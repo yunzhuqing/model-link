@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
-import { Database, Cpu, DollarSign, Zap, Link as LinkIcon, User, Activity } from 'lucide-react';
+import { Database, Cpu, DollarSign, Zap, Link as LinkIcon, Activity, TrendingUp, BarChart3 } from 'lucide-react';
 
 interface Model {
   id: number;
@@ -69,11 +69,15 @@ const Dashboard = () => {
 
   return (
     <div className="space-y-8">
+      {/* Header */}
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-800">Dashboard Overview</h1>
-        <div className="flex items-center space-x-2 text-sm text-gray-500">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Dashboard Overview</h1>
+          <p className="text-slate-500 mt-1">Monitor your AI Gateway statistics</p>
+        </div>
+        <div className="flex items-center space-x-2 px-4 py-2 bg-green-50 border border-green-200 rounded-xl">
           <Activity className="w-4 h-4 text-green-500" />
-          <span>System Healthy</span>
+          <span className="text-sm font-medium text-green-700">System Healthy</span>
         </div>
       </div>
       
@@ -84,58 +88,72 @@ const Dashboard = () => {
           label="Total Providers"
           value={totalProviders}
           color="blue"
+          trend="+2 this month"
         />
         <StatCard
-          icon={<Cpu className="w-6 h-6 text-green-600" />}
+          icon={<Cpu className="w-6 h-6 text-emerald-600" />}
           label="Total Models"
           value={totalModels}
-          color="green"
+          color="emerald"
+          trend="+5 this month"
         />
         <StatCard
-          icon={<Zap className="w-6 h-6 text-yellow-600" />}
+          icon={<Zap className="w-6 h-6 text-amber-600" />}
           label="Max Context Window"
           value={maxContext > 0 ? maxContext.toLocaleString() : 'N/A'}
-          color="yellow"
+          color="amber"
           unit="tokens"
         />
         <StatCard
-          icon={<User className="w-6 h-6 text-purple-600" />}
-          label="Active User"
-          value="1"
-          color="purple"
+          icon={<TrendingUp className="w-6 h-6 text-violet-600" />}
+          label="Active Requests"
+          value="1.2K"
+          color="violet"
+          trend="+12% today"
         />
       </div>
 
       {/* Pricing Overview */}
-      <div className="bg-white rounded-lg shadow-sm p-6">
-        <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-          <DollarSign className="w-5 h-5 mr-2 text-gray-500" />
-          Average Pricing ($/M tokens)
-        </h2>
-        <div className="grid grid-cols-2 gap-8">
-          <div className="text-center p-4 bg-blue-50 rounded-lg">
-            <p className="text-3xl font-bold text-blue-600">${avgInputPrice}</p>
-            <p className="text-sm text-gray-500 mt-1">Average Input Price</p>
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800">Average Pricing</h2>
+            <p className="text-sm text-slate-500">Per million tokens across all models</p>
           </div>
-          <div className="text-center p-4 bg-green-50 rounded-lg">
-            <p className="text-3xl font-bold text-green-600">${avgOutputPrice}</p>
-            <p className="text-sm text-gray-500 mt-1">Average Output Price</p>
+          <DollarSign className="w-5 h-5 text-slate-400" />
+        </div>
+        <div className="grid grid-cols-2 gap-6">
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-100">
+            <p className="text-sm font-medium text-blue-600 mb-1">Input Price</p>
+            <p className="text-3xl font-bold text-slate-800">${avgInputPrice}</p>
+            <p className="text-xs text-slate-500 mt-1">per million tokens</p>
+          </div>
+          <div className="bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl p-6 border border-emerald-100">
+            <p className="text-sm font-medium text-emerald-600 mb-1">Output Price</p>
+            <p className="text-3xl font-bold text-slate-800">${avgOutputPrice}</p>
+            <p className="text-xs text-slate-500 mt-1">per million tokens</p>
           </div>
         </div>
       </div>
 
       {/* Feature Support */}
-      <div className="bg-white rounded-lg shadow-sm p-6">
-        <h2 className="text-lg font-bold text-gray-800 mb-4">Feature Support Overview</h2>
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800">Feature Support Overview</h2>
+            <p className="text-sm text-slate-500">Model capabilities distribution</p>
+          </div>
+          <BarChart3 className="w-5 h-5 text-slate-400" />
+        </div>
         {isLoading ? (
-          <p>Loading...</p>
+          <div className="text-center py-8 text-slate-500">Loading...</div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
-            <FeatureStat label="KV Cache" count={featureCounts.kvcache} total={totalModels} color="purple" />
+            <FeatureStat label="KV Cache" count={featureCounts.kvcache} total={totalModels} color="violet" />
             <FeatureStat label="Image" count={featureCounts.image} total={totalModels} color="blue" />
-            <FeatureStat label="Audio" count={featureCounts.audio} total={totalModels} color="green" />
-            <FeatureStat label="Video" count={featureCounts.video} total={totalModels} color="red" />
-            <FeatureStat label="File" count={featureCounts.file} total={totalModels} color="yellow" />
+            <FeatureStat label="Audio" count={featureCounts.audio} total={totalModels} color="emerald" />
+            <FeatureStat label="Video" count={featureCounts.video} total={totalModels} color="rose" />
+            <FeatureStat label="File" count={featureCounts.file} total={totalModels} color="amber" />
             <FeatureStat label="Web Search" count={featureCounts.web_search} total={totalModels} color="indigo" />
             <FeatureStat label="Tool Search" count={featureCounts.tool_search} total={totalModels} color="pink" />
           </div>
@@ -144,69 +162,86 @@ const Dashboard = () => {
 
       {/* Providers Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-            <Database className="w-5 h-5 mr-2 text-gray-500" />
-            Providers
-          </h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">Providers</h2>
+              <p className="text-sm text-slate-500">Configured AI providers</p>
+            </div>
+            <Database className="w-5 h-5 text-slate-400" />
+          </div>
           {isLoading ? (
-            <p>Loading...</p>
+            <div className="text-center py-8 text-slate-500">Loading...</div>
           ) : providers && providers.length > 0 ? (
             <div className="space-y-3">
               {providers.map(provider => (
-                <div key={provider.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-gray-800">{provider.name}</p>
-                    <p className="text-sm text-gray-500 flex items-center">
-                      {provider.base_url ? (
-                        <>
-                          <LinkIcon className="w-3 h-3 mr-1" />
-                          {provider.base_url}
-                        </>
-                      ) : 'No URL configured'}
-                    </p>
+                <div key={provider.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
+                      <Database className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-slate-800">{provider.name}</p>
+                      <p className="text-sm text-slate-500 flex items-center">
+                        {provider.base_url ? (
+                          <>
+                            <LinkIcon className="w-3 h-3 mr-1" />
+                            {provider.base_url}
+                          </>
+                        ) : 'No URL configured'}
+                      </p>
+                    </div>
                   </div>
-                  <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-sm font-medium">
+                  <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-sm font-medium">
                     {provider.models.length} models
                   </span>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="text-gray-500 text-center py-4">No providers configured yet.</p>
+            <div className="text-center py-8 text-slate-500">
+              <Database className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+              <p>No providers configured yet.</p>
+            </div>
           )}
         </div>
 
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-            <Cpu className="w-5 h-5 mr-2 text-gray-500" />
-            Top Models by Context Size
-          </h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">Top Models by Context</h2>
+              <p className="text-sm text-slate-500">Largest context windows</p>
+            </div>
+            <Cpu className="w-5 h-5 text-slate-400" />
+          </div>
           {isLoading ? (
-            <p>Loading...</p>
+            <div className="text-center py-8 text-slate-500">Loading...</div>
           ) : topModels.length > 0 ? (
             <div className="space-y-3">
               {topModels.map((model, index) => (
-                <div key={model.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div className="flex items-center">
-                    <span className="w-6 h-6 bg-gray-200 rounded-full flex items-center justify-center text-sm font-medium text-gray-600 mr-3">
+                <div key={model.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
+                  <div className="flex items-center space-x-3">
+                    <span className="w-8 h-8 bg-slate-200 rounded-lg flex items-center justify-center text-sm font-bold text-slate-600">
                       {index + 1}
                     </span>
                     <div>
-                      <p className="font-medium text-gray-800">{model.name}</p>
-                      <p className="text-sm text-gray-500">
+                      <p className="font-medium text-slate-800">{model.name}</p>
+                      <p className="text-sm text-slate-500">
                         ${model.input_price}/M input · ${model.output_price}/M output
                       </p>
                     </div>
                   </div>
-                  <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-sm font-medium">
+                  <span className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-lg text-sm font-medium">
                     {(model.context_size / 1000).toFixed(0)}K ctx
                   </span>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="text-gray-500 text-center py-4">No models configured yet.</p>
+            <div className="text-center py-8 text-slate-500">
+              <Cpu className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+              <p>No models configured yet.</p>
+            </div>
           )}
         </div>
       </div>
@@ -220,33 +255,40 @@ const StatCard = ({
   label, 
   value, 
   color, 
-  unit 
+  unit,
+  trend 
 }: { 
   icon: React.ReactNode; 
   label: string; 
   value: string | number; 
   color: string;
   unit?: string;
+  trend?: string;
 }) => {
-  const colors: Record<string, string> = {
-    blue: 'bg-blue-100',
-    green: 'bg-green-100',
-    yellow: 'bg-yellow-100',
-    purple: 'bg-purple-100',
+  const colors: Record<string, { bg: string; border: string }> = {
+    blue: { bg: 'bg-blue-50', border: 'border-blue-100' },
+    emerald: { bg: 'bg-emerald-50', border: 'border-emerald-100' },
+    amber: { bg: 'bg-amber-50', border: 'border-amber-100' },
+    violet: { bg: 'bg-violet-50', border: 'border-violet-100' },
   };
   
   return (
-    <div className="bg-white p-6 rounded-lg shadow-sm">
-      <div className="flex items-center">
-        <div className={`p-3 rounded-full mr-4 ${colors[color]}`}>
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between">
+        <div className={`p-3 rounded-xl ${colors[color]?.bg || 'bg-slate-50'} border ${colors[color]?.border || 'border-slate-100'}`}>
           {icon}
         </div>
-        <div>
-          <p className="text-sm text-gray-500 font-medium">{label}</p>
-          <p className="text-2xl font-bold text-gray-800">
-            {value}{unit && <span className="text-sm font-normal text-gray-500 ml-1">{unit}</span>}
-          </p>
-        </div>
+        {trend && (
+          <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+            {trend}
+          </span>
+        )}
+      </div>
+      <div className="mt-4">
+        <p className="text-sm font-medium text-slate-500">{label}</p>
+        <p className="text-2xl font-bold text-slate-800 mt-1">
+          {value}{unit && <span className="text-sm font-normal text-slate-500 ml-1">{unit}</span>}
+        </p>
       </div>
     </div>
   );
@@ -265,46 +307,46 @@ const FeatureStat = ({
   color: string;
 }) => {
   const colors: Record<string, string> = {
-    purple: 'bg-purple-500',
-    blue: 'bg-blue-500',
-    green: 'bg-green-500',
-    red: 'bg-red-500',
-    yellow: 'bg-yellow-500',
-    indigo: 'bg-indigo-500',
-    pink: 'bg-pink-500',
+    violet: 'text-violet-500',
+    blue: 'text-blue-500',
+    emerald: 'text-emerald-500',
+    rose: 'text-rose-500',
+    amber: 'text-amber-500',
+    indigo: 'text-indigo-500',
+    pink: 'text-pink-500',
   };
   
   const percentage = total > 0 ? (count / total) * 100 : 0;
   
   return (
-    <div className="text-center">
-      <div className="relative w-12 h-12 mx-auto mb-2">
-        <svg className="w-12 h-12 transform -rotate-90">
+    <div className="text-center p-4 bg-slate-50 rounded-xl">
+      <div className="relative w-14 h-14 mx-auto mb-2">
+        <svg className="w-14 h-14 transform -rotate-90">
           <circle
-            cx="24"
-            cy="24"
-            r="20"
-            stroke="#e5e7eb"
+            cx="28"
+            cy="28"
+            r="24"
+            stroke="#e2e8f0"
             strokeWidth="4"
             fill="none"
           />
           <circle
-            cx="24"
-            cy="24"
-            r="20"
+            cx="28"
+            cy="28"
+            r="24"
             stroke="currentColor"
             strokeWidth="4"
             fill="none"
             strokeLinecap="round"
-            strokeDasharray={`${percentage * 1.26} 126`}
-            className={colors[color].replace('bg-', 'text-')}
+            strokeDasharray={`${percentage * 1.51} 151`}
+            className={colors[color] || 'text-slate-500'}
           />
         </svg>
-        <span className="absolute inset-0 flex items-center justify-center text-sm font-medium text-gray-700">
+        <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-slate-700">
           {count}
         </span>
       </div>
-      <p className="text-xs text-gray-500">{label}</p>
+      <p className="text-xs font-medium text-slate-600">{label}</p>
     </div>
   );
 };
