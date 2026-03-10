@@ -32,6 +32,288 @@ SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 
 
+# ============== 请求解析辅助函数 ==============
+
+def parse_openai_request(data: dict) -> ChatRequest:
+    """从 OpenAI 格式解析请求"""
+    import json
+    from app.abstraction.messages import ContentBlock, ContentType
+    from app.abstraction.tools import ToolParameter, ToolType
+    
+    messages = []
+    for msg_data in data.get('messages', []):
+        role = MessageRole(msg_data.get('role', 'user'))
+        content = msg_data.get('content')
+        name = msg_data.get('name')
+        tool_call_id = msg_data.get('tool_call_id')
+        reasoning_content = msg_data.get('reasoning_content')
+        
+        blocks = []
+        if 'tool_calls' in msg_data:
+            for tc in msg_data['tool_calls']:
+                tc_id = tc.get('id')
+                func = tc.get('function', {})
+                tc_name = func.get('name')
+                tc_args = func.get('arguments')
+                
+                if isinstance(tc_args, str):
+                    try:
+                        tc_args = json.loads(tc_args)
+                    except:
+                        pass
+                
+                blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args if isinstance(tc_args, dict) else {}))
+        
+        if isinstance(content, list):
+            for item in content:
+                item_type = item.get('type', 'text')
+                if item_type == 'text':
+                    blocks.append(ContentBlock.from_text(item.get('text', '')))
+                elif item_type == 'image_url':
+                    image_url = item.get('image_url', {})
+                    url = image_url.get('url', '')
+                    if url.startswith('data:'):
+                        parts = url.split(',')
+                        media_type = parts[0].replace('data:', '').replace(';base64', '')
+                        data_str = parts[1] if len(parts) > 1 else ''
+                        blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                    else:
+                        blocks.append(ContentBlock.from_image_url(url))
+            content = blocks if blocks else None
+        elif blocks:
+            if content:
+                blocks.insert(0, ContentBlock.from_text(content))
+            content = blocks
+        
+        messages.append(Message(
+            role=role,
+            content=content,
+            name=name,
+            tool_call_id=tool_call_id,
+            reasoning_content=reasoning_content
+        ))
+    
+    tools = []
+    for tool_data in data.get('tools', []):
+        func = tool_data.get('function', tool_data)
+        name = func.get('name', '')
+        description = func.get('description', '')
+        params_schema = func.get('parameters', {})
+        
+        parameters = []
+        properties = params_schema.get('properties', {})
+        required = params_schema.get('required', [])
+        
+        for param_name, param_schema in properties.items():
+            parameters.append(ToolParameter(
+                name=param_name,
+                type=param_schema.get('type', 'string'),
+                description=param_schema.get('description'),
+                required=param_name in required,
+                enum=param_schema.get('enum'),
+                default=param_schema.get('default')
+            ))
+        
+        tools.append(ToolDefinition(
+            name=name,
+            description=description,
+            parameters=parameters,
+            tool_type=ToolType.FUNCTION
+        ))
+    
+    known_keys = {
+        'model', 'messages', 'temperature', 'top_p', 'max_tokens',
+        'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
+        'frequency_penalty', 'user'
+    }
+    metadata = {k: v for k, v in data.items() if k not in known_keys}
+    
+    return ChatRequest(
+        messages=messages,
+        model=data.get('model', ''),
+        temperature=data.get('temperature'),
+        top_p=data.get('top_p'),
+        max_tokens=data.get('max_tokens'),
+        stream=data.get('stream', False),
+        tools=tools,
+        tool_choice=data.get('tool_choice'),
+        stop=data.get('stop'),
+        presence_penalty=data.get('presence_penalty'),
+        frequency_penalty=data.get('frequency_penalty'),
+        user=data.get('user'),
+        metadata=metadata
+    )
+
+
+def parse_anthropic_request(data: dict) -> ChatRequest:
+    """从 Anthropic 格式解析请求"""
+    from app.abstraction.messages import ContentBlock
+    from app.abstraction.tools import ToolParameter, ToolType
+    
+    messages = []
+    
+    if 'system' in data:
+        messages.append(Message(
+            role=MessageRole.SYSTEM,
+            content=data['system']
+        ))
+    
+    for msg_data in data.get('messages', []):
+        role = MessageRole(msg_data.get('role', 'user'))
+        content = msg_data.get('content', '')
+        
+        if isinstance(content, list):
+            blocks = []
+            for item in content:
+                item_type = item.get('type', 'text')
+                
+                if item_type == 'text':
+                    blocks.append(ContentBlock.from_text(item.get('text', '')))
+                elif item_type == 'image':
+                    source = item.get('source', {})
+                    source_type = source.get('type', 'url')
+                    
+                    if source_type == 'url':
+                        blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                    elif source_type == 'base64':
+                        blocks.append(ContentBlock.from_image_base64(
+                            source.get('data', ''),
+                            source.get('media_type', 'image/jpeg')
+                        ))
+            
+            content = blocks
+        
+        messages.append(Message(role=role, content=content))
+    
+    tools = []
+    for tool_data in data.get('tools', []):
+        name = tool_data.get('name', '')
+        description = tool_data.get('description', '')
+        input_schema = tool_data.get('input_schema', {})
+        
+        parameters = []
+        properties = input_schema.get('properties', {})
+        required = input_schema.get('required', [])
+        
+        for param_name, param_schema in properties.items():
+            parameters.append(ToolParameter(
+                name=param_name,
+                type=param_schema.get('type', 'string'),
+                description=param_schema.get('description'),
+                required=param_name in required,
+                enum=param_schema.get('enum'),
+                default=param_schema.get('default')
+            ))
+        
+        tools.append(ToolDefinition(
+            name=name,
+            description=description,
+            parameters=parameters,
+            tool_type=ToolType.FUNCTION
+        ))
+    
+    return ChatRequest(
+        messages=messages,
+        model=data.get('model', ''),
+        temperature=data.get('temperature'),
+        top_p=data.get('top_p'),
+        max_tokens=data.get('max_tokens'),
+        stream=data.get('stream', False),
+        tools=tools,
+        tool_choice=data.get('tool_choice', {}).get('type') if data.get('tool_choice') else None,
+        stop=data.get('stop_sequences'),
+        metadata=data.get('metadata', {})
+    )
+
+
+def response_to_openai(response: ChatResponse) -> dict:
+    """将响应转换为 OpenAI 格式"""
+    import json
+    
+    choices = []
+    for choice in response.choices:
+        choice_dict = {
+            'index': choice.index,
+            'finish_reason': choice.finish_reason.value
+        }
+        
+        if choice.message:
+            msg = choice.message
+            content = msg.get_text_content()
+            
+            choice_dict['message'] = {
+                'role': msg.role.value,
+                'content': content
+            }
+            
+            if choice.reasoning_content:
+                choice_dict['message']['reasoning_content'] = choice.reasoning_content
+            
+            if choice.tool_calls:
+                choice_dict['message']['tool_calls'] = [
+                    {
+                        'id': tc.id,
+                        'type': tc.call_type,
+                        'function': {
+                            'name': tc.name,
+                            'arguments': json.dumps(tc.arguments, ensure_ascii=False)
+                        }
+                    }
+                    for tc in choice.tool_calls
+                ]
+        
+        choices.append(choice_dict)
+    
+    return {
+        'id': response.id,
+        'object': 'chat.completion',
+        'created': response.created,
+        'model': response.model,
+        'choices': choices,
+        'usage': {
+            'prompt_tokens': response.usage.prompt_tokens,
+            'completion_tokens': response.usage.completion_tokens,
+            'total_tokens': response.usage.total_tokens
+        }
+    }
+
+
+def response_to_anthropic(response: ChatResponse) -> dict:
+    """将响应转换为 Anthropic 格式"""
+    content = []
+    for choice in response.choices:
+        if choice.message:
+            text = choice.message.get_text_content()
+            if text:
+                content.append({'type': 'text', 'text': text})
+            
+            if choice.tool_calls:
+                for tc in choice.tool_calls:
+                    content.append({
+                        'type': 'tool_use',
+                        'id': tc.id,
+                        'name': tc.name,
+                        'input': tc.arguments
+                    })
+    
+    return {
+        'id': response.id,
+        'type': 'message',
+        'role': 'assistant',
+        'content': content,
+        'model': response.model,
+        'stop_reason': response.choices[0].finish_reason.value if response.choices else 'end_turn',
+        'usage': {
+            'input_tokens': response.usage.prompt_tokens,
+            'output_tokens': response.usage.completion_tokens
+        }
+    }
+
+# Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
+ALGORITHM = "HS256"
+
+
 def get_current_user_or_api_key():
     """Authenticate via either JWT token or API key."""
     auth_header = request.headers.get('Authorization')
@@ -238,9 +520,9 @@ def chat_completions():
             'detail': f"Model '{model_name}' not found. Please configure it in the providers section."
         }), 404
     
-    # 使用抽象层创建请求对象
+    # 解析请求
     try:
-        chat_request = ChatRequest.from_openai_format(data)
+        chat_request = parse_openai_request(data)
     except Exception as e:
         return jsonify({'detail': f'Invalid request format: {str(e)}'}), 400
     
@@ -253,7 +535,7 @@ def chat_completions():
         else:
             # 非流式请求
             response = provider_instance.chat(chat_request)
-            return jsonify(response.to_openai_format())
+            return jsonify(response_to_openai(response))
     
     except ValueError as e:
         return jsonify({'detail': str(e)}), 400
@@ -328,9 +610,9 @@ def anthropic_messages():
             'detail': f"Model '{model_name}' not found. Please configure it in the providers section."
         }), 404
     
-    # 使用抽象层创建请求对象（从 Anthropic 格式）
+    # 使用辅助函数解析 Anthropic 格式请求
     try:
-        chat_request = ChatRequest.from_anthropic_format(data)
+        chat_request = parse_anthropic_request(data)
         chat_request.max_tokens = max_tokens
     except Exception as e:
         return jsonify({'detail': f'Invalid request format: {str(e)}'}), 400
@@ -344,7 +626,7 @@ def anthropic_messages():
         else:
             # 非流式请求
             response = provider_instance.chat(chat_request)
-            return jsonify(response.to_anthropic_format())
+            return jsonify(response_to_anthropic(response))
     
     except ValueError as e:
         return jsonify({'detail': str(e)}), 400

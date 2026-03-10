@@ -2,6 +2,7 @@
 百炼供应商实现 (Bailian Provider)
 实现阿里云百炼模型的 API 调用。
 
+百炼 API 采用 OpenAI 兼容格式，继承 OpenAIProvider 复用代码。
 百炼 API 文档：https://help.aliyun.com/document_detail/2712195.html
 """
 from typing import Optional, List, Dict, Any, Generator
@@ -9,19 +10,20 @@ import json
 import time
 import uuid
 
-from .base import BaseProvider, ProviderConfig, ProviderCapability
+from .openai_provider import OpenAIProvider
+from .base import ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
-from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.abstraction.streaming import StreamChunk
 
 
-class BailianProvider(BaseProvider):
+class BailianProvider(OpenAIProvider):
     """
     百炼供应商实现
     
     阿里云百炼是一个 AI 模型服务平台，提供多种大语言模型的 API 调用。
-    百炼 API 采用 OpenAI 兼容格式，但有一些细微差异。
+    百炼 API 采用 OpenAI 兼容格式，继承 OpenAIProvider 复用代码。
     """
     
     PROVIDER_TYPE: str = "bailian"
@@ -103,65 +105,11 @@ class BailianProvider(BaseProvider):
         
         super().__init__(config)
     
-    def get_headers(self) -> Dict[str, str]:
-        """获取请求头"""
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}"
-        }
-    
-    @property
-    def client(self) -> Any:
-        """获取 HTTP 客户端"""
-        if self._client is None:
-            import httpx
-            self._client = httpx.Client(
-                timeout=self.config.timeout,
-                headers=self.get_headers()
-            )
-        return self._client
-    
-    def supports_model(self, model: str) -> bool:
-        """
-        检查是否支持某个模型
-        
-        Args:
-            model: 模型名称
-        
-        Returns:
-            是否支持该模型
-        """
-        # 百炼支持自定义模型，所以默认返回 True
-        return True
-    
-    def get_model_info(self, model: str) -> Optional[Dict[str, Any]]:
-        """
-        获取模型信息
-        
-        Args:
-            model: 模型名称
-        
-        Returns:
-            模型信息字典
-        """
-        # 首先检查预定义模型
-        if model in self.SUPPORTED_MODELS:
-            return self.SUPPORTED_MODELS[model]
-        
-        # 返回默认信息
-        return {
-            "description": f"Custom model: {model}",
-            "context_size": 8192,
-            "supports_vision": False,
-        }
-    
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         准备百炼请求数据
         
-        百炼 API 采用 OpenAI 兼容格式，但有一些特殊参数：
-        - enable_search: 启用搜索增强
-        - incremental_output: 流式增量输出
+        复用 OpenAI 格式，添加百炼特有参数。
         
         Args:
             request: 对话请求对象
@@ -169,81 +117,52 @@ class BailianProvider(BaseProvider):
         Returns:
             百炼请求字典
         """
-        # 基础请求结构
-        data = {
-            "model": request.model,
-            "messages": [msg.to_bailian_format() for msg in request.messages],
-            "stream": request.stream,
-        }
+        # 复用父类 OpenAI 格式
+        data = super().prepare_request(request)
         
-        # 添加可选参数
-        if request.temperature is not None:
-            data["temperature"] = request.temperature
-        if request.top_p is not None:
-            data["top_p"] = request.top_p
-        if request.max_tokens is not None:
-            data["max_tokens"] = request.max_tokens
-        if request.stop:
-            data["stop"] = request.stop
-        if request.presence_penalty is not None:
-            data["presence_penalty"] = request.presence_penalty
-        if request.frequency_penalty is not None:
-            data["frequency_penalty"] = request.frequency_penalty
-        
-        # 工具调用
-        if request.tools:
-            data["tools"] = [t.to_bailian_format() for t in request.tools]
-        if request.tool_choice:
-            data["tool_choice"] = request.tool_choice
-        
-        # 百炼特有参数
+        # 百炼特有参数从 metadata 中提取
         if "enable_search" in request.metadata:
             data["enable_search"] = request.metadata["enable_search"]
         
-        # 添加额外参数
-        for key, value in request.metadata.items():
-            if key not in ["enable_search"]:
-                data[key] = value
-        
         return data
     
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """
-        执行对话请求
+        解析百炼响应数据
+        
+        复用 OpenAI 格式解析，处理百炼特有字段。
         
         Args:
-            request: 对话请求对象
+            response_data: 响应数据
+            model: 模型名称
         
         Returns:
             对话响应对象
         """
-        # 验证请求
-        error = self.validate_request(request)
-        if error:
-            raise ValueError(error)
+        # 复用父类 OpenAI 格式解析
+        response = super().parse_response(response_data, model)
+        response.provider = self.PROVIDER_TYPE
         
-        # 准备请求数据
-        request_data = self.prepare_request(request)
-        request_data["stream"] = False
+        # 处理百炼特有的 reasoning_content
+        for i, choice_data in enumerate(response_data.get("choices", [])):
+            message_data = choice_data.get("message", {})
+            if "reasoning_content" in message_data:
+                response.choices[i].reasoning_content = message_data["reasoning_content"]
         
-        print(f"Bailian Request Body: {json.dumps(request_data, ensure_ascii=False)}")
+        # 处理百炼特有的 cache tokens
+        usage_data = response_data.get("usage", {})
+        if "cache_read_tokens" in usage_data:
+            response.usage.cache_read_tokens = usage_data["cache_read_tokens"]
+        if "cache_write_tokens" in usage_data:
+            response.usage.cache_write_tokens = usage_data["cache_write_tokens"]
         
-        # 发送请求
-        url = f"{self.config.base_url}/chat/completions"
-        
-        try:
-            response = self.client.post(url, json=request_data)
-            response.raise_for_status()
-            
-            response_data = response.json()
-            return self.parse_response(response_data, request.model)
-        
-        except Exception as e:
-            raise RuntimeError(f"Bailian API error: {str(e)}")
+        return response
     
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """
         执行流式对话请求
+        
+        复用 OpenAI 流式处理，添加百炼特有参数。
         
         Args:
             request: 对话请求对象
@@ -263,11 +182,7 @@ class BailianProvider(BaseProvider):
         # 百炼特有：增量输出
         request_data["incremental_output"] = True
         
-        print(f"Bailian Stream Request Body: {json.dumps(request_data, ensure_ascii=False)}")
-        
-        # 发送请求
         url = f"{self.config.base_url}/chat/completions"
-        
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         
         try:
@@ -295,14 +210,11 @@ class BailianProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Bailian streaming API error: {str(e)}")
     
-    def _parse_stream_chunk(
-        self, 
-        data: Dict[str, Any], 
-        response_id: str, 
-        model: str
-    ) -> Optional[StreamChunk]:
+    def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """
         解析流式响应块
+        
+        复用 OpenAI 格式，处理百炼特有字段。
         
         Args:
             data: 响应数据
@@ -312,109 +224,18 @@ class BailianProvider(BaseProvider):
         Returns:
             流式响应块，如果无效返回 None
         """
-        choices = data.get("choices", [])
-        if not choices:
-            return None
+        # 复用父类解析
+        chunk = super()._parse_stream_chunk(data, response_id, model)
         
-        choice = choices[0]
-        delta = choice.get("delta", {})
+        if chunk:
+            # 处理百炼特有的 reasoning_content
+            choices = data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                if "reasoning_content" in delta:
+                    chunk.delta_reasoning_content = delta["reasoning_content"]
         
-        # 提取内容
-        content = delta.get("content")
-        role = delta.get("role")
-        reasoning_content = delta.get("reasoning_content")
-        
-        # 提取完成原因
-        finish_reason_str = choice.get("finish_reason")
-        finish_reason = None
-        if finish_reason_str:
-            try:
-                finish_reason = FinishReason(finish_reason_str)
-            except ValueError:
-                finish_reason = FinishReason.STOP
-        
-        # 提取工具调用
-        tool_calls = delta.get("tool_calls", [])
-        
-        return StreamChunk(
-            id=data.get("id", response_id),
-            model=data.get("model", model),
-            delta_content=content,
-            delta_role=role,
-            delta_reasoning_content=reasoning_content,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            created=data.get("created", int(time.time()))
-        )
-    
-    def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
-        """
-        解析百炼响应数据
-        
-        百炼响应格式与 OpenAI 类似，但可能包含额外的使用量信息。
-        
-        Args:
-            response_data: 响应数据
-            model: 模型名称
-        
-        Returns:
-            对话响应对象
-        """
-        choices = []
-        for choice_data in response_data.get("choices", []):
-            message_data = choice_data.get("message", {})
-            
-            # 解析消息
-            message = None
-            reasoning_content = message_data.get("reasoning_content")
-            if message_data:
-                message = Message(
-                    role=MessageRole(message_data.get("role", "assistant")),
-                    content=message_data.get("content", ""),
-                    reasoning_content=reasoning_content
-                )
-            
-            # 解析完成原因
-            finish_reason_str = choice_data.get("finish_reason")
-            finish_reason = FinishReason.STOP
-            if finish_reason_str:
-                try:
-                    finish_reason = FinishReason(finish_reason_str)
-                except ValueError:
-                    pass
-            
-            # 解析工具调用
-            tool_calls = []
-            if "tool_calls" in message_data:
-                for tc_data in message_data["tool_calls"]:
-                    tool_calls.append(ToolCall.from_bailian_format(tc_data))
-            
-            choices.append(ChatChoice(
-                index=choice_data.get("index", 0),
-                message=message,
-                finish_reason=finish_reason,
-                tool_calls=tool_calls,
-                reasoning_content=reasoning_content
-            ))
-        
-        # 解析使用量信息
-        usage_data = response_data.get("usage", {})
-        usage = UsageInfo(
-            prompt_tokens=usage_data.get("prompt_tokens", 0),
-            completion_tokens=usage_data.get("completion_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0),
-            cache_read_tokens=usage_data.get("cache_read_tokens", 0),
-            cache_write_tokens=usage_data.get("cache_write_tokens", 0),
-        )
-        
-        return ChatResponse(
-            id=response_data.get("id", f"chatcmpl-{uuid.uuid4().hex[:8]}"),
-            model=model,
-            choices=choices,
-            usage=usage,
-            created=response_data.get("created", int(time.time())),
-            provider=self.PROVIDER_TYPE
-        )
+        return chunk
     
     def list_models(self) -> List[Dict[str, Any]]:
         """
@@ -464,6 +285,7 @@ class BailianAsyncProvider:
         if not self.config.base_url:
             self.config.base_url = BailianProvider.DEFAULT_BASE_URL
         self._async_client = None
+        self._sync_provider = None
     
     def get_headers(self) -> Dict[str, str]:
         """获取请求头"""
@@ -473,15 +295,11 @@ class BailianAsyncProvider:
         }
     
     @property
-    def async_client(self) -> Any:
-        """获取异步 HTTP 客户端"""
-        if self._async_client is None:
-            import httpx
-            self._async_client = httpx.AsyncClient(
-                timeout=self.config.timeout,
-                headers=self.get_headers()
-            )
-        return self._async_client
+    def sync_provider(self) -> BailianProvider:
+        """获取同步供应商实例"""
+        if self._sync_provider is None:
+            self._sync_provider = BailianProvider(self.config)
+        return self._sync_provider
     
     async def chat(self, request: ChatRequest) -> ChatResponse:
         """
@@ -493,9 +311,7 @@ class BailianAsyncProvider:
         Returns:
             对话响应对象
         """
-        # 使用同步版本的实现
-        sync_provider = BailianProvider(self.config)
-        return sync_provider.chat(request)
+        return self.sync_provider.chat(request)
     
     async def stream_chat(self, request: ChatRequest):
         """
@@ -507,13 +323,11 @@ class BailianAsyncProvider:
         Yields:
             流式响应块
         """
-        # 使用同步版本的实现
-        sync_provider = BailianProvider(self.config)
-        for chunk in sync_provider.stream_chat(request):
+        for chunk in self.sync_provider.stream_chat(request):
             yield chunk
     
     async def close(self):
         """关闭异步客户端连接"""
-        if self._async_client:
-            await self._async_client.aclose()
-            self._async_client = None
+        if self._sync_provider:
+            self._sync_provider.close()
+            self._sync_provider = None

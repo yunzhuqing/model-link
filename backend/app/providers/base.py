@@ -175,7 +175,11 @@ class BaseProvider(ABC):
         Returns:
             供应商特定的请求字典
         """
-        return request.to_openai_format()
+        # 默认返回基本格式，子类应覆盖
+        return {
+            "model": request.model,
+            "messages": [],  # 子类应实现消息转换
+        }
     
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """
@@ -205,20 +209,71 @@ class BaseProvider(ABC):
         Returns:
             对话响应对象
         """
+        from app.abstraction.messages import MessageRole, ContentBlock
+        
         choices = []
         for choice_data in data.get("choices", []):
             message_data = choice_data.get("message", {})
-            message = Message.from_openai_format(message_data) if message_data else None
+            
+            # 解析消息
+            message = None
+            if message_data:
+                role_str = message_data.get("role", "assistant")
+                role = MessageRole(role_str)
+                content = message_data.get("content")
+                
+                # 解析工具调用
+                blocks = []
+                if "tool_calls" in message_data:
+                    for tc in message_data["tool_calls"]:
+                        tc_id = tc.get("id")
+                        func = tc.get("function", {})
+                        tc_name = func.get("name")
+                        tc_args = func.get("arguments")
+                        
+                        import json
+                        if isinstance(tc_args, str):
+                            try:
+                                tc_args = json.loads(tc_args)
+                            except:
+                                tc_args = {}
+                        
+                        blocks.append(ContentBlock.from_tool_call(
+                            tc_id, tc_name, tc_args if isinstance(tc_args, dict) else {}
+                        ))
+                
+                if content:
+                    blocks.insert(0, ContentBlock.from_text(content))
+                
+                message = Message(
+                    role=role,
+                    content=blocks if blocks else content
+                )
             
             finish_reason_str = choice_data.get("finish_reason")
             finish_reason = FinishReason(finish_reason_str) if finish_reason_str else FinishReason.STOP
             
+            # 解析工具调用
             tool_calls = []
-            if "tool_calls" in message_data:
-                tool_calls = [
-                    ToolCall.from_openai_format(tc) 
-                    for tc in message_data["tool_calls"]
-                ]
+            if message_data and "tool_calls" in message_data:
+                for tc in message_data["tool_calls"]:
+                    import json
+                    tc_id = tc.get("id")
+                    func = tc.get("function", {})
+                    tc_name = func.get("name")
+                    tc_args = func.get("arguments")
+                    
+                    if isinstance(tc_args, str):
+                        try:
+                            tc_args = json.loads(tc_args)
+                        except:
+                            tc_args = {}
+                    
+                    tool_calls.append(ToolCall(
+                        id=tc_id,
+                        name=tc_name,
+                        arguments=tc_args if isinstance(tc_args, dict) else {}
+                    ))
             
             choices.append(ChatChoice(
                 index=choice_data.get("index", 0),

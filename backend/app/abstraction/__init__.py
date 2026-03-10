@@ -4,13 +4,13 @@
 """
 
 from .messages import Message, MessageRole, ContentBlock, ContentType
-from .tools import Tool, ToolCall, ToolResult, ToolDefinition
-from .chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo
+from .tools import ToolCall, ToolResult, ToolDefinition, ToolParameter, ToolType
+from .chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from .streaming import StreamChunk, StreamManager
 
 __all__ = [
     'Message', 'MessageRole', 'ContentBlock', 'ContentType',
-    'Tool', 'ToolCall', 'ToolResult', 'ToolDefinition',
-    'ChatRequest', 'ChatResponse', 'ChatChoice', 'UsageInfo',
+    'ToolCall', 'ToolResult', 'ToolDefinition', 'ToolParameter', 'ToolType',
+    'ChatRequest', 'ChatResponse', 'ChatChoice', 'UsageInfo', 'FinishReason',
     'StreamChunk', 'StreamManager'
 ]
