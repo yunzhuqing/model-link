@@ -13,8 +13,8 @@ apikeys_bp = Blueprint('apikeys', __name__)
 
 
 def generate_api_key():
-    """Generate a secure random API key."""
-    return f"ml-{secrets.token_hex(24)}"
+    """Generate a secure random API key with sk- prefix (OpenAI compatible)."""
+    return f"sk-{secrets.token_hex(24)}"
 
 
 # ============== Group Management ==============

@@ -209,7 +209,7 @@ export default function ApiKeyList() {
                   <Users className="w-3 h-3 mr-1" />
                   <span className="text-xs">分组</span>
                 </div>
-                <span className="font-medium text-slate-700">{apiKey.group_name || '-'}</span>
+                <span className="font-medium text-slate-700">{apiKey.group_name || groups?.find(g => g.id === apiKey.group_id)?.name || '-'}</span>
               </div>
             </div>
 
