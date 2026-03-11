@@ -25,6 +25,7 @@ interface Model {
 interface Provider {
   id: number;
   name: string;
+  type: string;
   description: string;
   base_url: string;
   api_key: string;
@@ -52,7 +53,7 @@ const ProviderList = () => {
   const queryClient = useQueryClient();
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [newProvider, setNewProvider] = useState({ name: '', description: '', base_url: '', api_key: '' });
+  const [newProvider, setNewProvider] = useState({ name: '', type: 'openai', description: '', base_url: '', api_key: '' });
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
   const [showAddModel, setShowAddModel] = useState<number | null>(null);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
@@ -71,7 +72,7 @@ const ProviderList = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowAddProvider(false);
-      setNewProvider({ name: '', description: '', base_url: '', api_key: '' });
+      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '' });
     },
   });
 
@@ -174,6 +175,27 @@ const ProviderList = () => {
               />
             </div>
             <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Provider Type *</label>
+              <select
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                value={editingProvider ? editingProvider.type : newProvider.type}
+                onChange={(e) => editingProvider 
+                  ? setEditingProvider({ ...editingProvider, type: e.target.value })
+                  : setNewProvider({ ...newProvider, type: e.target.value })
+                }
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="kimi">Kimi</option>
+                <option value="glm">GLM (Zhipu AI)</option>
+                <option value="minimax">MiniMax</option>
+                <option value="bailian">Bailian (Alibaba)</option>
+                <option value="volcengine">Volcengine (ByteDance)</option>
+                <option value="tencent">Tencent</option>
+              </select>
+            </div>
+            <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Base URL</label>
               <input
                 placeholder="https://api.example.com"
@@ -247,7 +269,12 @@ const ProviderList = () => {
                   <Database className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-slate-800">{provider.name}</h3>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-lg font-bold text-slate-800">{provider.name}</h3>
+                    <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-semibold uppercase">
+                      {provider.type}
+                    </span>
+                  </div>
                   <p className="text-sm text-slate-500 flex items-center">
                     {provider.base_url ? (
                       <>

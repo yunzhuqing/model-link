@@ -5,15 +5,17 @@
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .bailian_provider import BailianProvider
+from .volcengine_provider import VolcengineProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
-    'BailianProvider'
+    'BailianProvider', 'VolcengineProvider'
 ]
 
 # 供应商注册表
 PROVIDER_REGISTRY = {
     'bailian': BailianProvider,
+    'volcengine': VolcengineProvider,
 }
 
 

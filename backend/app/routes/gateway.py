@@ -440,6 +440,8 @@ def infer_provider_type(provider_name: str, base_url: str = None) -> str:
         return 'openai'
     if 'anthropic' in name_lower or 'claude' in name_lower:
         return 'anthropic'
+    if 'volcengine' in name_lower or 'volces' in name_lower or '火山' in name_lower:
+        return 'volcengine'
     if 'deepseek' in name_lower:
         return 'bailian'  # DeepSeek 在百炼上可用
     if 'qwen' in name_lower or '通义' in name_lower:
@@ -453,6 +455,8 @@ def infer_provider_type(provider_name: str, base_url: str = None) -> str:
             return 'openai'
         if 'anthropic' in base_url:
             return 'anthropic'
+        if 'volcengine' in base_url or 'volces' in base_url:
+            return 'volcengine'
         if 'deepseek' in base_url:
             return 'bailian'
     

@@ -129,6 +129,7 @@ class Provider(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    type = db.Column(db.String(50), nullable=False, default="openai")  # openai, anthropic, deepseek, kimi, glm, minimax, bailian, volcengine, tencent
     description = db.Column(db.String(255))
     api_key = db.Column(db.String(255))
     base_url = db.Column(db.String(255))
@@ -139,6 +140,7 @@ class Provider(db.Model):
         return {
             'id': self.id,
             'name': self.name,
+            'type': self.type,
             'description': self.description,
             'api_key': '***' if self.api_key else None,  # Don't expose API key
             'base_url': self.base_url,
@@ -149,6 +151,7 @@ class Provider(db.Model):
         return {
             'id': self.id,
             'name': self.name,
+            'type': self.type,
             'description': self.description,
             'base_url': self.base_url
         }

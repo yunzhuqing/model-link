@@ -32,6 +32,7 @@ def create_provider(current_user):
     
     provider = Provider(
         name=data.get('name'),
+        type=data.get('type', 'openai'),
         description=data.get('description'),
         api_key=data.get('api_key'),
         base_url=data.get('base_url')
@@ -64,6 +65,8 @@ def update_provider(current_user, provider_id):
     data = request.get_json()
     if 'name' in data:
         provider.name = data['name']
+    if 'type' in data:
+        provider.type = data['type']
     if 'description' in data:
         provider.description = data['description']
     if 'api_key' in data:
