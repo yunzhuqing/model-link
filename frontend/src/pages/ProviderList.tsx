@@ -30,7 +30,14 @@ interface Provider {
   description: string;
   base_url: string;
   api_key: string;
+  group_id: number;
   models: Model[];
+}
+
+interface Group {
+  id: number;
+  name: string;
+  description: string;
 }
 
 const defaultModelState = {
@@ -55,7 +62,7 @@ const ProviderList = () => {
   const queryClient = useQueryClient();
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [newProvider, setNewProvider] = useState({ name: '', type: 'openai', description: '', base_url: '', api_key: '' });
+  const [newProvider, setNewProvider] = useState({ name: '', type: 'openai', description: '', base_url: '', api_key: '', group_id: 0 });
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
   const [showAddModel, setShowAddModel] = useState<number | null>(null);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
@@ -69,12 +76,20 @@ const ProviderList = () => {
     },
   });
 
+  const { data: groups } = useQuery({
+    queryKey: ['groups'],
+    queryFn: async () => {
+      const response = await client.get('/api/groups/');
+      return response.data as Group[];
+    },
+  });
+
   const createProviderMutation = useMutation({
     mutationFn: (provider: any) => client.post('/api/providers/', provider),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowAddProvider(false);
-      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '' });
+      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', group_id: 0 });
     },
   });
 
@@ -233,6 +248,25 @@ const ProviderList = () => {
                   : setNewProvider({ ...newProvider, description: e.target.value })
                 }
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Group *</label>
+              <select
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                value={editingProvider ? editingProvider.group_id : newProvider.group_id}
+                onChange={(e) => editingProvider 
+                  ? setEditingProvider({ ...editingProvider, group_id: parseInt(e.target.value) })
+                  : setNewProvider({ ...newProvider, group_id: parseInt(e.target.value) })
+                }
+              >
+                <option value={0}>Select a group</option>
+                {groups?.map((group) => (
+                  <option key={group.id} value={group.id}>{group.name}</option>
+                ))}
+              </select>
+              {groups?.length === 0 && (
+                <p className="text-amber-600 text-sm mt-1">No groups available. Please create a group first.</p>
+              )}
             </div>
           </div>
           <div className="mt-6 flex space-x-3">

@@ -1,11 +1,13 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { groupsApi } from '../api/client';
 import type { Group, GroupCreate } from '../api/client';
-import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar } from 'lucide-react';
+import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database } from 'lucide-react';
 
 export default function GroupList() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
@@ -110,17 +112,21 @@ export default function GroupList() {
       {/* Groups Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {groups?.map((group) => (
-          <div key={group.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md transition-shadow">
+          <div 
+            key={group.id} 
+            className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer group"
+            onClick={() => navigate(`/groups/${group.id}`)}
+          >
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center space-x-3">
                 <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/25">
                   <Users className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-800">{group.name}</h3>
+                  <h3 className="text-lg font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">{group.name}</h3>
                 </div>
               </div>
-              <div className="flex space-x-1">
+              <div className="flex space-x-1" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => openEditModal(group)}
                   className="text-slate-400 hover:text-blue-600 p-1.5 hover:bg-blue-50 rounded-lg transition-colors"
@@ -143,27 +149,37 @@ export default function GroupList() {
             </p>
 
             {/* Stats */}
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="bg-slate-50 rounded-xl p-4">
-                <div className="flex items-center text-slate-400 mb-2">
-                  <User className="w-4 h-4 mr-2" />
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="bg-slate-50 rounded-xl p-3">
+                <div className="flex items-center text-slate-400 mb-1">
+                  <User className="w-3 h-3 mr-1" />
                   <span className="text-xs font-medium">用户</span>
                 </div>
-                <span className="text-2xl font-bold text-slate-800">{group.user_count || 0}</span>
+                <span className="text-xl font-bold text-slate-800">{group.users?.length || 0}</span>
               </div>
-              <div className="bg-slate-50 rounded-xl p-4">
-                <div className="flex items-center text-slate-400 mb-2">
-                  <Key className="w-4 h-4 mr-2" />
-                  <span className="text-xs font-medium">API Key</span>
+              <div className="bg-slate-50 rounded-xl p-3">
+                <div className="flex items-center text-slate-400 mb-1">
+                  <Key className="w-3 h-3 mr-1" />
+                  <span className="text-xs font-medium">Keys</span>
                 </div>
-                <span className="text-2xl font-bold text-slate-800">{group.api_key_count || 0}</span>
+                <span className="text-xl font-bold text-slate-800">{group.api_keys?.length || 0}</span>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3">
+                <div className="flex items-center text-slate-400 mb-1">
+                  <Database className="w-3 h-3 mr-1" />
+                  <span className="text-xs font-medium">Providers</span>
+                </div>
+                <span className="text-xl font-bold text-slate-800">{group.providers?.length || 0}</span>
               </div>
             </div>
 
-            {/* Date */}
-            <div className="pt-4 border-t border-slate-100 flex items-center text-xs text-slate-500">
-              <Calendar className="w-3 h-3 mr-2" />
-              <span>创建于 {formatDate(group.created_at)}</span>
+            {/* Footer */}
+            <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+              <div className="flex items-center text-xs text-slate-500">
+                <Calendar className="w-3 h-3 mr-2" />
+                <span>{formatDate(group.created_at)}</span>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />
             </div>
           </div>
         ))}

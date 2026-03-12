@@ -48,6 +48,9 @@ export interface Group {
   created_at: string;
   user_count?: number;
   api_key_count?: number;
+  users?: Array<{ id: number; username: string; email: string }>;
+  api_keys?: Array<{ id: number; name: string; is_active: boolean }>;
+  providers?: Array<{ id: number; name: string; type: string }>;
 }
 
 export interface GroupCreate {

@@ -250,12 +250,13 @@ def get_current_user_or_api_key():
     return user, None, None, 200
 
 
-def resolve_model(model_name: str):
+def resolve_model(model_name: str, group_id: int = None):
     """
     Resolve a model name or alias to its provider and model configuration.
     
     Args:
         model_name: 模型名称或别名
+        group_id: Optional group ID to filter providers by group
     
     Returns:
         (provider_model, db_provider, db_model) 或 (None, None, None)
@@ -270,6 +271,10 @@ def resolve_model(model_name: str):
             Provider.id == db_model.provider_id
         ).first()
         if db_provider:
+            # Check group access if group_id is specified
+            if group_id is not None and db_provider.group_id != group_id:
+                return None, None, None
+            
             # 创建供应商实例
             provider_instance = create_provider_instance(db_provider)
             return provider_instance, db_provider, db_model
@@ -322,7 +327,11 @@ def list_models():
     if error:
         return jsonify(error), status
     
-    providers = db.session.query(Provider).all()
+    # Filter providers by group if using API key
+    if api_key:
+        providers = db.session.query(Provider).filter(Provider.group_id == api_key.group_id).all()
+    else:
+        providers = db.session.query(Provider).all()
     
     models_list = []
     for provider in providers:
@@ -379,11 +388,14 @@ def chat_completions():
     if not messages:
         return jsonify({'detail': 'Messages are required'}), 400
     
+    # Get group_id for access control (from API key)
+    group_id = api_key.group_id if api_key else None
+    
     # 解析模型
-    provider_instance, db_provider, db_model = resolve_model(model_name)
+    provider_instance, db_provider, db_model = resolve_model(model_name, group_id)
     if not provider_instance:
         return jsonify({
-            'detail': f"Model '{model_name}' not found. Please configure it in the providers section."
+            'detail': f"Model '{model_name}' not found or not accessible with your API key."
         }), 404
     
     # 解析请求
@@ -472,11 +484,14 @@ def anthropic_messages():
     
     max_tokens = data.get('max_tokens', 4096)
     
+    # Get group_id for access control (from API key)
+    group_id = api_key.group_id if api_key else None
+    
     # 解析模型
-    provider_instance, db_provider, db_model = resolve_model(model_name)
+    provider_instance, db_provider, db_model = resolve_model(model_name, group_id)
     if not provider_instance:
         return jsonify({
-            'detail': f"Model '{model_name}' not found. Please configure it in the providers section."
+            'detail': f"Model '{model_name}' not found or not accessible with your API key."
         }), 404
     
     # 使用辅助函数解析 Anthropic 格式请求

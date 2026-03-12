@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import ProviderList from './pages/ProviderList';
 import ApiKeyList from './pages/ApiKeyList';
 import GroupList from './pages/GroupList';
+import GroupDetail from './pages/GroupDetail';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -33,9 +34,8 @@ function App() {
               }
             >
               <Route index element={<Dashboard />} />
-              <Route path="providers" element={<ProviderList />} />
-              <Route path="api-keys" element={<ApiKeyList />} />
               <Route path="groups" element={<GroupList />} />
+              <Route path="groups/:id" element={<GroupDetail />} />
             </Route>
           </Routes>
         </BrowserRouter>

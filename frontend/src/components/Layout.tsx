@@ -4,9 +4,7 @@ import { LayoutDashboard, Database, LogOut, Key, Users, Settings, ChevronRight }
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview & Statistics' },
-  { path: '/providers', label: 'Providers', icon: Database, description: 'AI Model Providers' },
-  { path: '/api-keys', label: 'API Keys', icon: Key, description: 'Manage API Keys' },
-  { path: '/groups', label: 'Groups', icon: Users, description: 'User Groups' },
+  { path: '/groups', label: 'Groups', icon: Users, description: 'Manage Groups, API Keys & Providers' },
 ];
 
 const Layout = () => {

@@ -6,7 +6,7 @@ from functools import wraps
 import os
 
 from app import db
-from app.models import Provider, Model
+from app.models import Provider, Model, Group
 from app.routes.users import token_required
 
 providers_bp = Blueprint('providers', __name__)
@@ -17,25 +17,41 @@ providers_bp = Blueprint('providers', __name__)
 @providers_bp.route('/providers/', methods=['GET'])
 @token_required
 def list_providers(current_user):
-    """List all providers."""
+    """List all providers, optionally filtered by group_id."""
     skip = request.args.get('skip', 0, type=int)
     limit = request.args.get('limit', 100, type=int)
-    providers = db.session.query(Provider).offset(skip).limit(limit).all()
+    group_id = request.args.get('group_id', type=int)
+    
+    query = db.session.query(Provider)
+    if group_id:
+        query = query.filter(Provider.group_id == group_id)
+    
+    providers = query.offset(skip).limit(limit).all()
     return jsonify([p.to_dict() for p in providers])
 
 
 @providers_bp.route('/providers/', methods=['POST'])
 @token_required
 def create_provider(current_user):
-    """Create a new provider."""
+    """Create a new provider in a group."""
     data = request.get_json()
+    
+    group_id = data.get('group_id')
+    if not group_id:
+        return jsonify({'detail': 'group_id is required'}), 400
+    
+    # Verify group exists
+    group = db.session.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        return jsonify({'detail': 'Group not found'}), 404
     
     provider = Provider(
         name=data.get('name'),
         type=data.get('type', 'openai'),
         description=data.get('description'),
         api_key=data.get('api_key'),
-        base_url=data.get('base_url')
+        base_url=data.get('base_url'),
+        group_id=group_id
     )
     db.session.add(provider)
     db.session.commit()

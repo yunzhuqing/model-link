@@ -5,12 +5,17 @@ from datetime import datetime
 from app import db
 
 
-# User-Group association table (many-to-many)
-user_group = db.Table(
-    'ml_user_groups',
-    db.Column('user_id', db.Integer, db.ForeignKey('ml_users.id'), primary_key=True),
-    db.Column('group_id', db.Integer, db.ForeignKey('ml_groups.id'), primary_key=True)
-)
+# User-Group association table (many-to-many) with roles
+class UserGroup(db.Model):
+    """Association table for User-Group with role support"""
+    __tablename__ = 'ml_user_groups'
+    
+    user_id = db.Column(db.Integer, db.ForeignKey('ml_users.id'), primary_key=True)
+    group_id = db.Column(db.Integer, db.ForeignKey('ml_groups.id'), primary_key=True)
+    role = db.Column(db.String(20), default='member')  # root, admin, member
+    
+    user = db.relationship("User", back_populates="group_associations")
+    group = db.relationship("Group", back_populates="user_associations")
 
 
 class User(db.Model):
@@ -21,15 +26,15 @@ class User(db.Model):
     hashed_password = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(100), unique=True, index=True)
     
-    # User's groups (many-to-many)
-    groups = db.relationship("Group", secondary=user_group, back_populates="users")
+    # User's groups through association
+    group_associations = db.relationship("UserGroup", back_populates="user", cascade="all, delete-orphan")
+    groups = db.relationship("Group", secondary="ml_user_groups", back_populates="users", viewonly=True)
 
     def to_dict(self):
         return {
             'id': self.id,
             'username': self.username,
-            'email': self.email,
-            'groups': [g.to_dict_simple() for g in self.groups]
+            'email': self.email
         }
 
     def to_dict_simple(self):
@@ -49,19 +54,32 @@ class Group(db.Model):
     description = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Users in group (many-to-many)
-    users = db.relationship("User", secondary=user_group, back_populates="groups")
+    # Users in group through association
+    user_associations = db.relationship("UserGroup", back_populates="group", cascade="all, delete-orphan")
+    users = db.relationship("User", secondary="ml_user_groups", back_populates="groups", viewonly=True)
     # API Keys in group (one-to-many)
     api_keys = db.relationship("ApiKey", back_populates="group", cascade="all, delete-orphan")
+    # Providers in group (one-to-many)
+    providers = db.relationship("Provider", back_populates="group", cascade="all, delete-orphan")
 
     def to_dict(self):
+        # Include role information with users
+        user_list = []
+        for ug in self.user_associations:
+            user_list.append({
+                'id': ug.user.id,
+                'username': ug.user.username,
+                'email': ug.user.email,
+                'role': ug.role
+            })
         return {
             'id': self.id,
             'name': self.name,
             'description': self.description,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'users': [u.to_dict_simple() for u in self.users],
-            'api_keys': [k.to_dict_simple() for k in self.api_keys]
+            'users': user_list,
+            'api_keys': [k.to_dict_simple() for k in self.api_keys],
+            'providers': [p.to_dict_simple() for p in self.providers]
         }
 
     def to_dict_simple(self):
@@ -133,8 +151,10 @@ class Provider(db.Model):
     description = db.Column(db.String(255))
     api_key = db.Column(db.String(255))
     base_url = db.Column(db.String(255))
+    group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
 
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
+    group = db.relationship("Group", back_populates="providers")
 
     def to_dict(self):
         return {
@@ -144,6 +164,7 @@ class Provider(db.Model):
             'description': self.description,
             'api_key': '***' if self.api_key else None,  # Don't expose API key
             'base_url': self.base_url,
+            'group_id': self.group_id,
             'models': [m.to_dict() for m in self.models]
         }
 
@@ -153,7 +174,8 @@ class Provider(db.Model):
             'name': self.name,
             'type': self.type,
             'description': self.description,
-            'base_url': self.base_url
+            'base_url': self.base_url,
+            'group_id': self.group_id
         }
 
 
