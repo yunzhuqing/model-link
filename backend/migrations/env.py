@@ -72,6 +72,32 @@ def run_migrations_offline():
         context.run_migrations()
 
 
+def include_object(object, name, type_, reflected, compare_to):
+    """
+    Only include tables with ml_ prefix for migrations.
+    This prevents affecting other tables in shared databases.
+    """
+    if type_ == "table":
+        # Only manage tables that start with 'ml_' prefix
+        return name.startswith('ml_')
+    elif type_ == "column":
+        # For columns, check if the parent table has ml_ prefix
+        if hasattr(object, 'table'):
+            return object.table.name.startswith('ml_')
+        return True
+    elif type_ == "index":
+        # For indexes, check if the table has ml_ prefix
+        if hasattr(object, 'table'):
+            return object.table.name.startswith('ml_')
+        return name.startswith('ml_') or name.startswith('idx_') or name.startswith('uq_')
+    elif type_ == "constraint":
+        # For constraints, check parent table
+        if hasattr(object, 'table'):
+            return object.table.name.startswith('ml_')
+        return True
+    return True
+
+
 def run_migrations_online():
     """Run migrations in 'online' mode.
 
@@ -100,6 +126,7 @@ def run_migrations_online():
         context.configure(
             connection=connection,
             target_metadata=get_metadata(),
+            include_object=include_object,
             **conf_args
         )
 

@@ -114,6 +114,7 @@ def create_model(current_user):
     
     model = Model(
         name=data.get('name'),
+        alias=data.get('alias') if data.get('alias') else None,  # Alias for API access
         provider_id=data.get('provider_id'),
         context_size=data.get('context_size', 4096),
         input_size=data.get('input_size', 4096),
@@ -145,12 +146,16 @@ def update_model(current_user, model_id):
         return jsonify({'detail': 'Model not found'}), 404
     
     data = request.get_json()
-    for field in ['name', 'provider_id', 'context_size', 'input_size', 
+    for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 
                   'input_price', 'output_price', 'cache_creation_price', 'cache_hit_price',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search']:
         if field in data:
-            setattr(model, field, data[field])
+            # Handle alias - convert empty string to None
+            if field == 'alias' and data[field] == '':
+                setattr(model, field, None)
+            else:
+                setattr(model, field, data[field])
     
     db.session.commit()
     db.session.refresh(model)

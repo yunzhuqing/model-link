@@ -8,10 +8,137 @@ import time
 import uuid
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
-from app.abstraction.messages import Message, MessageRole
-from app.abstraction.tools import ToolDefinition, ToolCall
+from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk
+
+
+def parse_openai_request(data: dict) -> ChatRequest:
+    """
+    从 OpenAI 格式解析请求
+    
+    Args:
+        data: OpenAI 格式的请求数据
+    
+    Returns:
+        ChatRequest 对象
+    """
+    messages = []
+    for msg_data in data.get('messages', []):
+        role = MessageRole(msg_data.get('role', 'user'))
+        content = msg_data.get('content')
+        name = msg_data.get('name')
+        tool_call_id = msg_data.get('tool_call_id')
+        reasoning_content = msg_data.get('reasoning_content')
+        
+        blocks = []
+        if 'tool_calls' in msg_data:
+            for tc in msg_data['tool_calls']:
+                tc_id = tc.get('id')
+                func = tc.get('function', {})
+                tc_name = func.get('name')
+                tc_args = func.get('arguments')
+                
+                if isinstance(tc_args, str):
+                    try:
+                        tc_args = json.loads(tc_args)
+                    except:
+                        pass
+                
+                blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args if isinstance(tc_args, dict) else {}))
+        
+        if isinstance(content, list):
+            for item in content:
+                item_type = item.get('type', 'text')
+                if item_type == 'text':
+                    blocks.append(ContentBlock.from_text(item.get('text', '')))
+                elif item_type == 'image_url':
+                    image_url = item.get('image_url', {})
+                    url = image_url.get('url', '')
+                    if url.startswith('data:'):
+                        parts = url.split(',')
+                        media_type = parts[0].replace('data:', '').replace(';base64', '')
+                        data_str = parts[1] if len(parts) > 1 else ''
+                        blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                    else:
+                        blocks.append(ContentBlock.from_image_url(url))
+                elif item_type == 'video_url':
+                    video_url = item.get('video_url', {})
+                    url = video_url.get('url', '')
+                    blocks.append(ContentBlock.from_video_url(url))
+                elif item_type == 'audio_url':
+                    audio_url = item.get('audio_url', {})
+                    url = audio_url.get('url', '')
+                    blocks.append(ContentBlock.from_audio_url(url) if hasattr(ContentBlock, 'from_audio_url') else ContentBlock.from_video_url(url))
+                elif item_type == 'file_url':
+                    file_url = item.get('file_url', {})
+                    url = file_url.get('url', '')
+                    blocks.append(ContentBlock.from_file_url(url) if hasattr(ContentBlock, 'from_file_url') else ContentBlock.from_video_url(url))
+            content = blocks if blocks else None
+        elif blocks:
+            if content:
+                blocks.insert(0, ContentBlock.from_text(content))
+            content = blocks
+        
+        messages.append(Message(
+            role=role,
+            content=content,
+            name=name,
+            tool_call_id=tool_call_id,
+            reasoning_content=reasoning_content
+        ))
+    
+    tools = []
+    for tool_data in data.get('tools', []):
+        func = tool_data.get('function', tool_data)
+        name = func.get('name', '')
+        description = func.get('description', '')
+        params_schema = func.get('parameters', {})
+        
+        parameters = []
+        properties = params_schema.get('properties', {})
+        required = params_schema.get('required', [])
+        
+        for param_name, param_schema in properties.items():
+            parameters.append(ToolParameter(
+                name=param_name,
+                type=param_schema.get('type', 'string'),
+                description=param_schema.get('description'),
+                required=param_name in required,
+                enum=param_schema.get('enum'),
+                default=param_schema.get('default')
+            ))
+        
+        tools.append(ToolDefinition(
+            name=name,
+            description=description,
+            parameters=parameters,
+            tool_type=ToolType.FUNCTION
+        ))
+    
+    known_keys = {
+        'model', 'messages', 'temperature', 'top_p', 'max_tokens',
+        'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
+        'frequency_penalty', 'user'
+    }
+    metadata = {k: v for k, v in data.items() if k not in known_keys}
+    
+    return ChatRequest(
+        messages=messages,
+        model=data.get('model', ''),
+        temperature=data.get('temperature'),
+        top_p=data.get('top_p'),
+        max_tokens=data.get('max_tokens'),
+        stream=data.get('stream', False),
+        tools=tools,
+        tool_choice=data.get('tool_choice'),
+        stop=data.get('stop'),
+        presence_penalty=data.get('presence_penalty'),
+        frequency_penalty=data.get('frequency_penalty'),
+        user=data.get('user'),
+        metadata=metadata
+    )
 
 
 class OpenAIProvider(BaseProvider):
@@ -202,6 +329,27 @@ class OpenAIProvider(BaseProvider):
             return {
                 "type": "image_url",
                 "image_url": {"url": f"data:{block.media_type or 'image/jpeg'};base64,{block.data}"}
+            }
+        elif block.type == ContentType.VIDEO_URL:
+            return {"type": "video_url", "video_url": {"url": block.url}}
+        elif block.type == ContentType.VIDEO_BASE64:
+            return {
+                "type": "video_url",
+                "video_url": {"url": f"data:{block.media_type or 'video/mp4'};base64,{block.data}"}
+            }
+        elif block.type == ContentType.AUDIO_URL:
+            return {"type": "audio_url", "audio_url": {"url": block.url}}
+        elif block.type == ContentType.AUDIO_BASE64:
+            return {
+                "type": "audio_url",
+                "audio_url": {"url": f"data:{block.media_type or 'audio/mp3'};base64,{block.data}"}
+            }
+        elif block.type == ContentType.FILE_URL:
+            return {"type": "file_url", "file_url": {"url": block.url}}
+        elif block.type == ContentType.FILE_BASE64:
+            return {
+                "type": "file_url",
+                "file_url": {"url": f"data:{block.media_type or 'application/octet-stream'};base64,{block.data}"}
             }
         else:
             return {"type": block.type.value, "url": block.url, "data": block.data}

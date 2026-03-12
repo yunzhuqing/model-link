@@ -71,6 +71,36 @@ class ContentBlock:
         return cls(type=ContentType.IMAGE_BASE64, data=data, media_type=media_type)
     
     @classmethod
+    def from_video_url(cls, url: str) -> 'ContentBlock':
+        """从视频 URL 创建内容块"""
+        return cls(type=ContentType.VIDEO_URL, url=url)
+    
+    @classmethod
+    def from_video_base64(cls, data: str, media_type: str = "video/mp4") -> 'ContentBlock':
+        """从 Base64 视频创建内容块"""
+        return cls(type=ContentType.VIDEO_BASE64, data=data, media_type=media_type)
+    
+    @classmethod
+    def from_audio_url(cls, url: str) -> 'ContentBlock':
+        """从音频 URL 创建内容块"""
+        return cls(type=ContentType.AUDIO_URL, url=url)
+    
+    @classmethod
+    def from_audio_base64(cls, data: str, media_type: str = "audio/mp3") -> 'ContentBlock':
+        """从 Base64 音频创建内容块"""
+        return cls(type=ContentType.AUDIO_BASE64, data=data, media_type=media_type)
+    
+    @classmethod
+    def from_file_url(cls, url: str) -> 'ContentBlock':
+        """从文件 URL 创建内容块"""
+        return cls(type=ContentType.FILE_URL, url=url)
+    
+    @classmethod
+    def from_file_base64(cls, data: str, media_type: str = "application/octet-stream") -> 'ContentBlock':
+        """从 Base64 文件创建内容块"""
+        return cls(type=ContentType.FILE_BASE64, data=data, media_type=media_type)
+    
+    @classmethod
     def from_tool_call(cls, tool_call_id: str, tool_name: str, arguments: Dict[str, Any]) -> 'ContentBlock':
         """从工具调用创建内容块"""
         return cls(

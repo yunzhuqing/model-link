@@ -27,6 +27,15 @@ def create_app(config=None):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     
+    # Database connection pooling settings for long-lived connections
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': 10,           # Number of connections to keep in the pool
+        'max_overflow': 20,        # Maximum connections beyond pool_size
+        'pool_timeout': 60,        # Timeout (seconds) for getting connection from pool
+        'pool_recycle': 3600,      # Recycle connections after 1 hour (prevents MySQL gone away)
+        'pool_pre_ping': True,     # Enable connection health checks
+    }
+    
     # Apply any custom config
     if config:
         app.config.update(config)

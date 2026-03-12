@@ -7,6 +7,7 @@ interface Model {
   id: number;
   provider_id: number;
   name: string;
+  alias: string | null;
   context_size: number;
   input_size: number;
   input_price: number;
@@ -34,6 +35,7 @@ interface Provider {
 
 const defaultModelState = {
   name: '',
+  alias: '',
   context_size: 4096,
   input_size: 4096,
   input_price: 0,
@@ -359,6 +361,11 @@ const ProviderList = () => {
                                   <Cpu className="w-5 h-5 text-slate-600" />
                                 </div>
                                 <h5 className="font-semibold text-slate-800">{model.name}</h5>
+                                {model.alias && (
+                                  <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs font-medium">
+                                    @{model.alias}
+                                  </span>
+                                )}
                               </div>
                               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
                                 <div className="bg-slate-50 p-3 rounded-lg">
@@ -479,6 +486,18 @@ const ModelForm = ({
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
             value={model.name}
             onChange={(e) => setModel({ ...model, name: e.target.value })}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Alias
+            <span className="text-slate-400 font-normal ml-1">(for API access)</span>
+          </label>
+          <input
+            placeholder="my-gpt4, smart-model, etc."
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.alias || ''}
+            onChange={(e) => setModel({ ...model, alias: e.target.value || null })}
           />
         </div>
         <div>

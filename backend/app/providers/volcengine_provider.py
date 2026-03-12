@@ -60,14 +60,35 @@ class VolcengineProvider(OpenAIProvider):
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """
         解析火山引擎响应数据
+        
+        复用 OpenAI 格式解析，处理火山引擎特有字段。
         """
         response = super().parse_response(response_data, model)
         response.provider = self.PROVIDER_TYPE
+        
+        # 处理火山引擎特有的 reasoning_content
+        for i, choice_data in enumerate(response_data.get("choices", [])):
+            message_data = choice_data.get("message", {})
+            if "reasoning_content" in message_data:
+                response.choices[i].reasoning_content = message_data["reasoning_content"]
+        
         return response
-
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    
+    def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """
-        执行流式对话请求
+        解析流式响应块
+        
+        复用 OpenAI 格式，处理火山引擎特有字段。
         """
-        # 火山引擎也支持 OpenAI 格式的流式输出
-        yield from super().stream_chat(request)
+        # 复用父类解析
+        chunk = super()._parse_stream_chunk(data, response_id, model)
+        
+        if chunk:
+            # 处理火山引擎特有的 reasoning_content
+            choices = data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                if "reasoning_content" in delta:
+                    chunk.delta_reasoning_content = delta["reasoning_content"]
+        
+        return chunk

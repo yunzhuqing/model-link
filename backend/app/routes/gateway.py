@@ -24,6 +24,7 @@ from app.abstraction.streaming import StreamChunk, StreamManager, create_stream_
 # 导入供应商层
 from app.providers import get_provider_class, list_providers
 from app.providers.base import ProviderConfig, ProviderCapability
+from app.providers.openai_provider import parse_openai_request
 
 gateway_bp = Blueprint('gateway', __name__)
 
@@ -33,117 +34,6 @@ ALGORITHM = "HS256"
 
 
 # ============== 请求解析辅助函数 ==============
-
-def parse_openai_request(data: dict) -> ChatRequest:
-    """从 OpenAI 格式解析请求"""
-    import json
-    from app.abstraction.messages import ContentBlock, ContentType
-    from app.abstraction.tools import ToolParameter, ToolType
-    
-    messages = []
-    for msg_data in data.get('messages', []):
-        role = MessageRole(msg_data.get('role', 'user'))
-        content = msg_data.get('content')
-        name = msg_data.get('name')
-        tool_call_id = msg_data.get('tool_call_id')
-        reasoning_content = msg_data.get('reasoning_content')
-        
-        blocks = []
-        if 'tool_calls' in msg_data:
-            for tc in msg_data['tool_calls']:
-                tc_id = tc.get('id')
-                func = tc.get('function', {})
-                tc_name = func.get('name')
-                tc_args = func.get('arguments')
-                
-                if isinstance(tc_args, str):
-                    try:
-                        tc_args = json.loads(tc_args)
-                    except:
-                        pass
-                
-                blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args if isinstance(tc_args, dict) else {}))
-        
-        if isinstance(content, list):
-            for item in content:
-                item_type = item.get('type', 'text')
-                if item_type == 'text':
-                    blocks.append(ContentBlock.from_text(item.get('text', '')))
-                elif item_type == 'image_url':
-                    image_url = item.get('image_url', {})
-                    url = image_url.get('url', '')
-                    if url.startswith('data:'):
-                        parts = url.split(',')
-                        media_type = parts[0].replace('data:', '').replace(';base64', '')
-                        data_str = parts[1] if len(parts) > 1 else ''
-                        blocks.append(ContentBlock.from_image_base64(data_str, media_type))
-                    else:
-                        blocks.append(ContentBlock.from_image_url(url))
-            content = blocks if blocks else None
-        elif blocks:
-            if content:
-                blocks.insert(0, ContentBlock.from_text(content))
-            content = blocks
-        
-        messages.append(Message(
-            role=role,
-            content=content,
-            name=name,
-            tool_call_id=tool_call_id,
-            reasoning_content=reasoning_content
-        ))
-    
-    tools = []
-    for tool_data in data.get('tools', []):
-        func = tool_data.get('function', tool_data)
-        name = func.get('name', '')
-        description = func.get('description', '')
-        params_schema = func.get('parameters', {})
-        
-        parameters = []
-        properties = params_schema.get('properties', {})
-        required = params_schema.get('required', [])
-        
-        for param_name, param_schema in properties.items():
-            parameters.append(ToolParameter(
-                name=param_name,
-                type=param_schema.get('type', 'string'),
-                description=param_schema.get('description'),
-                required=param_name in required,
-                enum=param_schema.get('enum'),
-                default=param_schema.get('default')
-            ))
-        
-        tools.append(ToolDefinition(
-            name=name,
-            description=description,
-            parameters=parameters,
-            tool_type=ToolType.FUNCTION
-        ))
-    
-    known_keys = {
-        'model', 'messages', 'temperature', 'top_p', 'max_tokens',
-        'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
-        'frequency_penalty', 'user'
-    }
-    metadata = {k: v for k, v in data.items() if k not in known_keys}
-    
-    return ChatRequest(
-        messages=messages,
-        model=data.get('model', ''),
-        temperature=data.get('temperature'),
-        top_p=data.get('top_p'),
-        max_tokens=data.get('max_tokens'),
-        stream=data.get('stream', False),
-        tools=tools,
-        tool_choice=data.get('tool_choice'),
-        stop=data.get('stop'),
-        presence_penalty=data.get('presence_penalty'),
-        frequency_penalty=data.get('frequency_penalty'),
-        user=data.get('user'),
-        metadata=metadata
-    )
-
 
 def parse_anthropic_request(data: dict) -> ChatRequest:
     """从 Anthropic 格式解析请求"""
@@ -362,15 +252,18 @@ def get_current_user_or_api_key():
 
 def resolve_model(model_name: str):
     """
-    Resolve a model name to its provider and model configuration.
+    Resolve a model name or alias to its provider and model configuration.
     
     Args:
-        model_name: 模型名称
+        model_name: 模型名称或别名
     
     Returns:
         (provider_model, db_provider, db_model) 或 (None, None, None)
     """
-    db_model = db.session.query(Model).filter(Model.name == model_name).first()
+    # First try to find by alias (priority), then by name
+    db_model = db.session.query(Model).filter(
+        (Model.alias == model_name) | (Model.name == model_name)
+    ).first()
     
     if db_model:
         db_provider = db.session.query(Provider).filter(
@@ -394,8 +287,8 @@ def create_provider_instance(db_provider: Provider):
     Returns:
         供应商实例，如果创建失败返回 None
     """
-    # 从供应商名称推断供应商类型
-    provider_type = infer_provider_type(db_provider.name, db_provider.base_url)
+    # 使用数据库中的供应商类型
+    provider_type = db_provider.type
     
     # 获取供应商类
     provider_class = get_provider_class(provider_type)
@@ -420,50 +313,6 @@ def create_provider_instance(db_provider: Provider):
         return None
 
 
-def infer_provider_type(provider_name: str, base_url: str = None) -> str:
-    """
-    从供应商名称或 URL 推断供应商类型
-    
-    Args:
-        provider_name: 供应商名称
-        base_url: API 基础 URL
-    
-    Returns:
-        供应商类型字符串
-    """
-    name_lower = provider_name.lower()
-    
-    # 根据名称推断
-    if 'bailian' in name_lower or '百炼' in name_lower or 'dashscope' in name_lower:
-        return 'bailian'
-    if 'openai' in name_lower:
-        return 'openai'
-    if 'anthropic' in name_lower or 'claude' in name_lower:
-        return 'anthropic'
-    if 'volcengine' in name_lower or 'volces' in name_lower or '火山' in name_lower:
-        return 'volcengine'
-    if 'deepseek' in name_lower:
-        return 'bailian'  # DeepSeek 在百炼上可用
-    if 'qwen' in name_lower or '通义' in name_lower:
-        return 'bailian'
-    
-    # 根据 URL 推断
-    if base_url:
-        if 'dashscope' in base_url or 'aliyun' in base_url:
-            return 'bailian'
-        if 'openai' in base_url:
-            return 'openai'
-        if 'anthropic' in base_url:
-            return 'anthropic'
-        if 'volcengine' in base_url or 'volces' in base_url:
-            return 'volcengine'
-        if 'deepseek' in base_url:
-            return 'bailian'
-    
-    # 默认使用百炼（OpenAI 兼容）
-    return 'bailian'
-
-
 # ============== OpenAI Compatible Endpoints ==============
 
 @gateway_bp.route('/v1/models', methods=['GET'])
@@ -478,8 +327,10 @@ def list_models():
     models_list = []
     for provider in providers:
         for model in provider.models:
+            # Use alias as id if available, otherwise use name
+            model_id = model.alias if model.alias else model.name
             models_list.append({
-                "id": model.name,
+                "id": model_id,
                 "object": "model",
                 "created": int(time.time()),
                 "owned_by": provider.name,
@@ -487,6 +338,17 @@ def list_models():
                 "root": model.name,
                 "parent": None,
             })
+            # If alias exists, also add an entry with the original name
+            if model.alias and model.alias != model.name:
+                models_list.append({
+                    "id": model.name,
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": provider.name,
+                    "permission": [],
+                    "root": model.name,
+                    "parent": None,
+                })
     
     return jsonify({
         "object": "list",
@@ -530,12 +392,15 @@ def chat_completions():
     except Exception as e:
         return jsonify({'detail': f'Invalid request format: {str(e)}'}), 400
     
+    # Replace alias with real model name for provider API call
+    chat_request.model = db_model.name
+    
     # 检查是否流式请求
     stream = data.get('stream', False)
     
     try:
         if stream:
-            return stream_chat_response(provider_instance, chat_request, model_name)
+            return stream_chat_response(provider_instance, chat_request, db_model.name)
         else:
             # 非流式请求
             response = provider_instance.chat(chat_request)
@@ -621,12 +486,15 @@ def anthropic_messages():
     except Exception as e:
         return jsonify({'detail': f'Invalid request format: {str(e)}'}), 400
     
+    # Replace alias with real model name for provider API call
+    chat_request.model = db_model.name
+    
     # 检查是否流式请求
     stream = data.get('stream', False)
     
     try:
         if stream:
-            return stream_anthropic_response(provider_instance, chat_request, model_name)
+            return stream_anthropic_response(provider_instance, chat_request, db_model.name)
         else:
             # 非流式请求
             response = provider_instance.chat(chat_request)

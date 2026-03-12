@@ -163,6 +163,7 @@ class Model(db.Model):
     id = db.Column(db.Integer, primary_key=True, index=True)
     provider_id = db.Column(db.Integer, db.ForeignKey("ml_providers.id"))
     name = db.Column(db.String(100), nullable=False, index=True)
+    alias = db.Column(db.String(100), nullable=True, index=True)  # Alias name for API access
     
     # Basic properties
     context_size = db.Column(db.Integer, default=4096)
@@ -190,6 +191,7 @@ class Model(db.Model):
             'id': self.id,
             'provider_id': self.provider_id,
             'name': self.name,
+            'alias': self.alias,
             'context_size': self.context_size,
             'input_size': self.input_size,
             'input_price': self.input_price,

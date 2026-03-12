@@ -25,7 +25,7 @@ def upgrade():
     op.execute("UPDATE ml_providers SET type = 'openai' WHERE type IS NULL")
     
     with op.batch_alter_table('ml_providers', schema=None) as batch_op:
-        batch_op.alter_column('type', nullable=False)
+        batch_op.alter_column('type', type_=sa.String(length=50), nullable=False)
 
     # ### end Alembic commands ###
 
