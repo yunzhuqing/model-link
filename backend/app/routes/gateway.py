@@ -420,6 +420,25 @@ def chat_completions():
     
     except ValueError as e:
         return jsonify({'detail': str(e)}), 400
+    except RuntimeError as e:
+        # Parse error from provider to get status code
+        error_msg = str(e)
+        # Try to extract status code from error message
+        import re
+        match = re.search(r'API error \((\d+)\)', error_msg)
+        if match:
+            status_code = int(match.group(1))
+            # Try to parse the JSON error response
+            try:
+                # Find the JSON part after the status code
+                json_start = error_msg.find('): ') + 3
+                if json_start > 2:
+                    json_str = error_msg[json_start:]
+                    error_data = json.loads(json_str)
+                    return jsonify(error_data), status_code
+            except:
+                pass
+        return jsonify({'detail': error_msg}), 500
     except Exception as e:
         return jsonify({'detail': f'Provider error: {str(e)}'}), 500
 
@@ -442,6 +461,26 @@ def stream_chat_response(provider_instance, chat_request: ChatRequest, model_nam
                 yield chunk.to_sse("openai")
             
             # 发送结束标记
+            yield "data: [DONE]\n\n"
+        
+        except RuntimeError as e:
+            # Parse error from provider to get status code and error data
+            error_msg = str(e)
+            import re
+            match = re.search(r'API error \((\d+)\)', error_msg)
+            if match:
+                status_code = int(match.group(1))
+                try:
+                    json_start = error_msg.find('): ') + 3
+                    if json_start > 2:
+                        json_str = error_msg[json_start:]
+                        error_data = json.loads(json_str)
+                        # Send error as SSE event
+                        yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+                except:
+                    yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+            else:
+                yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
             yield "data: [DONE]\n\n"
         
         except Exception as e:
@@ -517,6 +556,22 @@ def anthropic_messages():
     
     except ValueError as e:
         return jsonify({'detail': str(e)}), 400
+    except RuntimeError as e:
+        # Parse error from provider to get status code
+        error_msg = str(e)
+        import re
+        match = re.search(r'API error \((\d+)\)', error_msg)
+        if match:
+            status_code = int(match.group(1))
+            try:
+                json_start = error_msg.find('): ') + 3
+                if json_start > 2:
+                    json_str = error_msg[json_start:]
+                    error_data = json.loads(json_str)
+                    return jsonify(error_data), status_code
+            except:
+                pass
+        return jsonify({'detail': error_msg}), 500
     except Exception as e:
         return jsonify({'detail': f'Provider error: {str(e)}'}), 500
 
@@ -543,6 +598,43 @@ def stream_anthropic_response(provider_instance, chat_request: ChatRequest, mode
             
             # 发送消息结束事件
             yield "event: message_stop\ndata: {}\n\n"
+        
+        except RuntimeError as e:
+            # Parse error from provider to get status code and error data
+            error_msg = str(e)
+            import re
+            match = re.search(r'API error \((\d+)\)', error_msg)
+            if match:
+                status_code = int(match.group(1))
+                try:
+                    json_start = error_msg.find('): ') + 3
+                    if json_start > 2:
+                        json_str = error_msg[json_start:]
+                        error_data = json.loads(json_str)
+                        # Send error as Anthropic-style SSE event
+                        error_event = {
+                            "type": "error",
+                            "error": error_data
+                        }
+                        yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+                except:
+                    error_event = {
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": error_msg
+                        }
+                    }
+                    yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+            else:
+                error_event = {
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": error_msg
+                    }
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
         
         except Exception as e:
             error_event = {

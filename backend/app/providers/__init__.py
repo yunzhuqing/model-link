@@ -4,16 +4,20 @@
 """
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
+from .openai_provider import OpenAIProvider
+from .azure_provider import AzureProvider
 from .bailian_provider import BailianProvider
 from .volcengine_provider import VolcengineProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
-    'BailianProvider', 'VolcengineProvider'
+    'OpenAIProvider', 'AzureProvider', 'BailianProvider', 'VolcengineProvider'
 ]
 
 # 供应商注册表
 PROVIDER_REGISTRY = {
+    'openai': OpenAIProvider,
+    'azure': AzureProvider,
     'bailian': BailianProvider,
     'volcengine': VolcengineProvider,
 }

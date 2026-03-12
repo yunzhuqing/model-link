@@ -187,7 +187,18 @@ class BailianProvider(OpenAIProvider):
         
         try:
             with self.client.stream("POST", url, json=request_data) as response:
-                response.raise_for_status()
+                # Check for error status before streaming
+                if response.status_code >= 400:
+                    # Read the error response and raise with details
+                    error_text = ""
+                    for chunk in response.iter_bytes():
+                        if chunk:
+                            error_text += chunk.decode('utf-8')
+                    try:
+                        error_data = json.loads(error_text)
+                        raise RuntimeError(f"Bailian API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                    except json.JSONDecodeError:
+                        raise RuntimeError(f"Bailian API error ({response.status_code}): {error_text}")
                 
                 for line in response.iter_lines():
                     if not line:
@@ -207,6 +218,8 @@ class BailianProvider(OpenAIProvider):
                         except json.JSONDecodeError:
                             continue
         
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"Bailian streaming API error: {str(e)}")
     

@@ -878,6 +878,7 @@ export default function GroupDetail() {
                   }
                 >
                   <option value="openai">OpenAI</option>
+                  <option value="azure">Azure OpenAI</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="deepseek">DeepSeek</option>
                   <option value="kimi">Kimi</option>
@@ -1015,56 +1016,141 @@ export default function GroupDetail() {
                   {/* Add Model Form */}
                   {showAddModel === provider.id && (
                     <div className="bg-white p-4 rounded-xl border border-slate-200 mb-3">
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div>
-                          <label className="block text-xs font-medium text-slate-700 mb-1">Name *</label>
-                          <input
-                            placeholder="gpt-4"
-                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                            value={newModel.name}
-                            onChange={(e) => setNewModel({ ...newModel, name: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-slate-700 mb-1">Alias</label>
-                          <input
-                            placeholder="my-gpt4"
-                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                            value={newModel.alias}
-                            onChange={(e) => setNewModel({ ...newModel, alias: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-slate-700 mb-1">Context</label>
-                          <input
-                            type="number"
-                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                            value={newModel.context_size}
-                            onChange={(e) => setNewModel({ ...newModel, context_size: parseInt(e.target.value) })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-slate-700 mb-1">Input Price ($/M)</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                            value={newModel.input_price}
-                            onChange={(e) => setNewModel({ ...newModel, input_price: parseFloat(e.target.value) })}
-                          />
+                      {/* Basic Info */}
+                      <div className="mb-4">
+                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Basic Information</h4>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Name *</label>
+                            <input
+                              placeholder="gpt-4o"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.name}
+                              onChange={(e) => setNewModel({ ...newModel, name: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Alias</label>
+                            <input
+                              placeholder="my-gpt4"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.alias}
+                              onChange={(e) => setNewModel({ ...newModel, alias: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Context Size</label>
+                            <input
+                              type="number"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.context_size}
+                              onChange={(e) => setNewModel({ ...newModel, context_size: parseInt(e.target.value) || 4096 })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Input Size</label>
+                            <input
+                              type="number"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.input_size}
+                              onChange={(e) => setNewModel({ ...newModel, input_size: parseInt(e.target.value) || 4096 })}
+                            />
+                          </div>
                         </div>
                       </div>
-                      <div className="flex space-x-2 mt-3">
+
+                      {/* Pricing */}
+                      <div className="mb-4">
+                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Pricing ($ per 1M tokens)</h4>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Input Price</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.input_price}
+                              onChange={(e) => setNewModel({ ...newModel, input_price: parseFloat(e.target.value) || 0 })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Output Price</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.output_price}
+                              onChange={(e) => setNewModel({ ...newModel, output_price: parseFloat(e.target.value) || 0 })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Cache Creation Price</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.cache_creation_price}
+                              onChange={(e) => setNewModel({ ...newModel, cache_creation_price: parseFloat(e.target.value) || 0 })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Cache Hit Price</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.cache_hit_price}
+                              onChange={(e) => setNewModel({ ...newModel, cache_hit_price: parseFloat(e.target.value) || 0 })}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Features */}
+                      <div className="mb-4">
+                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Supported Features</h4>
+                        <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
+                          {[
+                            { key: 'support_kvcache', label: 'KV Cache' },
+                            { key: 'support_image', label: 'Image' },
+                            { key: 'support_audio', label: 'Audio' },
+                            { key: 'support_video', label: 'Video' },
+                            { key: 'support_file', label: 'File' },
+                            { key: 'support_web_search', label: 'Web Search' },
+                            { key: 'support_tool_search', label: 'Tool Search' },
+                          ].map((feature) => (
+                            <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100">
+                              <input
+                                type="checkbox"
+                                checked={newModel[feature.key as keyof typeof newModel] as boolean}
+                                onChange={(e) => setNewModel({ ...newModel, [feature.key]: e.target.checked })}
+                                className="w-4 h-4 rounded border-slate-300 text-blue-600"
+                              />
+                              <span className="text-xs text-slate-600">{feature.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex space-x-2 pt-3 border-t border-slate-200">
                         <button
                           onClick={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
-                          disabled={!newModel.name}
-                          className="bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-sm hover:bg-emerald-600 disabled:bg-slate-300"
+                          disabled={!newModel.name || createModelMutation.isPending}
+                          className="bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-emerald-600 disabled:bg-slate-300"
                         >
-                          Add
+                          {createModelMutation.isPending ? 'Adding...' : 'Add Model'}
                         </button>
                         <button
-                          onClick={() => setShowAddModel(null)}
-                          className="bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-sm hover:bg-slate-300"
+                          onClick={() => {
+                            setShowAddModel(null);
+                            setNewModel({
+                              name: '', alias: '', context_size: 4096, input_size: 4096,
+                              input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
+                              support_kvcache: false, support_image: false, support_audio: false,
+                              support_video: false, support_file: false, support_web_search: false, support_tool_search: false
+                            });
+                          }}
+                          className="bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-300"
                         >
                           Cancel
                         </button>

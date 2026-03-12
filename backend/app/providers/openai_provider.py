@@ -507,11 +507,22 @@ class OpenAIProvider(BaseProvider):
         
         try:
             response = self.client.post(url, json=request_data)
+            
+            if response.status_code >= 400:
+                # Try to parse error response
+                try:
+                    error_data = response.json()
+                    raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"OpenAI API error ({response.status_code}): {response.text}")
+            
             response.raise_for_status()
             
             response_data = response.json()
             return self.parse_response(response_data, request.model)
         
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"OpenAI API error: {str(e)}")
     
@@ -529,7 +540,18 @@ class OpenAIProvider(BaseProvider):
         
         try:
             with self.client.stream("POST", url, json=request_data) as response:
-                response.raise_for_status()
+                # Check for error status before streaming
+                if response.status_code >= 400:
+                    # Read the error response and raise with details
+                    error_text = ""
+                    for chunk in response.iter_bytes():
+                        if chunk:
+                            error_text += chunk.decode('utf-8')
+                    try:
+                        error_data = json.loads(error_text)
+                        raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                    except json.JSONDecodeError:
+                        raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_text}")
                 
                 for line in response.iter_lines():
                     if not line:
@@ -549,6 +571,8 @@ class OpenAIProvider(BaseProvider):
                         except json.JSONDecodeError:
                             continue
         
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"OpenAI streaming API error: {str(e)}")
     
