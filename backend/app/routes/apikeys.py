@@ -272,7 +272,7 @@ def update_member_role(current_user, group_id, user_id):
 
 # ============== API Key Management ==============
 
-@apikeys_bp.route('/api-keys/', methods=['GET'])
+@apikeys_bp.route('/apikeys/', methods=['GET'])
 @token_required
 def list_api_keys(current_user):
     """List all API keys for groups the user belongs to."""
@@ -296,34 +296,7 @@ def list_api_keys_by_group(current_user, group_id):
     return jsonify([k.to_dict() for k in group.api_keys])
 
 
-@apikeys_bp.route('/api-keys/', methods=['POST'])
-@token_required
-def create_api_key(current_user):
-    """Create a new API key."""
-    data = request.get_json()
-    
-    # Check if the group exists and user is a member
-    group = db.session.query(Group).filter(Group.id == data.get('group_id')).first()
-    if not group:
-        return jsonify({'detail': 'Group not found'}), 404
-    
-    if current_user not in group.users:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
-    
-    api_key = ApiKey(
-        key=generate_api_key(),
-        name=data.get('name'),
-        group_id=data.get('group_id'),
-        expires_at=data.get('expires_at')
-    )
-    db.session.add(api_key)
-    db.session.commit()
-    db.session.refresh(api_key)
-    
-    return jsonify(api_key.to_dict()), 201
-
-
-@apikeys_bp.route('/api-keys/<int:api_key_id>', methods=['GET'])
+@apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['GET'])
 @token_required
 def get_api_key(current_user, api_key_id):
     """Get a specific API key."""
@@ -337,7 +310,39 @@ def get_api_key(current_user, api_key_id):
     return jsonify(api_key.to_dict_with_group())
 
 
-@apikeys_bp.route('/api-keys/<int:api_key_id>', methods=['PUT'])
+@apikeys_bp.route('/apikeys/', methods=['POST'])
+@token_required
+def create_api_key(current_user):
+    """Create a new API key."""
+    data = request.get_json()
+    
+    # Check if the group exists and user is a member
+    group = db.session.query(Group).filter(Group.id == data.get('group_id')).first()
+    if not group:
+        return jsonify({'detail': 'Group not found'}), 404
+    
+    if current_user not in group.users:
+        return jsonify({'detail': 'You are not a member of this group'}), 403
+    
+    # Convert empty string to None for expires_at (empty string is not valid for timestamp)
+    expires_at = data.get('expires_at')
+    if expires_at == '':
+        expires_at = None
+    
+    api_key = ApiKey(
+        key=generate_api_key(),
+        name=data.get('name'),
+        group_id=data.get('group_id'),
+        expires_at=expires_at
+    )
+    db.session.add(api_key)
+    db.session.commit()
+    db.session.refresh(api_key)
+    
+    return jsonify(api_key.to_dict()), 201
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['PUT'])
 @token_required
 def update_api_key(current_user, api_key_id):
     """Update an API key."""
@@ -354,7 +359,9 @@ def update_api_key(current_user, api_key_id):
     if 'is_active' in data:
         api_key.is_active = data['is_active']
     if 'expires_at' in data:
-        api_key.expires_at = data['expires_at']
+        # Convert empty string to None for expires_at (empty string is not valid for timestamp)
+        expires_at = data['expires_at']
+        api_key.expires_at = None if expires_at == '' else expires_at
     
     db.session.commit()
     db.session.refresh(api_key)
@@ -362,7 +369,7 @@ def update_api_key(current_user, api_key_id):
     return jsonify(api_key.to_dict())
 
 
-@apikeys_bp.route('/api-keys/<int:api_key_id>', methods=['DELETE'])
+@apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['DELETE'])
 @token_required
 def delete_api_key(current_user, api_key_id):
     """Delete an API key."""
@@ -379,7 +386,7 @@ def delete_api_key(current_user, api_key_id):
     return '', 204
 
 
-@apikeys_bp.route('/api-keys/<int:api_key_id>/regenerate', methods=['POST'])
+@apikeys_bp.route('/apikeys/<int:api_key_id>/regenerate', methods=['POST'])
 @token_required
 def regenerate_api_key(current_user, api_key_id):
     """Regenerate an API key (revokes the old one)."""
