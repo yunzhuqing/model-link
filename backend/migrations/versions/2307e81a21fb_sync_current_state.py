@@ -26,10 +26,20 @@ def upgrade():
     # Ensure all providers have a group_id before setting it to NOT NULL
     op.execute("UPDATE ml_providers SET group_id = (SELECT id FROM ml_groups LIMIT 1) WHERE group_id IS NULL")
 
+    # MySQL requires dropping foreign key before altering the column
+    # First drop the foreign key constraint
+    with op.batch_alter_table('ml_providers', schema=None) as batch_op:
+        batch_op.drop_constraint('fk_ml_providers_group_id', type_='foreignkey')
+
+    # Then alter the column
     with op.batch_alter_table('ml_providers', schema=None) as batch_op:
         batch_op.alter_column('group_id',
                existing_type=sa.INTEGER(),
                nullable=False)
+
+    # Recreate the foreign key constraint
+    with op.batch_alter_table('ml_providers', schema=None) as batch_op:
+        batch_op.create_foreign_key('fk_ml_providers_group_id', 'ml_groups', ['group_id'], ['id'])
 
     with op.batch_alter_table('ml_user_groups', schema=None) as batch_op:
         batch_op.alter_column('role',

@@ -85,7 +85,7 @@ def update_provider(current_user, provider_id):
         provider.type = data['type']
     if 'description' in data:
         provider.description = data['description']
-    if 'api_key' in data:
+    if 'api_key' in data and data['api_key'] != '***':
         provider.api_key = data['api_key']
     if 'base_url' in data:
         provider.base_url = data['base_url']

@@ -296,24 +296,35 @@ class OpenAIProvider(BaseProvider):
             from app.abstraction.messages import ContentType
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
             tool_call_blocks = [b for b in message.content if b.type == ContentType.TOOL_CALL]
+            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL)]
             
-            if len(text_blocks) == len(message.content) and len(tool_call_blocks) == 0:
+            # content 只包含文本和其他类型（图片、视频等），不包含 tool_call
+            if text_blocks and not other_blocks and not tool_call_blocks:
+                # 只有文本块，使用字符串格式
                 result["content"] = " ".join(b.text or "" for b in text_blocks)
-            else:
-                result["content"] = [self._content_block_to_openai(b) for b in message.content]
-                
-                if tool_call_blocks:
-                    result["tool_calls"] = [
-                        {
-                            "id": b.tool_call_id,
-                            "type": "function",
-                            "function": {
-                                "name": b.tool_name,
-                                "arguments": b.tool_arguments
-                            }
+            elif text_blocks or other_blocks:
+                # 有文本或其他类型（图片等），使用数组格式
+                content_parts = []
+                for b in text_blocks:
+                    content_parts.append({"type": "text", "text": b.text or ""})
+                for b in other_blocks:
+                    content_parts.append(self._content_block_to_openai(b))
+                result["content"] = content_parts
+            # 如果只有 tool_call_blocks，content 不设置（保持 None/null）
+            
+            # 单独处理 tool_calls
+            if tool_call_blocks:
+                result["tool_calls"] = [
+                    {
+                        "id": b.tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": b.tool_name,
+                            "arguments": b.tool_arguments if isinstance(b.tool_arguments, str) else json.dumps(b.tool_arguments, ensure_ascii=False)
                         }
-                        for b in tool_call_blocks
-                    ]
+                    }
+                    for b in tool_call_blocks
+                ]
         
         return result
     

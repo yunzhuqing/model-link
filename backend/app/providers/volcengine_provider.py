@@ -14,6 +14,7 @@ from .openai_provider import OpenAIProvider
 from .base import ProviderConfig, ProviderCapability
 from app.abstraction.chat import ChatRequest, ChatResponse, UsageInfo
 from app.abstraction.streaming import StreamChunk
+import sys
 
 
 class VolcengineProvider(OpenAIProvider):
@@ -56,6 +57,27 @@ class VolcengineProvider(OpenAIProvider):
                 config.base_url = f"{config.base_url}/v3"
         
         super().__init__(config)
+    
+    def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """
+        准备请求数据，并打印到控制台
+        
+        Args:
+            request: 对话请求对象
+        
+        Returns:
+            请求字典
+        """
+        result = super().prepare_request(request)
+        
+        # 打印请求体到控制台
+        print("\n" + "=" * 50, file=sys.stderr)
+        print("[Volcengine Request Body]", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+        print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr)
+        print("=" * 50 + "\n", file=sys.stderr)
+        
+        return result
 
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """
