@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_URL = 'http://127.0.0.1:8000';
+// In production (Docker), use relative URL (same origin).
+// In development, set VITE_API_URL in frontend/.env.development
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 const client = axios.create({
   baseURL: API_URL,
@@ -138,9 +140,9 @@ export const groupsApi = {
   create: (data: GroupCreate) => client.post<Group>('/api/groups/', data),
   update: (id: number, data: GroupUpdate) => client.put<Group>(`/api/groups/${id}`, data),
   delete: (id: number) => client.delete(`/api/groups/${id}`),
-  addUser: (groupId: number, userId: number) => 
+  addUser: (groupId: number, userId: number) =>
     client.post(`/api/groups/${groupId}/users/${userId}`),
-  removeUser: (groupId: number, userId: number) => 
+  removeUser: (groupId: number, userId: number) =>
     client.delete(`/api/groups/${groupId}/users/${userId}`),
 };
 
@@ -149,14 +151,14 @@ export const providersApi = {
   list: () => client.get<Provider[]>('/api/providers/'),
   get: (id: number) => client.get<Provider>(`/api/providers/${id}`),
   create: (data: ProviderCreate) => client.post<Provider>('/api/providers/', data),
-  update: (id: number, data: Partial<ProviderCreate>) => 
+  update: (id: number, data: Partial<ProviderCreate>) =>
     client.put<Provider>(`/api/providers/${id}`, data),
   delete: (id: number) => client.delete(`/api/providers/${id}`),
-  addModel: (providerId: number, data: ModelCreate) => 
+  addModel: (providerId: number, data: ModelCreate) =>
     client.post<Model>(`/api/providers/${providerId}/models`, data),
-  updateModel: (providerId: number, modelId: number, data: Partial<ModelCreate>) => 
+  updateModel: (providerId: number, modelId: number, data: Partial<ModelCreate>) =>
     client.put<Model>(`/api/providers/${providerId}/models/${modelId}`, data),
-  deleteModel: (providerId: number, modelId: number) => 
+  deleteModel: (providerId: number, modelId: number) =>
     client.delete(`/api/providers/${providerId}/models/${modelId}`),
 };
 
