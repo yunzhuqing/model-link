@@ -1,7 +1,7 @@
 """
 Flask application factory for Model Link AI Gateway.
 """
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_cors import CORS
@@ -57,23 +57,38 @@ def create_app(config=None):
     app.register_blueprint(gateway_bp)
     app.register_blueprint(apikeys_bp, url_prefix='/api')
     
-    # Root endpoint
-    @app.route('/')
-    def index():
-        return {
-            "message": "Welcome to AI Gateway API",
-            "docs": "/docs",
-            "endpoints": {
-                "openai_chat_completions": "/v1/chat/completions",
-                "anthropic_messages": "/v1/messages",
-                "openai_responses": "/v1/responses",
-                "models": "/v1/models",
-                "providers": "/api/providers/",
-                "register": "/register",
-                "login": "/token"
+    # Serve React frontend if static folder exists, otherwise API-only mode
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'static')
+    static_dir = os.path.abspath(static_dir)
+
+    if os.path.isdir(static_dir) and os.path.isfile(os.path.join(static_dir, 'index.html')):
+        @app.route('/', defaults={'path': ''})
+        @app.route('/<path:path>')
+        def serve_react(path):
+            """Serve React frontend. API routes take priority via blueprints."""
+            # Serve static files (JS, CSS, images, etc.)
+            if path and os.path.isfile(os.path.join(static_dir, path)):
+                return send_from_directory(static_dir, path)
+            # For all other routes, serve index.html (React Router handles client-side routing)
+            return send_from_directory(static_dir, 'index.html')
+    else:
+        # API-only mode (no frontend build present)
+        @app.route('/')
+        def index():
+            return {
+                "message": "Welcome to AI Gateway API",
+                "docs": "/docs",
+                "endpoints": {
+                    "openai_chat_completions": "/v1/chat/completions",
+                    "anthropic_messages": "/v1/messages",
+                    "openai_responses": "/v1/responses",
+                    "models": "/v1/models",
+                    "providers": "/api/providers/",
+                    "register": "/register",
+                    "login": "/token"
+                }
             }
-        }
-    
+
     @app.route('/health')
     def health():
         return {"status": "healthy"}
