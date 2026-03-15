@@ -64,8 +64,9 @@ def create_app(config=None):
             "message": "Welcome to AI Gateway API",
             "docs": "/docs",
             "endpoints": {
-                "openai_compatible": "/v1/chat/completions",
-                "anthropic_compatible": "/v1/messages",
+                "openai_chat_completions": "/v1/chat/completions",
+                "anthropic_messages": "/v1/messages",
+                "openai_responses": "/v1/responses",
                 "models": "/v1/models",
                 "providers": "/api/providers/",
                 "register": "/register",
