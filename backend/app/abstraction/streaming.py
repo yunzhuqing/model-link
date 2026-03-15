@@ -109,40 +109,10 @@ class StreamChunk:
         
         return result
     
-    def to_bailian_format(self) -> Dict[str, Any]:
-        """转换为百炼格式"""
-        delta = {}
-        
-        if self.delta_role:
-            delta["role"] = self.delta_role
-        if self.delta_content:
-            delta["content"] = self.delta_content
-        if self.tool_calls:
-            delta["tool_calls"] = self.tool_calls
-        
-        result = {
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": self.finish_reason.value if self.finish_reason else None
-            }]
-        }
-        
-        if self.usage:
-            result["usage"] = self.usage
-        
-        return result
-    
     def to_sse(self, provider_format: str = "openai") -> str:
         """转换为 SSE 格式字符串"""
         if provider_format == "anthropic":
             data = self.to_anthropic_format()
-        elif provider_format == "bailian":
-            data = self.to_bailian_format()
         else:
             data = self.to_openai_format()
         
@@ -291,7 +261,7 @@ class StreamManager:
         text: str,
         chunk_size: int = 10,
         include_usage: bool = False,
-        usage: Dict[str, int] = None
+        usage: Optional[Dict[str, int]] = None
     ) -> Generator[str, None, None]:
         """
         生成 SSE 格式的流式响应
@@ -420,12 +390,6 @@ class StreamManager:
             model="",
             event_type=StreamEventType.CONTENT_DELTA
         )
-    
-    @staticmethod
-    def parse_bailian_stream_chunk(data: Dict[str, Any]) -> StreamChunk:
-        """解析百炼格式的流式块"""
-        # 百炼格式与 OpenAI 类似
-        return StreamManager.parse_openai_stream_chunk(data)
 
 
 def create_stream_response_generator(
@@ -433,7 +397,7 @@ def create_stream_response_generator(
     model: str,
     provider_format: str = "openai",
     chunk_size: int = 10,
-    usage: Dict[str, int] = None
+    usage: Optional[Dict[str, int]] = None
 ) -> Generator[str, None, None]:
     """
     创建流式响应生成器的便捷函数
