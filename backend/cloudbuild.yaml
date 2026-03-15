@@ -5,9 +5,9 @@ steps:
     args:
       - 'build'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_IMAGE_NAME}:${SHORT_SHA}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/yunzhuqing-model-link/${_IMAGE_NAME}:${SHORT_SHA}'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_IMAGE_NAME}:latest'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/yunzhuqing-model-link/${_IMAGE_NAME}:latest'
       - '.'
 
   # Push the image to Artifact Registry
@@ -15,15 +15,15 @@ steps:
     args:
       - 'push'
       - '--all-tags'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_IMAGE_NAME}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/yunzhuqing-model-link/${_IMAGE_NAME}'
 
 images:
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_IMAGE_NAME}:${SHORT_SHA}'
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_IMAGE_NAME}:latest'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/yunzhuqing-model-link/${_IMAGE_NAME}:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/yunzhuqing-model-link/${_IMAGE_NAME}:latest'
 
 substitutions:
   _REGION: 'asia-southeast1'
-  _IMAGE_NAME: 'model-link-api'
+  _IMAGE_NAME: 'model-link'
 
 options:
   logging: CLOUD_LOGGING_ONLY
