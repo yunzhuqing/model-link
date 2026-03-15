@@ -39,7 +39,7 @@ images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE_NAME}:latest'
 
 substitutions:
-  _REGION: 'us-central1'
+  _REGION: 'asia-southeast1'
   _REPOSITORY: 'model-link'
   _IMAGE_NAME: 'model-link-api'
   _SERVICE_NAME: 'model-link-backend'
