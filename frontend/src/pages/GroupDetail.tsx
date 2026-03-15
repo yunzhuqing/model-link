@@ -74,7 +74,6 @@ export default function GroupDetail() {
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
   const [editingMemberRole, setEditingMemberRole] = useState<number | null>(null);
   const [showAddApiKey, setShowAddApiKey] = useState(false);
-  const [editingApiKey, setEditingApiKey] = useState<ApiKey | null>(null);
   const [newApiKey, setNewApiKey] = useState({ name: '', expires_at: '' });
   
   const [showAddProvider, setShowAddProvider] = useState(false);

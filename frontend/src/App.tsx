@@ -4,8 +4,6 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import Dashboard from './pages/Dashboard';
-import ProviderList from './pages/ProviderList';
-import ApiKeyList from './pages/ApiKeyList';
 import GroupList from './pages/GroupList';
 import GroupDetail from './pages/GroupDetail';
 import Layout from './components/Layout';
