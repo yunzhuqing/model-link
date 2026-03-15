@@ -1,0 +1,28 @@
+.git
+.gitignore
+
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.venv
+**/venv
+
+# Backend specific
+backend/instance/
+backend/*.db
+backend/uv.lock
+backend/.python-version
+
+# Frontend specific
+frontend/node_modules
+frontend/dist
+
+# Docs
+**/README.md
