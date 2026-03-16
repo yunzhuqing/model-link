@@ -219,15 +219,21 @@ class VertexAIProvider(BaseProvider):
         },
     }
 
+    # Default Vertex AI base URL template (requires PROJECT_ID)
+    DEFAULT_BASE_URL_TEMPLATE = "https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/global"
+
     def __init__(self, config: ProviderConfig):
         """
         初始化 Vertex AI 供应商
 
         Args:
             config: 供应商配置
-                - base_url: Vertex AI 端点 URL
+                - base_url: Vertex AI 端点 URL (格式: https://aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/global)
                 - api_key: 服务账号 JSON 密钥内容（或留空使用 ADC）
         """
+        # Will set base_url after getting project_id from credentials
+        self._project_id = None
+        self._pending_base_url = config.base_url
         super().__init__(config)
         self._credentials = None
 
@@ -250,13 +256,22 @@ class VertexAIProvider(BaseProvider):
                     service_account_info,
                     scopes=scopes
                 )
+                # Extract project_id from service account
+                self._project_id = service_account_info.get("project_id")
             except (json.JSONDecodeError, ValueError) as e:
                 raise ValueError(
                     f"Invalid service account JSON in api_key: {e}. "
                     "Please provide the full JSON content of the service account key file."
                 )
         else:
-            self._credentials, _ = google.auth.default(scopes=scopes)
+            self._credentials, project_id = google.auth.default(scopes=scopes)
+            self._project_id = project_id
+
+        # Set default base_url if not provided
+        if not self._pending_base_url and self._project_id:
+            self.config.base_url = self.DEFAULT_BASE_URL_TEMPLATE.format(project_id=self._project_id)
+        elif self._pending_base_url:
+            self.config.base_url = self._pending_base_url
 
         return self._credentials
 
@@ -277,6 +292,8 @@ class VertexAIProvider(BaseProvider):
     def get_headers(self) -> Dict[str, str]:
         """获取请求头（包含 OAuth2 Bearer token）"""
         access_token = self._get_access_token()
+        # Print full access token for debugging
+        print(f"[VertexAI] Access Token: {access_token}", file=sys.stderr)
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}"
@@ -975,8 +992,8 @@ class VertexAIProvider(BaseProvider):
             # OpenAI-compatible models
             request_data["stream"] = True
 
-        url = self._get_api_url(request.model, streaming=True)
         headers = self.get_headers()
+        url = self._get_api_url(request.model, streaming=True)
         response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
         print(f"[VertexAI {publisher} Stream] URL: {url}", file=sys.stderr)

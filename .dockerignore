@@ -17,7 +17,6 @@
 # Backend specific
 backend/instance/
 backend/*.db
-backend/uv.lock
 backend/.python-version
 
 # Frontend specific

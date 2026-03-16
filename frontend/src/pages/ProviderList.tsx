@@ -203,19 +203,25 @@ const ProviderList = () => {
               >
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
+                <option value="azure">Azure OpenAI</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="kimi">Kimi</option>
                 <option value="glm">GLM (Zhipu AI)</option>
                 <option value="minimax">MiniMax</option>
                 <option value="bailian">Bailian (Alibaba)</option>
                 <option value="volcengine">Volcengine (ByteDance)</option>
+                <option value="vertexai">Vertex AI (Google Cloud)</option>
                 <option value="tencent">Tencent</option>
               </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Base URL</label>
               <input
-                placeholder="https://api.example.com"
+                placeholder={
+                  (editingProvider?.type || newProvider.type) === 'vertexai'
+                    ? 'https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}'
+                    : 'https://api.example.com'
+                }
                 className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
                 value={editingProvider ? editingProvider.base_url : newProvider.base_url}
                 onChange={(e) => editingProvider 
@@ -223,19 +229,39 @@ const ProviderList = () => {
                   : setNewProvider({ ...newProvider, base_url: e.target.value })
                 }
               />
+              {(editingProvider?.type || newProvider.type) === 'vertexai' && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Format: https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/REGION
+                </p>
+              )}
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">API Key</label>
-              <input
-                type="password"
-                placeholder="sk-..."
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                value={editingProvider ? editingProvider.api_key : newProvider.api_key}
-                onChange={(e) => editingProvider 
-                  ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
-                  : setNewProvider({ ...newProvider, api_key: e.target.value })
-                }
-              />
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                {(editingProvider?.type || newProvider.type) === 'vertexai' ? 'Service Account JSON' : 'API Key'}
+              </label>
+              {(editingProvider?.type || newProvider.type) === 'vertexai' ? (
+                <textarea
+                  placeholder='Paste the full JSON content of your Google Cloud service account key file, or leave empty to use Application Default Credentials (ADC)'
+                  rows={4}
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-sm"
+                  value={editingProvider ? editingProvider.api_key : newProvider.api_key}
+                  onChange={(e) => editingProvider 
+                    ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
+                    : setNewProvider({ ...newProvider, api_key: e.target.value })
+                  }
+                />
+              ) : (
+                <input
+                  type="password"
+                  placeholder="sk-..."
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                  value={editingProvider ? editingProvider.api_key : newProvider.api_key}
+                  onChange={(e) => editingProvider 
+                    ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
+                    : setNewProvider({ ...newProvider, api_key: e.target.value })
+                  }
+                />
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Description</label>

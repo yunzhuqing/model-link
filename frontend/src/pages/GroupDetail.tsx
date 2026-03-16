@@ -43,6 +43,8 @@ interface Model {
   input_size: number;
   input_price: number;
   output_price: number;
+  cache_creation_price: number;
+  cache_hit_price: number;
   support_kvcache: boolean;
   support_image: boolean;
   support_audio: boolean;
@@ -642,7 +644,7 @@ export default function GroupDetail() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">Context Size</label>
                     <input
@@ -681,11 +683,31 @@ export default function GroupDetail() {
                       onChange={(e) => setEditingModel({ ...editingModel, output_price: parseFloat(e.target.value) })}
                     />
                   </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">Cache Create ($/M)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                      value={editingModel.cache_creation_price}
+                      onChange={(e) => setEditingModel({ ...editingModel, cache_creation_price: parseFloat(e.target.value) })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">Cache Hit ($/M)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                      value={editingModel.cache_hit_price}
+                      onChange={(e) => setEditingModel({ ...editingModel, cache_hit_price: parseFloat(e.target.value) })}
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Supported Features</label>
-                  <div className="grid grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {[
                       { key: 'support_kvcache', label: 'KV Cache' },
                       { key: 'support_image', label: 'Image' },
@@ -752,6 +774,14 @@ export default function GroupDetail() {
                     <div className="bg-blue-50 p-4 rounded-xl">
                       <span className="text-sm text-blue-600">Output Price</span>
                       <p className="text-2xl font-bold text-blue-700">${viewingModel.output_price}/M</p>
+                    </div>
+                    <div className="bg-violet-50 p-4 rounded-xl">
+                      <span className="text-sm text-violet-600">Cache Create Price</span>
+                      <p className="text-2xl font-bold text-violet-700">${viewingModel.cache_creation_price}/M</p>
+                    </div>
+                    <div className="bg-amber-50 p-4 rounded-xl">
+                      <span className="text-sm text-amber-600">Cache Hit Price</span>
+                      <p className="text-2xl font-bold text-amber-700">${viewingModel.cache_hit_price}/M</p>
                     </div>
                   </div>
                 </div>
@@ -853,7 +883,7 @@ export default function GroupDetail() {
         {/* Add/Edit Provider Form */}
         {(showAddProvider || editingProvider) && (
           <div className="bg-slate-50 p-4 rounded-xl mb-4">
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
                 <input
@@ -885,13 +915,18 @@ export default function GroupDetail() {
                   <option value="minimax">MiniMax</option>
                   <option value="bailian">Bailian (Alibaba)</option>
                   <option value="volcengine">Volcengine</option>
+                  <option value="vertexai">Vertex AI (Google Cloud)</option>
                   <option value="tencent">Tencent</option>
                 </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Base URL</label>
                 <input
-                  placeholder="https://api.example.com"
+                  placeholder={
+                    (editingProvider?.type || newProvider.type) === 'vertexai'
+                      ? 'https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}'
+                      : 'https://api.example.com'
+                  }
                   className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
                   value={editingProvider ? editingProvider.base_url : newProvider.base_url}
                   onChange={(e) => editingProvider 
@@ -899,19 +934,39 @@ export default function GroupDetail() {
                     : setNewProvider({ ...newProvider, base_url: e.target.value })
                   }
                 />
+                {(editingProvider?.type || newProvider.type) === 'vertexai' && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Format: https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/REGION
+                  </p>
+                )}
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">API Key</label>
-                <input
-                  type="password"
-                  placeholder="sk-..."
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={editingProvider ? editingProvider.api_key : newProvider.api_key}
-                  onChange={(e) => editingProvider 
-                    ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
-                    : setNewProvider({ ...newProvider, api_key: e.target.value })
-                  }
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {(editingProvider?.type || newProvider.type) === 'vertexai' ? 'Service Account JSON' : 'API Key'}
+                </label>
+                {(editingProvider?.type || newProvider.type) === 'vertexai' ? (
+                  <textarea
+                    placeholder='Paste the full JSON content of your Google Cloud service account key file, or leave empty to use Application Default Credentials (ADC)'
+                    rows={4}
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-mono"
+                    value={editingProvider ? editingProvider.api_key : newProvider.api_key}
+                    onChange={(e) => editingProvider 
+                      ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
+                      : setNewProvider({ ...newProvider, api_key: e.target.value })
+                    }
+                  />
+                ) : (
+                  <input
+                    type="password"
+                    placeholder="sk-..."
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                    value={editingProvider ? editingProvider.api_key : newProvider.api_key}
+                    onChange={(e) => editingProvider 
+                      ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
+                      : setNewProvider({ ...newProvider, api_key: e.target.value })
+                    }
+                  />
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Description</label>

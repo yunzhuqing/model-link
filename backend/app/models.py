@@ -149,8 +149,8 @@ class Provider(db.Model):
     name = db.Column(db.String(100), unique=True, nullable=False, index=True)
     type = db.Column(db.String(50), nullable=False, default="openai")  # openai, anthropic, deepseek, kimi, glm, minimax, bailian, volcengine, tencent
     description = db.Column(db.String(255))
-    api_key = db.Column(db.String(255))
-    base_url = db.Column(db.String(255))
+    api_key = db.Column(db.Text)
+    base_url = db.Column(db.String(500))
     group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
 
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
