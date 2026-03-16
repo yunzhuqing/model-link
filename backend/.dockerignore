@@ -12,4 +12,3 @@ venv
 instance/
 *.db
 .python-version
-README.md
