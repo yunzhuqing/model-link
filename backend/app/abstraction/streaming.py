@@ -71,33 +71,101 @@ class StreamChunk:
         
         return result
     
-    def to_anthropic_format(self) -> Dict[str, Any]:
-        """转换为 Anthropic 格式"""
-        if self.event_type == StreamEventType.DONE:
-            return {
-                "type": "message_stop"
-            }
+    def _build_anthropic_usage(self) -> Dict[str, int]:
+        """
+        构建 Anthropic 格式的 usage 字典。
         
-        if self.event_type == StreamEventType.USAGE:
-            return {
-                "type": "message_delta",
-                "usage": self.usage
-            }
-        
-        result = {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {}
+        将 OpenAI 格式的 usage 字段映射为 Anthropic 格式：
+        - prompt_tokens → input_tokens
+        - completion_tokens → output_tokens
+        - 同时支持 cache_read_input_tokens, cache_creation_input_tokens
+        """
+        usage = {}
+        if self.usage:
+            # input_tokens: 优先使用 input_tokens，其次 prompt_tokens
+            usage["input_tokens"] = self.usage.get("input_tokens",
+                                    self.usage.get("prompt_tokens", 0))
+            # output_tokens: 优先使用 output_tokens，其次 completion_tokens
+            usage["output_tokens"] = self.usage.get("output_tokens",
+                                     self.usage.get("completion_tokens", 0))
+            # cache tokens
+            cache_read = self.usage.get("cache_read_input_tokens",
+                         self.usage.get("cache_read_tokens", 0))
+            if cache_read:
+                usage["cache_read_input_tokens"] = cache_read
+            cache_creation = self.usage.get("cache_creation_input_tokens",
+                             self.usage.get("cache_write_tokens", 0))
+            if cache_creation:
+                usage["cache_creation_input_tokens"] = cache_creation
+        else:
+            usage["input_tokens"] = 0
+            usage["output_tokens"] = 0
+        return usage
+
+    def _map_finish_reason_to_anthropic(self) -> Optional[str]:
+        """将 finish_reason 映射为 Anthropic stop_reason"""
+        if not self.finish_reason:
+            return None
+        mapping = {
+            FinishReason.STOP: "end_turn",
+            FinishReason.LENGTH: "max_tokens",
+            FinishReason.TOOL_CALLS: "tool_use",
+            FinishReason.CONTENT_FILTER: "end_turn",
+            FinishReason.ERROR: "end_turn",
         }
+        return mapping.get(self.finish_reason, "end_turn")
+
+    def to_anthropic_events(self) -> List[Dict[str, Any]]:
+        """
+        转换为 Anthropic 格式的事件列表。
         
-        if self.delta_content:
-            result["delta"] = {
-                "type": "text_delta",
-                "text": self.delta_content
+        一个 StreamChunk 可能需要输出多个 Anthropic SSE 事件，例如：
+        当 finish_reason 存在时需要输出 content_block_stop + message_delta。
+        """
+        events = []
+
+        if self.event_type == StreamEventType.DONE:
+            # message_stop 由 adapter 的 format_stream_end() 处理
+            return events
+
+        if self.event_type == StreamEventType.USAGE:
+            # message_delta with stop_reason and usage
+            stop_reason = self._map_finish_reason_to_anthropic()
+            event = {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": stop_reason,
+                    "stop_sequence": None,
+                },
+                "usage": self._build_anthropic_usage(),
             }
-        
+            return [event]
+
+        # 处理 thinking/reasoning 内容
+        if self.delta_reasoning_content:
+            events.append({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "thinking_delta",
+                    "thinking": self.delta_reasoning_content
+                }
+            })
+
+        # 处理文本内容
+        if self.delta_content:
+            events.append({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": self.delta_content
+                }
+            })
+
+        # 处理工具调用
         if self.tool_calls:
-            return {
+            events.append({
                 "type": "content_block_start",
                 "index": 0,
                 "content_block": {
@@ -105,18 +173,54 @@ class StreamChunk:
                     "id": self.tool_calls[0].get("id", ""),
                     "name": self.tool_calls[0].get("function", {}).get("name", "")
                 }
+            })
+
+        # 当有 finish_reason 时，追加 content_block_stop + message_delta
+        if self.finish_reason:
+            events.append({
+                "type": "content_block_stop",
+                "index": 0,
+            })
+            stop_reason = self._map_finish_reason_to_anthropic()
+            message_delta = {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": stop_reason,
+                    "stop_sequence": None,
+                },
+                "usage": self._build_anthropic_usage(),
             }
-        
-        return result
+            events.append(message_delta)
+
+        # 如果没有任何有意义的事件（如 role-only chunk），返回空
+        if not events and self.delta_role:
+            # role chunk 不需要单独的 anthropic 事件
+            # message_start 由 adapter 的 format_stream_start() 处理
+            pass
+
+        return events
+
+    def to_anthropic_format(self) -> Dict[str, Any]:
+        """转换为 Anthropic 格式（返回单个事件，向后兼容）"""
+        events = self.to_anthropic_events()
+        if events:
+            return events[0]
+        return {"type": "content_block_delta", "index": 0, "delta": {}}
     
     def to_sse(self, provider_format: str = "openai") -> str:
         """转换为 SSE 格式字符串"""
         if provider_format == "anthropic":
-            data = self.to_anthropic_format()
+            events = self.to_anthropic_events()
+            if not events:
+                return ""
+            parts = []
+            for event in events:
+                event_type = event.get("type", "")
+                parts.append(f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n")
+            return "".join(parts)
         else:
             data = self.to_openai_format()
-        
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+            return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     
     @classmethod
     def create_text_chunk(cls, id: str, model: str, text: str) -> 'StreamChunk':

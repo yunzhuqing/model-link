@@ -8,10 +8,12 @@ from .openai_provider import OpenAIProvider
 from .azure_provider import AzureProvider
 from .bailian_provider import BailianProvider
 from .volcengine_provider import VolcengineProvider
+from .vertexai_provider import VertexAIProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
-    'OpenAIProvider', 'AzureProvider', 'BailianProvider', 'VolcengineProvider'
+    'OpenAIProvider', 'AzureProvider', 'BailianProvider', 'VolcengineProvider',
+    'VertexAIProvider'
 ]
 
 # 供应商注册表
@@ -20,6 +22,7 @@ PROVIDER_REGISTRY = {
     'azure': AzureProvider,
     'bailian': BailianProvider,
     'volcengine': VolcengineProvider,
+    'vertexai': VertexAIProvider,
 }
 
 

@@ -11,7 +11,7 @@ from .base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
-from app.abstraction.streaming import StreamChunk
+from app.abstraction.streaming import StreamChunk, StreamEventType
 
 
 def parse_openai_request(data: dict) -> ChatRequest:
@@ -545,6 +545,8 @@ class OpenAIProvider(BaseProvider):
         
         request_data = self.prepare_request(request)
         request_data["stream"] = True
+        # Request usage info in the final streaming chunk
+        request_data["stream_options"] = {"include_usage": True}
         
         url = f"{self.config.base_url}/chat/completions"
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -590,7 +592,18 @@ class OpenAIProvider(BaseProvider):
     def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """解析流式响应块"""
         choices = data.get("choices", [])
+        usage = data.get("usage")
+        
         if not choices:
+            # Handle usage-only chunks (sent when stream_options.include_usage=true)
+            if usage:
+                return StreamChunk(
+                    id=data.get("id", response_id),
+                    model=data.get("model", model),
+                    usage=usage,
+                    event_type=StreamEventType.USAGE,
+                    created=data.get("created", int(time.time()))
+                )
             return None
         
         choice = choices[0]
@@ -616,6 +629,7 @@ class OpenAIProvider(BaseProvider):
             delta_role=role,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            usage=usage,
             created=data.get("created", int(time.time()))
         )
     

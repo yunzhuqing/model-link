@@ -4,13 +4,16 @@ Anthropic Messages 适配器
 """
 import json
 import time
-from typing import Optional
+from typing import Optional, Generator
+
+from flask import Response
 
 from .base import BaseAdapter
 from app.abstraction.chat import ChatRequest, ChatResponse
-from app.abstraction.streaming import StreamChunk
+from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.messages import Message, MessageRole, ContentBlock
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
+from app.middleware.gateway_service import GatewayServiceError, ProviderError
 
 
 class AnthropicMessagesAdapter(BaseAdapter):
@@ -153,6 +156,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             "type": "message",
             "role": "assistant",
             "content": [
+                {"type": "thinking", "thinking": "..."},
                 {"type": "text", "text": "Hello!"}
             ],
             "model": "claude-3-opus-20240229",
@@ -165,6 +169,13 @@ class AnthropicMessagesAdapter(BaseAdapter):
         """
         content = []
         for choice in response.choices:
+            # 添加 thinking/reasoning 内容（来自 DeepSeek R1、Qwen 等模型）
+            reasoning = choice.reasoning_content
+            if not reasoning and choice.message and choice.message.reasoning_content:
+                reasoning = choice.message.reasoning_content
+            if reasoning:
+                content.append({'type': 'thinking', 'thinking': reasoning})
+
             if choice.message:
                 text = choice.message.get_text_content()
                 if text:
@@ -223,11 +234,11 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
     def format_stream_end(self) -> str:
         """Anthropic 流式结束标记"""
-        return "event: message_stop\ndata: {}\n\n"
+        end_data = {"type": "message_stop"}
+        return f"event: message_stop\ndata: {json.dumps(end_data)}\n\n"
 
     def format_stream_error(self, error: Exception) -> str:
         """将错误转换为 Anthropic 格式的流式错误事件"""
-        from app.middleware.gateway_service import ProviderError
 
         if isinstance(error, ProviderError) and error.error_data:
             error_event = {
@@ -244,3 +255,82 @@ class AnthropicMessagesAdapter(BaseAdapter):
             }
 
         return f"event: error\ndata: {json.dumps(error_event)}\n\n"
+
+    def create_stream_response(
+        self,
+        chunks: Generator[StreamChunk, None, None],
+        model_name: str
+    ) -> Response:
+        """
+        从 StreamChunk 生成器创建 Anthropic 格式的 HTTP 流式响应。
+
+        重写父类方法，实现用量（usage）累积：
+        - 在 OpenAI 兼容的流式 API 中，usage 通常在 finish_reason 之后的
+          独立 chunk 中发送（需要 stream_options.include_usage=true）。
+        - 为了在 Anthropic 格式的 message_delta 中包含完整的 usage，
+          需要缓冲 finish chunk，等待 usage chunk 到达后合并。
+
+        流程：
+        1. 流式输出 content_block_delta 等事件（实时）
+        2. 遇到 finish_reason chunk 时缓冲，不立即输出
+        3. 继续消费剩余 chunk，累积 usage
+        4. 流结束后，将累积的 usage 注入 finish chunk 并输出
+        """
+        def generate():
+            accumulated_usage = {}
+            pending_finish_chunk = None
+
+            try:
+                # 发送 message_start
+                start_event = self.format_stream_start(model_name)
+                if start_event:
+                    yield start_event
+
+                for chunk in chunks:
+                    # 从每个 chunk 累积 usage 信息
+                    if chunk.usage:
+                        for k, v in chunk.usage.items():
+                            accumulated_usage[k] = v
+
+                    if chunk.finish_reason:
+                        # 缓冲 finish chunk，等待可能的 usage chunk
+                        pending_finish_chunk = chunk
+                        continue
+
+                    # 跳过纯 usage chunk（其数据已累积，将合并到 finish chunk）
+                    if chunk.event_type == StreamEventType.USAGE:
+                        continue
+
+                    # 实时输出内容 chunk
+                    formatted = self.format_stream_chunk(chunk)
+                    if formatted:
+                        yield formatted
+
+                # 流结束，输出缓冲的 finish chunk（带累积 usage）
+                if pending_finish_chunk:
+                    if accumulated_usage:
+                        pending_finish_chunk.usage = accumulated_usage
+                    formatted = self.format_stream_chunk(pending_finish_chunk)
+                    if formatted:
+                        yield formatted
+
+                # 发送 message_stop
+                yield self.format_stream_end()
+
+            except (GatewayServiceError, ProviderError) as e:
+                yield self.format_stream_error(e)
+                yield self.format_stream_end()
+
+            except Exception as e:
+                yield self.format_stream_error(e)
+                yield self.format_stream_end()
+
+        return Response(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            }
+        )

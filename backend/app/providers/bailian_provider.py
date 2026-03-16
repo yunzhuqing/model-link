@@ -178,6 +178,8 @@ class BailianProvider(OpenAIProvider):
         # 准备请求数据
         request_data = self.prepare_request(request)
         request_data["stream"] = True
+        # Request usage info in the final streaming chunk
+        request_data["stream_options"] = {"include_usage": True}
         
         # 百炼特有：增量输出
         request_data["incremental_output"] = True
