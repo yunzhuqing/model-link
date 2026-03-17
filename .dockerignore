@@ -23,5 +23,5 @@ backend/.python-version
 frontend/node_modules
 frontend/dist
 
-# Docs
-**/README.md
+# Docs (only root-level, keep backend/README.md for pyproject.toml)
+README.md
