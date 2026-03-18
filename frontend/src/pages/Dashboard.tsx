@@ -15,6 +15,7 @@ interface Model {
   support_file: boolean;
   support_web_search: boolean;
   support_tool_search: boolean;
+  support_thinking: boolean;
 }
 
 interface Provider {
@@ -57,6 +58,7 @@ const Dashboard = () => {
     file: models.filter(m => m.support_file).length,
     web_search: models.filter(m => m.support_web_search).length,
     tool_search: models.filter(m => m.support_tool_search).length,
+    thinking: models.filter(m => m.support_thinking).length,
   };
 
   // Max context window
@@ -156,6 +158,7 @@ const Dashboard = () => {
             <FeatureStat label="File" count={featureCounts.file} total={totalModels} color="amber" />
             <FeatureStat label="Web Search" count={featureCounts.web_search} total={totalModels} color="indigo" />
             <FeatureStat label="Tool Search" count={featureCounts.tool_search} total={totalModels} color="pink" />
+            <FeatureStat label="Thinking" count={featureCounts.thinking} total={totalModels} color="cyan" />
           </div>
         )}
       </div>
@@ -314,6 +317,7 @@ const FeatureStat = ({
     amber: 'text-amber-500',
     indigo: 'text-indigo-500',
     pink: 'text-pink-500',
+    cyan: 'text-cyan-500',
   };
   
   const percentage = total > 0 ? (count / total) * 100 : 0;

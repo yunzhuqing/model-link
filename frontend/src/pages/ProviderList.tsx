@@ -21,6 +21,7 @@ interface Model {
   support_file: boolean;
   support_web_search: boolean;
   support_tool_search: boolean;
+  support_thinking: boolean;
 }
 
 interface Provider {
@@ -56,6 +57,7 @@ const defaultModelState = {
   support_file: false,
   support_web_search: false,
   support_tool_search: false,
+  support_thinking: false,
 };
 
 const ProviderList = () => {
@@ -453,6 +455,7 @@ const ProviderList = () => {
                                 {model.support_file && <FeatureBadge label="File" color="amber" />}
                                 {model.support_web_search && <FeatureBadge label="Web Search" color="indigo" />}
                                 {model.support_tool_search && <FeatureBadge label="Tool Search" color="pink" />}
+                                {model.support_thinking && <FeatureBadge label="Thinking" color="cyan" />}
                               </div>
                             </div>
                             <div className="flex space-x-1 ml-4">
@@ -514,6 +517,7 @@ const FeatureBadge = ({ label, color }: { label: string; color: string }) => {
     amber: 'bg-amber-100 text-amber-700',
     indigo: 'bg-indigo-100 text-indigo-700',
     pink: 'bg-pink-100 text-pink-700',
+    cyan: 'bg-cyan-100 text-cyan-700',
   };
   return (
     <span className={`px-2.5 py-1 rounded-lg text-xs font-medium ${colors[color]}`}>
@@ -631,6 +635,7 @@ const ModelForm = ({
             { key: 'support_file', label: 'File Input' },
             { key: 'support_web_search', label: 'Web Search' },
             { key: 'support_tool_search', label: 'Tool Search' },
+            { key: 'support_thinking', label: 'Thinking' },
           ].map((feature) => (
             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
               <input

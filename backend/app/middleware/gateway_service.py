@@ -150,6 +150,9 @@ class GatewayService:
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
 
+        # 2.5. 传递模型特性标志到请求元数据
+        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
+
         # 3. 调用供应商 API
         try:
             response = resolved.provider_instance.chat(request)
@@ -188,6 +191,9 @@ class GatewayService:
 
         # 2. 立即替换为真实模型名称
         request.model = resolved.real_model_name
+
+        # 2.5. 传递模型特性标志到请求元数据
+        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
 
         # 3. 返回惰性生成器（流式数据传输）
         def _stream():

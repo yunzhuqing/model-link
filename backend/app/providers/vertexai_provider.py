@@ -452,10 +452,16 @@ class VertexAIProvider(BaseProvider):
         content_blocks = response_data.get("content", [])
         tool_calls = []
         message_blocks = []
+        thinking_parts = []
 
         for block in content_blocks:
             block_type = block.get("type", "")
-            if block_type == "text":
+            if block_type == "thinking":
+                # Claude extended thinking block - collect thinking summary
+                thinking_text = block.get("thinking", "")
+                if thinking_text:
+                    thinking_parts.append(thinking_text)
+            elif block_type == "text":
                 message_blocks.append(ContentBlock.from_text(block.get("text", "")))
             elif block_type == "tool_use":
                 tc_id, tc_name, tc_input = block.get("id", ""), block.get("name", ""), block.get("input", {})
@@ -463,6 +469,9 @@ class VertexAIProvider(BaseProvider):
                 message_blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_input))
 
         message = Message(role=MessageRole.ASSISTANT, content=message_blocks if message_blocks else None)
+
+        # Combine all thinking parts into reasoning_content
+        reasoning_content = "\n\n".join(thinking_parts) if thinking_parts else None
 
         stop_reason = response_data.get("stop_reason", "end_turn")
         finish_reason_map = {"end_turn": FinishReason.STOP, "max_tokens": FinishReason.LENGTH, "tool_use": FinishReason.TOOL_CALLS, "stop_sequence": FinishReason.STOP}
@@ -480,7 +489,7 @@ class VertexAIProvider(BaseProvider):
         return ChatResponse(
             id=response_data.get("id", f"msg_{uuid.uuid4().hex[:12]}"),
             model=response_data.get("model", model),
-            choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls)],
+            choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls, reasoning_content=reasoning_content)],
             usage=usage, created=int(time.time()), provider=self.PROVIDER_TYPE
         )
 
@@ -567,6 +576,13 @@ class VertexAIProvider(BaseProvider):
             gen_config["maxOutputTokens"] = request.max_tokens
         if request.stop:
             gen_config["stopSequences"] = request.stop
+
+        # Enable thinking based on model's support_thinking flag from database
+        if request.metadata.get('support_thinking', False):
+            gen_config["thinkingConfig"] = {
+                "includeThoughts": True
+            }
+
         if gen_config:
             result["generationConfig"] = gen_config
 
@@ -665,6 +681,7 @@ class VertexAIProvider(BaseProvider):
         candidates = response_data.get("candidates", [])
         message_blocks = []
         tool_calls = []
+        thinking_parts = []
         finish_reason = FinishReason.STOP
 
         if candidates:
@@ -674,7 +691,11 @@ class VertexAIProvider(BaseProvider):
 
             for part in parts:
                 if "text" in part:
-                    message_blocks.append(ContentBlock.from_text(part["text"]))
+                    # Gemini 2.5 models return thought parts with "thought": true
+                    if part.get("thought", False):
+                        thinking_parts.append(part["text"])
+                    else:
+                        message_blocks.append(ContentBlock.from_text(part["text"]))
                 elif "functionCall" in part:
                     fc = part["functionCall"]
                     tc_id = f"call_{uuid.uuid4().hex[:8]}"
@@ -693,6 +714,9 @@ class VertexAIProvider(BaseProvider):
 
         message = Message(role=MessageRole.ASSISTANT, content=message_blocks if message_blocks else None)
 
+        # Combine all thinking parts into reasoning_content
+        reasoning_content = "\n\n".join(thinking_parts) if thinking_parts else None
+
         # Parse usage
         usage_metadata = response_data.get("usageMetadata", {})
         usage = UsageInfo(
@@ -704,7 +728,7 @@ class VertexAIProvider(BaseProvider):
         return ChatResponse(
             id=f"gemini-{uuid.uuid4().hex[:12]}",
             model=model,
-            choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls)],
+            choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls, reasoning_content=reasoning_content)],
             usage=usage, created=int(time.time()), provider=self.PROVIDER_TYPE
         )
 
@@ -736,11 +760,16 @@ class VertexAIProvider(BaseProvider):
             finish_reason = finish_map.get(gemini_finish, FinishReason.STOP)
 
         delta_content = None
+        delta_reasoning_content = None
         tool_calls_data = []
 
         for part in parts:
             if "text" in part:
-                delta_content = (delta_content or "") + part["text"]
+                # Gemini 2.5 models return thought parts with "thought": true
+                if part.get("thought", False):
+                    delta_reasoning_content = (delta_reasoning_content or "") + part["text"]
+                else:
+                    delta_content = (delta_content or "") + part["text"]
             elif "functionCall" in part:
                 fc = part["functionCall"]
                 tc_id = f"call_{uuid.uuid4().hex[:8]}"
@@ -759,6 +788,7 @@ class VertexAIProvider(BaseProvider):
         return StreamChunk(
             id=response_id, model=model,
             delta_content=delta_content, delta_role=delta_role,
+            delta_reasoning_content=delta_reasoning_content,
             tool_calls=tool_calls_data if tool_calls_data else [],
             finish_reason=finish_reason,
             event_type=StreamEventType.CONTENT_DELTA
@@ -949,8 +979,8 @@ class VertexAIProvider(BaseProvider):
         if publisher == ModelPublisher.ANTHROPIC:
             request_data.pop("stream", None)
 
-        url = self._get_api_url(request.model, streaming=False)
         headers = self.get_headers()
+        url = self._get_api_url(request.model, streaming=False)
 
         print(f"[VertexAI {publisher}] URL: {url}", file=sys.stderr)
         print(f"[VertexAI {publisher}] Request: {json.dumps(request_data, ensure_ascii=False, indent=2)}", file=sys.stderr)

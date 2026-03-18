@@ -205,6 +205,7 @@ class Model(db.Model):
     support_file = db.Column(db.Boolean, default=False)
     support_web_search = db.Column(db.Boolean, default=False)
     support_tool_search = db.Column(db.Boolean, default=False)
+    support_thinking = db.Column(db.Boolean, default=False)
 
     provider = db.relationship("Provider", back_populates="models")
 
@@ -226,5 +227,6 @@ class Model(db.Model):
             'support_video': self.support_video,
             'support_file': self.support_file,
             'support_web_search': self.support_web_search,
-            'support_tool_search': self.support_tool_search
+            'support_tool_search': self.support_tool_search,
+            'support_thinking': self.support_thinking
         }

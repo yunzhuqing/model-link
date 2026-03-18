@@ -144,7 +144,8 @@ def create_model(current_user):
         support_video=data.get('support_video', False),
         support_file=data.get('support_file', False),
         support_web_search=data.get('support_web_search', False),
-        support_tool_search=data.get('support_tool_search', False)
+        support_tool_search=data.get('support_tool_search', False),
+        support_thinking=data.get('support_thinking', False)
     )
     db.session.add(model)
     db.session.commit()
@@ -165,7 +166,7 @@ def update_model(current_user, model_id):
     for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 
                   'input_price', 'output_price', 'cache_creation_price', 'cache_hit_price',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
-                  'support_file', 'support_web_search', 'support_tool_search']:
+                  'support_file', 'support_web_search', 'support_tool_search', 'support_thinking']:
         if field in data:
             # Handle alias - convert empty string to None
             if field == 'alias' and data[field] == '':

@@ -52,6 +52,7 @@ interface Model {
   support_file: boolean;
   support_web_search: boolean;
   support_tool_search: boolean;
+  support_thinking: boolean;
 }
 
 interface Provider {
@@ -92,7 +93,8 @@ export default function GroupDetail() {
     name: '', alias: '', context_size: 4096, input_size: 4096,
     input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
     support_kvcache: false, support_image: false, support_audio: false,
-    support_video: false, support_file: false, support_web_search: false, support_tool_search: false
+    support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
+    support_thinking: false
   });
   
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
@@ -174,7 +176,8 @@ export default function GroupDetail() {
         name: '', alias: '', context_size: 4096, input_size: 4096,
         input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
         support_kvcache: false, support_image: false, support_audio: false,
-        support_video: false, support_file: false, support_web_search: false, support_tool_search: false
+        support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
+        support_thinking: false
       });
     },
   });
@@ -716,6 +719,7 @@ export default function GroupDetail() {
                       { key: 'support_file', label: 'File' },
                       { key: 'support_web_search', label: 'Web Search' },
                       { key: 'support_tool_search', label: 'Tool Search' },
+                      { key: 'support_thinking', label: 'Thinking' },
                     ].map((feature) => (
                       <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
                         <input
@@ -813,6 +817,7 @@ export default function GroupDetail() {
                       { key: 'support_file', label: 'File', color: 'amber' },
                       { key: 'support_web_search', label: 'Web Search', color: 'indigo' },
                       { key: 'support_tool_search', label: 'Tool Search', color: 'pink' },
+                      { key: 'support_thinking', label: 'Thinking', color: 'cyan' },
                     ].map((feature) => {
                       const enabled = viewingModel[feature.key as keyof Model] as boolean;
                       const colors: Record<string, string> = {
@@ -823,6 +828,7 @@ export default function GroupDetail() {
                         amber: 'bg-amber-100 text-amber-700',
                         indigo: 'bg-indigo-100 text-indigo-700',
                         pink: 'bg-pink-100 text-pink-700',
+                        cyan: 'bg-cyan-100 text-cyan-700',
                       };
                       return (
                         <span
@@ -1172,6 +1178,7 @@ export default function GroupDetail() {
                             { key: 'support_file', label: 'File' },
                             { key: 'support_web_search', label: 'Web Search' },
                             { key: 'support_tool_search', label: 'Tool Search' },
+                            { key: 'support_thinking', label: 'Thinking' },
                           ].map((feature) => (
                             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100">
                               <input
@@ -1201,7 +1208,8 @@ export default function GroupDetail() {
                               name: '', alias: '', context_size: 4096, input_size: 4096,
                               input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
                               support_kvcache: false, support_image: false, support_audio: false,
-                              support_video: false, support_file: false, support_web_search: false, support_tool_search: false
+                              support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
+                              support_thinking: false
                             });
                           }}
                           className="bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-300"
