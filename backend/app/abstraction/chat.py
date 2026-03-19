@@ -60,6 +60,7 @@ class ChatRequest:
     presence_penalty: Optional[float] = None
     frequency_penalty: Optional[float] = None
     user: Optional[str] = None
+    reasoning_effort: Optional[str] = None  # 推理力度: "none"(默认), "low", "medium", "high"
     metadata: Dict[str, Any] = field(default_factory=dict)  # 额外参数
     
     def get_system_message(self) -> Optional[str]:

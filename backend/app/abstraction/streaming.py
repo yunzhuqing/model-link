@@ -35,6 +35,7 @@ class StreamChunk:
     delta_content: Optional[str] = None
     delta_role: Optional[str] = None
     delta_reasoning_content: Optional[str] = None  # 推理内容（如 DeepSeek R1）
+    anthropic_index: int = 0  # Anthropic 格式的内容块索引（由适配器设置）
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: Optional[FinishReason] = None
     usage: Optional[Dict[str, int]] = None
@@ -141,11 +142,13 @@ class StreamChunk:
             }
             return [event]
 
+        idx = self.anthropic_index
+
         # 处理 thinking/reasoning 内容
         if self.delta_reasoning_content:
             events.append({
                 "type": "content_block_delta",
-                "index": 0,
+                "index": idx,
                 "delta": {
                     "type": "thinking_delta",
                     "thinking": self.delta_reasoning_content
@@ -156,7 +159,7 @@ class StreamChunk:
         if self.delta_content:
             events.append({
                 "type": "content_block_delta",
-                "index": 0,
+                "index": idx,
                 "delta": {
                     "type": "text_delta",
                     "text": self.delta_content
@@ -165,21 +168,39 @@ class StreamChunk:
 
         # 处理工具调用
         if self.tool_calls:
-            events.append({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {
-                    "type": "tool_use",
-                    "id": self.tool_calls[0].get("id", ""),
-                    "name": self.tool_calls[0].get("function", {}).get("name", "")
-                }
-            })
+            tc = self.tool_calls[0]
+            tc_id = tc.get("id", "")
+            tc_func = tc.get("function", {})
+            tc_name = tc_func.get("name", "")
+            tc_arguments = tc_func.get("arguments", "")
+
+            if tc_id:
+                events.append({
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tc_id,
+                        "name": tc_name,
+                        "input": {}
+                    }
+                })
+
+            if tc_arguments:
+                events.append({
+                    "type": "content_block_delta",
+                    "index": idx,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": tc_arguments
+                    }
+                })
 
         # 当有 finish_reason 时，追加 content_block_stop + message_delta
         if self.finish_reason:
             events.append({
                 "type": "content_block_stop",
-                "index": 0,
+                "index": idx,
             })
             stop_reason = self._map_finish_reason_to_anthropic()
             message_delta = {

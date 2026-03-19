@@ -121,8 +121,11 @@ def _handle_request(adapter):
     if error:
         return jsonify(error), status
 
-    # 2. 获取请求数据
-    data = request.get_json()
+    # 2. 获取请求数据 (force=True to accept any Content-Type)
+    data = request.get_json(force=True, silent=True)
+
+    if not data:
+        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
     model_name = data.get('model')
     if not model_name:

@@ -58,6 +58,8 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
             if isinstance(content, list):
                 blocks = []
+                tool_results = []  # 收集 tool_result 块，稍后转为独立的 TOOL 消息
+
                 for item in content:
                     item_type = item.get('type', 'text')
 
@@ -70,9 +72,22 @@ class AnthropicMessagesAdapter(BaseAdapter):
                         if source_type == 'url':
                             blocks.append(ContentBlock.from_image_url(source.get('url', '')))
                         elif source_type == 'base64':
+                            raw_data = source.get('data', '')
+                            media_type = source.get('media_type', 'image/jpeg')
+                            # Strip data URI prefix if accidentally included
+                            # e.g. "data:image/jpeg;base64,/9j/..." → "/9j/..."
+                            if raw_data.startswith('data:'):
+                                parts = raw_data.split(',', 1)
+                                if len(parts) > 1:
+                                    # Extract media_type from prefix if not explicitly set
+                                    prefix = parts[0]  # "data:image/jpeg;base64"
+                                    extracted_type = prefix.replace('data:', '').replace(';base64', '')
+                                    if extracted_type:
+                                        media_type = extracted_type
+                                    raw_data = parts[1]
                             blocks.append(ContentBlock.from_image_base64(
-                                source.get('data', ''),
-                                source.get('media_type', 'image/jpeg')
+                                raw_data,
+                                media_type
                             ))
                     elif item_type == 'tool_use':
                         blocks.append(ContentBlock.from_tool_call(
@@ -86,24 +101,42 @@ class AnthropicMessagesAdapter(BaseAdapter):
                             # Extract text from content blocks
                             texts = [c.get('text', '') for c in result_content if c.get('type') == 'text']
                             result_content = ' '.join(texts)
-                        blocks.append(ContentBlock.from_tool_result(
-                            item.get('tool_use_id', ''),
-                            result_content,
-                            item.get('is_error', False)
-                        ))
+                        # 收集 tool_result，稍后转为独立的 TOOL 消息
+                        tool_results.append({
+                            'tool_use_id': item.get('tool_use_id', ''),
+                            'content': result_content,
+                            'is_error': item.get('is_error', False)
+                        })
 
-                content = blocks
-            
-            # Handle tool_call_id for tool results
-            tool_call_id = None
-            if role == MessageRole.TOOL:
-                tool_call_id = msg_data.get('tool_use_id')
+                # 如果有非 tool_result 的内容块，添加为原始角色的消息
+                if blocks:
+                    messages.append(Message(
+                        role=role,
+                        content=blocks
+                    ))
 
-            messages.append(Message(
-                role=role,
-                content=content,
-                tool_call_id=tool_call_id
-            ))
+                # 将每个 tool_result 转为独立的 TOOL 消息（OpenAI 格式要求）
+                for tr in tool_results:
+                    messages.append(Message(
+                        role=MessageRole.TOOL,
+                        content=tr['content'] or '',
+                        tool_call_id=tr['tool_use_id']
+                    ))
+
+                # 如果既没有 blocks 也没有 tool_results，跳过
+                if not blocks and not tool_results:
+                    messages.append(Message(role=role, content=''))
+            else:
+                # Handle tool_call_id for tool results
+                tool_call_id = None
+                if role == MessageRole.TOOL:
+                    tool_call_id = msg_data.get('tool_use_id')
+
+                messages.append(Message(
+                    role=role,
+                    content=content,
+                    tool_call_id=tool_call_id
+                ))
 
         # 处理工具定义
         tools = []
@@ -279,6 +312,10 @@ class AnthropicMessagesAdapter(BaseAdapter):
         def generate():
             accumulated_usage = {}
             pending_finish_chunk = None
+            text_block_started = False  # 跟踪是否已发送 text 的 content_block_start
+            thinking_block_started = False  # 跟踪是否已发送 thinking 的 content_block_start
+            block_open = False  # 是否有内容块处于打开状态
+            content_block_index = 0  # 当前内容块索引
 
             try:
                 # 发送 message_start
@@ -301,18 +338,68 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     if chunk.event_type == StreamEventType.USAGE:
                         continue
 
+                    # 检测内容块类型转换，管理 content_block_start/stop
+                    new_block_type = None
+                    if chunk.delta_reasoning_content and not thinking_block_started:
+                        new_block_type = "thinking"
+                    elif chunk.delta_content and not text_block_started:
+                        new_block_type = "text"
+                    elif chunk.tool_calls and chunk.tool_calls[0].get("id"):
+                        new_block_type = "tool_use"
+
+                    # 如果有新的内容块类型，先关闭前一个块，再打开新块
+                    if new_block_type:
+                        # 关闭前一个块（如果有打开的块）
+                        if block_open:
+                            yield f"event: content_block_stop\ndata: {{\"type\": \"content_block_stop\", \"index\": {content_block_index}}}\n\n"
+                            content_block_index += 1
+
+                        block_open = True
+                        if new_block_type == "thinking":
+                            thinking_block_started = True
+                            start_event = {
+                                "type": "content_block_start",
+                                "index": content_block_index,
+                                "content_block": {"type": "thinking", "thinking": ""}
+                            }
+                            yield f"event: content_block_start\ndata: {json.dumps(start_event)}\n\n"
+                        elif new_block_type == "text":
+                            text_block_started = True
+                            start_event = {
+                                "type": "content_block_start",
+                                "index": content_block_index,
+                                "content_block": {"type": "text", "text": ""}
+                            }
+                            yield f"event: content_block_start\ndata: {json.dumps(start_event)}\n\n"
+                        # tool_use content_block_start 由 to_anthropic_events() 生成
+
+                    # 设置当前内容块索引，确保 to_anthropic_events() 使用正确的索引
+                    chunk.anthropic_index = content_block_index
+
                     # 实时输出内容 chunk
                     formatted = self.format_stream_chunk(chunk)
                     if formatted:
                         yield formatted
 
+                # 关闭最后一个打开的内容块（Anthropic 协议要求每个 content_block_start 必须有对应的 content_block_stop）
+                if block_open:
+                    yield f"event: content_block_stop\ndata: {{\"type\": \"content_block_stop\", \"index\": {content_block_index}}}\n\n"
+
                 # 流结束，输出缓冲的 finish chunk（带累积 usage）
                 if pending_finish_chunk:
                     if accumulated_usage:
                         pending_finish_chunk.usage = accumulated_usage
-                    formatted = self.format_stream_chunk(pending_finish_chunk)
-                    if formatted:
-                        yield formatted
+                    # Use to_anthropic_events() but filter out content_block_stop,
+                    # since the content block lifecycle (start/stop) is already
+                    # managed explicitly above. Without this filter, a duplicate
+                    # content_block_stop would be emitted (one from the explicit
+                    # close above, and another from to_anthropic_events()).
+                    events = pending_finish_chunk.to_anthropic_events()
+                    for event in events:
+                        if event.get("type") == "content_block_stop":
+                            continue
+                        event_type = event.get("type", "")
+                        yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
                 # 发送 message_stop
                 yield self.format_stream_end()

@@ -70,6 +70,15 @@ class VolcengineProvider(OpenAIProvider):
         """
         result = super().prepare_request(request)
         
+        # 火山引擎特有：根据模型是否支持思维和 reasoning_effort 设置 thinking 参数
+        # reasoning_effort 默认为 None/'none'，当不为 'none' 时启用思维
+        if request.metadata.get('support_thinking', False):
+            reasoning_effort = request.reasoning_effort or 'none'
+            if reasoning_effort != 'none':
+                result["thinking"] = {"type": "enabled"}
+            else:
+                result["thinking"] = {"type": "disabled"}
+        
         # 打印请求体到控制台
         print("\n" + "=" * 50, file=sys.stderr)
         print("[Volcengine Request Body]", file=sys.stderr)

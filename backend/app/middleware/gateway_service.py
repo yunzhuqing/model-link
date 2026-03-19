@@ -55,6 +55,11 @@ class ProviderError(GatewayServiceError):
         super().__init__(message, status_code)
 
 
+# Internal metadata keys set by the gateway service.
+# These are used for internal logic and should NOT be sent to upstream provider APIs.
+INTERNAL_METADATA_KEYS = frozenset({'support_thinking'})
+
+
 class GatewayService:
     """
     网关服务 - 中间层核心
@@ -156,6 +161,12 @@ class GatewayService:
         # 3. 调用供应商 API
         try:
             response = resolved.provider_instance.chat(request)
+
+            # 4. 根据模型能力和请求参数过滤 reasoning_content
+            if not self._should_include_reasoning(request):
+                for choice in response.choices:
+                    choice.reasoning_content = None
+
             return response
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
@@ -195,10 +206,16 @@ class GatewayService:
         # 2.5. 传递模型特性标志到请求元数据
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
 
+        # 2.6. 判断是否应包含推理内容（在生成器外部计算，避免惰性求值问题）
+        include_reasoning = self._should_include_reasoning(request)
+
         # 3. 返回惰性生成器（流式数据传输）
         def _stream():
             try:
                 for chunk in resolved.provider_instance.stream_chat(request):
+                    # 根据模型能力和请求参数过滤 reasoning_content
+                    if not include_reasoning:
+                        chunk.delta_reasoning_content = None
                     yield chunk
             except ValueError as e:
                 raise GatewayServiceError(str(e), status_code=400)
@@ -209,6 +226,26 @@ class GatewayService:
                 raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
         return _stream()
+
+    @staticmethod
+    def _should_include_reasoning(request: ChatRequest) -> bool:
+        """
+        判断是否应在响应中包含推理内容 (reasoning_content)。
+
+        仅当以下两个条件同时满足时返回 True：
+        1. 模型支持思维/推理 (support_thinking 标志在数据库中为 True)
+        2. 请求中 reasoning_effort 参数不为 'none'
+           （reasoning_effort 默认值为 'none'，即未设置时不启用推理）
+
+        Args:
+            request: 对话请求对象
+
+        Returns:
+            是否应包含推理内容
+        """
+        support_thinking = request.metadata.get('support_thinking', False)
+        reasoning_effort = request.reasoning_effort or 'none'
+        return support_thinking and reasoning_effort != 'none'
 
     def _create_provider_instance(self, db_provider: Provider) -> Optional[BaseProvider]:
         """

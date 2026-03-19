@@ -577,10 +577,12 @@ class VertexAIProvider(BaseProvider):
         if request.stop:
             gen_config["stopSequences"] = request.stop
 
-        # Enable thinking based on model's support_thinking flag from database
+        # Enable thinking based on model's support_thinking flag and reasoning_effort
+        # Only enable when model supports thinking AND reasoning_effort is not 'none'
         if request.metadata.get('support_thinking', False):
+            reasoning_effort = request.reasoning_effort or 'none'
             gen_config["thinkingConfig"] = {
-                "includeThoughts": True
+                "includeThoughts": reasoning_effort != 'none'
             }
 
         if gen_config:

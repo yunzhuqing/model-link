@@ -28,6 +28,9 @@ def create_app(config=None):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     
+    # Allow large request bodies (base64 images can be several MB)
+    app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB default
+    
     # Database connection pooling settings for long-lived connections
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         'pool_size': 10,           # Number of connections to keep in the pool

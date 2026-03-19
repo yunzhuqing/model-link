@@ -13,6 +13,10 @@ from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolT
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 
+# Internal metadata keys set by the gateway service.
+# These must be filtered out before sending requests to upstream provider APIs.
+_GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking'})
+
 
 def parse_openai_request(data: dict) -> ChatRequest:
     """
@@ -120,7 +124,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
     known_keys = {
         'model', 'messages', 'temperature', 'top_p', 'max_tokens',
         'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
-        'frequency_penalty', 'user'
+        'frequency_penalty', 'user', 'reasoning_effort'
     }
     metadata = {k: v for k, v in data.items() if k not in known_keys}
     
@@ -137,6 +141,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         presence_penalty=data.get('presence_penalty'),
         frequency_penalty=data.get('frequency_penalty'),
         user=data.get('user'),
+        reasoning_effort=data.get('reasoning_effort'),
         metadata=metadata
     )
 
@@ -271,9 +276,13 @@ class OpenAIProvider(BaseProvider):
             result["frequency_penalty"] = request.frequency_penalty
         if request.user:
             result["user"] = request.user
+        if request.reasoning_effort and request.reasoning_effort != 'none':
+            result["reasoning_effort"] = request.reasoning_effort
         
-        # 添加额外参数
-        result.update(request.metadata)
+        # 添加额外参数（排除网关内部元数据键，避免泄漏到上游供应商 API）
+        for key, value in request.metadata.items():
+            if key not in _GATEWAY_INTERNAL_KEYS:
+                result[key] = value
         
         return result
     

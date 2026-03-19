@@ -16,6 +16,7 @@ from app.abstraction.messages import Message, MessageRole
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk
+import sys
 
 
 class BailianProvider(OpenAIProvider):
@@ -123,6 +124,19 @@ class BailianProvider(OpenAIProvider):
         # 百炼特有参数从 metadata 中提取
         if "enable_search" in request.metadata:
             data["enable_search"] = request.metadata["enable_search"]
+        
+        # 百炼特有：根据模型是否支持思维和 reasoning_effort 设置 enable_thinking
+        # reasoning_effort 默认为 None/'none'，当不为 'none' 时启用思维
+        if request.metadata.get('support_thinking', False):
+            reasoning_effort = request.reasoning_effort or 'none'
+            data["enable_thinking"] = reasoning_effort != 'none'
+        
+        # 打印请求体到控制台
+        print("\n" + "=" * 50, file=sys.stderr)
+        print("[Bailian Request Body]", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+        print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
+        print("=" * 50 + "\n", file=sys.stderr)
         
         return data
     
