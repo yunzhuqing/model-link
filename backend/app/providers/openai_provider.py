@@ -590,7 +590,8 @@ class OpenAIProvider(BaseProvider):
                             chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
                             if chunk:
                                 yield chunk
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as err:
+                            print(f"Failed to parse OpenAI stream chunk: {err}. Data: {data_str}")
                             continue
         
         except RuntimeError:

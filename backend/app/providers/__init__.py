@@ -9,11 +9,14 @@ from .azure_provider import AzureProvider
 from .bailian_provider import BailianProvider
 from .volcengine_provider import VolcengineProvider
 from .vertexai_provider import VertexAIProvider
+from .moonshot_provider import MoonshotProvider
+from .glm_provider import GLMProvider
+from .minimax_provider import MiniMaxProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
     'OpenAIProvider', 'AzureProvider', 'BailianProvider', 'VolcengineProvider',
-    'VertexAIProvider'
+    'VertexAIProvider', 'MoonshotProvider', 'GLMProvider', 'MiniMaxProvider'
 ]
 
 # 供应商注册表
@@ -23,6 +26,9 @@ PROVIDER_REGISTRY = {
     'bailian': BailianProvider,
     'volcengine': VolcengineProvider,
     'vertexai': VertexAIProvider,
+    'moonshot': MoonshotProvider,
+    'glm': GLMProvider,
+    'minimax': MiniMaxProvider,
 }
 
 

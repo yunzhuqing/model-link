@@ -166,6 +166,17 @@ class AnthropicMessagesAdapter(BaseAdapter):
                 tool_type=ToolType.FUNCTION
             ))
 
+        # 处理 thinking 参数 → 映射为 reasoning_effort
+        # Anthropic 格式: {"thinking": {"type": "enabled", "budget_tokens": 10000}}
+        # 映射为 ChatRequest.reasoning_effort: "high" (enabled) / "none" (disabled)
+        reasoning_effort = None
+        thinking_config = data.get('thinking')
+        if isinstance(thinking_config, dict):
+            if thinking_config.get('type') == 'enabled':
+                reasoning_effort = 'high'
+            else:
+                reasoning_effort = 'none'
+
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),
@@ -176,6 +187,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             tools=tools,
             tool_choice=data.get('tool_choice', {}).get('type') if isinstance(data.get('tool_choice'), dict) else data.get('tool_choice'),
             stop=data.get('stop_sequences'),
+            reasoning_effort=reasoning_effort,
             metadata=data.get('metadata', {})
         )
 

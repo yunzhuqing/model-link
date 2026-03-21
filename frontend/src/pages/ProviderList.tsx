@@ -207,7 +207,7 @@ const ProviderList = () => {
                 <option value="anthropic">Anthropic</option>
                 <option value="azure">Azure OpenAI</option>
                 <option value="deepseek">DeepSeek</option>
-                <option value="kimi">Kimi</option>
+                <option value="moonshot">Moonshot (Kimi)</option>
                 <option value="glm">GLM (Zhipu AI)</option>
                 <option value="minimax">MiniMax</option>
                 <option value="bailian">Bailian (Alibaba)</option>
