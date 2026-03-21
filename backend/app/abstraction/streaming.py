@@ -132,13 +132,14 @@ class StreamChunk:
         if self.event_type == StreamEventType.USAGE:
             # message_delta with stop_reason and usage
             stop_reason = self._map_finish_reason_to_anthropic()
+            usage = self._build_anthropic_usage()
             event = {
                 "type": "message_delta",
                 "delta": {
                     "stop_reason": stop_reason,
                     "stop_sequence": None,
                 },
-                "usage": self._build_anthropic_usage(),
+                "usage": {"output_tokens": usage.get("output_tokens", 0)},
             }
             return [event]
 
@@ -203,13 +204,15 @@ class StreamChunk:
                 "index": idx,
             })
             stop_reason = self._map_finish_reason_to_anthropic()
+            usage = self._build_anthropic_usage()
             message_delta = {
                 "type": "message_delta",
                 "delta": {
                     "stop_reason": stop_reason,
                     "stop_sequence": None,
                 },
-                "usage": self._build_anthropic_usage(),
+                # Anthropic SDK's MessageDeltaUsage only expects output_tokens
+                "usage": {"output_tokens": usage.get("output_tokens", 0)},
             }
             events.append(message_delta)
 

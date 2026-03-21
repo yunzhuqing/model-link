@@ -163,9 +163,13 @@ class GatewayService:
             response = resolved.provider_instance.chat(request)
 
             # 4. 根据模型能力和请求参数过滤 reasoning_content
+            # 必须同时清除 choice 和 message 上的 reasoning_content，
+            # 否则 Anthropic 适配器的 format_response() 会通过 message 回退获取到泄漏的推理内容
             if not self._should_include_reasoning(request):
                 for choice in response.choices:
                     choice.reasoning_content = None
+                    if choice.message:
+                        choice.message.reasoning_content = None
 
             return response
         except ValueError as e:

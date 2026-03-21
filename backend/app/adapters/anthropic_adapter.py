@@ -177,6 +177,35 @@ class AnthropicMessagesAdapter(BaseAdapter):
             else:
                 reasoning_effort = 'none'
 
+        # 处理 output_config → 映射为 OpenAI 兼容的 response_format
+        # Anthropic 格式:
+        #   {"output_config": {"format": {"type": "json_schema", "name": "...", "schema": {...}}}}
+        # OpenAI 格式:
+        #   {"response_format": {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}}
+        metadata = data.get('metadata') or {}
+        output_config = data.get('output_config')
+        if isinstance(output_config, dict):
+            fmt = output_config.get('format', {})
+            fmt_type = fmt.get('type', 'text')
+            if fmt_type == 'json_schema':
+                # Anthropic puts name/schema directly on format object;
+                # OpenAI nests them under response_format.json_schema
+                openai_json_schema = {}
+                # 'name' is required by OpenAI; default to 'response' if absent
+                openai_json_schema['name'] = fmt.get('name', 'response')
+                if 'description' in fmt:
+                    openai_json_schema['description'] = fmt['description']
+                if 'schema' in fmt:
+                    openai_json_schema['schema'] = fmt['schema']
+                # OpenAI recommends strict mode for structured outputs
+                openai_json_schema.setdefault('strict', True)
+                metadata['response_format'] = {
+                    'type': 'json_schema',
+                    'json_schema': openai_json_schema
+                }
+            elif fmt_type == 'json':
+                metadata['response_format'] = {'type': 'json_object'}
+
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),
@@ -188,7 +217,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             tool_choice=data.get('tool_choice', {}).get('type') if isinstance(data.get('tool_choice'), dict) else data.get('tool_choice'),
             stop=data.get('stop_sequences'),
             reasoning_effort=reasoning_effort,
-            metadata=data.get('metadata', {})
+            metadata=metadata
         )
 
     def format_response(self, response: ChatResponse) -> dict:
@@ -247,13 +276,27 @@ class AnthropicMessagesAdapter(BaseAdapter):
             }
             stop_reason = stop_reason_map.get(fr, 'end_turn')
 
+        # Normalize ID to msg_ prefix for Anthropic format compatibility.
+        # Non-Claude providers return IDs like "chatcmpl-xxx" or "gemini-xxx",
+        # but Anthropic SDK clients expect "msg_xxx".
+        response_id = response.id
+        if not response_id.startswith('msg_'):
+            # Strip known provider prefixes and re-prefix with msg_
+            clean_id = response_id
+            for prefix in ('chatcmpl-', 'gemini-'):
+                if clean_id.startswith(prefix):
+                    clean_id = clean_id[len(prefix):]
+                    break
+            response_id = f'msg_{clean_id}'
+
         return {
-            'id': response.id,
+            'id': response_id,
             'type': 'message',
             'role': 'assistant',
             'content': content,
             'model': response.model,
             'stop_reason': stop_reason,
+            'stop_sequence': None,
             'usage': {
                 'input_tokens': response.usage.prompt_tokens,
                 'output_tokens': response.usage.completion_tokens
@@ -261,14 +304,27 @@ class AnthropicMessagesAdapter(BaseAdapter):
         }
 
     def format_stream_start(self, model_name: str) -> Optional[str]:
-        """发送 Anthropic 消息开始事件"""
+        """
+        发送 Anthropic 消息开始事件。
+
+        Anthropic SDK (pydantic) 要求 message_start 事件中的 message 对象
+        包含完整的 Message 字段，否则客户端会抛出验证错误。
+        必须包含: id, type, role, content, model, stop_reason, stop_sequence, usage
+        """
         start_data = {
             'type': 'message_start',
             'message': {
                 'id': 'msg_' + str(int(time.time())),
                 'type': 'message',
                 'role': 'assistant',
-                'model': model_name
+                'content': [],
+                'model': model_name,
+                'stop_reason': None,
+                'stop_sequence': None,
+                'usage': {
+                    'input_tokens': 0,
+                    'output_tokens': 0
+                }
             }
         }
         return f"event: message_start\ndata: {json.dumps(start_data)}\n\n"
@@ -412,6 +468,25 @@ class AnthropicMessagesAdapter(BaseAdapter):
                             continue
                         event_type = event.get("type", "")
                         yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                else:
+                    # Fallback: always emit message_delta before message_stop.
+                    # Anthropic SDK clients expect a message_delta event with
+                    # stop_reason and usage before the final message_stop.
+                    usage = {}
+                    if accumulated_usage:
+                        output_tokens = accumulated_usage.get("output_tokens",
+                                        accumulated_usage.get("completion_tokens", 0))
+                    else:
+                        output_tokens = 0
+                    fallback_delta = {
+                        "type": "message_delta",
+                        "delta": {
+                            "stop_reason": "end_turn",
+                            "stop_sequence": None,
+                        },
+                        "usage": {"output_tokens": output_tokens},
+                    }
+                    yield f"event: message_delta\ndata: {json.dumps(fallback_delta)}\n\n"
 
                 # 发送 message_stop
                 yield self.format_stream_end()
