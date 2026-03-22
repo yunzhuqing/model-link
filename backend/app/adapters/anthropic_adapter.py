@@ -12,7 +12,7 @@ from flask import Response
 from .base import BaseAdapter
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.abstraction.messages import Message, MessageRole, ContentBlock
+from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 from app.middleware.gateway_service import GatewayServiceError, ProviderError
 
@@ -44,6 +44,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
         }
         """
         messages = []
+        print(f"Parsing Anthropic Messages request: {json.dumps(data, ensure_ascii=False)}")  # Debug log
 
         # 处理 system 消息
         if 'system' in data:
@@ -59,7 +60,6 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
             if isinstance(content, list):
                 blocks = []
-                tool_results = []  # 收集 tool_result 块，稍后转为独立的 TOOL 消息
 
                 for item in content:
                     item_type = item.get('type', 'text')
@@ -102,30 +102,23 @@ class AnthropicMessagesAdapter(BaseAdapter):
                             # Extract text from content blocks
                             texts = [c.get('text', '') for c in result_content if c.get('type') == 'text']
                             result_content = ' '.join(texts)
-                        # 收集 tool_result，稍后转为独立的 TOOL 消息
-                        tool_results.append({
-                            'tool_use_id': item.get('tool_use_id', ''),
-                            'content': result_content,
-                            'is_error': item.get('is_error', False)
-                        })
+                        # 将 tool_result 作为 ContentBlock 添加到 blocks 列表中
+                        # 这样可以保持与原始 Anthropic 格式一致，tool_result 和 text 在同一消息中
+                        blocks.append(ContentBlock(
+                            type=ContentType.TOOL_RESULT,
+                            tool_call_id=item.get('tool_use_id', ''),
+                            tool_result=result_content,
+                            is_error=item.get('is_error', False)
+                        ))
 
-                # 如果有非 tool_result 的内容块，添加为原始角色的消息
+                # 添加消息（包含 text、tool_use、tool_result 等所有内容块）
                 if blocks:
                     messages.append(Message(
                         role=role,
                         content=blocks
                     ))
-
-                # 将每个 tool_result 转为独立的 TOOL 消息（OpenAI 格式要求）
-                for tr in tool_results:
-                    messages.append(Message(
-                        role=MessageRole.TOOL,
-                        content=tr['content'] or '',
-                        tool_call_id=tr['tool_use_id']
-                    ))
-
-                # 如果既没有 blocks 也没有 tool_results，跳过
-                if not blocks and not tool_results:
+                else:
+                    # 如果没有任何内容块，添加空消息
                     messages.append(Message(role=role, content=''))
             else:
                 # Handle tool_call_id for tool results

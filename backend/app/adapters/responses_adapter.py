@@ -71,67 +71,109 @@ class OpenAIResponsesAdapter(BaseAdapter):
             ))
         elif isinstance(input_data, list):
             # 数组格式输入（类似 messages）
-            for item in input_data:
-                if isinstance(item, str):
+            # First, check if this is a list of content blocks (no 'role' field in items)
+            # vs a list of message objects (has 'role' field)
+            is_content_blocks = all(
+                isinstance(item, dict) and 'role' not in item and 'type' in item
+                for item in input_data
+            )
+
+            if is_content_blocks:
+                # Treat as a single user message with multiple content blocks
+                blocks = []
+                for block in input_data:
+                    block_type = block.get('type', 'input_text')
+
+                    if block_type in ('input_text', 'text'):
+                        blocks.append(ContentBlock.from_text(block.get('text', '')))
+                    elif block_type in ('input_image', 'image'):
+                        if 'image_url' in block:
+                            url = block['image_url'].get('url', '')
+                            if url.startswith('data:'):
+                                parts = url.split(',')
+                                media_type = parts[0].replace('data:', '').replace(';base64', '')
+                                data_str = parts[1] if len(parts) > 1 else ''
+                                blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                            else:
+                                blocks.append(ContentBlock.from_image_url(url))
+                        elif 'source' in block:
+                            source = block['source']
+                            if source.get('type') == 'base64':
+                                blocks.append(ContentBlock.from_image_base64(
+                                    source.get('data', ''),
+                                    source.get('media_type', 'image/jpeg')
+                                ))
+                            elif source.get('type') == 'url':
+                                blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+
+                if blocks:
                     messages.append(Message(
                         role=MessageRole.USER,
-                        content=item
+                        content=blocks
                     ))
-                elif isinstance(item, dict):
-                    role_str = item.get('role', 'user')
-                    role = MessageRole(role_str)
-                    content = item.get('content', '')
+            else:
+                # Standard message format with role
+                for item in input_data:
+                    if isinstance(item, str):
+                        messages.append(Message(
+                            role=MessageRole.USER,
+                            content=item
+                        ))
+                    elif isinstance(item, dict):
+                        role_str = item.get('role', 'user')
+                        role = MessageRole(role_str)
+                        content = item.get('content', '')
 
-                    if isinstance(content, list):
-                        blocks = []
-                        for block in content:
-                            block_type = block.get('type', 'input_text')
+                        if isinstance(content, list):
+                            blocks = []
+                            for block in content:
+                                block_type = block.get('type', 'input_text')
 
-                            if block_type in ('input_text', 'text'):
-                                blocks.append(ContentBlock.from_text(block.get('text', '')))
-                            elif block_type in ('input_image', 'image'):
-                                # Handle image content
-                                if 'image_url' in block:
-                                    url = block['image_url'].get('url', '')
-                                    if url.startswith('data:'):
-                                        parts = url.split(',')
-                                        media_type = parts[0].replace('data:', '').replace(';base64', '')
-                                        data_str = parts[1] if len(parts) > 1 else ''
-                                        blocks.append(ContentBlock.from_image_base64(data_str, media_type))
-                                    else:
-                                        blocks.append(ContentBlock.from_image_url(url))
-                                elif 'source' in block:
-                                    source = block['source']
-                                    if source.get('type') == 'base64':
-                                        blocks.append(ContentBlock.from_image_base64(
-                                            source.get('data', ''),
-                                            source.get('media_type', 'image/jpeg')
+                                if block_type in ('input_text', 'text'):
+                                    blocks.append(ContentBlock.from_text(block.get('text', '')))
+                                elif block_type in ('input_image', 'image'):
+                                    # Handle image content
+                                    if 'image_url' in block:
+                                        url = block['image_url'].get('url', '')
+                                        if url.startswith('data:'):
+                                            parts = url.split(',')
+                                            media_type = parts[0].replace('data:', '').replace(';base64', '')
+                                            data_str = parts[1] if len(parts) > 1 else ''
+                                            blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                                        else:
+                                            blocks.append(ContentBlock.from_image_url(url))
+                                    elif 'source' in block:
+                                        source = block['source']
+                                        if source.get('type') == 'base64':
+                                            blocks.append(ContentBlock.from_image_base64(
+                                                source.get('data', ''),
+                                                source.get('media_type', 'image/jpeg')
+                                            ))
+                                        elif source.get('type') == 'url':
+                                            blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                                elif block_type == 'input_audio':
+                                    if 'input_audio' in block:
+                                        audio_data = block['input_audio']
+                                        blocks.append(ContentBlock.from_audio_base64(
+                                            audio_data.get('data', ''),
+                                            f"audio/{audio_data.get('format', 'wav')}"
                                         ))
-                                    elif source.get('type') == 'url':
-                                        blocks.append(ContentBlock.from_image_url(source.get('url', '')))
-                            elif block_type == 'input_audio':
-                                if 'input_audio' in block:
-                                    audio_data = block['input_audio']
-                                    blocks.append(ContentBlock.from_audio_base64(
-                                        audio_data.get('data', ''),
-                                        f"audio/{audio_data.get('format', 'wav')}"
-                                    ))
-                            elif block_type == 'input_file':
-                                if 'file_url' in block:
-                                    blocks.append(ContentBlock.from_file_url(block['file_url'].get('url', '')))
+                                elif block_type == 'input_file':
+                                    if 'file_url' in block:
+                                        blocks.append(ContentBlock.from_file_url(block['file_url'].get('url', '')))
 
-                        content = blocks if blocks else content
-                    
-                    # Handle tool result messages
-                    tool_call_id = item.get('call_id') or item.get('tool_call_id')
-                    name = item.get('name')
+                            content = blocks if blocks else content
+                        
+                        # Handle tool result messages
+                        tool_call_id = item.get('call_id') or item.get('tool_call_id')
+                        name = item.get('name')
 
-                    messages.append(Message(
-                        role=role,
-                        content=content,
-                        name=name,
-                        tool_call_id=tool_call_id
-                    ))
+                        messages.append(Message(
+                            role=role,
+                            content=content,
+                            name=name,
+                            tool_call_id=tool_call_id
+                        ))
 
         # 处理工具定义
         tools = []

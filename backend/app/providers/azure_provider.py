@@ -97,6 +97,22 @@ class AzureProvider(OpenAIProvider):
         """获取 API 版本"""
         return self.config.extra_config.get('api_version', self.DEFAULT_API_VERSION)
     
+    # Models that must use the Responses API (/v1/responses) instead of Chat Completions
+    RESPONSES_API_MODELS = {
+        "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4",
+        "gpt-5.3-chat", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2",
+        "gpt-5.2-chat", "gpt-5.1-codex-max", "gpt-5.1", "gpt-5.1-chat",
+        "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-pro", "gpt-5-codex",
+        "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat", "gpt-4o",
+        "gpt-4o-mini", "computer-use-preview", "gpt-4.1", "gpt-4.1-nano",
+        "gpt-4.1-mini", "gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5",
+        "o1", "o3-mini", "o3", "o4-mini"
+    }
+
+    def _uses_responses_api(self, model: str) -> bool:
+        """Check if the given model requires the Responses API."""
+        return model in self.RESPONSES_API_MODELS
+
     def get_chat_url(self, deployment_name: str) -> str:
         """
         获取聊天 API URL
@@ -109,21 +125,240 @@ class AzureProvider(OpenAIProvider):
         """
         base_url = self.config.base_url.rstrip('/')
         
-        responses_api_models = {
-            "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4",
-            "gpt-5.3-chat", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2",
-            "gpt-5.2-chat", "gpt-5.1-codex-max", "gpt-5.1", "gpt-5.1-chat",
-            "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-pro", "gpt-5-codex",
-            "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat", "gpt-4o",
-            "gpt-4o-mini", "computer-use-preview", "gpt-4.1", "gpt-4.1-nano",
-            "gpt-4.1-mini", "gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5",
-            "o1", "o3-mini", "o3", "o4-mini"
-        }
-        
-        if deployment_name in responses_api_models:
-            return f"{base_url}/v1/chat/completions"
-            
+        if self._uses_responses_api(deployment_name):
+            return f"{base_url}/v1/responses?api-version={self.api_version}"
+
         return f"{base_url}/openai/deployments/{deployment_name}/chat/completions?api-version={self.api_version}"
+
+    def _prepare_responses_api_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """
+        Convert a ChatRequest to the OpenAI Responses API request body format.
+
+        Responses API differences from Chat Completions:
+        - Uses `input` instead of `messages`
+        - Uses `instructions` instead of system message
+        - Uses `max_output_tokens` instead of `max_tokens`
+        """
+        messages = request.messages
+
+        # Separate system messages (become `instructions`) from the rest
+        system_parts = []
+        non_system_messages = []
+        for msg in messages:
+            if msg.role == MessageRole.SYSTEM:
+                if isinstance(msg.content, str):
+                    system_parts.append(msg.content)
+                elif isinstance(msg.content, list):
+                    system_parts.append(" ".join(b.text or "" for b in msg.content if hasattr(b, "text")))
+            else:
+                non_system_messages.append(msg)
+
+        # Build `input` array
+        input_items = []
+        for msg in non_system_messages:
+            item: Dict[str, Any] = {"role": msg.role.value}
+
+            if isinstance(msg.content, str):
+                item["content"] = [{"type": "input_text", "text": msg.content}]
+            elif isinstance(msg.content, list):
+                content_parts = []
+                for block in msg.content:
+                    if block.type == ContentType.TEXT:
+                        content_parts.append({"type": "input_text", "text": block.text or ""})
+                    elif block.type == ContentType.IMAGE_URL:
+                        content_parts.append({
+                            "type": "input_image",
+                            "image_url": {"url": block.url}
+                        })
+                    elif block.type == ContentType.IMAGE_BASE64:
+                        content_parts.append({
+                            "type": "input_image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": block.media_type or "image/jpeg",
+                                "data": block.data
+                            }
+                        })
+                    elif block.type == ContentType.TOOL_CALL:
+                        # Tool calls go as top-level function_call items, handled separately
+                        pass
+                if content_parts:
+                    item["content"] = content_parts
+            else:
+                item["content"] = []
+
+            # Handle tool call results (tool role)
+            if msg.tool_call_id:
+                item["call_id"] = msg.tool_call_id
+
+            input_items.append(item)
+
+        result: Dict[str, Any] = {
+            "model": request.model,
+            "input": input_items,
+        }
+
+        if system_parts:
+            result["instructions"] = "\n".join(system_parts)
+
+        if request.temperature is not None:
+            result["temperature"] = request.temperature
+        if request.top_p is not None:
+            result["top_p"] = request.top_p
+        if request.max_tokens is not None:
+            result["max_output_tokens"] = request.max_tokens
+        if request.tools:
+            result["tools"] = [self._tool_to_openai(t) for t in request.tools]
+        if request.tool_choice:
+            result["tool_choice"] = request.tool_choice
+        if request.stop:
+            result["stop"] = request.stop
+        if request.presence_penalty is not None:
+            result["presence_penalty"] = request.presence_penalty
+        if request.frequency_penalty is not None:
+            result["frequency_penalty"] = request.frequency_penalty
+        if request.user:
+            result["user"] = request.user
+
+        return result
+
+    def _parse_responses_api_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
+        """
+        Parse an OpenAI Responses API response body into a ChatResponse.
+        """
+        text_parts = []
+        tool_calls = []
+
+        for item in response_data.get("output", []):
+            item_type = item.get("type")
+            if item_type == "message":
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text":
+                        text_parts.append(part.get("text", ""))
+            elif item_type == "function_call":
+                from app.abstraction.tools import ToolCall as TC
+                args_str = item.get("arguments", "{}")
+                try:
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append(ToolCall(
+                    id=item.get("call_id") or item.get("id", ""),
+                    name=item.get("name", ""),
+                    arguments=args,
+                    call_type="function"
+                ))
+
+        full_text = "".join(text_parts)
+        message = Message(role=MessageRole.ASSISTANT, content=full_text)
+
+        finish_reason = FinishReason.STOP
+        status = response_data.get("status", "completed")
+        if status == "incomplete":
+            finish_reason = FinishReason.LENGTH
+        elif tool_calls:
+            finish_reason = FinishReason.TOOL_CALLS
+
+        choice = ChatChoice(
+            index=0,
+            message=message,
+            finish_reason=finish_reason,
+            tool_calls=tool_calls
+        )
+
+        usage_data = response_data.get("usage", {})
+        usage = UsageInfo(
+            prompt_tokens=usage_data.get("input_tokens", 0),
+            completion_tokens=usage_data.get("output_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0)
+        )
+
+        resp_id = response_data.get("id", f"resp_{uuid.uuid4().hex[:8]}")
+        # Normalise to chatcmpl- prefix for internal consistency
+        if resp_id.startswith("resp_"):
+            resp_id = resp_id.replace("resp_", "chatcmpl-", 1)
+
+        return ChatResponse(
+            id=resp_id,
+            model=model,
+            choices=[choice],
+            usage=usage,
+            created=response_data.get("created_at", int(time.time())),
+            provider=self.PROVIDER_TYPE
+        )
+
+    def _parse_responses_api_stream(
+        self, response, response_id: str, model: str
+    ) -> Generator[StreamChunk, None, None]:
+        """
+        Parse Server-Sent Events from the Responses API streaming endpoint
+        into StreamChunk objects.
+        """
+        for line in response.iter_lines():
+            if not line:
+                continue
+
+            if line.startswith("event:"):
+                # SSE event name line — skip, we read the data on the next line
+                continue
+
+            if line.startswith("data:"):
+                data_str = line[5:].strip()
+
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    event_data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                event_type = event_data.get("type", "")
+
+                if event_type == "response.output_text.delta":
+                    delta = event_data.get("delta", "")
+                    yield StreamChunk(
+                        id=response_id,
+                        model=model,
+                        delta_content=delta,
+                        created=int(time.time())
+                    )
+
+                elif event_type == "response.function_call_arguments.delta":
+                    delta = event_data.get("delta", "")
+                    index = event_data.get("output_index", 0)
+                    yield StreamChunk(
+                        id=response_id,
+                        model=model,
+                        tool_calls=[{
+                            "index": index,
+                            "function": {"arguments": delta}
+                        }],
+                        created=int(time.time())
+                    )
+
+                elif event_type == "response.completed":
+                    resp = event_data.get("response", {})
+                    usage_data = resp.get("usage", {})
+                    usage = {
+                        "prompt_tokens": usage_data.get("input_tokens", 0),
+                        "completion_tokens": usage_data.get("output_tokens", 0),
+                        "total_tokens": usage_data.get("total_tokens", 0),
+                    } if usage_data else None
+                    yield StreamChunk(
+                        id=response_id,
+                        model=model,
+                        finish_reason=FinishReason.STOP,
+                        usage=usage,
+                        created=int(time.time())
+                    )
+                    break
+
+                elif event_type == "error":
+                    error_info = event_data.get("error", {})
+                    raise RuntimeError(
+                        f"Azure Responses API error: {json.dumps(error_info, ensure_ascii=False)}"
+                    )
     
     def supports_model(self, model: str) -> bool:
         """检查是否支持某个模型（部署名称）"""
@@ -143,95 +378,121 @@ class AzureProvider(OpenAIProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
-        
-        request_data = self.prepare_request(request)
-        request_data["stream"] = False
-        
-        # 使用模型名称作为部署名称
+
         deployment_name = request.model
         url = self.get_chat_url(deployment_name)
-        
+
+        if self._uses_responses_api(deployment_name):
+            # Build Responses API request body
+            request_data = self._prepare_responses_api_request(request)
+        else:
+            request_data = self.prepare_request(request)
+            request_data["stream"] = False
+
         # Debug: print request details
         print(f"[Azure Debug] URL: {url}")
         print(f"[Azure Debug] Headers: {self.get_headers()}")
         print(f"[Azure Debug] Request Data: {json.dumps(request_data, ensure_ascii=False, indent=2)}")
-        
+
         try:
             response = self.client.post(url, json=request_data)
             print(f"[Azure Debug] Response Status: {response.status_code}")
-            
+
             if response.status_code >= 400:
-                # Try to parse error response
                 try:
                     error_data = response.json()
                     print(f"[Azure Debug] Error Response: {json.dumps(error_data, ensure_ascii=False, indent=2)}")
                     raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                 except json.JSONDecodeError:
                     raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
-            
+
             response.raise_for_status()
-            
             response_data = response.json()
+
+            if self._uses_responses_api(deployment_name):
+                return self._parse_responses_api_response(response_data, request.model)
             return self.parse_response(response_data, request.model)
-        
+
         except RuntimeError:
             raise
         except Exception as e:
             print(f"[Azure Debug] Error: {str(e)}")
             raise RuntimeError(f"Azure OpenAI API error: {str(e)}")
-    
+
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
-        
-        request_data = self.prepare_request(request)
-        request_data["stream"] = True
-        
-        # 使用模型名称作为部署名称
+
         deployment_name = request.model
         url = self.get_chat_url(deployment_name)
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-        
-        try:
-            with self.client.stream("POST", url, json=request_data) as response:
-                # Check for error status before streaming
-                if response.status_code >= 400:
-                    # Read the error response and raise with details
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode('utf-8')
-                    print(f"[Azure Debug] Stream Error Response: {error_text}")
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                    except json.JSONDecodeError:
-                        raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
-                
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        
-                        if data_str == "[DONE]":
-                            break
-                        
-                        try:
-                            chunk_data = json.loads(data_str)
-                            chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+
+        if self._uses_responses_api(deployment_name):
+            request_data = self._prepare_responses_api_request(request)
+            request_data["stream"] = True
+
+            try:
+                with self.client.stream("POST", url, json=request_data) as response:
+                    if response.status_code >= 400:
+                        error_text = ""
+                        for chunk in response.iter_bytes():
                             if chunk:
-                                yield chunk
+                                error_text += chunk.decode('utf-8')
+                        print(f"[Azure Debug] Stream Error Response: {error_text}")
+                        try:
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                         except json.JSONDecodeError:
+                            raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
+
+                    yield from self._parse_responses_api_stream(response, response_id, request.model)
+
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"Azure Responses API streaming error: {str(e)}")
+        else:
+            request_data = self.prepare_request(request)
+            request_data["stream"] = True
+
+            try:
+                with self.client.stream("POST", url, json=request_data) as response:
+                    if response.status_code >= 400:
+                        error_text = ""
+                        for chunk in response.iter_bytes():
+                            if chunk:
+                                error_text += chunk.decode('utf-8')
+                        print(f"[Azure Debug] Stream Error Response: {error_text}")
+                        try:
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                        except json.JSONDecodeError:
+                            raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
+
+                    for line in response.iter_lines():
+                        if not line:
                             continue
-        
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"Azure OpenAI streaming API error: {str(e)}")
+
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+
+                            if data_str == "[DONE]":
+                                break
+
+                            try:
+                                chunk_data = json.loads(data_str)
+                                chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+                                if chunk:
+                                    yield chunk
+                            except json.JSONDecodeError:
+                                continue
+
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"Azure OpenAI streaming API error: {str(e)}")
     
     def list_models(self) -> List[Dict[str, Any]]:
         """列出支持的模型（Azure 需要用户自己配置部署）"""

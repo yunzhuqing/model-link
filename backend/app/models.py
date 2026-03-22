@@ -152,6 +152,7 @@ class Provider(db.Model):
     api_key = db.Column(db.Text)
     base_url = db.Column(db.String(500))
     group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
+    extra_config = db.Column(db.JSON, nullable=True)  # Provider-specific extra config (e.g. api_version for Azure)
 
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
     group = db.relationship("Group", back_populates="providers")
@@ -165,6 +166,7 @@ class Provider(db.Model):
             'api_key': '***' if self.api_key else None,  # Don't expose API key
             'base_url': self.base_url,
             'group_id': self.group_id,
+            'extra_config': self.extra_config or {},
             'models': [m.to_dict() for m in self.models]
         }
 
@@ -175,7 +177,8 @@ class Provider(db.Model):
             'type': self.type,
             'description': self.description,
             'base_url': self.base_url,
-            'group_id': self.group_id
+            'group_id': self.group_id,
+            'extra_config': self.extra_config or {}
         }
 
 

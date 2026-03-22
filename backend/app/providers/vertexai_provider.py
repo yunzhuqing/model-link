@@ -461,39 +461,8 @@ class VertexAIProvider(BaseProvider):
 
     def _message_to_anthropic(self, message: Message) -> Dict[str, Any]:
         """将 Message 转换为 Anthropic 格式"""
-        # Handle TOOL role - Anthropic requires tool_result in a user message
-        if message.role == MessageRole.TOOL:
-            # Convert tool result to user message with tool_result content blocks
-            content_blocks = []
-            if isinstance(message.content, list):
-                for block in message.content:
-                    if block.type == ContentType.TOOL_RESULT:
-                        content_blocks.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.tool_call_id or message.tool_call_id or "",
-                            "content": block.tool_result or "",
-                            "is_error": block.is_error
-                        })
-                    elif block.type == ContentType.TEXT:
-                        # Text content in tool message - treat as tool result
-                        content_blocks.append({
-                            "type": "tool_result",
-                            "tool_use_id": message.tool_call_id or "",
-                            "content": block.text or ""
-                        })
-            elif isinstance(message.content, str):
-                content_blocks.append({
-                    "type": "tool_result",
-                    "tool_use_id": message.tool_call_id or "",
-                    "content": message.content
-                })
-            
-            return {
-                "role": "user",
-                "content": content_blocks if content_blocks else [{"type": "tool_result", "tool_use_id": message.tool_call_id or "", "content": ""}]
-            }
-        
         result = {"role": message.role.value}
+        
         if isinstance(message.content, str):
             result["content"] = message.content
         elif isinstance(message.content, list):
