@@ -38,7 +38,7 @@ class AzureProvider(OpenAIProvider):
     ]
     
     # Azure API 版本
-    DEFAULT_API_VERSION = "2025-01-01-preview"
+    DEFAULT_API_VERSION = "2025-04-01-preview"
     
     # Azure OpenAI 支持的模型列表（部署名称由用户自定义）
     SUPPORTED_MODELS = {
@@ -113,6 +113,27 @@ class AzureProvider(OpenAIProvider):
         """Check if the given model requires the Responses API."""
         return model in self.RESPONSES_API_MODELS
 
+    def _tool_to_responses_api(self, tool: ToolDefinition) -> Dict[str, Any]:
+        """
+        Convert a ToolDefinition to the Responses API flat tool format.
+
+        Responses API format (flat, no 'function' wrapper):
+        {
+            "type": "function",
+            "name": "...",
+            "description": "...",
+            "parameters": {...}
+        }
+
+        This differs from Chat Completions format which wraps in a 'function' key.
+        """
+        return {
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.get_parameters_schema()
+        }
+
     def get_chat_url(self, deployment_name: str) -> str:
         """
         获取聊天 API URL
@@ -126,7 +147,7 @@ class AzureProvider(OpenAIProvider):
         base_url = self.config.base_url.rstrip('/')
         
         if self._uses_responses_api(deployment_name):
-            return f"{base_url}/v1/responses?api-version={self.api_version}"
+            return f"{base_url}/openai/responses?api-version={self.api_version}"
 
         return f"{base_url}/openai/deployments/{deployment_name}/chat/completions?api-version={self.api_version}"
 
@@ -156,6 +177,37 @@ class AzureProvider(OpenAIProvider):
         # Build `input` array
         input_items = []
         for msg in non_system_messages:
+            if isinstance(msg.content, list):
+                # Check for tool_call blocks → becomes function_call top-level item
+                tool_call_blocks = [b for b in msg.content if b.type == ContentType.TOOL_CALL]
+                # Check for tool_result blocks → becomes function_call_output top-level item
+                tool_result_blocks = [b for b in msg.content if b.type == ContentType.TOOL_RESULT]
+
+                if tool_call_blocks:
+                    # Emit each tool call as a separate function_call input item
+                    for block in tool_call_blocks:
+                        args = block.tool_arguments or {}
+                        args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+                        input_items.append({
+                            "type": "function_call",
+                            "call_id": block.tool_call_id or "",
+                            "name": block.tool_name or "",
+                            "arguments": args_str,
+                            "status": "completed"
+                        })
+                    continue
+
+                if tool_result_blocks:
+                    # Emit each tool result as a function_call_output input item
+                    for block in tool_result_blocks:
+                        input_items.append({
+                            "type": "function_call_output",
+                            "call_id": block.tool_call_id or "",
+                            "output": block.tool_result or ""
+                        })
+                    continue
+
+            # Regular message item
             item: Dict[str, Any] = {"role": msg.role.value}
 
             if isinstance(msg.content, str):
@@ -166,9 +218,10 @@ class AzureProvider(OpenAIProvider):
                     if block.type == ContentType.TEXT:
                         content_parts.append({"type": "input_text", "text": block.text or ""})
                     elif block.type == ContentType.IMAGE_URL:
+                        # Azure Responses API uses image_url as a plain string
                         content_parts.append({
                             "type": "input_image",
-                            "image_url": {"url": block.url}
+                            "image_url": block.url
                         })
                     elif block.type == ContentType.IMAGE_BASE64:
                         content_parts.append({
@@ -179,9 +232,6 @@ class AzureProvider(OpenAIProvider):
                                 "data": block.data
                             }
                         })
-                    elif block.type == ContentType.TOOL_CALL:
-                        # Tool calls go as top-level function_call items, handled separately
-                        pass
                 if content_parts:
                     item["content"] = content_parts
             else:
@@ -208,7 +258,7 @@ class AzureProvider(OpenAIProvider):
         if request.max_tokens is not None:
             result["max_output_tokens"] = request.max_tokens
         if request.tools:
-            result["tools"] = [self._tool_to_openai(t) for t in request.tools]
+            result["tools"] = [self._tool_to_responses_api(t) for t in request.tools]
         if request.tool_choice:
             result["tool_choice"] = request.tool_choice
         if request.stop:
@@ -220,6 +270,17 @@ class AzureProvider(OpenAIProvider):
         if request.user:
             result["user"] = request.user
 
+        # Add reasoning parameter for models that support it
+        if request.reasoning_effort:
+            # Use full reasoning config from metadata if available (includes summary field)
+            reasoning_config = request.metadata.get('reasoning') if request.metadata else None
+            if reasoning_config and isinstance(reasoning_config, dict):
+                result["reasoning"] = reasoning_config
+            else:
+                result["reasoning"] = {
+                    "effort": request.reasoning_effort
+                }
+
         return result
 
     def _parse_responses_api_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
@@ -228,10 +289,19 @@ class AzureProvider(OpenAIProvider):
         """
         text_parts = []
         tool_calls = []
+        reasoning_summary_parts = []
+
+        print(f"[Azure Debug] Response output items: {[item.get('type') for item in response_data.get('output', [])]}")
 
         for item in response_data.get("output", []):
             item_type = item.get("type")
-            if item_type == "message":
+            if item_type == "reasoning":
+                # Extract summary_text from reasoning output item
+                print(f"[Azure Debug] Reasoning item found: {json.dumps(item, ensure_ascii=False)}")
+                for summary_item in item.get("summary", []):
+                    if summary_item.get("type") == "summary_text":
+                        reasoning_summary_parts.append(summary_item.get("text", ""))
+            elif item_type == "message":
                 for part in item.get("content", []):
                     if part.get("type") == "output_text":
                         text_parts.append(part.get("text", ""))
@@ -259,18 +329,25 @@ class AzureProvider(OpenAIProvider):
         elif tool_calls:
             finish_reason = FinishReason.TOOL_CALLS
 
+        reasoning_content = "\n".join(reasoning_summary_parts) if reasoning_summary_parts else None
+
         choice = ChatChoice(
             index=0,
             message=message,
             finish_reason=finish_reason,
-            tool_calls=tool_calls
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content
         )
 
         usage_data = response_data.get("usage", {})
+        input_token_details = usage_data.get("input_tokens_details", {})
+        output_token_details = usage_data.get("output_tokens_details", {})
         usage = UsageInfo(
             prompt_tokens=usage_data.get("input_tokens", 0),
             completion_tokens=usage_data.get("output_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0)
+            total_tokens=usage_data.get("total_tokens", 0),
+            cached_tokens=input_token_details.get("cached_tokens", 0),
+            reasoning_tokens=output_token_details.get("reasoning_tokens", 0),
         )
 
         resp_id = response_data.get("id", f"resp_{uuid.uuid4().hex[:8]}")

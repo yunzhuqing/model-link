@@ -150,15 +150,32 @@ class Message:
         elif isinstance(item, dict):
             # Convert dict to ContentBlock
             content_type_str = item.get('type', 'text')
+            # Normalize Responses API type names to internal ContentType values
+            _type_map = {
+                'input_text': 'text',
+                'input_image': 'image_url',
+                'input_audio': 'audio_url',
+                'input_file': 'file_url',
+            }
+            content_type_str = _type_map.get(content_type_str, content_type_str)
             try:
                 content_type = ContentType(content_type_str)
             except ValueError:
                 content_type = ContentType.TEXT
             
+            # Extract url: may be in 'url', or 'image_url' (string or dict)
+            url = item.get('url')
+            if not url:
+                image_url_val = item.get('image_url')
+                if isinstance(image_url_val, str):
+                    url = image_url_val
+                elif isinstance(image_url_val, dict):
+                    url = image_url_val.get('url')
+
             return ContentBlock(
                 type=content_type,
                 text=item.get('text'),
-                url=item.get('url') or item.get('image_url', {}).get('url'),
+                url=url,
                 media_type=item.get('media_type'),
                 data=item.get('data'),
                 tool_call_id=item.get('tool_call_id') or item.get('id'),

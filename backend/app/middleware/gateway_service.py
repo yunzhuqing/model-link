@@ -236,10 +236,11 @@ class GatewayService:
         """
         判断是否应在响应中包含推理内容 (reasoning_content)。
 
-        仅当以下两个条件同时满足时返回 True：
+        返回 True 的条件（满足其一即可）：
         1. 模型支持思维/推理 (support_thinking 标志在数据库中为 True)
-        2. 请求中 reasoning_effort 参数不为 'none'
-           （reasoning_effort 默认值为 'none'，即未设置时不启用推理）
+           且请求中 reasoning_effort 参数不为 'none'
+        2. 请求中明确设置了 reasoning_effort（非 None 且非 'none'），
+           例如通过 Responses API 的 reasoning.effort 字段传入
 
         Args:
             request: 对话请求对象
@@ -247,9 +248,16 @@ class GatewayService:
         Returns:
             是否应包含推理内容
         """
-        support_thinking = request.metadata.get('support_thinking', False)
         reasoning_effort = request.reasoning_effort or 'none'
-        return support_thinking and reasoning_effort != 'none'
+
+        # If reasoning_effort is explicitly set in the request (e.g. via Responses API),
+        # always include reasoning content regardless of DB support_thinking flag
+        if reasoning_effort != 'none':
+            return True
+
+        # Fall back to DB-based support_thinking flag
+        support_thinking = request.metadata.get('support_thinking', False)
+        return bool(support_thinking)
 
     def _create_provider_instance(self, db_provider: Provider) -> Optional[BaseProvider]:
         """
@@ -274,6 +282,7 @@ class GatewayService:
             api_key=db_provider.api_key or "",
             base_url=db_provider.base_url,
             timeout=60,
+            extra_config=db_provider.extra_config or {},
         )
 
         try:

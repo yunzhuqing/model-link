@@ -51,7 +51,8 @@ def create_provider(current_user):
         description=data.get('description'),
         api_key=data.get('api_key'),
         base_url=data.get('base_url'),
-        group_id=group_id
+        group_id=group_id,
+        extra_config=data.get('extra_config')
     )
     db.session.add(provider)
     db.session.commit()
@@ -89,6 +90,8 @@ def update_provider(current_user, provider_id):
         provider.api_key = data['api_key']
     if 'base_url' in data:
         provider.base_url = data['base_url']
+    if 'extra_config' in data:
+        provider.extra_config = data['extra_config']
     
     db.session.commit()
     db.session.refresh(provider)

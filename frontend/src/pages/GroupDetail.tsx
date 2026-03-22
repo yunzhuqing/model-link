@@ -63,6 +63,7 @@ interface Provider {
   base_url: string;
   api_key: string;
   group_id: number;
+  extra_config: Record<string, any>;
   models: Model[];
 }
 
@@ -82,7 +83,7 @@ export default function GroupDetail() {
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [newProvider, setNewProvider] = useState({ 
-    name: '', type: 'openai', description: '', base_url: '', api_key: '' 
+    name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {} as Record<string, any>
   });
   
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
@@ -148,7 +149,7 @@ export default function GroupDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
       setShowAddProvider(false);
-      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '' });
+      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {} });
     },
   });
 
@@ -931,6 +932,8 @@ export default function GroupDetail() {
                   placeholder={
                     (editingProvider?.type || newProvider.type) === 'vertexai'
                       ? 'https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}'
+                      : (editingProvider?.type || newProvider.type) === 'azure'
+                      ? 'https://your-resource.openai.azure.com'
                       : 'https://api.example.com'
                   }
                   className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
@@ -943,6 +946,11 @@ export default function GroupDetail() {
                 {(editingProvider?.type || newProvider.type) === 'vertexai' && (
                   <p className="text-xs text-slate-400 mt-1">
                     Format: https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/REGION
+                  </p>
+                )}
+                {(editingProvider?.type || newProvider.type) === 'azure' && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Format: https://&#123;resource-name&#125;.openai.azure.com
                   </p>
                 )}
               </div>
@@ -987,6 +995,72 @@ export default function GroupDetail() {
                 />
               </div>
             </div>
+
+            {/* Azure-specific fields */}
+            {(editingProvider?.type || newProvider.type) === 'azure' && (
+              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                <h3 className="text-sm font-semibold text-blue-800 mb-3">Azure OpenAI Configuration</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">API Version</label>
+                    <input
+                      placeholder="2025-01-01-preview"
+                      className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                      value={editingProvider 
+                        ? (editingProvider.extra_config?.api_version || '') 
+                        : (newProvider.extra_config?.api_version || '')
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (editingProvider) {
+                          setEditingProvider({ 
+                            ...editingProvider, 
+                            extra_config: { ...editingProvider.extra_config, api_version: val } 
+                          });
+                        } else {
+                          setNewProvider({ 
+                            ...newProvider, 
+                            extra_config: { ...newProvider.extra_config, api_version: val } 
+                          });
+                        }
+                      }}
+                    />
+                    <p className="text-xs text-slate-400 mt-1">
+                      Default: 2025-01-01-preview. See Azure docs for available versions.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">Region</label>
+                    <input
+                      placeholder="eastus, westeurope, etc."
+                      className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                      value={editingProvider 
+                        ? (editingProvider.extra_config?.region || '') 
+                        : (newProvider.extra_config?.region || '')
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (editingProvider) {
+                          setEditingProvider({ 
+                            ...editingProvider, 
+                            extra_config: { ...editingProvider.extra_config, region: val } 
+                          });
+                        } else {
+                          setNewProvider({ 
+                            ...newProvider, 
+                            extra_config: { ...newProvider.extra_config, region: val } 
+                          });
+                        }
+                      }}
+                    />
+                    <p className="text-xs text-slate-400 mt-1">
+                      The Azure region where your resource is deployed (e.g., eastus, westeurope).
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex space-x-3 mt-4">
               <button
                 onClick={() => {

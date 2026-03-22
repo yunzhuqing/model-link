@@ -70,15 +70,24 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 content=input_data
             ))
         elif isinstance(input_data, list):
-            # 数组格式输入（类似 messages）
-            # First, check if this is a list of content blocks (no 'role' field in items)
-            # vs a list of message objects (has 'role' field)
-            is_content_blocks = all(
-                isinstance(item, dict) and 'role' not in item and 'type' in item
+            # 数组格式输入
+            # Items can be:
+            # 1. Message objects with 'role' field
+            # 2. function_call items (assistant tool calls)
+            # 3. function_call_output items (tool results)
+            # 4. Plain content blocks (no 'role', has 'type' like input_text/input_image)
+
+            # Check if ALL items are plain content blocks (no role, no special types)
+            SPECIAL_TYPES = {'function_call', 'function_call_output'}
+            is_pure_content_blocks = all(
+                isinstance(item, dict)
+                and 'role' not in item
+                and 'type' in item
+                and item.get('type') not in SPECIAL_TYPES
                 for item in input_data
             )
 
-            if is_content_blocks:
+            if is_pure_content_blocks:
                 # Treat as a single user message with multiple content blocks
                 blocks = []
                 for block in input_data:
@@ -88,7 +97,9 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         blocks.append(ContentBlock.from_text(block.get('text', '')))
                     elif block_type in ('input_image', 'image'):
                         if 'image_url' in block:
-                            url = block['image_url'].get('url', '')
+                            # image_url can be a string or a dict with 'url' key
+                            image_url_val = block['image_url']
+                            url = image_url_val if isinstance(image_url_val, str) else image_url_val.get('url', '')
                             if url.startswith('data:'):
                                 parts = url.split(',')
                                 media_type = parts[0].replace('data:', '').replace(';base64', '')
@@ -112,7 +123,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         content=blocks
                     ))
             else:
-                # Standard message format with role
+                # Mixed format: messages, function_call, function_call_output items
                 for item in input_data:
                     if isinstance(item, str):
                         messages.append(Message(
@@ -120,60 +131,91 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             content=item
                         ))
                     elif isinstance(item, dict):
-                        role_str = item.get('role', 'user')
-                        role = MessageRole(role_str)
-                        content = item.get('content', '')
+                        item_type = item.get('type', '')
 
-                        if isinstance(content, list):
-                            blocks = []
-                            for block in content:
-                                block_type = block.get('type', 'input_text')
+                        if item_type == 'function_call':
+                            # Assistant tool call item — convert to assistant message with tool_call block
+                            args_str = item.get('arguments', '{}')
+                            try:
+                                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                            except (json.JSONDecodeError, TypeError):
+                                args = {}
+                            call_id = item.get('call_id') or item.get('id', '')
+                            tool_name = item.get('name', '')
+                            block = ContentBlock.from_tool_call(call_id, tool_name, args)
+                            messages.append(Message(
+                                role=MessageRole.ASSISTANT,
+                                content=[block]
+                            ))
 
-                                if block_type in ('input_text', 'text'):
-                                    blocks.append(ContentBlock.from_text(block.get('text', '')))
-                                elif block_type in ('input_image', 'image'):
-                                    # Handle image content
-                                    if 'image_url' in block:
-                                        url = block['image_url'].get('url', '')
-                                        if url.startswith('data:'):
-                                            parts = url.split(',')
-                                            media_type = parts[0].replace('data:', '').replace(';base64', '')
-                                            data_str = parts[1] if len(parts) > 1 else ''
-                                            blocks.append(ContentBlock.from_image_base64(data_str, media_type))
-                                        else:
-                                            blocks.append(ContentBlock.from_image_url(url))
-                                    elif 'source' in block:
-                                        source = block['source']
-                                        if source.get('type') == 'base64':
-                                            blocks.append(ContentBlock.from_image_base64(
-                                                source.get('data', ''),
-                                                source.get('media_type', 'image/jpeg')
+                        elif item_type == 'function_call_output':
+                            # Tool result item — convert to tool message
+                            call_id = item.get('call_id', '')
+                            output = item.get('output', '')
+                            block = ContentBlock.from_tool_result(call_id, str(output))
+                            messages.append(Message(
+                                role=MessageRole.TOOL,
+                                content=[block],
+                                tool_call_id=call_id
+                            ))
+
+                        elif 'role' in item:
+                            # Standard message object with role
+                            role_str = item.get('role', 'user')
+                            role = MessageRole(role_str)
+                            content = item.get('content', '')
+
+                            if isinstance(content, list):
+                                blocks = []
+                                for block in content:
+                                    block_type = block.get('type', 'input_text')
+
+                                    if block_type in ('input_text', 'text'):
+                                        blocks.append(ContentBlock.from_text(block.get('text', '')))
+                                    elif block_type in ('input_image', 'image'):
+                                        # Handle image content
+                                        if 'image_url' in block:
+                                            # image_url can be a string or a dict with 'url' key
+                                            image_url_val = block['image_url']
+                                            url = image_url_val if isinstance(image_url_val, str) else image_url_val.get('url', '')
+                                            if url.startswith('data:'):
+                                                parts = url.split(',')
+                                                media_type = parts[0].replace('data:', '').replace(';base64', '')
+                                                data_str = parts[1] if len(parts) > 1 else ''
+                                                blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                                            else:
+                                                blocks.append(ContentBlock.from_image_url(url))
+                                        elif 'source' in block:
+                                            source = block['source']
+                                            if source.get('type') == 'base64':
+                                                blocks.append(ContentBlock.from_image_base64(
+                                                    source.get('data', ''),
+                                                    source.get('media_type', 'image/jpeg')
+                                                ))
+                                            elif source.get('type') == 'url':
+                                                blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                                    elif block_type == 'input_audio':
+                                        if 'input_audio' in block:
+                                            audio_data = block['input_audio']
+                                            blocks.append(ContentBlock.from_audio_base64(
+                                                audio_data.get('data', ''),
+                                                f"audio/{audio_data.get('format', 'wav')}"
                                             ))
-                                        elif source.get('type') == 'url':
-                                            blocks.append(ContentBlock.from_image_url(source.get('url', '')))
-                                elif block_type == 'input_audio':
-                                    if 'input_audio' in block:
-                                        audio_data = block['input_audio']
-                                        blocks.append(ContentBlock.from_audio_base64(
-                                            audio_data.get('data', ''),
-                                            f"audio/{audio_data.get('format', 'wav')}"
-                                        ))
-                                elif block_type == 'input_file':
-                                    if 'file_url' in block:
-                                        blocks.append(ContentBlock.from_file_url(block['file_url'].get('url', '')))
+                                    elif block_type == 'input_file':
+                                        if 'file_url' in block:
+                                            blocks.append(ContentBlock.from_file_url(block['file_url'].get('url', '')))
 
-                            content = blocks if blocks else content
-                        
-                        # Handle tool result messages
-                        tool_call_id = item.get('call_id') or item.get('tool_call_id')
-                        name = item.get('name')
+                                content = blocks if blocks else content
 
-                        messages.append(Message(
-                            role=role,
-                            content=content,
-                            name=name,
-                            tool_call_id=tool_call_id
-                        ))
+                            tool_call_id = item.get('call_id') or item.get('tool_call_id')
+                            name = item.get('name')
+
+                            messages.append(Message(
+                                role=role,
+                                content=content,
+                                name=name,
+                                tool_call_id=tool_call_id
+                            ))
 
         # 处理工具定义
         tools = []
@@ -210,14 +252,27 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 # Web search tool - pass through as metadata
                 pass
 
+        # Parse reasoning parameter
+        reasoning_effort = None
+        reasoning = data.get('reasoning')
+        if reasoning:
+            if isinstance(reasoning, dict):
+                reasoning_effort = reasoning.get('effort')
+            elif isinstance(reasoning, str):
+                reasoning_effort = reasoning
+
         # 收集额外参数
         known_keys = {
             'model', 'input', 'instructions', 'temperature', 'top_p',
             'max_output_tokens', 'stream', 'tools', 'tool_choice',
             'stop', 'presence_penalty', 'frequency_penalty', 'user',
-            'metadata', 'store', 'truncation'
+            'metadata', 'store', 'truncation', 'reasoning'
         }
         metadata = {k: v for k, v in data.items() if k not in known_keys}
+
+        # Store full reasoning config in metadata so providers can use all fields (e.g. summary)
+        if reasoning and isinstance(reasoning, dict):
+            metadata['reasoning'] = reasoning
 
         return ChatRequest(
             messages=messages,
@@ -232,6 +287,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             presence_penalty=data.get('presence_penalty'),
             frequency_penalty=data.get('frequency_penalty'),
             user=data.get('user'),
+            reasoning_effort=reasoning_effort,
             metadata=metadata
         )
 
@@ -267,6 +323,19 @@ class OpenAIResponsesAdapter(BaseAdapter):
         output = []
 
         for choice in response.choices:
+            # Include reasoning output item with summary_text if available
+            if choice.reasoning_content:
+                output.append({
+                    'type': 'reasoning',
+                    'id': f"rs_{uuid.uuid4().hex[:12]}",
+                    'summary': [
+                        {
+                            'type': 'summary_text',
+                            'text': choice.reasoning_content
+                        }
+                    ]
+                })
+
             if choice.message:
                 content_items = []
                 text = choice.message.get_text_content()
@@ -310,6 +379,24 @@ class OpenAIResponsesAdapter(BaseAdapter):
             }
             status = status_map.get(fr, 'completed')
 
+        usage_dict: dict = {
+            'input_tokens': response.usage.prompt_tokens,
+            'output_tokens': response.usage.completion_tokens,
+            'total_tokens': response.usage.total_tokens,
+        }
+        # Include detailed token breakdowns when available
+        input_details: dict = {}
+        if response.usage.cached_tokens:
+            input_details['cached_tokens'] = response.usage.cached_tokens
+        if input_details:
+            usage_dict['input_tokens_details'] = input_details
+
+        output_details: dict = {}
+        if response.usage.reasoning_tokens:
+            output_details['reasoning_tokens'] = response.usage.reasoning_tokens
+        if output_details:
+            usage_dict['output_tokens_details'] = output_details
+
         return {
             'id': response.id.replace('chatcmpl-', 'resp_') if response.id.startswith('chatcmpl-') else response.id,
             'object': 'response',
@@ -317,11 +404,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             'model': response.model,
             'status': status,
             'output': output,
-            'usage': {
-                'input_tokens': response.usage.prompt_tokens,
-                'output_tokens': response.usage.completion_tokens,
-                'total_tokens': response.usage.total_tokens
-            }
+            'usage': usage_dict
         }
 
     def format_stream_chunk(self, chunk: StreamChunk) -> str:

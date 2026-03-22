@@ -29,6 +29,9 @@ class UsageInfo:
     total_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Detailed token breakdown
+    reasoning_tokens: int = 0          # output tokens used for reasoning
+    cached_tokens: int = 0             # input tokens served from cache
 
 
 @dataclass
