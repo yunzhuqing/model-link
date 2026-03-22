@@ -6,6 +6,7 @@
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider
 from .azure_provider import AzureProvider
+from .anthropic_provider import AnthropicProvider
 from .bailian_provider import BailianProvider
 from .volcengine_provider import VolcengineProvider
 from .vertexai_provider import VertexAIProvider
@@ -15,14 +16,16 @@ from .minimax_provider import MiniMaxProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
-    'OpenAIProvider', 'AzureProvider', 'BailianProvider', 'VolcengineProvider',
-    'VertexAIProvider', 'MoonshotProvider', 'GLMProvider', 'MiniMaxProvider'
+    'OpenAIProvider', 'AzureProvider', 'AnthropicProvider', 'BailianProvider',
+    'VolcengineProvider', 'VertexAIProvider', 'MoonshotProvider', 'GLMProvider',
+    'MiniMaxProvider'
 ]
 
 # 供应商注册表
 PROVIDER_REGISTRY = {
     'openai': OpenAIProvider,
     'azure': AzureProvider,
+    'anthropic': AnthropicProvider,
     'bailian': BailianProvider,
     'volcengine': VolcengineProvider,
     'vertexai': VertexAIProvider,

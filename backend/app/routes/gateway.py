@@ -54,14 +54,24 @@ _gateway_service = GatewayService()
 # ============== 认证 ==============
 
 def get_current_user_or_api_key():
-    """Authenticate via either JWT token or API key."""
-    auth_header = request.headers.get('Authorization')
+    """Authenticate via either JWT token, API key, or Anthropic x-api-key header.
 
-    if not auth_header:
+    Supported authentication methods:
+    1. Authorization: Bearer <token>  (JWT or API key)
+    2. Authorization: <token>         (API key without Bearer prefix)
+    3. x-api-key: <key>              (Anthropic SDK compatible)
+    """
+    auth_header = request.headers.get('Authorization')
+    x_api_key = request.headers.get('x-api-key')
+
+    if not auth_header and not x_api_key:
         return None, None, {'detail': 'Not authenticated'}, 401
 
     token = None
-    if auth_header.startswith('Bearer '):
+    if x_api_key:
+        # Anthropic SDK sends credentials via x-api-key header
+        token = x_api_key
+    elif auth_header.startswith('Bearer '):
         token = auth_header.split(' ')[1]
     else:
         token = auth_header
@@ -119,23 +129,23 @@ def _handle_request(adapter):
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
-        return jsonify(error), status
+        return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     # 2. 获取请求数据 (force=True to accept any Content-Type)
     data = request.get_json(force=True, silent=True)
 
     if not data:
-        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+        return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
 
     model_name = data.get('model')
     if not model_name:
-        return jsonify({'detail': 'Model is required'}), 400
+        return jsonify(adapter.format_error_response('Model is required', 400)), 400
 
     # 3. 使用适配器解析请求
     try:
         chat_request = adapter.parse_request(data)
     except Exception as e:
-        return jsonify({'detail': f'Invalid request format: {str(e)}'}), 400
+        return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
@@ -152,13 +162,11 @@ def _handle_request(adapter):
             return jsonify(adapter.format_response(response))
 
     except ProviderError as e:
-        if e.error_data:
-            return jsonify(e.error_data), e.status_code
-        return jsonify({'detail': e.message}), e.status_code
+        return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
-        return jsonify({'detail': e.message}), e.status_code
+        return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
-        return jsonify({'detail': e.message}), e.status_code
+        return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
 
 # ============== API 端点 ==============

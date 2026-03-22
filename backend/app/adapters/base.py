@@ -143,3 +143,28 @@ class BaseAdapter(ABC):
             SSE 格式字符串或 None
         """
         return None
+
+    def format_error_response(self, message: str, status_code: int, error_data: Optional[dict] = None) -> dict:
+        """
+        Format an error into the API-specific error response structure.
+
+        Default implementation returns OpenAI-compatible format.
+        Subclasses can override for provider-specific formats (e.g. Anthropic).
+
+        Args:
+            message: Error message
+            status_code: HTTP status code
+            error_data: Optional raw error data from upstream provider
+
+        Returns:
+            Error response dictionary
+        """
+        if error_data:
+            return error_data
+        return {
+            'error': {
+                'message': message,
+                'type': 'server_error',
+                'code': status_code,
+            }
+        }

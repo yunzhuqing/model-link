@@ -2,6 +2,7 @@
 Anthropic Messages 适配器
 处理 /v1/messages 格式的请求和响应转换。
 """
+import itertools
 import json
 import time
 from typing import Optional, Generator
@@ -303,7 +304,9 @@ class AnthropicMessagesAdapter(BaseAdapter):
             }
         }
 
-    def format_stream_start(self, model_name: str) -> Optional[str]:
+    def format_stream_start(self, model_name: str, message_id: Optional[str] = None,
+                            input_tokens: int = 0, cache_read_input_tokens: int = 0,
+                            cache_creation_input_tokens: int = 0) -> Optional[str]:
         """
         发送 Anthropic 消息开始事件。
 
@@ -311,20 +314,35 @@ class AnthropicMessagesAdapter(BaseAdapter):
         包含完整的 Message 字段，否则客户端会抛出验证错误。
         必须包含: id, type, role, content, model, stop_reason, stop_sequence, usage
         """
+        usage = {
+            'input_tokens': input_tokens,
+            'output_tokens': 0,
+        }
+        if cache_read_input_tokens:
+            usage['cache_read_input_tokens'] = cache_read_input_tokens
+        if cache_creation_input_tokens:
+            usage['cache_creation_input_tokens'] = cache_creation_input_tokens
+
+        msg_id = message_id or ('msg_' + str(int(time.time())))
+        # Normalize ID to msg_ prefix
+        if not msg_id.startswith('msg_'):
+            for prefix in ('chatcmpl-', 'gemini-'):
+                if msg_id.startswith(prefix):
+                    msg_id = msg_id[len(prefix):]
+                    break
+            msg_id = f'msg_{msg_id}'
+
         start_data = {
             'type': 'message_start',
             'message': {
-                'id': 'msg_' + str(int(time.time())),
+                'id': msg_id,
                 'type': 'message',
                 'role': 'assistant',
                 'content': [],
                 'model': model_name,
                 'stop_reason': None,
                 'stop_sequence': None,
-                'usage': {
-                    'input_tokens': 0,
-                    'output_tokens': 0
-                }
+                'usage': usage,
             }
         }
         return f"event: message_start\ndata: {json.dumps(start_data)}\n\n"
@@ -357,6 +375,49 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
         return f"event: error\ndata: {json.dumps(error_event)}\n\n"
 
+    def format_error_response(self, message: str, status_code: int, error_data: Optional[dict] = None) -> dict:
+        """
+        Format errors in Anthropic-compatible structure.
+
+        Anthropic error format:
+        {
+            "type": "error",
+            "error": {
+                "type": "not_found_error",
+                "message": "Model not found"
+            }
+        }
+        """
+        if error_data:
+            # If upstream already returned Anthropic-format error, pass through
+            if 'type' in error_data and 'error' in error_data:
+                return error_data
+            # Wrap raw error data
+            return {
+                'type': 'error',
+                'error': error_data
+            }
+
+        # Map HTTP status codes to Anthropic error types
+        error_type_map = {
+            400: 'invalid_request_error',
+            401: 'authentication_error',
+            403: 'permission_error',
+            404: 'not_found_error',
+            429: 'rate_limit_error',
+            500: 'api_error',
+            529: 'overloaded_error',
+        }
+        error_type = error_type_map.get(status_code, 'api_error')
+
+        return {
+            'type': 'error',
+            'error': {
+                'type': error_type,
+                'message': message,
+            }
+        }
+
     def create_stream_response(
         self,
         chunks: Generator[StreamChunk, None, None],
@@ -386,12 +447,58 @@ class AnthropicMessagesAdapter(BaseAdapter):
             content_block_index = 0  # 当前内容块索引
 
             try:
-                # 发送 message_start
-                start_event = self.format_stream_start(model_name)
+                # Peek at the first chunk to extract usage info (input_tokens)
+                # and message ID for the message_start event.
+                # The first chunk from Anthropic provider contains input_tokens
+                # from the API's message_start event; from OpenAI-compatible
+                # providers it typically contains only the role.
+                first_chunk = None
+                try:
+                    first_chunk = next(chunks)
+                except StopIteration:
+                    pass
+
+                # Extract usage info from the first chunk
+                message_id = None
+                input_tokens = 0
+                cache_read_input_tokens = 0
+                cache_creation_input_tokens = 0
+
+                if first_chunk:
+                    message_id = first_chunk.id
+                    if first_chunk.usage:
+                        # Accumulate usage from first chunk
+                        for k, v in first_chunk.usage.items():
+                            accumulated_usage[k] = v
+                        input_tokens = first_chunk.usage.get(
+                            'input_tokens',
+                            first_chunk.usage.get('prompt_tokens', 0))
+                        cache_read_input_tokens = first_chunk.usage.get(
+                            'cache_read_input_tokens',
+                            first_chunk.usage.get('cache_read_tokens', 0))
+                        cache_creation_input_tokens = first_chunk.usage.get(
+                            'cache_creation_input_tokens',
+                            first_chunk.usage.get('cache_write_tokens', 0))
+
+                # 发送 message_start (with actual usage from first chunk)
+                start_event = self.format_stream_start(
+                    model_name,
+                    message_id=message_id,
+                    input_tokens=input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                )
                 if start_event:
                     yield start_event
 
-                for chunk in chunks:
+                # Build an iterator that includes the first chunk
+                import itertools
+                if first_chunk:
+                    all_chunks = itertools.chain([first_chunk], chunks)
+                else:
+                    all_chunks = iter([])
+
+                for chunk in all_chunks:
                     # 从每个 chunk 累积 usage 信息
                     if chunk.usage:
                         for k, v in chunk.usage.items():
