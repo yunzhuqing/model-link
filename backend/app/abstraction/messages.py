@@ -138,13 +138,53 @@ class Message:
         """初始化后处理，自动转换字符串内容"""
         if isinstance(self.content, str):
             self.content = [ContentBlock.from_text(self.content)]
+        elif isinstance(self.content, list):
+            # Convert any dict items to ContentBlock objects
+            self.content = [self._ensure_content_block(item) for item in self.content]
+    
+    @staticmethod
+    def _ensure_content_block(item: Union[ContentBlock, Dict[str, Any]]) -> ContentBlock:
+        """Ensure an item is a ContentBlock, converting from dict if necessary"""
+        if isinstance(item, ContentBlock):
+            return item
+        elif isinstance(item, dict):
+            # Convert dict to ContentBlock
+            content_type_str = item.get('type', 'text')
+            try:
+                content_type = ContentType(content_type_str)
+            except ValueError:
+                content_type = ContentType.TEXT
+            
+            return ContentBlock(
+                type=content_type,
+                text=item.get('text'),
+                url=item.get('url') or item.get('image_url', {}).get('url'),
+                media_type=item.get('media_type'),
+                data=item.get('data'),
+                tool_call_id=item.get('tool_call_id') or item.get('id'),
+                tool_name=item.get('tool_name') or item.get('name') or item.get('function', {}).get('name'),
+                tool_arguments=item.get('tool_arguments') or item.get('function', {}).get('arguments'),
+                tool_result=item.get('tool_result'),
+                is_error=item.get('is_error', False)
+            )
+        else:
+            # Unknown type, return empty text block
+            return ContentBlock(type=ContentType.TEXT, text=str(item) if item else "")
     
     def get_text_content(self) -> Optional[str]:
         """获取文本内容"""
         if isinstance(self.content, str):
             return self.content
         elif isinstance(self.content, list):
-            texts = [block.text for block in self.content if block.type == ContentType.TEXT and block.text]
+            texts = []
+            for block in self.content:
+                # Handle both ContentBlock objects and dicts
+                if isinstance(block, ContentBlock):
+                    if block.type == ContentType.TEXT and block.text:
+                        texts.append(block.text)
+                elif isinstance(block, dict):
+                    if block.get('type') == 'text' and block.get('text'):
+                        texts.append(block.get('text'))
             return " ".join(texts) if texts else None
         return None
     
@@ -153,5 +193,5 @@ class Message:
         if isinstance(self.content, str):
             return [ContentBlock.from_text(self.content)]
         elif isinstance(self.content, list):
-            return self.content
+            return [self._ensure_content_block(item) for item in self.content]
         return []

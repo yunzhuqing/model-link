@@ -16,9 +16,15 @@ AI Gateway API 路由层
 """
 from flask import Blueprint, request, jsonify, Response
 from datetime import datetime
+from typing import Optional
 import json
+import logging
 import time
 import os
+import uuid
+
+# Configure logger for gateway
+logger = logging.getLogger("gateway")
 
 from app import db
 from app.models import Provider, Model, ApiKey, User
@@ -149,6 +155,9 @@ def _handle_request(adapter):
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
+
+    # 4.5. 记录原始请求数据
+    logger.info(f"Original request logged to: {json.dumps(data, ensure_ascii=False, indent=4)}")
 
     # 5. 调用中间层
     try:

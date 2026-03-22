@@ -108,6 +108,21 @@ class AzureProvider(OpenAIProvider):
             完整的 API URL
         """
         base_url = self.config.base_url.rstrip('/')
+        
+        responses_api_models = {
+            "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4",
+            "gpt-5.3-chat", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2",
+            "gpt-5.2-chat", "gpt-5.1-codex-max", "gpt-5.1", "gpt-5.1-chat",
+            "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-pro", "gpt-5-codex",
+            "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat", "gpt-4o",
+            "gpt-4o-mini", "computer-use-preview", "gpt-4.1", "gpt-4.1-nano",
+            "gpt-4.1-mini", "gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5",
+            "o1", "o3-mini", "o3", "o4-mini"
+        }
+        
+        if deployment_name in responses_api_models:
+            return f"{base_url}/v1/chat/completions"
+            
         return f"{base_url}/openai/deployments/{deployment_name}/chat/completions?api-version={self.api_version}"
     
     def supports_model(self, model: str) -> bool:

@@ -26,13 +26,19 @@ from typing import Optional, List, Dict, Any, Generator
 import json
 import time
 import uuid
+import logging
+import os
 import sys
+import traceback
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
+
+# Configure logger for VertexAI provider
+logger = logging.getLogger("vertexai")
 
 
 class ModelPublisher:
@@ -73,6 +79,39 @@ def detect_publisher(model_name: str) -> str:
             return publisher
     # 默认使用 Google (Gemini) 格式
     return ModelPublisher.GOOGLE
+
+
+# Log directory for large request/response data
+LOG_DIR = "/tmp/vertexai_logs"
+
+def _log_to_file(data: Any, prefix: str, publisher: str) -> str:
+    """
+    Log large data to a file instead of console
+    
+    Args:
+        data: Data to log (will be JSON serialized)
+        prefix: Prefix for the log filename (e.g., "request", "response")
+        publisher: Publisher name for logging
+    
+    Returns:
+        Path to the log file
+    """
+    # Create log directory if it doesn't exist
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+    
+    # Generate filename with timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{prefix}_{publisher}_{timestamp}_{uuid.uuid4().hex[:8]}.json"
+    filepath = os.path.join(LOG_DIR, filename)
+    
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return filepath
+    except Exception as e:
+        logger.error(f"Failed to write log file: {e}")
+        return ""
 
 
 class VertexAIProvider(BaseProvider):
@@ -292,8 +331,8 @@ class VertexAIProvider(BaseProvider):
     def get_headers(self) -> Dict[str, str]:
         """获取请求头（包含 OAuth2 Bearer token）"""
         access_token = self._get_access_token()
-        # Print full access token for debugging
-        print(f"[VertexAI] Access Token: {access_token}", file=sys.stderr)
+        # Log access token for debugging
+        logger.info(f"Obtained access token for Vertex AI: {access_token}")
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}"
@@ -421,6 +460,39 @@ class VertexAIProvider(BaseProvider):
         return result
 
     def _message_to_anthropic(self, message: Message) -> Dict[str, Any]:
+        """将 Message 转换为 Anthropic 格式"""
+        # Handle TOOL role - Anthropic requires tool_result in a user message
+        if message.role == MessageRole.TOOL:
+            # Convert tool result to user message with tool_result content blocks
+            content_blocks = []
+            if isinstance(message.content, list):
+                for block in message.content:
+                    if block.type == ContentType.TOOL_RESULT:
+                        content_blocks.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.tool_call_id or message.tool_call_id or "",
+                            "content": block.tool_result or "",
+                            "is_error": block.is_error
+                        })
+                    elif block.type == ContentType.TEXT:
+                        # Text content in tool message - treat as tool result
+                        content_blocks.append({
+                            "type": "tool_result",
+                            "tool_use_id": message.tool_call_id or "",
+                            "content": block.text or ""
+                        })
+            elif isinstance(message.content, str):
+                content_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id or "",
+                    "content": message.content
+                })
+            
+            return {
+                "role": "user",
+                "content": content_blocks if content_blocks else [{"type": "tool_result", "tool_use_id": message.tool_call_id or "", "content": ""}]
+            }
+        
         result = {"role": message.role.value}
         if isinstance(message.content, str):
             result["content"] = message.content
@@ -972,10 +1044,17 @@ class VertexAIProvider(BaseProvider):
         """执行非流式对话请求"""
         error = self.validate_request(request)
         if error:
+            print(f"[VertexAI] Validation error: {error}", file=sys.stderr)
             raise ValueError(error)
 
         publisher = self._get_publisher_for_model(request.model)
-        request_data = self.prepare_request(request)
+        
+        try:
+            request_data = self.prepare_request(request)
+        except Exception as e:
+            print(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
+            raise
 
         # Anthropic rawPredict 不需要 stream 参数
         if publisher == ModelPublisher.ANTHROPIC:
@@ -985,37 +1064,69 @@ class VertexAIProvider(BaseProvider):
         url = self._get_api_url(request.model, streaming=False)
 
         print(f"[VertexAI {publisher}] URL: {url}", file=sys.stderr)
-        print(f"[VertexAI {publisher}] Request: {json.dumps(request_data, ensure_ascii=False, indent=2)}", file=sys.stderr)
+        
+        # Log request data to file
+        log_file = _log_to_file(request_data, "request", publisher)
+        print(f"[VertexAI {publisher}] Request data logged to: {log_file}", file=sys.stderr)
 
         try:
             response = self.client.post(url, json=request_data, headers=headers)
 
             if response.status_code >= 400:
+                error_text = response.text
+                log_file = _log_to_file({"status_code": response.status_code, "error": error_text}, "error", publisher)
+                print(f"[VertexAI {publisher}] HTTP Error {response.status_code}, details logged to: {log_file}", file=sys.stderr)
                 try:
                     error_data = response.json()
-                    print(f"[VertexAI {publisher}] Error: {json.dumps(error_data, ensure_ascii=False)}", file=sys.stderr)
                     raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                 except json.JSONDecodeError:
-                    raise RuntimeError(f"Vertex AI API error ({response.status_code}): {response.text}")
+                    raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text[:500]}")
 
-            response_data = response.json()
-            print(f"[VertexAI {publisher}] Response: {json.dumps(response_data, ensure_ascii=False, indent=2)}", file=sys.stderr)
+            try:
+                response_data = response.json()
+            except json.JSONDecodeError as e:
+                print(f"[VertexAI {publisher}] Failed to parse response JSON: {e}", file=sys.stderr)
+                raw_text = response.text
+                log_file = _log_to_file({"raw_response": raw_text}, "raw_response", publisher)
+                print(f"[VertexAI {publisher}] Raw response logged to: {log_file}", file=sys.stderr)
+                raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {raw_text[:500]}")
 
-            return self.parse_response(response_data, request.model)
+            # Log response data to file
+            log_file = _log_to_file(response_data, "response", publisher)
+            print(f"[VertexAI {publisher}] Response data logged to: {log_file}", file=sys.stderr)
+
+            try:
+                return self.parse_response(response_data, request.model)
+            except Exception as e:
+                print(f"[VertexAI {publisher}] Response parsing error: {type(e).__name__}: {e}", file=sys.stderr)
+                # Log response data to file for debugging
+                log_file = _log_to_file(response_data, "parse_error", publisher)
+                print(f"[VertexAI {publisher}] Response data that failed to parse logged to: {log_file}", file=sys.stderr)
+                traceback.print_exc()
+                raise
 
         except RuntimeError:
             raise
         except Exception as e:
+            print(f"[VertexAI {publisher}] Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
             raise RuntimeError(f"Vertex AI API error ({publisher}): {str(e)}")
 
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
+            print(f"[VertexAI] Validation error: {error}", file=sys.stderr)
             raise ValueError(error)
 
         publisher = self._get_publisher_for_model(request.model)
-        request_data = self.prepare_request(request)
+        
+        try:
+            request_data = self.prepare_request(request)
+        except Exception as e:
+            print(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
+            raise
 
         # Ensure stream flag is set appropriately
         if publisher == ModelPublisher.ANTHROPIC:
@@ -1029,7 +1140,9 @@ class VertexAIProvider(BaseProvider):
         response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
         print(f"[VertexAI {publisher} Stream] URL: {url}", file=sys.stderr)
-        print(f"[VertexAI {publisher} Stream] Request: {json.dumps(request_data, ensure_ascii=False, indent=2)}", file=sys.stderr)
+        
+        # Log request data to file
+        logger.info(f"VertexAI {publisher} streaming request data logged to: {json.dumps(request_data, ensure_ascii=False)}")
 
         try:
             with self.client.stream("POST", url, json=request_data, headers=headers) as response:
@@ -1038,10 +1151,13 @@ class VertexAIProvider(BaseProvider):
                     for chunk in response.iter_bytes():
                         if chunk:
                             error_text += chunk.decode('utf-8')
+                    print(f"[VertexAI {publisher} Stream] HTTP Error {response.status_code}: {error_text}", file=sys.stderr)
                     try:
                         error_data = json.loads(error_text)
+                        print(f"[VertexAI {publisher} Stream] Error JSON: {json.dumps(error_data, ensure_ascii=False)}", file=sys.stderr)
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                     except json.JSONDecodeError:
+                        print(f"[VertexAI {publisher} Stream] Error response is not valid JSON, raw text: {error_text}", file=sys.stderr)
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text}")
 
                 for line in response.iter_lines():
@@ -1058,16 +1174,26 @@ class VertexAIProvider(BaseProvider):
 
                         try:
                             event_data = json.loads(data_str)
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as e:
+                            print(f"[VertexAI {publisher} Stream] Failed to parse SSE data as JSON: {e}", file=sys.stderr)
+                            print(f"[VertexAI {publisher} Stream] Raw data: {data_str}", file=sys.stderr)
                             continue
 
-                        chunk = self._dispatch_stream_parse(publisher, event_data, response_id, request.model)
-                        if chunk:
-                            yield chunk
+                        try:
+                            chunk = self._dispatch_stream_parse(publisher, event_data, response_id, request.model)
+                            if chunk:
+                                yield chunk
+                        except Exception as e:
+                            print(f"[VertexAI {publisher} Stream] Stream chunk parse error: {type(e).__name__}: {e}", file=sys.stderr)
+                            print(f"[VertexAI {publisher} Stream] Event data that failed: {json.dumps(event_data, ensure_ascii=False)}", file=sys.stderr)
+                            traceback.print_exc()
+                            raise
 
         except RuntimeError:
             raise
         except Exception as e:
+            print(f"[VertexAI {publisher} Stream] Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc()
             raise RuntimeError(f"Vertex AI streaming API error ({publisher}): {str(e)}")
 
     def _dispatch_stream_parse(self, publisher: str, event_data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
