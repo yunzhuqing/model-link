@@ -695,5 +695,78 @@ class AzureProvider(OpenAIProvider):
         return models
 
 
+    def get_embedding_url(self, deployment_name: str) -> str:
+        """
+        获取嵌入 API URL
+        
+        Azure embedding URL format:
+        {base_url}/openai/deployments/{deployment_name}/embeddings?api-version={api_version}
+        
+        Args:
+            deployment_name: Azure 部署名称 (e.g., text-embedding-3-large)
+        
+        Returns:
+            完整的嵌入 API URL
+        """
+        base_url = self.config.base_url.rstrip('/')
+        return f"{base_url}/openai/deployments/{deployment_name}/embeddings?api-version={self.api_version}"
+
+    def embed(self, request: 'EmbeddingRequest') -> 'EmbeddingResponse':
+        """
+        执行嵌入请求（Azure 版本）
+        
+        使用 Azure 特定的 URL 格式：
+        {base_url}/openai/deployments/{model}/embeddings?api-version={api_version}
+        
+        Args:
+            request: 嵌入请求对象
+        
+        Returns:
+            嵌入响应对象
+        """
+        from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
+
+        # 准备请求数据 - Azure 不需要 model 字段（在 URL 中指定）
+        request_data = {
+            "encoding_format": request.encoding_format,
+        }
+        
+        # Multimodal embedding uses "messages" instead of "input"
+        if request.is_multimodal:
+            request_data["messages"] = request.messages
+        else:
+            request_data["input"] = request.input
+        
+        if request.dimensions is not None:
+            request_data["dimensions"] = request.dimensions
+        
+        if request.user:
+            request_data["user"] = request.user
+        
+        url = self.get_embedding_url(request.model)
+        
+        print(f"[Azure Debug] Embedding URL: {url}")
+        
+        try:
+            response = self.client.post(url, json=request_data)
+            
+            if response.status_code >= 400:
+                try:
+                    error_data = response.json()
+                    raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
+            
+            response.raise_for_status()
+            
+            response_data = response.json()
+            return self._parse_embedding_response(response_data, request.model)
+        
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Azure embedding API error: {str(e)}")
+
+
 # 导出解析函数（与 OpenAI 格式相同）
 __all__ = ['AzureProvider', 'parse_openai_request']

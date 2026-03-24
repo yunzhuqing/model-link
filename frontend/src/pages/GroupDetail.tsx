@@ -55,6 +55,7 @@ interface Model {
   support_thinking: boolean;
   support_online_image: boolean;
   support_online_video: boolean;
+  support_embedding: boolean;
 }
 
 interface Provider {
@@ -97,7 +98,7 @@ export default function GroupDetail() {
     input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
     support_kvcache: false, support_image: false, support_audio: false,
     support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-    support_thinking: false, support_online_image: true, support_online_video: true
+    support_thinking: false, support_online_image: true, support_online_video: true, support_embedding: false
   });
   
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
@@ -180,7 +181,7 @@ export default function GroupDetail() {
         input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
         support_kvcache: false, support_image: false, support_audio: false,
         support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-        support_thinking: false, support_online_image: true, support_online_video: true
+        support_thinking: false, support_online_image: true, support_online_video: true, support_embedding: false
       });
     },
   });
@@ -725,6 +726,7 @@ export default function GroupDetail() {
                       { key: 'support_thinking', label: 'Thinking' },
                       { key: 'support_online_image', label: 'Online Image URL' },
                       { key: 'support_online_video', label: 'Online Video URL' },
+                      { key: 'support_embedding', label: 'Embedding' },
                     ].map((feature) => (
                       <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
                         <input
@@ -825,6 +827,7 @@ export default function GroupDetail() {
                       { key: 'support_thinking', label: 'Thinking', color: 'cyan' },
                       { key: 'support_online_image', label: 'Online Image URL', color: 'teal' },
                       { key: 'support_online_video', label: 'Online Video URL', color: 'lime' },
+                      { key: 'support_embedding', label: 'Embedding', color: 'emerald' },
                     ].map((feature) => {
                       const enabled = !!viewingModel[feature.key as keyof Model];
                           const colors: Record<string, string> = {
@@ -1263,6 +1266,7 @@ export default function GroupDetail() {
                             { key: 'support_thinking', label: 'Thinking' },
                             { key: 'support_online_image', label: 'Online Image URL' },
                             { key: 'support_online_video', label: 'Online Video URL' },
+                            { key: 'support_embedding', label: 'Embedding' },
                           ].map((feature) => (
                             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100">
                               <input
@@ -1293,7 +1297,7 @@ export default function GroupDetail() {
                               input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
                               support_kvcache: false, support_image: false, support_audio: false,
                               support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-                              support_thinking: false, support_online_image: true, support_online_video: true
+                              support_thinking: false, support_online_image: true, support_online_video: true, support_embedding: false
                             });
                           }}
                           className="bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-300"

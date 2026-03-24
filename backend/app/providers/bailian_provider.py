@@ -16,6 +16,7 @@ from app.abstraction.messages import Message, MessageRole
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk
+from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 import sys
 
 
@@ -272,6 +273,195 @@ class BailianProvider(OpenAIProvider):
         
         return chunk
     
+    # 百炼多模态嵌入 API 的基础 URL（非 OpenAI 兼容格式）
+    BAILIAN_MULTIMODAL_EMBEDDING_URL = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"
+
+    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        """
+        执行嵌入请求
+        
+        对于文本嵌入，使用 OpenAI 兼容格式（继承父类）。
+        对于多模态嵌入，使用百炼专用 API 格式。
+        
+        百炼多模态嵌入 API 格式：
+        POST https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding
+        {
+            "model": "tongyi-embedding-vision-plus",
+            "input": {
+                "contents": [
+                    {"text": "文本内容"},
+                    {"image": "https://..."},
+                    {"video": "https://..."},
+                    {"multi_images": ["https://...", "https://..."]}
+                ]
+            }
+        }
+        
+        Args:
+            request: 嵌入请求对象
+        
+        Returns:
+            嵌入响应对象
+        """
+        if not request.is_multimodal:
+            # 文本嵌入使用 OpenAI 兼容格式
+            return super().embed(request)
+        
+        # 多模态嵌入使用百炼专用 API
+        contents = self._convert_messages_to_bailian_contents(request.messages)
+        
+        request_data = {
+            "model": request.model,
+            "input": {
+                "contents": contents
+            }
+        }
+        
+        # 打印请求体到控制台
+        print("\n" + "=" * 50, file=sys.stderr)
+        print("[Bailian Multimodal Embedding Request Body]", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+        print(json.dumps(request_data, ensure_ascii=False, indent=2), file=sys.stderr)
+        print("=" * 50 + "\n", file=sys.stderr)
+        
+        url = self.BAILIAN_MULTIMODAL_EMBEDDING_URL
+        
+        try:
+            response = self.client.post(url, json=request_data)
+            
+            if response.status_code >= 400:
+                try:
+                    error_data = response.json()
+                    raise RuntimeError(f"Bailian multimodal embedding API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"Bailian multimodal embedding API error ({response.status_code}): {response.text}")
+            
+            response.raise_for_status()
+            
+            response_data = response.json()
+            return self._parse_bailian_multimodal_embedding_response(response_data, request.model)
+        
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Bailian multimodal embedding API error: {str(e)}")
+    
+    def _convert_messages_to_bailian_contents(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        将 OpenAI 格式的 messages 转换为百炼多模态嵌入的 contents 格式。
+        
+        输入格式 (OpenAI messages):
+        [{"role": "user", "content": [
+            {"type": "text", "text": "描述"},
+            {"type": "image_url", "image_url": {"url": "https://..."}},
+            {"type": "video_url", "video_url": {"url": "https://..."}}
+        ]}]
+        
+        输出格式 (百炼 contents):
+        [
+            {"text": "描述"},
+            {"image": "https://..."},
+            {"video": "https://..."}
+        ]
+        
+        Args:
+            messages: OpenAI 格式的消息列表
+        
+        Returns:
+            百炼格式的 contents 列表
+        """
+        contents = []
+        
+        for message in messages:
+            content = message.get("content", [])
+            
+            if isinstance(content, str):
+                # 纯文本内容
+                contents.append({"text": content})
+                continue
+            
+            if isinstance(content, list):
+                image_urls = []
+                for item in content:
+                    item_type = item.get("type", "text")
+                    
+                    if item_type == "text":
+                        text = item.get("text", "")
+                        if text:
+                            contents.append({"text": text})
+                    elif item_type == "image_url":
+                        image_url = item.get("image_url", {})
+                        url = image_url.get("url", "")
+                        if url:
+                            image_urls.append(url)
+                    elif item_type == "video_url":
+                        video_url = item.get("video_url", {})
+                        url = video_url.get("url", "")
+                        if url:
+                            contents.append({"video": url})
+                
+                # 多张图片使用 multi_images，单张使用 image
+                if len(image_urls) > 1:
+                    contents.append({"multi_images": image_urls})
+                elif len(image_urls) == 1:
+                    contents.append({"image": image_urls[0]})
+        
+        return contents
+    
+    def _parse_bailian_multimodal_embedding_response(self, data: Dict[str, Any], model: str) -> EmbeddingResponse:
+        """
+        解析百炼多模态嵌入响应。
+        
+        百炼响应格式:
+        {
+            "output": {
+                "embeddings": [
+                    {"index": 0, "embedding": [...], "type": "text"},
+                    {"index": 1, "embedding": [...], "type": "image"}
+                ]
+            },
+            "usage": {
+                "input_tokens": 10,
+                "image_tokens": 896
+            }
+        }
+        
+        Args:
+            data: 百炼响应数据
+            model: 模型名称
+        
+        Returns:
+            统一的嵌入响应对象
+        """
+        embedding_data = []
+        output = data.get("output", {})
+        
+        for item in output.get("embeddings", []):
+            embedding_data.append(EmbeddingData(
+                index=item.get("index", 0),
+                embedding=item.get("embedding", []),
+                object="embedding"
+            ))
+        
+        usage_data = data.get("usage", {})
+        # 百炼使用 input_tokens + image_tokens，合并为 total_tokens
+        input_tokens = usage_data.get("input_tokens", 0)
+        image_tokens = usage_data.get("image_tokens", 0)
+        video_tokens = usage_data.get("video_tokens", 0)
+        total_tokens = input_tokens + image_tokens + video_tokens
+        
+        usage = EmbeddingUsage(
+            prompt_tokens=total_tokens,
+            total_tokens=total_tokens
+        )
+        
+        return EmbeddingResponse(
+            object="list",
+            data=embedding_data,
+            model=model,
+            usage=usage
+        )
+
     def list_models(self) -> List[Dict[str, Any]]:
         """
         列出可用模型

@@ -24,6 +24,7 @@ interface Model {
   support_thinking: boolean;
   support_online_image: boolean;
   support_online_video: boolean;
+  support_embedding: boolean;
 }
 
 interface Provider {
@@ -63,6 +64,7 @@ const defaultModelState = {
   support_thinking: false,
   support_online_image: true,
   support_online_video: true,
+  support_embedding: false,
 };
 
 const ProviderList = () => {
@@ -536,6 +538,7 @@ const ProviderList = () => {
                                 {model.support_thinking && <FeatureBadge label="Thinking" color="cyan" />}
                                 {model.support_online_image === false && <FeatureBadge label="Base64 Image Only" color="slate" />}
                                 {model.support_online_video === false && <FeatureBadge label="Base64 Video Only" color="slate" />}
+                                {model.support_embedding && <FeatureBadge label="Embedding" color="emerald" />}
                               </div>
                             </div>
                             <div className="flex space-x-1 ml-4">
@@ -719,6 +722,7 @@ const ModelForm = ({
             { key: 'support_thinking', label: 'Thinking' },
             { key: 'support_online_image', label: 'Online Image URL' },
             { key: 'support_online_video', label: 'Online Video URL' },
+            { key: 'support_embedding', label: 'Embedding' },
           ].map((feature) => (
             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
               <input

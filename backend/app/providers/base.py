@@ -12,6 +12,7 @@ from app.abstraction.messages import Message
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk
+from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 
 
 class ProviderCapability(Enum):

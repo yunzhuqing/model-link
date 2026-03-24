@@ -38,6 +38,9 @@ from app.middleware.gateway_service import (
     ProviderError,
 )
 
+# 导入嵌入抽象
+from app.abstraction.embedding import EmbeddingRequest
+
 # 导入适配器
 from app.adapters.openai_adapter import OpenAIChatAdapter
 from app.adapters.anthropic_adapter import AnthropicMessagesAdapter
@@ -301,3 +304,81 @@ def list_provider_models(provider_type: str):
             })
     except Exception as e:
         return jsonify({'detail': f'Error listing models: {str(e)}'}), 500
+
+
+# ============== Embeddings API ==============
+
+@gateway_bp.route('/v1/embeddings', methods=['POST'])
+def create_embeddings():
+    """
+    OpenAI-compatible embeddings endpoint.
+    
+    Supports embedding models from various providers (OpenAI, Gemini, Qwen, Doubao, etc.)
+    that are compatible with OpenAI's embedding API format.
+    
+    Request body (standard):
+    {
+        "model": "text-embedding-3-small",
+        "input": "The food was delicious and the waiter...",
+        "encoding_format": "float",  // optional, "float" or "base64"
+        "dimensions": 1536,  // optional, output dimensions
+        "user": "user-id"  // optional
+    }
+    
+    Request body (multimodal):
+    {
+        "model": "multimodal-embedding-model",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "describe this image"},
+                {"type": "image_url", "image_url": {"url": "https://..."}}
+            ]}
+        ],
+        "encoding_format": "float",  // optional
+        "dimensions": 1536,  // optional
+        "user": "user-id"  // optional
+    }
+    """
+    # 1. 认证
+    user, api_key, error, status = get_current_user_or_api_key()
+    if error:
+        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+
+    # 2. 获取请求数据
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+
+    model_name = data.get('model')
+    if not model_name:
+        return jsonify({'detail': 'Model is required'}), 400
+
+    input_text = data.get('input')
+    messages = data.get('messages')
+
+    if input_text is None and messages is None:
+        return jsonify({'detail': 'Either "input" or "messages" is required'}), 400
+
+    # 3. 构建嵌入请求
+    embedding_request = EmbeddingRequest(
+        model=model_name,
+        input=input_text,
+        messages=messages,
+        encoding_format=data.get('encoding_format', 'float'),
+        dimensions=data.get('dimensions'),
+        user=data.get('user'),
+    )
+
+    # 4. 获取组 ID（用于访问控制）
+    group_id = api_key.group_id if api_key else None
+
+    # 5. 调用中间层
+    try:
+        response = _gateway_service.embed(embedding_request, group_id)
+        return jsonify(response.to_dict())
+    except ModelNotFoundError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except GatewayServiceError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except ProviderError as e:
+        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code

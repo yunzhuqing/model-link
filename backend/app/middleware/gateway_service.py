@@ -20,6 +20,7 @@ from app.providers import get_provider_class
 from app.providers.base import BaseProvider, ProviderConfig
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
+from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 
 
 @dataclass
@@ -472,6 +473,55 @@ class GatewayService:
                     new_blocks.append(block)
 
             message.content = new_blocks
+
+    def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None) -> EmbeddingResponse:
+        """
+        执行嵌入请求。
+
+        Args:
+            request: 嵌入请求对象
+            group_id: 可选的组 ID（用于访问控制）
+
+        Returns:
+            嵌入响应对象
+
+        Raises:
+            ModelNotFoundError: 模型未找到
+            GatewayServiceError: 请求验证失败
+            ProviderError: 供应商 API 调用失败
+        """
+        # 1. 解析模型
+        resolved = self.resolve_model(request.model, group_id)
+
+        # 2. 替换为真实模型名称
+        request.model = resolved.real_model_name
+
+        # 3. 检查模型是否标记为嵌入模型
+        if not getattr(resolved.db_model, 'support_embedding', False):
+            raise GatewayServiceError(
+                f"Model '{resolved.db_model.alias or resolved.db_model.name}' is not an embedding model. "
+                f"Set support_embedding=true for this model in the admin panel.",
+                status_code=400
+            )
+
+        # 4. 检查供应商是否支持嵌入
+        if not hasattr(resolved.provider_instance, 'embed'):
+            raise GatewayServiceError(
+                f"Provider '{resolved.db_provider.name}' does not support embedding",
+                status_code=400
+            )
+
+        # 4. 调用供应商 API
+        try:
+            response = resolved.provider_instance.embed(request)
+            return response
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+        except Exception as e:
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
     @staticmethod
     def _parse_provider_error(error: RuntimeError) -> Tuple[int, Optional[dict]]:

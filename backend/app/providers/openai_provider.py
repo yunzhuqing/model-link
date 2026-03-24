@@ -12,6 +12,7 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 
 # Internal metadata keys set by the gateway service.
 # These must be filtered out before sending requests to upstream provider APIs.
@@ -657,3 +658,81 @@ class OpenAIProvider(BaseProvider):
                 "supports_vision": info.get("supports_vision", False),
             })
         return models
+    
+    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        """
+        执行嵌入请求
+        
+        Supports both text-only and multimodal (text + images) embedding.
+        
+        Text-only: uses "input" field
+        Multimodal: uses "messages" field with content blocks
+        
+        Args:
+            request: 嵌入请求对象
+        
+        Returns:
+            嵌入响应对象
+        """
+        # 准备请求数据
+        request_data = {
+            "model": request.model,
+            "encoding_format": request.encoding_format,
+        }
+        
+        # Multimodal embedding uses "messages" instead of "input"
+        if request.is_multimodal:
+            request_data["messages"] = request.messages
+        else:
+            request_data["input"] = request.input
+        
+        if request.dimensions is not None:
+            request_data["dimensions"] = request.dimensions
+        
+        if request.user:
+            request_data["user"] = request.user
+        
+        url = f"{self.config.base_url}/embeddings"
+        
+        try:
+            response = self.client.post(url, json=request_data)
+            
+            if response.status_code >= 400:
+                try:
+                    error_data = response.json()
+                    raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"OpenAI API error ({response.status_code}): {response.text}")
+            
+            response.raise_for_status()
+            
+            response_data = response.json()
+            return self._parse_embedding_response(response_data, request.model)
+        
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"OpenAI embedding API error: {str(e)}")
+    
+    def _parse_embedding_response(self, data: Dict[str, Any], model: str) -> EmbeddingResponse:
+        """解析嵌入响应"""
+        embedding_data = []
+        for item in data.get("data", []):
+            embedding_data.append(EmbeddingData(
+                index=item.get("index", 0),
+                embedding=item.get("embedding", []),
+                object=item.get("object", "embedding")
+            ))
+        
+        usage_data = data.get("usage", {})
+        usage = EmbeddingUsage(
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0)
+        )
+        
+        return EmbeddingResponse(
+            object=data.get("object", "list"),
+            data=embedding_data,
+            model=model,
+            usage=usage
+        )
