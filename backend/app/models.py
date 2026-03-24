@@ -209,6 +209,8 @@ class Model(db.Model):
     support_web_search = db.Column(db.Boolean, default=False)
     support_tool_search = db.Column(db.Boolean, default=False)
     support_thinking = db.Column(db.Boolean, default=False)
+    support_online_image = db.Column(db.Boolean, default=True)  # Whether the provider supports image URLs directly; if False, URLs are converted to base64
+    support_online_video = db.Column(db.Boolean, default=True)  # Whether the provider supports video URLs directly; if False, URLs are converted to base64
 
     provider = db.relationship("Provider", back_populates="models")
 
@@ -231,5 +233,7 @@ class Model(db.Model):
             'support_file': self.support_file,
             'support_web_search': self.support_web_search,
             'support_tool_search': self.support_tool_search,
-            'support_thinking': self.support_thinking
+            'support_thinking': self.support_thinking,
+            'support_online_image': self.support_online_image,
+            'support_online_video': self.support_online_video
         }

@@ -41,20 +41,40 @@ class StreamChunk:
     usage: Optional[Dict[str, int]] = None
     event_type: StreamEventType = StreamEventType.CONTENT_DELTA
     created: int = field(default_factory=lambda: int(time.time()))
+    # Pre-formatted SSE event strings that adapters should pass through verbatim.
+    # Used by providers (e.g. Azure) to forward Responses API events that have no
+    # equivalent in the StreamChunk data model (e.g. reasoning_summary events).
+    raw_sse_passthrough: List[str] = field(default_factory=list)
     
+    # Standard role values that are valid in OpenAI Chat Completions delta chunks.
+    # Non-standard values (e.g. Azure internal msg_xxx IDs encoded in delta_role) are
+    # silently dropped so they never leak into the client-facing /v1/chat/completions
+    # stream output.
+    _STANDARD_ROLES = frozenset({"assistant", "user", "system", "tool", "function"})
+
     def to_openai_format(self) -> Dict[str, Any]:
         """转换为 OpenAI 格式"""
         delta = {}
-        
-        if self.delta_role:
+
+        # Only emit delta_role when it is a genuine chat role.
+        # Azure Responses API streaming encodes internal message IDs (e.g. "msg_xxx")
+        # in delta_role as marker chunks; those must not appear in Chat Completions output.
+        if self.delta_role and self.delta_role in self._STANDARD_ROLES:
             delta["role"] = self.delta_role
-        if self.delta_content:
+
+        # When finish_reason is set, delta_content may contain the FULL assembled text
+        # (Azure Responses API convention: the completed event carries the whole text so
+        # the Responses adapter can emit response.output_text.done).
+        # This is NOT a new incremental delta, so we skip it here to avoid re-sending
+        # all content in the final Chat Completions chunk.
+        if self.delta_content and not self.finish_reason:
             delta["content"] = self.delta_content
+
         if self.delta_reasoning_content:
             delta["reasoning_content"] = self.delta_reasoning_content
         if self.tool_calls:
             delta["tool_calls"] = self.tool_calls
-        
+
         result = {
             "id": self.id,
             "object": "chat.completion.chunk",
@@ -66,11 +86,61 @@ class StreamChunk:
                 "finish_reason": self.finish_reason.value if self.finish_reason else None
             }]
         }
-        
+
         if self.usage:
-            result["usage"] = self.usage
-        
+            # Strip internal implementation keys (e.g. _azure_completed_response) that
+            # are only meaningful to the Responses API adapter and must never be sent to
+            # clients via the Chat Completions stream.
+            clean_usage = {k: v for k, v in self.usage.items() if not k.startswith('_')}
+            if clean_usage:
+                result["usage"] = self._format_openai_usage(clean_usage)
+
         return result
+
+    @staticmethod
+    def _format_openai_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Format a flat usage dict into the OpenAI Chat Completions nested structure.
+
+        OpenAI standard:
+        {
+            "prompt_tokens": N,
+            "completion_tokens": N,
+            "total_tokens": N,
+            "prompt_tokens_details": {"cached_tokens": N, ...},
+            "completion_tokens_details": {"reasoning_tokens": N, ...}
+        }
+
+        Our internal flat representation uses top-level "reasoning_tokens" and
+        "cached_tokens" keys which must be moved into the nested detail dicts.
+        """
+        formatted: Dict[str, Any] = {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        }
+
+        # Build completion_tokens_details
+        completion_details: Dict[str, Any] = {}
+        if "reasoning_tokens" in usage:
+            completion_details["reasoning_tokens"] = usage["reasoning_tokens"]
+        # Pass through any pre-nested completion details from upstream
+        for k, v in usage.get("completion_tokens_details", {}).items():
+            completion_details.setdefault(k, v)
+        if completion_details:
+            formatted["completion_tokens_details"] = completion_details
+
+        # Build prompt_tokens_details
+        prompt_details: Dict[str, Any] = {}
+        if "cached_tokens" in usage:
+            prompt_details["cached_tokens"] = usage["cached_tokens"]
+        # Pass through any pre-nested prompt details from upstream
+        for k, v in usage.get("prompt_tokens_details", {}).items():
+            prompt_details.setdefault(k, v)
+        if prompt_details:
+            formatted["prompt_tokens_details"] = prompt_details
+
+        return formatted
     
     def _build_anthropic_usage(self) -> Dict[str, int]:
         """
@@ -243,6 +313,38 @@ class StreamChunk:
                 parts.append(f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n")
             return "".join(parts)
         else:
+            # OpenAI Chat Completions SSE format.
+            #
+            # When a chunk carries BOTH finish_reason and usage (which happens when Azure's
+            # response.completed event is translated to a StreamChunk), OpenAI's protocol
+            # requires TWO separate SSE events:
+            #   1. A finish chunk:  choices=[{finish_reason: "stop", delta: {}}], no usage
+            #   2. A usage chunk:   choices=[] with the usage dict (stream_options behavior)
+            #
+            # This keeps compatibility with OpenAI clients that expect usage in a trailing
+            # empty-choices chunk.
+            clean_usage = None
+            if self.usage:
+                clean_usage = {k: v for k, v in self.usage.items() if not k.startswith('_')}
+
+            if self.finish_reason and clean_usage:
+                # Emit finish chunk without usage
+                finish_data = self.to_openai_format()
+                finish_data.pop("usage", None)
+                parts = [f"data: {json.dumps(finish_data, ensure_ascii=False)}\n\n"]
+
+                # Emit trailing usage-only chunk with empty choices (standard OpenAI behavior)
+                usage_data = {
+                    "id": self.id,
+                    "object": "chat.completion.chunk",
+                    "created": self.created,
+                    "model": self.model,
+                    "choices": [],
+                    "usage": self._format_openai_usage(clean_usage),
+                }
+                parts.append(f"data: {json.dumps(usage_data, ensure_ascii=False)}\n\n")
+                return "".join(parts)
+
             data = self.to_openai_format()
             return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     

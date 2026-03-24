@@ -57,7 +57,7 @@ class ProviderError(GatewayServiceError):
 
 # Internal metadata keys set by the gateway service.
 # These are used for internal logic and should NOT be sent to upstream provider APIs.
-INTERNAL_METADATA_KEYS = frozenset({'support_thinking'})
+INTERNAL_METADATA_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
 
 
 class GatewayService:
@@ -158,6 +158,16 @@ class GatewayService:
         # 2.5. 传递模型特性标志到请求元数据
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
 
+        # 2.6. Convert image URLs to base64 if provider doesn't support online images
+        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
+        if not support_online_image:
+            self._convert_image_urls_to_base64(request)
+
+        # 2.7. Convert video URLs to base64 if provider doesn't support online videos
+        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
+        if not support_online_video:
+            self._convert_video_urls_to_base64(request)
+
         # 3. 调用供应商 API
         try:
             response = resolved.provider_instance.chat(request)
@@ -210,7 +220,17 @@ class GatewayService:
         # 2.5. 传递模型特性标志到请求元数据
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
 
-        # 2.6. 判断是否应包含推理内容（在生成器外部计算，避免惰性求值问题）
+        # 2.6. Convert image URLs to base64 if provider doesn't support online images
+        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
+        if not support_online_image:
+            self._convert_image_urls_to_base64(request)
+
+        # 2.7. Convert video URLs to base64 if provider doesn't support online videos
+        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
+        if not support_online_video:
+            self._convert_video_urls_to_base64(request)
+
+        # 2.8. 判断是否应包含推理内容（在生成器外部计算，避免惰性求值问题）
         include_reasoning = self._should_include_reasoning(request)
 
         # 3. 返回惰性生成器（流式数据传输）
@@ -290,6 +310,168 @@ class GatewayService:
         except Exception as e:
             print(f"Error creating provider instance: {e}")
             return None
+
+    @staticmethod
+    def _convert_image_urls_to_base64(request: ChatRequest) -> None:
+        """
+        Convert all IMAGE_URL content blocks in the request to IMAGE_BASE64.
+
+        Some providers (e.g. Kimi/Moonshot) do not support online image URLs in
+        their API.  This method downloads each image and converts it to a base64
+        data URI so the provider receives the raw image data instead.
+
+        The conversion happens in-place on the request's messages.
+
+        Args:
+            request: The ChatRequest whose messages should be transformed.
+        """
+        import base64
+        import logging
+        import httpx
+        from app.abstraction.messages import ContentBlock, ContentType
+
+        logger = logging.getLogger("gateway")
+
+        # Guess MIME type from Content-Type header or URL extension
+        _EXT_MIME = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+            '.svg': 'image/svg+xml',
+            '.ico': 'image/x-icon',
+            '.tiff': 'image/tiff',
+            '.tif': 'image/tiff',
+        }
+
+        def _guess_mime(url: str, content_type: str = '') -> str:
+            """Determine MIME type from Content-Type header or URL extension."""
+            if content_type:
+                # Strip parameters like '; charset=utf-8'
+                mime = content_type.split(';')[0].strip().lower()
+                if mime.startswith('image/'):
+                    return mime
+            # Fall back to extension
+            from urllib.parse import urlparse
+            import os
+            path = urlparse(url).path
+            ext = os.path.splitext(path)[1].lower()
+            return _EXT_MIME.get(ext, 'image/jpeg')
+
+        for message in request.messages:
+            if not isinstance(message.content, list):
+                continue
+
+            new_blocks = []
+            for block in message.content:
+                if not isinstance(block, ContentBlock):
+                    new_blocks.append(block)
+                    continue
+
+                if block.type == ContentType.IMAGE_URL and block.url:
+                    # Download the image and convert to base64
+                    try:
+                        with httpx.Client(timeout=30, follow_redirects=True) as client:
+                            resp = client.get(block.url)
+                            resp.raise_for_status()
+                        ct = resp.headers.get('content-type', '')
+                        mime = _guess_mime(block.url, ct)
+                        b64_data = base64.b64encode(resp.content).decode('ascii')
+                        new_blocks.append(ContentBlock.from_image_base64(b64_data, mime))
+                        logger.info(
+                            f"Converted image URL to base64: {block.url[:80]}... "
+                            f"({len(resp.content)} bytes, {mime})"
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to download image URL {block.url[:120]}: {exc}. "
+                            f"Keeping original URL block."
+                        )
+                        # Keep the original block if download fails
+                        new_blocks.append(block)
+                else:
+                    new_blocks.append(block)
+
+            message.content = new_blocks
+
+    @staticmethod
+    def _convert_video_urls_to_base64(request: ChatRequest) -> None:
+        """
+        Convert all VIDEO_URL content blocks in the request to VIDEO_BASE64.
+
+        Some providers do not support online video URLs in their API.  This
+        method downloads each video and converts it to a base64 data URI so the
+        provider receives the raw video data instead.
+
+        The conversion happens in-place on the request's messages.
+
+        Args:
+            request: The ChatRequest whose messages should be transformed.
+        """
+        import base64
+        import logging
+        import httpx
+        from app.abstraction.messages import ContentBlock, ContentType
+
+        logger = logging.getLogger("gateway")
+
+        _EXT_MIME = {
+            '.mp4': 'video/mp4',
+            '.webm': 'video/webm',
+            '.ogg': 'video/ogg',
+            '.avi': 'video/x-msvideo',
+            '.mov': 'video/quicktime',
+            '.mkv': 'video/x-matroska',
+            '.flv': 'video/x-flv',
+            '.wmv': 'video/x-ms-wmv',
+        }
+
+        def _guess_mime(url: str, content_type: str = '') -> str:
+            if content_type:
+                mime = content_type.split(';')[0].strip().lower()
+                if mime.startswith('video/'):
+                    return mime
+            from urllib.parse import urlparse
+            import os
+            path = urlparse(url).path
+            ext = os.path.splitext(path)[1].lower()
+            return _EXT_MIME.get(ext, 'video/mp4')
+
+        for message in request.messages:
+            if not isinstance(message.content, list):
+                continue
+
+            new_blocks = []
+            for block in message.content:
+                if not isinstance(block, ContentBlock):
+                    new_blocks.append(block)
+                    continue
+
+                if block.type == ContentType.VIDEO_URL and block.url:
+                    try:
+                        with httpx.Client(timeout=60, follow_redirects=True) as http_client:
+                            resp = http_client.get(block.url)
+                            resp.raise_for_status()
+                        ct = resp.headers.get('content-type', '')
+                        mime = _guess_mime(block.url, ct)
+                        b64_data = base64.b64encode(resp.content).decode('ascii')
+                        new_blocks.append(ContentBlock.from_video_base64(b64_data, mime))
+                        logger.info(
+                            f"Converted video URL to base64: {block.url[:80]}... "
+                            f"({len(resp.content)} bytes, {mime})"
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to download video URL {block.url[:120]}: {exc}. "
+                            f"Keeping original URL block."
+                        )
+                        new_blocks.append(block)
+                else:
+                    new_blocks.append(block)
+
+            message.content = new_blocks
 
     @staticmethod
     def _parse_provider_error(error: RuntimeError) -> Tuple[int, Optional[dict]]:

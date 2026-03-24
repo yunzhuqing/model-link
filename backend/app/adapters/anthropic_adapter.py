@@ -425,12 +425,41 @@ class AnthropicMessagesAdapter(BaseAdapter):
         - 为了在 Anthropic 格式的 message_delta 中包含完整的 usage，
           需要缓冲 finish chunk，等待 usage chunk 到达后合并。
 
+        Error handling: we eagerly consume the first chunk *before* committing
+        to an SSE stream.  Most provider errors (authentication, invalid
+        parameters, unsupported models, etc.) surface on the very first
+        iteration of the upstream generator.  By catching them here we return a
+        proper JSON error response with ``content-type: application/json``
+        instead of an SSE event.
+
         流程：
         1. 流式输出 content_block_delta 等事件（实时）
         2. 遇到 finish_reason chunk 时缓冲，不立即输出
         3. 继续消费剩余 chunk，累积 usage
         4. 流结束后，将累积的 usage 注入 finish chunk 并输出
         """
+        from flask import jsonify
+
+        # ------------------------------------------------------------------
+        # Eagerly consume the first chunk to surface provider errors early.
+        # ------------------------------------------------------------------
+        chunk_iter = iter(chunks)
+        first_chunk = None
+        try:
+            first_chunk = next(chunk_iter)
+        except StopIteration:
+            pass
+        except ProviderError as e:
+            return jsonify(self.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
+        except GatewayServiceError as e:
+            return jsonify(self.format_error_response(e.message, e.status_code)), e.status_code
+        except Exception as e:
+            return jsonify(self.format_error_response(str(e), 500)), 500
+
+        # Capture for use inside generate()
+        _first_chunk = first_chunk
+        _chunk_iter = chunk_iter
+
         def generate():
             accumulated_usage = {}
             pending_finish_chunk = None
@@ -440,16 +469,8 @@ class AnthropicMessagesAdapter(BaseAdapter):
             content_block_index = 0  # 当前内容块索引
 
             try:
-                # Peek at the first chunk to extract usage info (input_tokens)
-                # and message ID for the message_start event.
-                # The first chunk from Anthropic provider contains input_tokens
-                # from the API's message_start event; from OpenAI-compatible
-                # providers it typically contains only the role.
-                first_chunk = None
-                try:
-                    first_chunk = next(chunks)
-                except StopIteration:
-                    pass
+                # Use the eagerly consumed first chunk (already validated above).
+                first_chunk = _first_chunk
 
                 # Extract usage info from the first chunk
                 message_id = None
@@ -487,9 +508,9 @@ class AnthropicMessagesAdapter(BaseAdapter):
                 # Build an iterator that includes the first chunk
                 import itertools
                 if first_chunk:
-                    all_chunks = itertools.chain([first_chunk], chunks)
+                    all_chunks = itertools.chain([first_chunk], _chunk_iter)
                 else:
-                    all_chunks = iter([])
+                    all_chunks = _chunk_iter
 
                 for chunk in all_chunks:
                     # 从每个 chunk 累积 usage 信息

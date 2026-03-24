@@ -11,11 +11,22 @@ OpenAI Responses API 是 OpenAI 的新一代 API 格式，
 - 流式事件使用更细粒度的事件类型
 """
 import json
+import os
 import time
 import uuid
 from typing import Optional
 
 from .base import BaseAdapter
+
+
+def _gen_id(prefix: str) -> str:
+    """Generate an ID with a given prefix matching OpenAI's ~50-char format.
+
+    OpenAI IDs look like ``resp_08a90de11516ea260069c1e8c3e01c8193a407cbeddc0316a8``
+    (prefix + 48 hex chars).  We use ``os.urandom`` for speed and sufficient length.
+    """
+    return f"{prefix}{os.urandom(24).hex()}"
+
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.abstraction.messages import Message, MessageRole, ContentBlock
@@ -116,6 +127,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                 ))
                             elif source.get('type') == 'url':
                                 blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                    elif block_type in ('input_video', 'video'):
+                        video_url_val = block.get('video_url', '')
+                        if isinstance(video_url_val, dict):
+                            video_url_val = video_url_val.get('url', '')
+                        if video_url_val:
+                            blocks.append(ContentBlock.from_video_url(video_url_val))
 
                 if blocks:
                     messages.append(Message(
@@ -194,6 +211,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                                 ))
                                             elif source.get('type') == 'url':
                                                 blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                                    elif block_type in ('input_video', 'video'):
+                                        video_url_val = block.get('video_url', '')
+                                        if isinstance(video_url_val, dict):
+                                            video_url_val = video_url_val.get('url', '')
+                                        if video_url_val:
+                                            blocks.append(ContentBlock.from_video_url(video_url_val))
                                     elif block_type == 'input_audio':
                                         if 'input_audio' in block:
                                             audio_data = block['input_audio']
@@ -327,7 +350,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             if choice.reasoning_content:
                 output.append({
                     'type': 'reasoning',
-                    'id': f"rs_{uuid.uuid4().hex[:12]}",
+                    'id': _gen_id("rs_"),
                     'summary': [
                         {
                             'type': 'summary_text',
@@ -361,7 +384,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if content_items:
                     output.append({
                         'type': 'message',
-                        'id': f"msg_{uuid.uuid4().hex[:12]}",
+                        'id': _gen_id("msg_"),
                         'role': 'assistant',
                         'status': 'completed',
                         'content': content_items
@@ -414,18 +437,143 @@ class OpenAIResponsesAdapter(BaseAdapter):
         事件类型:
         - response.output_text.delta: 文本增量
         - response.function_call_arguments.delta: 工具调用参数增量
+        - response.output_text.done / response.content_part.done / response.output_item.done:
+            finish chunk with full text (emitted before response.completed)
         - response.completed: 完成事件
+
+        Convention: when a chunk carries both `finish_reason` and `delta_content`, the
+        `delta_content` contains the FULL assembled text (not a new delta). In this case
+        we emit the three "done" closure events instead of a delta event.
         """
         events = []
+        msg_id = getattr(self, '_stream_msg_id', None)
 
-        if chunk.delta_content:
-            event_data = {
+        if chunk.finish_reason and chunk.delta_content is not None:
+            # Full-text finish chunk: emit the three closure events
+            full_text = chunk.delta_content or ""
+            resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
+
+            # 1. response.output_text.done
+            text_done: dict = {
+                'type': 'response.output_text.done',
+                'output_index': 0,
+                'content_index': 0,
+                'text': full_text
+            }
+            if msg_id:
+                text_done['item_id'] = msg_id
+            events.append(f"event: response.output_text.done\ndata: {json.dumps(text_done, ensure_ascii=False)}\n\n")
+
+            # 2. response.content_part.done
+            part_done: dict = {
+                'type': 'response.content_part.done',
+                'output_index': 0,
+                'content_index': 0,
+                'part': {
+                    'type': 'output_text',
+                    'text': full_text,
+                    'annotations': []
+                }
+            }
+            if msg_id:
+                part_done['item_id'] = msg_id
+            events.append(f"event: response.content_part.done\ndata: {json.dumps(part_done, ensure_ascii=False)}\n\n")
+
+            # 3. response.output_item.done
+            item_done: dict = {
+                'type': 'response.output_item.done',
+                'output_index': 0,
+                'item': {
+                    'type': 'message',
+                    'id': msg_id or '',
+                    'role': 'assistant',
+                    'status': 'completed',
+                    'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                }
+            }
+            events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+
+            # 4. response.completed
+            # Use the full Azure response object verbatim when available; otherwise build a
+            # complete response object that includes the full output text and usage info.
+            azure_resp = chunk.usage.get('_azure_completed_response') if chunk.usage else None
+            if azure_resp:
+                completed_resp = azure_resp
+            else:
+                # Build output array with full message text so clients receive a complete
+                # response object (mirroring what a non-streaming response would return).
+                output_items = []
+
+                # Include reasoning output item if accumulated during the stream
+                stream_reasoning = getattr(self, '_stream_full_reasoning', '')
+                if stream_reasoning:
+                    rs_id = getattr(self, '_stream_reasoning_id', _gen_id("rs_"))
+                    output_items.append({
+                        'type': 'reasoning',
+                        'id': rs_id,
+                        'summary': [{
+                            'type': 'summary_text',
+                            'text': stream_reasoning
+                        }]
+                    })
+
+                output_content = [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                output_items.append({
+                    'type': 'message',
+                    'id': msg_id or _gen_id("msg_"),
+                    'role': 'assistant',
+                    'status': 'completed',
+                    'content': output_content
+                })
+                completed_resp = {
+                    'id': resp_id,
+                    'object': 'response',
+                    'status': 'completed',
+                    'model': chunk.model,
+                    'output': output_items,
+                }
+                if chunk.usage:
+                    usage_out: dict = {
+                        'input_tokens': chunk.usage.get('prompt_tokens', 0),
+                        'output_tokens': chunk.usage.get('completion_tokens', 0),
+                        'total_tokens': chunk.usage.get('total_tokens', 0),
+                    }
+                    if chunk.usage.get('cached_tokens'):
+                        usage_out['input_tokens_details'] = {'cached_tokens': chunk.usage['cached_tokens']}
+                    if chunk.usage.get('reasoning_tokens'):
+                        usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage['reasoning_tokens']}
+                    completed_resp['usage'] = usage_out
+            completed: dict = {
+                'type': 'response.completed',
+                'response': completed_resp
+            }
+            events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
+
+        elif chunk.delta_content:
+            # Regular incremental delta
+            event_data: dict = {
                 'type': 'response.output_text.delta',
                 'output_index': 0,
                 'content_index': 0,
                 'delta': chunk.delta_content
             }
+            if msg_id:
+                event_data['item_id'] = msg_id
             events.append(f"event: response.output_text.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
+
+        elif chunk.finish_reason:
+            # finish_reason only (no full text) — emit response.completed directly
+            resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
+            completed = {
+                'type': 'response.completed',
+                'response': {
+                    'id': resp_id,
+                    'object': 'response',
+                    'status': 'completed',
+                    'model': chunk.model
+                }
+            }
+            events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
 
         if chunk.tool_calls:
             for tc in chunk.tool_calls:
@@ -439,40 +587,54 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     events.append(f"event: response.function_call_arguments.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
 
-        if chunk.finish_reason:
-            event_data = {
-                'type': 'response.completed',
-                'response': {
-                    'id': chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id,
-                    'object': 'response',
-                    'status': 'completed',
-                    'model': chunk.model
-                }
-            }
-            events.append(f"event: response.completed\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
+        # Emit any raw SSE strings that the provider encoded for verbatim passthrough
+        # (e.g. Azure reasoning_summary events that have no StreamChunk equivalent).
+        if chunk.raw_sse_passthrough:
+            events.extend(chunk.raw_sse_passthrough)
 
         return ''.join(events) if events else ''
 
-    def format_stream_start(self, model_name: str) -> Optional[str]:
-        """发送 Responses API 流式开始事件"""
-        response_id = f"resp_{uuid.uuid4().hex[:12]}"
-        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+    def format_stream_start(self, model_name: str, response_id: Optional[str] = None, msg_id: Optional[str] = None) -> Optional[str]:
+        """发送 Responses API 流式开始事件
 
+        Args:
+            model_name: 模型名称
+            response_id: 可选的响应 ID。若提供则直接使用（e.g. Azure 的真实 resp_xxx ID），
+                         否则自动生成一个新的 ID。
+            msg_id: 可选的消息 item ID。若提供则直接使用（e.g. Azure 的真实 msg_xxx ID），
+                    否则自动生成一个新的 ID。
+        """
+        if not response_id:
+            response_id = _gen_id("resp_")
+        if not msg_id:
+            msg_id = _gen_id("msg_")
+
+        now = int(time.time())
         events = []
+
+        # Shared response envelope used in both response.created and response.in_progress
+        response_envelope = {
+            'id': response_id,
+            'object': 'response',
+            'created_at': now,
+            'model': model_name,
+            'status': 'in_progress',
+            'output': []
+        }
 
         # response.created
         created_data = {
             'type': 'response.created',
-            'response': {
-                'id': response_id,
-                'object': 'response',
-                'created_at': int(time.time()),
-                'model': model_name,
-                'status': 'in_progress',
-                'output': []
-            }
+            'response': response_envelope
         }
         events.append(f"event: response.created\ndata: {json.dumps(created_data)}\n\n")
+
+        # response.in_progress
+        in_progress_data = {
+            'type': 'response.in_progress',
+            'response': response_envelope
+        }
+        events.append(f"event: response.in_progress\ndata: {json.dumps(in_progress_data)}\n\n")
 
         # response.output_item.added
         item_data = {
@@ -491,6 +653,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         # response.content_part.added
         part_data = {
             'type': 'response.content_part.added',
+            'item_id': msg_id,
             'output_index': 0,
             'content_index': 0,
             'part': {
@@ -503,26 +666,337 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
         return ''.join(events)
 
+    def create_stream_response(self, chunks, model_name: str):
+        """
+        Override base implementation to extract the real response ID from the
+        first chunk before emitting the `response.created` SSE event.
+
+        When the upstream provider (e.g. Azure Responses API) yields a role-only
+        marker chunk whose ID is the real `resp_xxx` assigned by Azure, we:
+          1. Capture that ID and use it in `format_stream_start`.
+          2. Drop the role-only marker chunk (it carries no content to send).
+          3. Process all remaining chunks normally.
+
+        For other providers that do not emit such a marker, the first chunk will
+        either have content or be a finish chunk, and we simply fall back to
+        generating a random ID in `format_stream_start`.
+
+        Error handling: we eagerly consume the first chunk *before* committing to
+        an SSE stream.  Most provider errors (authentication, invalid parameters,
+        unsupported models, etc.) surface on the very first iteration of the
+        upstream generator.  By catching them here we return a proper JSON error
+        response with ``content-type: application/json`` instead of an SSE event.
+        """
+        from flask import Response, jsonify
+        from app.middleware.gateway_service import GatewayServiceError, ProviderError
+        import itertools
+
+        # ------------------------------------------------------------------
+        # Eagerly consume the first chunk to surface provider errors early.
+        # ------------------------------------------------------------------
+        chunk_iter_raw = iter(chunks)
+        first_chunks: list = []
+        try:
+            first_chunk = next(chunk_iter_raw)
+            first_chunks.append(first_chunk)
+        except StopIteration:
+            pass
+        except ProviderError as e:
+            return jsonify(self.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
+        except GatewayServiceError as e:
+            return jsonify(self.format_error_response(e.message, e.status_code)), e.status_code
+        except Exception as e:
+            return jsonify(self.format_error_response(str(e), 500)), 500
+
+        # Re-chain the eagerly consumed chunk(s) with the remaining iterator
+        all_chunks = itertools.chain(first_chunks, chunk_iter_raw)
+
+        def _is_marker_chunk(chunk: StreamChunk) -> bool:
+            """Return True if this chunk is a role-only marker carrying an ID."""
+            return bool(
+                chunk.delta_role
+                and not chunk.delta_content
+                and not chunk.finish_reason
+                and not chunk.tool_calls
+                and not chunk.raw_sse_passthrough
+            )
+
+        def generate():
+            try:
+                real_response_id = None
+                real_msg_id = None
+                buffered_chunk = None
+
+                chunk_iter = iter(all_chunks)
+
+                # Consume all leading marker chunks before emitting the start event.
+                # Markers are role-only chunks with no content/finish/tool_calls:
+                #   delta_role == "assistant"   → carries the real resp_xxx response ID
+                #   delta_role.startswith("msg_") → carries the real msg_xxx message ID
+                # We keep consuming until we see the first non-marker (real content) chunk.
+                while True:
+                    try:
+                        chunk = next(chunk_iter)
+                    except StopIteration:
+                        chunk = None
+                        break
+
+                    if not _is_marker_chunk(chunk):
+                        # Real content chunk — buffer it for after the start event
+                        buffered_chunk = chunk
+                        break
+
+                    role_val = chunk.delta_role
+                    if role_val == "assistant":
+                        real_response_id = chunk.id if chunk.id else None
+                    elif role_val and role_val.startswith("msg_"):
+                        real_msg_id = role_val
+                    # Any other role value is silently dropped
+
+                # Ensure we always have a concrete msg_id before emitting the start event.
+                # For non-Azure providers (e.g. Bailian) no marker chunks carry a msg_id, so
+                # we generate one here and store it on the adapter so that format_stream_chunk
+                # can include item_id in every response.output_text.delta event.
+                if not real_msg_id:
+                    real_msg_id = _gen_id("msg_")
+                self._stream_msg_id = real_msg_id
+
+                # Emit the start event using captured real IDs (or generated fallbacks)
+                start_event = self.format_stream_start(model_name, real_response_id, real_msg_id)
+                if start_event:
+                    yield start_event
+
+                # ----------------------------------------------------------------
+                # Accumulate text and handle finish/usage chunk pairing.
+                #
+                # Non-Azure providers (e.g. Bailian) emit the finish_reason and
+                # the usage as TWO separate consecutive StreamChunks:
+                #   1. finish chunk  – finish_reason="stop", no content, no usage
+                #   2. usage chunk   – choices=[], usage={...}, no finish_reason
+                #
+                # The Responses API adapter needs to emit the three "done" closure
+                # events (output_text.done / content_part.done / output_item.done)
+                # with the FULL assembled text, followed by response.completed
+                # containing the usage.  This requires combining the two chunks.
+                #
+                # Azure already combines them into a single chunk (delta_content =
+                # full text, finish_reason set, usage set), so we pass those through
+                # unchanged.
+                # ----------------------------------------------------------------
+                full_text = ""          # accumulated response text
+                full_reasoning = ""     # accumulated reasoning text
+                reasoning_started = False   # have we emitted reasoning_summary_part.added?
+                reasoning_closed = False    # have we emitted reasoning_summary done events?
+                finish_chunk = None     # buffered finish chunk waiting for usage
+
+                def _emit_reasoning_start():
+                    """Emit response.reasoning_summary_part.added event."""
+                    rs_id = _gen_id("rs_")
+                    # Store on adapter so format_stream_chunk can reference it
+                    self._stream_reasoning_id = rs_id
+                    event_data = {
+                        'type': 'response.reasoning_summary_part.added',
+                        'item_id': rs_id,
+                        'output_index': 0,
+                        'summary_index': 0,
+                        'part': {
+                            'type': 'summary_text',
+                            'text': ''
+                        }
+                    }
+                    return f"event: response.reasoning_summary_part.added\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+
+                def _emit_reasoning_delta(text):
+                    """Emit response.reasoning_summary_text.delta event."""
+                    rs_id = getattr(self, '_stream_reasoning_id', '')
+                    event_data = {
+                        'type': 'response.reasoning_summary_text.delta',
+                        'item_id': rs_id,
+                        'output_index': 0,
+                        'summary_index': 0,
+                        'delta': text
+                    }
+                    return f"event: response.reasoning_summary_text.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+
+                def _emit_reasoning_done():
+                    """Emit response.reasoning_summary_text.done + part.done events."""
+                    rs_id = getattr(self, '_stream_reasoning_id', '')
+                    parts = []
+                    # 1. response.reasoning_summary_text.done
+                    text_done = {
+                        'type': 'response.reasoning_summary_text.done',
+                        'item_id': rs_id,
+                        'output_index': 0,
+                        'summary_index': 0,
+                        'text': full_reasoning
+                    }
+                    parts.append(f"event: response.reasoning_summary_text.done\ndata: {json.dumps(text_done, ensure_ascii=False)}\n\n")
+                    # 2. response.reasoning_summary_part.done
+                    part_done = {
+                        'type': 'response.reasoning_summary_part.done',
+                        'item_id': rs_id,
+                        'output_index': 0,
+                        'summary_index': 0,
+                        'part': {
+                            'type': 'summary_text',
+                            'text': full_reasoning
+                        }
+                    }
+                    parts.append(f"event: response.reasoning_summary_part.done\ndata: {json.dumps(part_done, ensure_ascii=False)}\n\n")
+                    return ''.join(parts)
+
+                def _process_chunk(chunk):
+                    """
+                    Route a single chunk, always using the locally accumulated full_text
+                    for the done-event sequence:
+
+                    - Reasoning delta                  → emit reasoning summary events
+                    - Incremental text delta           → accumulate text, yield SSE delta
+                    - Combined finish+usage (Azure)    → override delta_content with full_text,
+                                                         yield done events + response.completed
+                    - Finish-only (Bailian/OpenAI)     → accumulate any final content, buffer
+                    - Usage-only                       → combine with buffered finish using
+                                                         full_text, yield done events + completed
+                    - Anything else                    → yield SSE as-is
+                    """
+                    nonlocal full_text, full_reasoning, reasoning_started, reasoning_closed, finish_chunk
+                    import copy
+                    parts = []
+
+                    # Handle reasoning_content (e.g. from Bailian qwen models with thinking)
+                    if chunk.delta_reasoning_content:
+                        if not reasoning_started:
+                            parts.append(_emit_reasoning_start())
+                            reasoning_started = True
+                        parts.append(_emit_reasoning_delta(chunk.delta_reasoning_content))
+                        full_reasoning += chunk.delta_reasoning_content
+
+                    # When transitioning from reasoning to text content, close reasoning
+                    if chunk.delta_content and reasoning_started and not reasoning_closed:
+                        parts.append(_emit_reasoning_done())
+                        reasoning_closed = True
+
+                    if chunk.finish_reason and chunk.usage is not None:
+                        # Close reasoning if still open
+                        if reasoning_started and not reasoning_closed:
+                            parts.append(_emit_reasoning_done())
+                            reasoning_closed = True
+                        # Combined finish+usage chunk (Azure convention or equivalent).
+                        combined = copy.copy(chunk)
+                        combined.delta_content = full_text
+                        # Store accumulated reasoning so format_stream_chunk can include it
+                        self._stream_full_reasoning = full_reasoning
+                        parts.append(self.format_stream_chunk(combined))
+                        return ''.join(parts)
+
+                    if chunk.finish_reason:
+                        # Close reasoning if still open
+                        if reasoning_started and not reasoning_closed:
+                            parts.append(_emit_reasoning_done())
+                            reasoning_closed = True
+                        # Finish-only chunk (Bailian/OpenAI standard): usage arrives later.
+                        if chunk.delta_content:
+                            full_text += chunk.delta_content
+                        finish_chunk = chunk
+                        return ''.join(parts)
+
+                    if chunk.usage and not chunk.finish_reason:
+                        # Usage-only chunk (stream_options / incremental_output).
+                        if finish_chunk is not None:
+                            combined = copy.copy(finish_chunk)
+                            combined.delta_content = full_text
+                            combined.usage = chunk.usage
+                            finish_chunk = None
+                            # Store accumulated reasoning so format_stream_chunk can include it
+                            self._stream_full_reasoning = full_reasoning
+                            parts.append(self.format_stream_chunk(combined))
+                            return ''.join(parts)
+                        return ''.join(parts)
+
+                    # Normal incremental delta (content / tool_calls / etc.)
+                    if chunk.delta_content:
+                        full_text += chunk.delta_content
+                    parts.append(self.format_stream_chunk(chunk))
+                    return ''.join(parts)
+
+                # Process buffered first chunk (if any)
+                if buffered_chunk is not None:
+                    sse = _process_chunk(buffered_chunk)
+                    if sse:
+                        yield sse
+
+                # Process remaining chunks
+                for chunk in chunk_iter:
+                    sse = _process_chunk(chunk)
+                    if sse:
+                        yield sse
+
+                # If a finish chunk was buffered but no usage chunk followed (e.g. the
+                # upstream didn't send stream_options usage), emit it now with full_text.
+                if finish_chunk is not None:
+                    finish_chunk.delta_content = full_text
+                    sse = self.format_stream_chunk(finish_chunk)
+                    if sse:
+                        yield sse
+
+                yield self.format_stream_end()
+
+            except (GatewayServiceError, ProviderError) as e:
+                yield self.format_stream_error(e)
+                yield self.format_stream_end()
+            except Exception as e:
+                yield self.format_stream_error(e)
+                yield self.format_stream_end()
+
+        from flask import Response
+        return Response(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            }
+        )
+
     def format_stream_end(self) -> str:
         """Responses API 流式结束标记"""
         return "data: [DONE]\n\n"
+
+    def format_error_response(self, message: str, status_code: int, error_data: dict = None) -> dict:
+        """
+        Format an error for the Responses API.
+
+        OpenAI Responses API returns errors in the same format as Chat Completions:
+        {"error": {"message": "...", "type": "...", "param": "...", "code": null}}
+
+        When error_data is provided from the upstream provider, it already contains the
+        full error structure (e.g. {"error": {...}}), so we return it as-is.
+        """
+        if error_data:
+            return error_data
+        return {
+            'error': {
+                'message': message,
+                'type': 'server_error',
+                'code': status_code,
+            }
+        }
 
     def format_stream_error(self, error: Exception) -> str:
         """将错误转换为 Responses API 格式的流式错误事件"""
         from app.middleware.gateway_service import ProviderError
 
         if isinstance(error, ProviderError) and error.error_data:
-            error_event = {
-                'type': 'error',
-                'error': error.error_data
-            }
+            # error_data may already be wrapped as {"error": {...}}; unwrap if so
+            inner = error.error_data
+            if 'error' in inner and isinstance(inner['error'], dict):
+                inner = inner['error']
+            error_event = inner
         else:
             error_event = {
-                'type': 'error',
-                'error': {
-                    'type': 'server_error',
-                    'message': str(error)
-                }
+                'type': 'server_error',
+                'message': str(error)
             }
 
         return f"event: error\ndata: {json.dumps(error_event)}\n\n"

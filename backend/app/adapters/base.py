@@ -93,6 +93,13 @@ class BaseAdapter(ABC):
         """
         从 StreamChunk 生成器创建 HTTP 流式响应。
 
+        Error handling: we eagerly consume the first chunk *before* committing
+        to an SSE stream.  Most provider errors (authentication, invalid
+        parameters, unsupported models, etc.) surface on the very first
+        iteration of the upstream generator.  By catching them here we return a
+        proper JSON error response with ``content-type: application/json``
+        instead of an SSE event.
+
         Args:
             chunks: StreamChunk 生成器
             model_name: 模型名称（用于错误处理）
@@ -100,6 +107,29 @@ class BaseAdapter(ABC):
         Returns:
             Flask Response 对象
         """
+        import itertools
+        from flask import jsonify
+
+        # ------------------------------------------------------------------
+        # Eagerly consume the first chunk to surface provider errors early.
+        # ------------------------------------------------------------------
+        chunk_iter = iter(chunks)
+        first_chunks: list = []
+        try:
+            first_chunk = next(chunk_iter)
+            first_chunks.append(first_chunk)
+        except StopIteration:
+            pass
+        except ProviderError as e:
+            return jsonify(self.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
+        except GatewayServiceError as e:
+            return jsonify(self.format_error_response(e.message, e.status_code)), e.status_code
+        except Exception as e:
+            return jsonify(self.format_error_response(str(e), 500)), 500
+
+        # Re-chain the eagerly consumed chunk(s) with the remaining iterator
+        all_chunks = itertools.chain(first_chunks, chunk_iter)
+
         def generate():
             try:
                 # 发送流式开始事件（子类可覆盖）
@@ -107,7 +137,7 @@ class BaseAdapter(ABC):
                 if start_event:
                     yield start_event
 
-                for chunk in chunks:
+                for chunk in all_chunks:
                     yield self.format_stream_chunk(chunk)
 
                 # 发送结束标记

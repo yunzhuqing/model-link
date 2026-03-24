@@ -126,10 +126,16 @@ class BailianProvider(OpenAIProvider):
             data["enable_search"] = request.metadata["enable_search"]
         
         # 百炼特有：根据模型是否支持思维和 reasoning_effort 设置 enable_thinking
-        # reasoning_effort 默认为 None/'none'，当不为 'none' 时启用思维
+        # Enable thinking when:
+        # 1. Model has support_thinking=True in DB AND reasoning_effort is not 'none', OR
+        # 2. User explicitly set reasoning_effort via the API (e.g. /v1/responses reasoning param)
+        reasoning_effort = request.reasoning_effort or 'none'
         if request.metadata.get('support_thinking', False):
-            reasoning_effort = request.reasoning_effort or 'none'
             data["enable_thinking"] = reasoning_effort != 'none'
+        elif reasoning_effort != 'none':
+            # User explicitly requested reasoning (e.g. via /v1/responses),
+            # enable thinking even if DB support_thinking is not set
+            data["enable_thinking"] = True
         
         # 打印请求体到控制台
         print("\n" + "=" * 50, file=sys.stderr)

@@ -15,7 +15,7 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 
 # Internal metadata keys set by the gateway service.
 # These must be filtered out before sending requests to upstream provider APIs.
-_GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking'})
+_GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
 
 
 def parse_openai_request(data: dict) -> ChatRequest:

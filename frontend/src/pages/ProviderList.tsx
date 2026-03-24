@@ -22,6 +22,8 @@ interface Model {
   support_web_search: boolean;
   support_tool_search: boolean;
   support_thinking: boolean;
+  support_online_image: boolean;
+  support_online_video: boolean;
 }
 
 interface Provider {
@@ -59,6 +61,8 @@ const defaultModelState = {
   support_web_search: false,
   support_tool_search: false,
   support_thinking: false,
+  support_online_image: true,
+  support_online_video: true,
 };
 
 const ProviderList = () => {
@@ -530,6 +534,8 @@ const ProviderList = () => {
                                 {model.support_web_search && <FeatureBadge label="Web Search" color="indigo" />}
                                 {model.support_tool_search && <FeatureBadge label="Tool Search" color="pink" />}
                                 {model.support_thinking && <FeatureBadge label="Thinking" color="cyan" />}
+                                {model.support_online_image === false && <FeatureBadge label="Base64 Image Only" color="slate" />}
+                                {model.support_online_video === false && <FeatureBadge label="Base64 Video Only" color="slate" />}
                               </div>
                             </div>
                             <div className="flex space-x-1 ml-4">
@@ -592,6 +598,7 @@ const FeatureBadge = ({ label, color }: { label: string; color: string }) => {
     indigo: 'bg-indigo-100 text-indigo-700',
     pink: 'bg-pink-100 text-pink-700',
     cyan: 'bg-cyan-100 text-cyan-700',
+    slate: 'bg-slate-200 text-slate-700',
   };
   return (
     <span className={`px-2.5 py-1 rounded-lg text-xs font-medium ${colors[color]}`}>
@@ -710,11 +717,13 @@ const ModelForm = ({
             { key: 'support_web_search', label: 'Web Search' },
             { key: 'support_tool_search', label: 'Tool Search' },
             { key: 'support_thinking', label: 'Thinking' },
+            { key: 'support_online_image', label: 'Online Image URL' },
+            { key: 'support_online_video', label: 'Online Video URL' },
           ].map((feature) => (
             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
               <input
                 type="checkbox"
-                checked={model[feature.key]}
+                checked={!!model[feature.key]}
                 onChange={(e) => setModel({ ...model, [feature.key]: e.target.checked })}
                 className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />

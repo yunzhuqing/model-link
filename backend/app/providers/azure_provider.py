@@ -270,15 +270,22 @@ class AzureProvider(OpenAIProvider):
         if request.user:
             result["user"] = request.user
 
-        # Add reasoning parameter for models that support it
+        # Add reasoning parameter for models that support it.
+        # Always include "summary": "auto" so Azure emits reasoning_summary streaming events
+        # (response.reasoning_summary_part.added / text.delta / text.done / part.done).
+        # The caller can override this by providing a full reasoning dict in metadata.
         if request.reasoning_effort:
             # Use full reasoning config from metadata if available (includes summary field)
             reasoning_config = request.metadata.get('reasoning') if request.metadata else None
             if reasoning_config and isinstance(reasoning_config, dict):
+                # Ensure summary is present; default to "auto" if not specified
+                if 'summary' not in reasoning_config:
+                    reasoning_config = dict(reasoning_config, summary="auto")
                 result["reasoning"] = reasoning_config
             else:
                 result["reasoning"] = {
-                    "effort": request.reasoning_effort
+                    "effort": request.reasoning_effort,
+                    "summary": "auto",
                 }
 
         return result
@@ -350,10 +357,8 @@ class AzureProvider(OpenAIProvider):
             reasoning_tokens=output_token_details.get("reasoning_tokens", 0),
         )
 
-        resp_id = response_data.get("id", f"resp_{uuid.uuid4().hex[:8]}")
-        # Normalise to chatcmpl- prefix for internal consistency
-        if resp_id.startswith("resp_"):
-            resp_id = resp_id.replace("resp_", "chatcmpl-", 1)
+        # Keep Azure's original resp_ ID as-is so the caller receives the exact same ID
+        resp_id = response_data.get("id", f"resp_{uuid.uuid4().hex[:12]}")
 
         return ChatResponse(
             id=resp_id,
@@ -370,13 +375,23 @@ class AzureProvider(OpenAIProvider):
         """
         Parse Server-Sent Events from the Responses API streaming endpoint
         into StreamChunk objects.
+
+        The real response ID is taken from Azure's `response.completed` event,
+        which carries the full response object including the authoritative `id`.
+        Delta chunks do not need a meaningful ID because the Responses API adapter
+        does not include the ID in delta SSE events.
         """
+        # Accumulate the real ID from response.completed; use fallback until then
+        current_id = response_id
+        # Full text captured from response.output_text.done (sent with the finish chunk)
+        full_text: str = ""
+
         for line in response.iter_lines():
             if not line:
                 continue
 
             if line.startswith("event:"):
-                # SSE event name line — skip, we read the data on the next line
+                # SSE event name line — skip, data follows on the next line
                 continue
 
             if line.startswith("data:"):
@@ -392,10 +407,77 @@ class AzureProvider(OpenAIProvider):
 
                 event_type = event_data.get("type", "")
 
-                if event_type == "response.output_text.delta":
+                if event_type == "response.created":
+                    # Capture Azure's real response ID from the first SSE event and yield a
+                    # marker chunk so the adapter can use it for the response.created event
+                    # it sends to the client.
+                    resp = event_data.get("response", {})
+                    real_id = resp.get("id")
+                    if real_id:
+                        current_id = real_id
+                    # Yield a role-only chunk (no content) to propagate the real ID upstream.
+                    # The Responses API adapter ignores role-only chunks in format_stream_chunk.
+                    yield StreamChunk(
+                        id=current_id,
+                        model=model,
+                        delta_role="assistant",
+                        created=int(time.time())
+                    )
+
+                elif event_type == "response.in_progress":
+                    # Azure sends this immediately after response.created; it also carries
+                    # the real response ID. Capture it as a belt-and-suspenders measure.
+                    # We do NOT yield a chunk — the adapter already emitted response.created.
+                    resp = event_data.get("response", {})
+                    real_id = resp.get("id")
+                    if real_id:
+                        current_id = real_id
+
+                elif event_type == "response.output_item.added":
+                    # Capture Azure's real message item ID so the adapter can use it in
+                    # the response.output_item.added event it sends to the client.
+                    # We encode the message ID in delta_role using the convention "msg_xxx".
+                    # Only emit for message-type items (not reasoning or function_call items).
+                    item = event_data.get("item", {})
+                    msg_id = item.get("id", "")
+                    if msg_id and item.get("type") == "message" and msg_id.startswith("msg_"):
+                        yield StreamChunk(
+                            id=current_id,
+                            model=model,
+                            delta_role=msg_id,  # encodes the real message ID
+                            created=int(time.time())
+                        )
+
+                elif event_type == "response.output_text.done":
+                    # Capture the full assembled text; pass it with the finish chunk so
+                    # the adapter can emit response.output_text.done / content_part.done /
+                    # output_item.done events to the client.
+                    full_text = event_data.get("text", "")
+
+                elif event_type in (
+                    "response.reasoning_summary_part.added",
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_summary_text.done",
+                    "response.reasoning_summary_part.done",
+                ):
+                    # Forward reasoning summary events verbatim to the Responses API adapter.
+                    # These events are Azure-specific and have no equivalent in the generic
+                    # StreamChunk model, so we encode them as raw SSE passthrough strings.
+                    raw_sse = (
+                        f"event: {event_type}\n"
+                        f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                    )
+                    yield StreamChunk(
+                        id=current_id,
+                        model=model,
+                        raw_sse_passthrough=[raw_sse],
+                        created=int(time.time())
+                    )
+
+                elif event_type == "response.output_text.delta":
                     delta = event_data.get("delta", "")
                     yield StreamChunk(
-                        id=response_id,
+                        id=current_id,
                         model=model,
                         delta_content=delta,
                         created=int(time.time())
@@ -405,7 +487,7 @@ class AzureProvider(OpenAIProvider):
                     delta = event_data.get("delta", "")
                     index = event_data.get("output_index", 0)
                     yield StreamChunk(
-                        id=response_id,
+                        id=current_id,
                         model=model,
                         tool_calls=[{
                             "index": index,
@@ -416,15 +498,35 @@ class AzureProvider(OpenAIProvider):
 
                 elif event_type == "response.completed":
                     resp = event_data.get("response", {})
+                    # Use the authoritative ID that Azure assigns in the completed event
+                    real_id = resp.get("id")
+                    if real_id:
+                        current_id = real_id
                     usage_data = resp.get("usage", {})
-                    usage = {
-                        "prompt_tokens": usage_data.get("input_tokens", 0),
-                        "completion_tokens": usage_data.get("output_tokens", 0),
-                        "total_tokens": usage_data.get("total_tokens", 0),
-                    } if usage_data else None
+                    if usage_data:
+                        input_details = usage_data.get("input_tokens_details", {})
+                        output_details = usage_data.get("output_tokens_details", {})
+                        usage: Dict[str, Any] = {
+                            "prompt_tokens": usage_data.get("input_tokens", 0),
+                            "completion_tokens": usage_data.get("output_tokens", 0),
+                            "total_tokens": usage_data.get("total_tokens", 0),
+                        }
+                        if input_details.get("cached_tokens"):
+                            usage["cached_tokens"] = input_details["cached_tokens"]
+                        if output_details.get("reasoning_tokens"):
+                            usage["reasoning_tokens"] = output_details["reasoning_tokens"]
+                        # Carry the full Azure response object so the adapter can emit it
+                        # verbatim in the response.completed SSE event.
+                        usage["_azure_completed_response"] = resp
+                    else:
+                        usage = {"_azure_completed_response": resp} if resp else None
+                    # Pass full_text in delta_content so the adapter can emit the three
+                    # "done" events (output_text.done, content_part.done, output_item.done)
+                    # before the response.completed event.
                     yield StreamChunk(
-                        id=response_id,
+                        id=current_id,
                         model=model,
+                        delta_content=full_text if full_text else None,
                         finish_reason=FinishReason.STOP,
                         usage=usage,
                         created=int(time.time())
@@ -504,7 +606,13 @@ class AzureProvider(OpenAIProvider):
 
         deployment_name = request.model
         url = self.get_chat_url(deployment_name)
-        response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        # For Chat Completions models, generate a local ID (Azure doesn't return one upfront).
+        # For Responses API models, Azure provides the real ID in the response.completed event;
+        # we start with an empty string and fill it in from the SSE stream.
+        if self._uses_responses_api(deployment_name):
+            response_id = ""
+        else:
+            response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
         if self._uses_responses_api(deployment_name):
             request_data = self._prepare_responses_api_request(request)
