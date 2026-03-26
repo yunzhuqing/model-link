@@ -9,7 +9,7 @@ Gemini API 文档:
 https://ai.google.dev/gemini-api/docs
 
 配置说明:
-- base_url: API 基础 URL（默认 https://generativelanguage.googleapis.com/v1beta）
+- base_url: API 基础 URL（默认 https://generativelanguage.googleapis.com）
 - api_key: Google AI API Key
 """
 from typing import Optional, List, Dict, Any, Generator
@@ -37,7 +37,7 @@ class GeminiProvider(BaseProvider):
     使用 API Key 认证，无需 Google Cloud 服务账号。
 
     配置:
-        - base_url: https://generativelanguage.googleapis.com/v1beta（默认）
+        - base_url: https://generativelanguage.googleapis.com（默认）
         - api_key: Google AI API Key
     """
 
@@ -52,7 +52,7 @@ class GeminiProvider(BaseProvider):
         ProviderCapability.VIDEO,
     ]
 
-    DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+    DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 
     SUPPORTED_MODELS = {
         "gemini-2.5-pro": {
@@ -105,6 +105,12 @@ class GeminiProvider(BaseProvider):
     def __init__(self, config: ProviderConfig):
         if not config.base_url:
             config.base_url = self.DEFAULT_BASE_URL
+        # Normalize: strip /v1beta or /v1beta/ suffix if present.
+        # The /v1beta prefix is added internally in _get_api_url.
+        if config.base_url:
+            config.base_url = config.base_url.rstrip('/')
+            if config.base_url.endswith('/v1beta'):
+                config.base_url = config.base_url[:-len('/v1beta')]
         super().__init__(config)
 
     def get_headers(self) -> Dict[str, str]:
@@ -112,6 +118,7 @@ class GeminiProvider(BaseProvider):
         return {
             "Content-Type": "application/json",
             "x-goog-api-key": self.config.api_key,
+            "Authorization": f"Bearer {self.config.api_key}",
         }
 
     @property
@@ -142,28 +149,31 @@ class GeminiProvider(BaseProvider):
         """
         构建 Gemini API URL
 
+        base_url 格式为 https://xxxx（不含 /v1beta），
+        /v1beta 前缀在此方法内自动添加。
+
         Args:
             model: 模型名称
             streaming: 是否流式请求
 
         Returns:
-            完整的 API URL（包含 API Key）
+            完整的 API URL
         """
         base_url = self.config.base_url.rstrip('/')
         if streaming:
-            return f"{base_url}/models/{model}:streamGenerateContent?alt=sse"
+            return f"{base_url}/v1beta/models/{model}:streamGenerateContent?alt=sse"
         else:
-            return f"{base_url}/models/{model}:generateContent"
+            return f"{base_url}/v1beta/models/{model}:generateContent"
 
     def _get_embed_url(self, model: str) -> str:
         """构建嵌入 API URL"""
         base_url = self.config.base_url.rstrip('/')
-        return f"{base_url}/models/{model}:embedContent"
+        return f"{base_url}/v1beta/models/{model}:embedContent"
 
     def _get_batch_embed_url(self, model: str) -> str:
         """构建批量嵌入 API URL"""
         base_url = self.config.base_url.rstrip('/')
-        return f"{base_url}/models/{model}:batchEmbedContents"
+        return f"{base_url}/v1beta/models/{model}:batchEmbedContents"
 
     # ==================== 请求准备 ====================
 
@@ -178,14 +188,32 @@ class GeminiProvider(BaseProvider):
                 "parts": [{"text": system_content}]
             }
 
-        # Convert messages to Gemini contents
+        # Convert messages to Gemini contents.
+        # Build a call_id → name mapping so functionResponse can include the
+        # function name even when the TOOL_RESULT ContentBlock doesn't carry it.
+        call_id_to_name: Dict[str, str] = {}
+        for msg in request.messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                        if block.tool_call_id and block.tool_name:
+                            call_id_to_name[block.tool_call_id] = block.tool_name
+
         contents = []
         for msg in request.messages:
             if msg.role == MessageRole.SYSTEM:
                 continue
-            gemini_msg = self._message_to_gemini(msg)
+            gemini_msg = self._message_to_gemini(msg, call_id_to_name)
             if gemini_msg:
-                contents.append(gemini_msg)
+                # Merge consecutive same-role messages.
+                # Gemini requires alternating user/model roles. When the
+                # Responses adapter creates separate ASSISTANT messages for each
+                # function_call or separate TOOL messages for each
+                # function_call_output, we must merge them into single messages.
+                if contents and contents[-1].get("role") == gemini_msg.get("role"):
+                    contents[-1]["parts"].extend(gemini_msg["parts"])
+                else:
+                    contents.append(gemini_msg)
         result["contents"] = contents
 
         # Generation config
@@ -233,37 +261,54 @@ class GeminiProvider(BaseProvider):
 
         return result
 
-    def _message_to_gemini(self, message: Message) -> Optional[Dict[str, Any]]:
-        """将 Message 转换为 Gemini 格式"""
+    def _message_to_gemini(self, message: Message, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+        """将 Message 转换为 Gemini 格式
+
+        Args:
+            message: 消息对象
+            call_id_to_name: tool_call_id → function name 映射表，
+                用于在 functionResponse 中补全缺失的 name 字段。
+        """
+        if call_id_to_name is None:
+            call_id_to_name = {}
+
         # Gemini uses "user" and "model" roles
         role = "model" if message.role == MessageRole.ASSISTANT else "user"
 
         # Handle tool role - Gemini uses functionResponse parts
         if message.role == MessageRole.TOOL:
             parts = []
+            call_id = message.tool_call_id or ""
             if isinstance(message.content, list):
                 for block in message.content:
                     if block.type == ContentType.TOOL_RESULT:
-                        parts.append({
-                            "functionResponse": {
-                                "name": block.tool_name or message.name or "",
-                                "response": {"result": block.tool_result or ""}
-                            }
-                        })
+                        bid = block.tool_call_id or call_id
+                        name = block.tool_name or message.name or call_id_to_name.get(bid, "")
+                        fr: Dict[str, Any] = {
+                            "name": name,
+                            "response": {"output": block.tool_result or ""}
+                        }
+                        if bid:
+                            fr["id"] = bid
+                        parts.append({"functionResponse": fr})
                     elif block.type == ContentType.TEXT:
-                        parts.append({
-                            "functionResponse": {
-                                "name": message.name or "",
-                                "response": {"result": block.text or ""}
-                            }
-                        })
+                        name = message.name or call_id_to_name.get(call_id, "")
+                        fr = {
+                            "name": name,
+                            "response": {"output": block.text or ""}
+                        }
+                        if call_id:
+                            fr["id"] = call_id
+                        parts.append({"functionResponse": fr})
             elif isinstance(message.content, str):
-                parts.append({
-                    "functionResponse": {
-                        "name": message.name or "",
-                        "response": {"result": message.content}
-                    }
-                })
+                name = message.name or call_id_to_name.get(call_id, "")
+                fr = {
+                    "name": name,
+                    "response": {"output": message.content}
+                }
+                if call_id:
+                    fr["id"] = call_id
+                parts.append({"functionResponse": fr})
             return {"role": "user", "parts": parts} if parts else None
 
         parts = []
@@ -271,7 +316,7 @@ class GeminiProvider(BaseProvider):
             parts.append({"text": message.content})
         elif isinstance(message.content, list):
             for block in message.content:
-                part = self._content_block_to_gemini(block)
+                part = self._content_block_to_gemini(block, call_id_to_name)
                 if part:
                     parts.append(part)
         else:
@@ -279,8 +324,16 @@ class GeminiProvider(BaseProvider):
 
         return {"role": role, "parts": parts} if parts else None
 
-    def _content_block_to_gemini(self, block: ContentBlock) -> Optional[Dict[str, Any]]:
-        """将 ContentBlock 转换为 Gemini parts 格式"""
+    def _content_block_to_gemini(self, block: ContentBlock, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+        """将 ContentBlock 转换为 Gemini parts 格式
+
+        Args:
+            block: 内容块
+            call_id_to_name: tool_call_id → function name 映射表
+        """
+        if call_id_to_name is None:
+            call_id_to_name = {}
+
         if block.type == ContentType.TEXT:
             return {"text": block.text or ""}
         elif block.type == ContentType.IMAGE_URL:
@@ -300,9 +353,17 @@ class GeminiProvider(BaseProvider):
         elif block.type == ContentType.FILE_BASE64:
             return {"inlineData": {"data": block.data, "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.TOOL_CALL:
-            return {"functionCall": {"name": block.tool_name or "", "args": block.tool_arguments or {}}}
+            fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
+            if block.tool_call_id:
+                fc["id"] = block.tool_call_id
+            return {"functionCall": fc}
         elif block.type == ContentType.TOOL_RESULT:
-            return {"functionResponse": {"name": block.tool_name or "", "response": {"result": block.tool_result or ""}}}
+            bid = block.tool_call_id or ""
+            name = block.tool_name or call_id_to_name.get(bid, "")
+            fr: Dict[str, Any] = {"name": name, "response": {"output": block.tool_result or ""}}
+            if bid:
+                fr["id"] = bid
+            return {"functionResponse": fr}
         else:
             return {"text": block.text or ""}
 

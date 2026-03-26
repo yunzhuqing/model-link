@@ -599,12 +599,28 @@ class VertexAIProvider(BaseProvider):
                 "parts": [{"text": system_content}]
             }
 
-        # Convert messages to Gemini contents
+        # Convert messages to Gemini contents.
+        # Build a call_id → name mapping so functionResponse can include the
+        # function name even when the TOOL_RESULT ContentBlock doesn't carry it.
+        call_id_to_name: Dict[str, str] = {} 
+        for msg in request.messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                        if block.tool_call_id and block.tool_name:
+                            call_id_to_name[block.tool_call_id] = block.tool_name
+
         contents = []
         for msg in request.messages:
             if msg.role == MessageRole.SYSTEM:
                 continue
-            contents.append(self._message_to_gemini(msg))
+            gemini_msg = self._message_to_gemini(msg, call_id_to_name)
+            if gemini_msg:
+                # Merge consecutive same-role messages (Gemini requires alternating roles)
+                if contents and contents[-1].get("role") == gemini_msg.get("role"):
+                    contents[-1]["parts"].extend(gemini_msg["parts"])
+                else:
+                    contents.append(gemini_msg)
         result["contents"] = contents
 
         # Generation config
@@ -640,52 +656,73 @@ class VertexAIProvider(BaseProvider):
 
         return result
 
-    def _message_to_gemini(self, message: Message) -> Dict[str, Any]:
-        """将 Message 转换为 Gemini 格式"""
+    def _message_to_gemini(self, message: Message, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+        """将 Message 转换为 Gemini 格式
+
+        Args:
+            message: 消息对象
+            call_id_to_name: tool_call_id → function name 映射表
+        """
+        if call_id_to_name is None:
+            call_id_to_name = {}
+
         # Gemini uses "user" and "model" roles
         role = "model" if message.role == MessageRole.ASSISTANT else "user"
 
         # Handle tool role - Gemini uses functionResponse parts
         if message.role == MessageRole.TOOL:
             parts = []
+            call_id = message.tool_call_id or ""
             if isinstance(message.content, list):
                 for block in message.content:
                     if block.type == ContentType.TOOL_RESULT:
-                        parts.append({
-                            "functionResponse": {
-                                "name": block.tool_name or message.name or "",
-                                "response": {"result": block.tool_result or ""}
-                            }
-                        })
+                        bid = block.tool_call_id or call_id
+                        name = block.tool_name or message.name or call_id_to_name.get(bid, "")
+                        fr: Dict[str, Any] = {
+                            "name": name,
+                            "response": {"output": block.tool_result or ""}
+                        }
+                        if bid:
+                            fr["id"] = bid
+                        parts.append({"functionResponse": fr})
                     elif block.type == ContentType.TEXT:
-                        parts.append({
-                            "functionResponse": {
-                                "name": message.name or "",
-                                "response": {"result": block.text or ""}
-                            }
-                        })
+                        name = message.name or call_id_to_name.get(call_id, "")
+                        fr = {
+                            "name": name,
+                            "response": {"output": block.text or ""}
+                        }
+                        if call_id:
+                            fr["id"] = call_id
+                        parts.append({"functionResponse": fr})
             elif isinstance(message.content, str):
-                parts.append({
-                    "functionResponse": {
-                        "name": message.name or "",
-                        "response": {"result": message.content}
-                    }
-                })
-            return {"role": "user", "parts": parts}
+                name = message.name or call_id_to_name.get(call_id, "")
+                fr = {
+                    "name": name,
+                    "response": {"output": message.content}
+                }
+                if call_id:
+                    fr["id"] = call_id
+                parts.append({"functionResponse": fr})
+            return {"role": "user", "parts": parts} if parts else None
 
         parts = []
         if isinstance(message.content, str):
             parts.append({"text": message.content})
         elif isinstance(message.content, list):
             for block in message.content:
-                parts.append(self._content_block_to_gemini(block))
+                part = self._content_block_to_gemini(block, call_id_to_name)
+                if part:
+                    parts.append(part)
         else:
             parts.append({"text": ""})
 
-        return {"role": role, "parts": parts}
+        return {"role": role, "parts": parts} if parts else None
 
-    def _content_block_to_gemini(self, block: ContentBlock) -> Dict[str, Any]:
+    def _content_block_to_gemini(self, block: ContentBlock, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
         """将 ContentBlock 转换为 Gemini parts 格式"""
+        if call_id_to_name is None:
+            call_id_to_name = {}
+
         if block.type == ContentType.TEXT:
             return {"text": block.text or ""}
         elif block.type == ContentType.IMAGE_URL:
@@ -705,9 +742,17 @@ class VertexAIProvider(BaseProvider):
         elif block.type == ContentType.FILE_BASE64:
             return {"inlineData": {"data": block.data, "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.TOOL_CALL:
-            return {"functionCall": {"name": block.tool_name or "", "args": block.tool_arguments or {}}}
+            fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
+            if block.tool_call_id:
+                fc["id"] = block.tool_call_id
+            return {"functionCall": fc}
         elif block.type == ContentType.TOOL_RESULT:
-            return {"functionResponse": {"name": block.tool_name or "", "response": {"result": block.tool_result or ""}}}
+            bid = block.tool_call_id or ""
+            name = block.tool_name or call_id_to_name.get(bid, "")
+            fr: Dict[str, Any] = {"name": name, "response": {"output": block.tool_result or ""}}
+            if bid:
+                fr["id"] = bid
+            return {"functionResponse": fr}
         else:
             return {"text": block.text or ""}
 
