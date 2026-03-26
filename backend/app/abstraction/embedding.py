@@ -21,7 +21,7 @@ class EmbeddingRequest:
         {"model": "...", "messages": [{"role": "user", "content": [...]}]}
     """
     model: str
-    input: Optional[Union[str, List[str]]] = None  # Text(s) to embed (text-only mode)
+    input: Optional[Union[str, List[str], List[Dict[str, Any]]]] = None  # Text(s) or content blocks to embed
     messages: Optional[List[Dict[str, Any]]] = None  # Multimodal messages (text + images)
     encoding_format: str = "float"  # "float", "base64"
     dimensions: Optional[int] = None  # Output dimensions (optional)

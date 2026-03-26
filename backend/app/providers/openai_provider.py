@@ -112,7 +112,8 @@ def parse_openai_request(data: dict) -> ChatRequest:
                 description=param_schema.get('description'),
                 required=param_name in required,
                 enum=param_schema.get('enum'),
-                default=param_schema.get('default')
+                default=param_schema.get('default'),
+                items=param_schema.get('items')
             ))
         
         tools.append(ToolDefinition(
@@ -255,7 +256,7 @@ class OpenAIProvider(BaseProvider):
         """
         result = {
             "model": request.model,
-            "messages": [self._message_to_openai(msg) for msg in request.messages],
+            "messages": self._expand_messages_to_openai(request.messages),
             "stream": request.stream,
         }
         
@@ -287,6 +288,60 @@ class OpenAIProvider(BaseProvider):
         
         return result
     
+    def _expand_messages_to_openai(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        """
+        将消息列表转换为 OpenAI 格式，处理 Anthropic 格式的 tool_result 内容块。
+
+        Anthropic 格式中，tool_result 是 user 消息中的内容块：
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "...", "content": "..."}]}
+
+        OpenAI 格式中，tool 结果必须是独立的 tool 角色消息：
+            {"role": "tool", "tool_call_id": "...", "content": "..."}
+
+        此方法会将包含 tool_result 内容块的消息拆分为多个独立的 OpenAI 消息。
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            OpenAI 格式的消息字典列表
+        """
+        result = []
+        for msg in messages:
+            if not isinstance(msg.content, list):
+                result.append(self._message_to_openai(msg))
+                continue
+
+            # Separate TOOL_RESULT blocks from other content blocks
+            tool_result_blocks = [b for b in msg.content if isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT]
+            other_content_blocks = [b for b in msg.content if not (isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT)]
+
+            if not tool_result_blocks:
+                # No tool_result blocks, convert normally
+                result.append(self._message_to_openai(msg))
+                continue
+
+            # Emit each tool_result as a separate "tool" role message
+            for block in tool_result_blocks:
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": block.tool_call_id or "",
+                    "content": block.tool_result or "",
+                })
+
+            # If there are other content blocks (e.g. text), emit them as a separate user message
+            if other_content_blocks:
+                remaining_msg = Message(
+                    role=msg.role,
+                    content=other_content_blocks,
+                    name=msg.name,
+                    tool_call_id=msg.tool_call_id,
+                    reasoning_content=msg.reasoning_content,
+                )
+                result.append(self._message_to_openai(remaining_msg))
+
+        return result
+
     def _message_to_openai(self, message: Message) -> Dict[str, Any]:
         """将 Message 转换为 OpenAI 格式"""
         result = {"role": message.role.value}
@@ -306,7 +361,9 @@ class OpenAIProvider(BaseProvider):
             from app.abstraction.messages import ContentType
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
             tool_call_blocks = [b for b in message.content if b.type == ContentType.TOOL_CALL]
-            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL)]
+            # Exclude TOOL_RESULT blocks - they are handled by _expand_messages_to_openai
+            # and converted to separate "tool" role messages
+            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL, ContentType.TOOL_RESULT)]
             
             # content 只包含文本和其他类型（图片、视频等），不包含 tool_call
             if text_blocks and not other_blocks and not tool_call_blocks:

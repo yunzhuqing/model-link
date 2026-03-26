@@ -150,7 +150,8 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     description=param_schema.get('description'),
                     required=param_name in required,
                     enum=param_schema.get('enum'),
-                    default=param_schema.get('default')
+                    default=param_schema.get('default'),
+                    items=param_schema.get('items')
                 ))
 
             tools.append(ToolDefinition(
@@ -271,13 +272,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
             stop_reason = stop_reason_map.get(fr, 'end_turn')
 
         # Normalize ID to msg_ prefix for Anthropic format compatibility.
-        # Non-Claude providers return IDs like "chatcmpl-xxx" or "gemini-xxx",
+        # Non-Claude providers return IDs like "chatcmpl-xxx", "gemini-xxx",
+        # or "resp_xxx" (Azure/OpenAI Responses API),
         # but Anthropic SDK clients expect "msg_xxx".
         response_id = response.id
         if not response_id.startswith('msg_'):
             # Strip known provider prefixes and re-prefix with msg_
             clean_id = response_id
-            for prefix in ('chatcmpl-', 'gemini-'):
+            for prefix in ('chatcmpl-', 'gemini-', 'resp_'):
                 if clean_id.startswith(prefix):
                     clean_id = clean_id[len(prefix):]
                     break
@@ -319,7 +321,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
         msg_id = message_id or ('msg_' + str(int(time.time())))
         # Normalize ID to msg_ prefix
         if not msg_id.startswith('msg_'):
-            for prefix in ('chatcmpl-', 'gemini-'):
+            for prefix in ('chatcmpl-', 'gemini-', 'resp_'):
                 if msg_id.startswith(prefix):
                     msg_id = msg_id[len(prefix):]
                     break

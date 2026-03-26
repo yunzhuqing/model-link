@@ -262,7 +262,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         description=param_schema.get('description'),
                         required=param_name in required,
                         enum=param_schema.get('enum'),
-                        default=param_schema.get('default')
+                        default=param_schema.get('default'),
+                        items=param_schema.get('items')
                     ))
 
                 tools.append(ToolDefinition(
@@ -577,12 +578,41 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
         if chunk.tool_calls:
             for tc in chunk.tool_calls:
+                call_id = tc.get('id', '')
                 func = tc.get('function', {})
+                name = func.get('name', '')
                 args = func.get('arguments', '')
+
+                if call_id:
+                    # New function call start — emit response.output_item.added
+                    output_index = getattr(self, '_stream_output_index', 1)
+                    self._stream_output_index = output_index + 1
+                    # Track call_id → output_index for arguments.delta events
+                    if not hasattr(self, '_stream_tool_output_indices'):
+                        self._stream_tool_output_indices = {}
+                    self._stream_tool_output_indices[call_id] = output_index
+
+                    item_added = {
+                        'type': 'response.output_item.added',
+                        'output_index': output_index,
+                        'item': {
+                            'id': _gen_id("fc_"),
+                            'type': 'function_call',
+                            'status': 'in_progress',
+                            'arguments': '',
+                            'call_id': call_id,
+                            'name': name
+                        }
+                    }
+                    events.append(f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n")
+
                 if args:
+                    # Determine output_index for this arguments delta
+                    tool_indices = getattr(self, '_stream_tool_output_indices', {})
+                    tc_output_index = tool_indices.get(call_id, 1) if call_id else (max(tool_indices.values()) if tool_indices else 1)
                     event_data = {
                         'type': 'response.function_call_arguments.delta',
-                        'output_index': 0,
+                        'output_index': tc_output_index,
                         'delta': args
                     }
                     events.append(f"event: response.function_call_arguments.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")

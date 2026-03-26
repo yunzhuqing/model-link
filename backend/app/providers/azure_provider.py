@@ -205,18 +205,59 @@ class AzureProvider(OpenAIProvider):
                             "call_id": block.tool_call_id or "",
                             "output": block.tool_result or ""
                         })
+                    # Also include non-tool-result content (e.g. text) as a regular message
+                    other_blocks = [
+                        b for b in msg.content
+                        if b.type != ContentType.TOOL_RESULT
+                    ]
+                    if other_blocks:
+                        text_type = "output_text" if msg.role == MessageRole.ASSISTANT else "input_text"
+                        content_parts = []
+                        for block in other_blocks:
+                            if block.type == ContentType.TEXT:
+                                content_parts.append({"type": text_type, "text": block.text or ""})
+                            elif block.type == ContentType.IMAGE_URL:
+                                content_parts.append({
+                                    "type": "input_image",
+                                    "image_url": block.url
+                                })
+                            elif block.type == ContentType.IMAGE_BASE64:
+                                content_parts.append({
+                                    "type": "input_image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": block.media_type or "image/jpeg",
+                                        "data": block.data
+                                    }
+                                })
+                        if content_parts:
+                            remaining_item: Dict[str, Any] = {
+                                "role": msg.role.value,
+                                "content": content_parts,
+                            }
+                            if msg.role == MessageRole.ASSISTANT:
+                                remaining_item["type"] = "message"
+                                remaining_item["status"] = "completed"
+                            input_items.append(remaining_item)
                     continue
 
             # Regular message item
             item: Dict[str, Any] = {"role": msg.role.value}
 
+            # Use "output_text" for assistant messages, "input_text" for others
+            text_type = "output_text" if msg.role == MessageRole.ASSISTANT else "input_text"
+
+            if msg.role == MessageRole.ASSISTANT:
+                item["type"] = "message"
+                item["status"] = "completed"
+
             if isinstance(msg.content, str):
-                item["content"] = [{"type": "input_text", "text": msg.content}]
+                item["content"] = [{"type": text_type, "text": msg.content}]
             elif isinstance(msg.content, list):
                 content_parts = []
                 for block in msg.content:
                     if block.type == ContentType.TEXT:
-                        content_parts.append({"type": "input_text", "text": block.text or ""})
+                        content_parts.append({"type": text_type, "text": block.text or ""})
                     elif block.type == ContentType.IMAGE_URL:
                         # Azure Responses API uses image_url as a plain string
                         content_parts.append({
@@ -246,6 +287,7 @@ class AzureProvider(OpenAIProvider):
         result: Dict[str, Any] = {
             "model": request.model,
             "input": input_items,
+            "stream": request.stream,
         }
 
         if system_parts:
@@ -287,7 +329,8 @@ class AzureProvider(OpenAIProvider):
                     "effort": request.reasoning_effort,
                     "summary": "auto",
                 }
-
+        
+        print(f"[Azure Debug] Prepared Responses API request body: {json.dumps(result, ensure_ascii=False)}")
         return result
 
     def _parse_responses_api_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
@@ -434,19 +477,40 @@ class AzureProvider(OpenAIProvider):
                         current_id = real_id
 
                 elif event_type == "response.output_item.added":
-                    # Capture Azure's real message item ID so the adapter can use it in
-                    # the response.output_item.added event it sends to the client.
-                    # We encode the message ID in delta_role using the convention "msg_xxx".
-                    # Only emit for message-type items (not reasoning or function_call items).
                     item = event_data.get("item", {})
+                    item_type = item.get("type", "")
                     msg_id = item.get("id", "")
-                    if msg_id and item.get("type") == "message" and msg_id.startswith("msg_"):
+
+                    if item_type == "message" and msg_id.startswith("msg_"):
+                        # Capture Azure's real message item ID so the adapter can use it in
+                        # the response.output_item.added event it sends to the client.
+                        # We encode the message ID in delta_role using the convention "msg_xxx".
                         yield StreamChunk(
                             id=current_id,
                             model=model,
                             delta_role=msg_id,  # encodes the real message ID
                             created=int(time.time())
                         )
+
+                    elif item_type == "function_call":
+                        # Function call start — emit tool_calls with id + name.
+                        # This triggers content_block_start (tool_use) in the Anthropic adapter.
+                        call_id = item.get("call_id", "")
+                        name = item.get("name", "")
+                        if call_id:
+                            tc: Dict[str, Any] = {
+                                "id": call_id,
+                                "function": {
+                                    "name": name,
+                                    "arguments": ""
+                                }
+                            }
+                            yield StreamChunk(
+                                id=current_id,
+                                model=model,
+                                tool_calls=[tc],
+                                created=int(time.time())
+                            )
 
                 elif event_type == "response.output_text.done":
                     # Capture the full assembled text; pass it with the finish chunk so
@@ -520,6 +584,15 @@ class AzureProvider(OpenAIProvider):
                         usage["_azure_completed_response"] = resp
                     else:
                         usage = {"_azure_completed_response": resp} if resp else None
+
+                    # Determine finish_reason: TOOL_CALLS if the response output
+                    # contains any function_call items, otherwise STOP.
+                    has_tool_calls = any(
+                        item.get("type") == "function_call"
+                        for item in resp.get("output", [])
+                    )
+                    finish = FinishReason.TOOL_CALLS if has_tool_calls else FinishReason.STOP
+
                     # Pass full_text in delta_content so the adapter can emit the three
                     # "done" events (output_text.done, content_part.done, output_item.done)
                     # before the response.completed event.
@@ -527,7 +600,7 @@ class AzureProvider(OpenAIProvider):
                         id=current_id,
                         model=model,
                         delta_content=full_text if full_text else None,
-                        finish_reason=FinishReason.STOP,
+                        finish_reason=finish,
                         usage=usage,
                         created=int(time.time())
                     )
@@ -564,6 +637,7 @@ class AzureProvider(OpenAIProvider):
         if self._uses_responses_api(deployment_name):
             # Build Responses API request body
             request_data = self._prepare_responses_api_request(request)
+            request_data["stream"] = False
         else:
             request_data = self.prepare_request(request)
             request_data["stream"] = False

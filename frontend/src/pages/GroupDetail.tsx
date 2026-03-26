@@ -933,6 +933,7 @@ export default function GroupDetail() {
                   <option value="minimax">MiniMax</option>
                   <option value="bailian">Bailian (Alibaba)</option>
                   <option value="volcengine">Volcengine</option>
+                  <option value="gemini">Gemini (Google AI)</option>
                   <option value="vertexai">Vertex AI (Google Cloud)</option>
                   <option value="tencent">Tencent</option>
                 </select>

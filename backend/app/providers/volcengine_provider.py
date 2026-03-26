@@ -111,6 +111,33 @@ class VolcengineProvider(BaseProvider):
                 else:
                     input_items.append(item)
 
+        # If the last input item is an assistant message, set partial=true
+        # so the Volcengine Responses API continues from that prefix.
+        # However, skip empty assistant messages (e.g. from Anthropic's {"role": "assistant", "content": []})
+        if input_items and isinstance(input_items[-1], dict) and input_items[-1].get("role") == "assistant":
+            last_content = input_items[-1].get("content")
+            # Check if content is empty or only contains empty text
+            has_meaningful_content = False
+            if isinstance(last_content, str) and last_content.strip():
+                has_meaningful_content = True
+            elif isinstance(last_content, list):
+                for part in last_content:
+                    if isinstance(part, dict):
+                        text = part.get("text", "")
+                        if text and text.strip():
+                            has_meaningful_content = True
+                            break
+                        # Non-text content (images, etc.) is always meaningful
+                        if part.get("type", "") not in ("input_text", "output_text"):
+                            has_meaningful_content = True
+                            break
+
+            if has_meaningful_content:
+                input_items[-1]["partial"] = True
+            else:
+                # Remove empty assistant message — Volcengine doesn't accept it
+                input_items.pop()
+
         result["input"] = input_items
 
         # Stream
@@ -163,7 +190,7 @@ class VolcengineProvider(BaseProvider):
         print("\n" + "=" * 50, file=sys.stderr)
         print("[Volcengine Responses API Request]", file=sys.stderr)
         print("=" * 50, file=sys.stderr)
-        print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr)
+        print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
         print("=" * 50 + "\n", file=sys.stderr)
 
         return result
@@ -181,6 +208,36 @@ class VolcengineProvider(BaseProvider):
                 "call_id": tool_call_id,
                 "output": output_text
             }
+
+        # Handle user messages containing TOOL_RESULT content blocks (Anthropic format)
+        # Convert each tool_result block to a function_call_output item
+        if isinstance(message.content, list):
+            tool_result_blocks = [
+                b for b in message.content
+                if isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT
+            ]
+            if tool_result_blocks:
+                items = []
+                for block in tool_result_blocks:
+                    items.append({
+                        "type": "function_call_output",
+                        "call_id": block.tool_call_id or "",
+                        "output": block.tool_result or ""
+                    })
+                # Also include non-tool-result content as a regular message
+                other_blocks = [
+                    b for b in message.content
+                    if not (isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT)
+                ]
+                if other_blocks:
+                    remaining_msg = Message(
+                        role=message.role,
+                        content=other_blocks,
+                        name=message.name,
+                    )
+                    remaining_content = self._convert_content(remaining_msg)
+                    items.append({"role": role, "content": remaining_content})
+                return items
 
         # Handle assistant messages with tool calls
         if message.role == MessageRole.ASSISTANT and isinstance(message.content, list):
@@ -210,20 +267,28 @@ class VolcengineProvider(BaseProvider):
                 if text_blocks:
                     content_parts = [{"type": "output_text", "text": b.text} for b in text_blocks]
                     items.insert(0, {
+                        "type": "message",
                         "role": "assistant",
-                        "content": content_parts
+                        "content": content_parts,
+                        "status": "completed"
                     })
                 return items
 
         # Regular message
         content = self._convert_content(message)
         item: Dict[str, Any] = {"role": role, "content": content}
+        if message.role == MessageRole.ASSISTANT:
+            item["type"] = "message"
+            item["status"] = "completed"
         return item
 
     def _convert_content(self, message: Message) -> Any:
         """Convert message content to Responses API format."""
         if isinstance(message.content, str):
             return message.content
+
+        # Use "output_text" for assistant messages, "input_text" for others
+        text_type = "output_text" if message.role == MessageRole.ASSISTANT else "input_text"
 
         if isinstance(message.content, list):
             parts = []
@@ -232,7 +297,7 @@ class VolcengineProvider(BaseProvider):
                     continue
 
                 if block.type == ContentType.TEXT:
-                    parts.append({"type": "input_text", "text": block.text or ""})
+                    parts.append({"type": text_type, "text": block.text or ""})
                 elif block.type == ContentType.IMAGE_URL:
                     parts.append({"type": "input_image", "image_url": block.url})
                 elif block.type == ContentType.IMAGE_BASE64:
@@ -254,14 +319,21 @@ class VolcengineProvider(BaseProvider):
         return message.content or ""
 
     def _tool_to_responses(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """Convert ToolDefinition to Responses API format."""
+        """Convert ToolDefinition to Responses API format.
+
+        Responses API uses a flat structure (not nested under 'function'):
+        {
+            "type": "function",
+            "name": "...",
+            "description": "...",
+            "parameters": {...}
+        }
+        """
         return {
             "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.get_parameters_schema()
-            }
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.get_parameters_schema(),
         }
 
     # ----------------------------------------------------------------
@@ -385,7 +457,15 @@ class VolcengineProvider(BaseProvider):
         request_data["stream"] = True
 
         url = f"{self.config.base_url}/responses"
-        response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        # Use a full-length placeholder ID; will be replaced by the real ID
+        # from the response.created event as soon as it arrives.
+        response_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+        # Track which function call IDs we've already emitted the initial chunk for.
+        # Volcengine sends call_id on every delta event, but we only want to include
+        # the `id` field on the FIRST chunk so the Anthropic adapter emits exactly one
+        # content_block_start per tool_use.
+        seen_call_ids: set = set()
 
         try:
             with self.client.stream("POST", url, json=request_data) as response:
@@ -433,8 +513,18 @@ class VolcengineProvider(BaseProvider):
                     if not event_type:
                         event_type = event_data.get("type", "")
 
+                    # Capture the real response ID from early events so all
+                    # subsequent chunks (and the Anthropic message_start event)
+                    # use the authoritative ID instead of the placeholder.
+                    if event_type in ("response.created", "response.in_progress"):
+                        resp_obj = event_data.get("response", {})
+                        real_id = resp_obj.get("id")
+                        if real_id:
+                            response_id = real_id
+
                     chunk = self._parse_responses_stream_event(
-                        event_type, event_data, response_id, request.model
+                        event_type, event_data, response_id, request.model,
+                        seen_call_ids=seen_call_ids
                     )
                     if chunk:
                         yield chunk
@@ -449,10 +539,34 @@ class VolcengineProvider(BaseProvider):
         event_type: str,
         data: Dict[str, Any],
         response_id: str,
-        model: str
+        model: str,
+        seen_call_ids: Optional[set] = None
     ) -> Optional[StreamChunk]:
-        """Parse a single Responses API SSE event into a StreamChunk."""
+        """Parse a single Responses API SSE event into a StreamChunk.
 
+        Volcengine Responses API event sequence:
+        1. response.created
+        2. response.in_progress
+        3. response.output_item.added (type=message, role=assistant)
+        4. response.reasoning_summary_part.added
+        5. response.reasoning_summary_text.delta (reasoning content)
+        6. response.reasoning_summary_text.done
+        7. response.reasoning_summary_part.done
+        8. response.output_item.done
+        9. response.output_item.added (type=function_call, with call_id + name)
+        10. response.function_call_arguments.delta (arguments chunks)
+        11. response.function_call_arguments.done
+        12. response.output_item.done
+        13. response.completed
+
+        Args:
+            seen_call_ids: Tracks which function call IDs have already been emitted
+                via response.output_item.added. Used to avoid duplicate emissions.
+        """
+        if seen_call_ids is None:
+            seen_call_ids = set()
+
+        # ---- Text content ----
         if event_type == "response.output_text.delta":
             delta_text = data.get("delta", "")
             if delta_text:
@@ -463,6 +577,7 @@ class VolcengineProvider(BaseProvider):
                     event_type=StreamEventType.CONTENT_DELTA
                 )
 
+        # ---- Reasoning/thinking content ----
         elif event_type == "response.reasoning_summary_text.delta":
             delta_text = data.get("delta", "")
             if delta_text:
@@ -473,18 +588,92 @@ class VolcengineProvider(BaseProvider):
                     event_type=StreamEventType.CONTENT_DELTA
                 )
 
+        # Reasoning summary done events — contain the full assembled reasoning text.
+        # Pass through as raw SSE events for the Responses adapter (/v1/responses).
+        # For Anthropic/OpenAI format, the content was already streamed via deltas.
+        elif event_type == "response.reasoning_summary_text.done":
+            raw_event = {
+                "type": event_type,
+                "summary_index": data.get("summary_index", 0),
+                "item_id": data.get("item_id", ""),
+                "output_index": data.get("output_index", 0),
+                "text": data.get("text", ""),
+                "sequence_number": data.get("sequence_number", 0),
+            }
+            chunk = StreamChunk(
+                id=response_id,
+                model=model,
+                event_type=StreamEventType.CONTENT_DELTA
+            )
+            chunk.raw_sse_passthrough = [
+                f"event: {event_type}\ndata: {json.dumps(raw_event, ensure_ascii=False)}\n\n"
+            ]
+            return chunk
+
+        elif event_type == "response.reasoning_summary_part.done":
+            raw_event = {
+                "type": event_type,
+                "item_id": data.get("item_id", ""),
+                "output_index": data.get("output_index", 0),
+                "summary_index": data.get("summary_index", 0),
+                "part": data.get("part", {}),
+                "sequence_number": data.get("sequence_number", 0),
+            }
+            chunk = StreamChunk(
+                id=response_id,
+                model=model,
+                event_type=StreamEventType.CONTENT_DELTA
+            )
+            chunk.raw_sse_passthrough = [
+                f"event: {event_type}\ndata: {json.dumps(raw_event, ensure_ascii=False)}\n\n"
+            ]
+            return chunk
+
+        # ---- Output item added (role marker OR function_call start) ----
+        elif event_type == "response.output_item.added":
+            item = data.get("item", {})
+            item_type = item.get("type", "")
+
+            if item_type == "message" and item.get("role") == "assistant":
+                # Role marker — emit as role chunk
+                return StreamChunk(
+                    id=response_id,
+                    model=model,
+                    delta_role="assistant",
+                    event_type=StreamEventType.CONTENT_DELTA
+                )
+
+            elif item_type == "function_call":
+                # Function call start — emit tool_calls with id + name.
+                # This triggers content_block_start (tool_use) in the Anthropic adapter.
+                call_id = item.get("call_id", "")
+                name = item.get("name", "")
+
+                if call_id and call_id not in seen_call_ids:
+                    seen_call_ids.add(call_id)
+                    tc: Dict[str, Any] = {
+                        "id": call_id,
+                        "function": {
+                            "name": name,
+                            "arguments": ""
+                        }
+                    }
+                    return StreamChunk(
+                        id=response_id,
+                        model=model,
+                        tool_calls=[tc],
+                        event_type=StreamEventType.TOOL_CALL
+                    )
+
+        # ---- Function call arguments delta ----
         elif event_type == "response.function_call_arguments.delta":
             delta_args = data.get("delta", "")
-            name = data.get("name", "")
-            call_id = data.get("call_id", "")
             if delta_args:
+                # Only emit arguments delta — the id/name was already emitted
+                # via response.output_item.added
                 tc = {
                     "function": {"arguments": delta_args}
                 }
-                if call_id:
-                    tc["id"] = call_id
-                if name:
-                    tc["function"]["name"] = name
                 return StreamChunk(
                     id=response_id,
                     model=model,
@@ -492,6 +681,11 @@ class VolcengineProvider(BaseProvider):
                     event_type=StreamEventType.TOOL_CALL
                 )
 
+        # Function call arguments done — no action needed
+        elif event_type == "response.function_call_arguments.done":
+            return None
+
+        # ---- Response completed ----
         elif event_type == "response.completed":
             resp = data.get("response", {})
             usage_data = resp.get("usage", {})
@@ -514,6 +708,14 @@ class VolcengineProvider(BaseProvider):
             if status == "incomplete":
                 finish = FinishReason.LENGTH
 
+            # Check if output contains function_call items → set TOOL_CALLS finish reason
+            has_function_calls = any(
+                item.get("type") == "function_call"
+                for item in resp.get("output", [])
+            )
+            if has_function_calls:
+                finish = FinishReason.TOOL_CALLS
+
             # Extract full text from completed response for the done-event sequence
             full_text = ""
             for item in resp.get("output", []):
@@ -528,23 +730,13 @@ class VolcengineProvider(BaseProvider):
                 delta_content=full_text,
                 finish_reason=finish,
                 usage=usage,
-                event_type=StreamEventType.DONE,
+                event_type=StreamEventType.CONTENT_DELTA,
                 created=resp.get("created_at", int(time.time()))
             )
 
-        elif event_type == "response.output_item.added":
-            # Role marker — emit as role chunk for the Responses adapter
-            item = data.get("item", {})
-            if item.get("type") == "message" and item.get("role") == "assistant":
-                return StreamChunk(
-                    id=response_id,
-                    model=model,
-                    delta_role="assistant",
-                    event_type=StreamEventType.CONTENT_DELTA
-                )
-
         # Ignore other events (response.created, response.in_progress,
-        # response.content_part.added, response.output_text.done, etc.)
+        # response.content_part.added, response.output_text.done,
+        # response.output_item.done, response.reasoning_summary_part.added, etc.)
         return None
 
     def list_models(self) -> List[Dict[str, Any]]:

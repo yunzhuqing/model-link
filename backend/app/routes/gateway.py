@@ -325,7 +325,7 @@ def create_embeddings():
         "user": "user-id"  // optional
     }
     
-    Request body (multimodal):
+    Request body (multimodal via messages):
     {
         "model": "multimodal-embedding-model",
         "messages": [
@@ -333,6 +333,19 @@ def create_embeddings():
                 {"type": "text", "text": "describe this image"},
                 {"type": "image_url", "image_url": {"url": "https://..."}}
             ]}
+        ],
+        "encoding_format": "float",  // optional
+        "dimensions": 1536,  // optional
+        "user": "user-id"  // optional
+    }
+    
+    Request body (multimodal via input content blocks):
+    {
+        "model": "multimodal-embedding-model",
+        "input": [
+            {"type": "text", "text": "describe this image"},
+            {"type": "image_url", "image_url": {"url": "https://..."}},
+            {"type": "video_url", "video_url": {"url": "https://..."}}
         ],
         "encoding_format": "float",  // optional
         "dimensions": 1536,  // optional
@@ -353,16 +366,24 @@ def create_embeddings():
     if not model_name:
         return jsonify({'detail': 'Model is required'}), 400
 
-    input_text = data.get('input')
+    input_data = data.get('input')
     messages = data.get('messages')
 
-    if input_text is None and messages is None:
+    if input_data is None and messages is None:
         return jsonify({'detail': 'Either "input" or "messages" is required'}), 400
+
+    # Detect multimodal input: if input is a list of dicts with "type" keys,
+    # normalize it into the messages format for unified downstream handling.
+    # e.g. "input": [{"type":"text","text":"..."}, {"type":"image_url","image_url":{"url":"..."}}]
+    if input_data is not None and isinstance(input_data, list) and len(input_data) > 0 and isinstance(input_data[0], dict) and 'type' in input_data[0]:
+        # Convert content blocks array into messages format
+        messages = [{"role": "user", "content": input_data}]
+        input_data = None  # Clear input since we moved it to messages
 
     # 3. 构建嵌入请求
     embedding_request = EmbeddingRequest(
         model=model_name,
-        input=input_text,
+        input=input_data,
         messages=messages,
         encoding_format=data.get('encoding_format', 'float'),
         dimensions=data.get('dimensions'),

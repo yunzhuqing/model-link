@@ -314,6 +314,9 @@ class BailianProvider(OpenAIProvider):
             "model": request.model,
             "input": {
                 "contents": contents
+            },
+            "parameters": {
+                "enable_fusion": True
             }
         }
         

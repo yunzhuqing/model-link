@@ -172,16 +172,36 @@ class Message:
                 elif isinstance(image_url_val, dict):
                     url = image_url_val.get('url')
 
+            # Extract tool_call_id: may be 'tool_call_id', 'id', or 'tool_use_id' (Anthropic format)
+            tool_call_id = item.get('tool_call_id') or item.get('tool_use_id') or item.get('id')
+
+            # Extract tool_result: may be 'tool_result', or 'content' for tool_result type blocks
+            tool_result_val = item.get('tool_result')
+            if tool_result_val is None and content_type == ContentType.TOOL_RESULT:
+                # Anthropic format: tool_result block uses 'content' for the result text
+                raw_content = item.get('content')
+                if isinstance(raw_content, str):
+                    tool_result_val = raw_content
+                elif isinstance(raw_content, list):
+                    # content can be a list of content blocks (e.g. [{"type": "text", "text": "..."}])
+                    text_parts = []
+                    for part in raw_content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text_parts.append(part.get('text', ''))
+                        elif isinstance(part, str):
+                            text_parts.append(part)
+                    tool_result_val = '\n'.join(text_parts) if text_parts else None
+
             return ContentBlock(
                 type=content_type,
                 text=item.get('text'),
                 url=url,
                 media_type=item.get('media_type'),
                 data=item.get('data'),
-                tool_call_id=item.get('tool_call_id') or item.get('id'),
+                tool_call_id=tool_call_id,
                 tool_name=item.get('tool_name') or item.get('name') or item.get('function', {}).get('name'),
                 tool_arguments=item.get('tool_arguments') or item.get('function', {}).get('arguments'),
-                tool_result=item.get('tool_result'),
+                tool_result=tool_result_val,
                 is_error=item.get('is_error', False)
             )
         else:

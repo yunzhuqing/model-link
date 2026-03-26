@@ -24,6 +24,7 @@ class ToolParameter:
     required: bool = False
     enum: Optional[List[str]] = None
     default: Optional[Any] = None
+    items: Optional[Dict[str, Any]] = None
     
     def to_json_schema(self) -> Dict[str, Any]:
         """转换为 JSON Schema 格式"""
@@ -34,6 +35,8 @@ class ToolParameter:
             schema["enum"] = self.enum
         if self.default is not None:
             schema["default"] = self.default
+        if self.items is not None:
+            schema["items"] = self.items
         return schema
 
 

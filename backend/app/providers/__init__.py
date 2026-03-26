@@ -13,12 +13,13 @@ from .vertexai_provider import VertexAIProvider
 from .moonshot_provider import MoonshotProvider
 from .glm_provider import GLMProvider
 from .minimax_provider import MiniMaxProvider
+from .gemini_provider import GeminiProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
     'OpenAIProvider', 'AzureProvider', 'AnthropicProvider', 'BailianProvider',
     'VolcengineProvider', 'VertexAIProvider', 'MoonshotProvider', 'GLMProvider',
-    'MiniMaxProvider'
+    'MiniMaxProvider', 'GeminiProvider'
 ]
 
 # 供应商注册表
@@ -32,6 +33,7 @@ PROVIDER_REGISTRY = {
     'moonshot': MoonshotProvider,
     'glm': GLMProvider,
     'minimax': MiniMaxProvider,
+    'gemini': GeminiProvider,
 }
 
 

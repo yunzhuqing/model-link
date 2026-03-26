@@ -227,7 +227,10 @@ class StreamChunk:
             })
 
         # 处理文本内容
-        if self.delta_content:
+        # When finish_reason is set, delta_content may contain the FULL assembled text
+        # (e.g. from Volcengine/Azure response.completed event), not a new incremental
+        # delta. Skip it to avoid re-sending all content in the final Anthropic chunk.
+        if self.delta_content and not self.finish_reason:
             events.append({
                 "type": "content_block_delta",
                 "index": idx,
