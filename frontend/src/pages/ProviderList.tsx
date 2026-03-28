@@ -10,10 +10,20 @@ interface Model {
   alias: string | null;
   context_size: number;
   input_size: number;
+  output_size: number;
+  reasoning_effort: string | null;
+  supported_image_formats: string | null;
+  pricing_tiers: PricingTier[] | null;
   input_price: number;
   output_price: number;
   cache_creation_price: number;
   cache_hit_price: number;
+  currency: string;
+  retirement_time: string | null;
+  is_retired: boolean;
+  rpm: number | null;
+  tpm: number | null;
+  discount: number;
   support_kvcache: boolean;
   support_image: boolean;
   support_audio: boolean;
@@ -50,10 +60,18 @@ const defaultModelState = {
   alias: '',
   context_size: 4096,
   input_size: 4096,
+  output_size: 4096,
+  reasoning_effort: '',
+  supported_image_formats: '',
   input_price: 0,
   output_price: 0,
   cache_creation_price: 0,
   cache_hit_price: 0,
+  currency: 'USD',
+  retirement_time: null as string | null,
+  rpm: null as number | null,
+  tpm: null as number | null,
+  discount: 1.0,
   support_kvcache: false,
   support_image: false,
   support_audio: false,
@@ -62,8 +80,8 @@ const defaultModelState = {
   support_web_search: false,
   support_tool_search: false,
   support_thinking: false,
-  support_online_image: true,
-  support_online_video: true,
+  support_online_image: false,
+  support_online_video: false,
   support_embedding: false,
 };
 
@@ -76,6 +94,14 @@ const ProviderList = () => {
   const [showAddModel, setShowAddModel] = useState<number | null>(null);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [newModel, setNewModel] = useState(defaultModelState);
+
+  const { data: modelTemplates = [] } = useQuery({
+    queryKey: ['model-templates'],
+    queryFn: async () => {
+      const response = await client.get('/api/model-templates/');
+      return response.data as ModelTemplate[];
+    },
+  });
 
   const { data: providers, isLoading } = useQuery({
     queryKey: ['providers'],
@@ -221,7 +247,7 @@ const ProviderList = () => {
                 <option value="volcengine">Volcengine (ByteDance)</option>
                 <option value="gemini">Gemini (Google AI)</option>
                 <option value="vertexai">Vertex AI (Google Cloud)</option>
-                <option value="tencent">Tencent</option>
+                <option value="tencentvod">Tencent VOD</option>
               </select>
             </div>
             <div>
@@ -249,6 +275,11 @@ const ProviderList = () => {
               {(editingProvider?.type || newProvider.type) === 'azure' && (
                 <p className="text-xs text-slate-400 mt-1">
                   Format: https://&#123;resource-name&#125;.openai.azure.com
+                </p>
+              )}
+              {(editingProvider?.type || newProvider.type) === 'tencentvod' && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)
                 </p>
               )}
             </div>
@@ -480,6 +511,7 @@ const ProviderList = () => {
                     onSave={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
                     onCancel={() => { setShowAddModel(null); setNewModel(defaultModelState); }}
                     isLoading={createModelMutation.isPending}
+                    templates={modelTemplates}
                   />
                 )}
 
@@ -494,19 +526,35 @@ const ProviderList = () => {
                           onSave={() => updateModelMutation.mutate({ id: model.id, data: editingModel })}
                           onCancel={() => setEditingModel(null)}
                           isLoading={updateModelMutation.isPending}
+                          templates={modelTemplates}
                         />
                       ) : (
                         <div className="bg-white p-5 rounded-xl border border-slate-200 hover:shadow-md transition-shadow">
                           <div className="flex justify-between items-start">
                             <div className="flex-1">
-                              <div className="flex items-center space-x-3">
-                                <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center">
+                              <div className="flex items-center space-x-3 flex-wrap gap-y-1">
+                                <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center shrink-0">
                                   <Cpu className="w-5 h-5 text-slate-600" />
                                 </div>
                                 <h5 className="font-semibold text-slate-800">{model.name}</h5>
                                 {model.alias && (
                                   <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs font-medium">
                                     @{model.alias}
+                                  </span>
+                                )}
+                                {model.currency && model.currency !== 'USD' && (
+                                  <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">
+                                    {model.currency}
+                                  </span>
+                                )}
+                                {model.is_retired && (
+                                  <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">
+                                    Retired
+                                  </span>
+                                )}
+                                {!model.is_retired && model.retirement_time && (
+                                  <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">
+                                    Retires {new Date(model.retirement_time).toLocaleDateString()}
                                   </span>
                                 )}
                               </div>
@@ -521,11 +569,11 @@ const ProviderList = () => {
                                 </div>
                                 <div className="bg-slate-50 p-3 rounded-lg">
                                   <span className="text-slate-400 block text-xs mb-1">Input Price</span>
-                                  <span className="text-slate-700 font-medium">${model.input_price}/M</span>
+                                  <span className="text-slate-700 font-medium">{model.input_price}/M {model.currency || 'USD'}</span>
                                 </div>
                                 <div className="bg-slate-50 p-3 rounded-lg">
                                   <span className="text-slate-400 block text-xs mb-1">Output Price</span>
-                                  <span className="text-slate-700 font-medium">${model.output_price}/M</span>
+                                  <span className="text-slate-700 font-medium">{model.output_price}/M {model.currency || 'USD'}</span>
                                 </div>
                               </div>
                               <div className="flex flex-wrap gap-2 mt-4">
@@ -611,22 +659,149 @@ const FeatureBadge = ({ label, color }: { label: string; color: string }) => {
   );
 };
 
+interface PricingTier {
+  label: string;
+  context_size: number;
+  input_size: number;
+  output_size: number;
+  input_price: number;
+  output_price: number;
+  cache_creation_price: number;
+  cache_hit_price: number;
+}
+
+interface ModelTemplate {
+  id: number;
+  label: string;
+  provider: string;
+  name: string;
+  alias: string | null;
+  context_size: number;
+  input_size: number;
+  output_size?: number;
+  pricing_tiers: PricingTier[] | null;
+  input_price: number;
+  output_price: number;
+  cache_creation_price: number;
+  cache_hit_price: number;
+  support_kvcache: boolean;
+  support_image: boolean;
+  support_audio: boolean;
+  support_video: boolean;
+  support_file: boolean;
+  support_web_search: boolean;
+  support_tool_search: boolean;
+  support_thinking: boolean;
+  support_online_image: boolean;
+  support_online_video: boolean;
+  support_embedding: boolean;
+}
+
 // Model Form Component
 const ModelForm = ({ 
   model, 
   setModel, 
   onSave, 
   onCancel, 
-  isLoading 
+  isLoading,
+  templates,
 }: { 
   model: any; 
   setModel: (m: any) => void; 
   onSave: () => void; 
   onCancel: () => void;
   isLoading: boolean;
+  templates: ModelTemplate[];
 }) => {
+  const templateProviders = Array.from(new Set(templates.map((t) => t.provider)));
+  const [activeTpl, setActiveTpl] = useState<ModelTemplate | null>(null);
+
+  const applyTplOrTier = (tpl: ModelTemplate, tier?: PricingTier) => {
+    const src = tier ?? tpl;
+    setModel({
+      ...model,
+      name: tpl.name,
+      alias: tpl.alias || '',
+      context_size: src.context_size ?? tpl.context_size,
+      input_size: src.input_size ?? tpl.input_size,
+      output_size: (src as any).output_size ?? tpl.output_size ?? 4096,
+      input_price: src.input_price,
+      output_price: src.output_price,
+      cache_creation_price: src.cache_creation_price,
+      cache_hit_price: src.cache_hit_price,
+      support_kvcache: tpl.support_kvcache,
+      support_image: tpl.support_image,
+      support_audio: tpl.support_audio,
+      support_video: tpl.support_video,
+      support_file: tpl.support_file,
+      support_web_search: tpl.support_web_search,
+      support_tool_search: tpl.support_tool_search,
+      support_thinking: tpl.support_thinking,
+      support_online_image: tpl.support_online_image,
+      support_online_video: tpl.support_online_video,
+      support_embedding: tpl.support_embedding,
+    });
+  };
+
   return (
     <div className="bg-white p-5 rounded-xl border border-slate-200 mb-3">
+      {/* Template selector */}
+      <div className="mb-4 pb-4 border-b border-slate-100">
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Quick Fill from Template
+          <span className="text-slate-400 font-normal ml-1">(optional)</span>
+        </label>
+        <select
+          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+          value={activeTpl?.id ?? ''}
+          onChange={(e) => {
+            const id = parseInt(e.target.value);
+            if (isNaN(id)) { setActiveTpl(null); return; }
+            const tpl = templates.find((t) => t.id === id);
+            if (!tpl) return;
+            setActiveTpl(tpl);
+            if (!tpl.pricing_tiers || tpl.pricing_tiers.length === 0) {
+              applyTplOrTier(tpl);
+            }
+          }}
+        >
+          <option value="">— Select a template —</option>
+          {templateProviders.map((providerName) => (
+            <optgroup key={providerName} label={providerName}>
+              {templates
+                .filter((tpl) => tpl.provider === providerName)
+                .map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.label}
+                  </option>
+                ))}
+            </optgroup>
+          ))}
+        </select>
+        {activeTpl?.pricing_tiers && activeTpl.pricing_tiers.length > 0 && (
+          <div className="mt-2">
+            <label className="block text-xs font-medium text-slate-600 mb-1">Select Pricing Tier</label>
+            <select
+              className="w-full p-2 bg-slate-50 border border-blue-300 rounded-lg text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+              defaultValue=""
+              onChange={(e) => {
+                const idx = parseInt(e.target.value);
+                if (isNaN(idx)) return;
+                const tier = activeTpl.pricing_tiers![idx];
+                applyTplOrTier(activeTpl, tier);
+              }}
+            >
+              <option value="">— Pick a tier —</option>
+              {activeTpl.pricing_tiers.map((tier, idx) => (
+                <option key={idx} value={idx}>
+                  {tier.label} — in ${tier.input_price}/M out ${tier.output_price}/M
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Model Name *</label>
@@ -665,6 +840,39 @@ const ModelForm = ({
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
             value={model.input_size}
             onChange={(e) => setModel({ ...model, input_size: parseInt(e.target.value) || 0 })}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Output Size</label>
+          <input
+            type="number"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.output_size ?? 4096}
+            onChange={(e) => setModel({ ...model, output_size: parseInt(e.target.value) || 0 })}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Reasoning Effort
+            <span className="text-slate-400 font-normal ml-1">(none/low/medium/high)</span>
+          </label>
+          <input
+            placeholder="none"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.reasoning_effort || ''}
+            onChange={(e) => setModel({ ...model, reasoning_effort: e.target.value || null })}
+          />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Supported Image Formats
+            <span className="text-slate-400 font-normal ml-1">(comma-separated, e.g. png,jpeg,webp)</span>
+          </label>
+          <input
+            placeholder="png,jpeg,webp,gif (leave blank for no restriction)"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.supported_image_formats || ''}
+            onChange={(e) => setModel({ ...model, supported_image_formats: e.target.value || null })}
           />
         </div>
         <div>
@@ -707,8 +915,81 @@ const ModelForm = ({
             onChange={(e) => setModel({ ...model, cache_hit_price: parseFloat(e.target.value) || 0 })}
           />
         </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Currency</label>
+          <select
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.currency || 'USD'}
+            onChange={(e) => setModel({ ...model, currency: e.target.value })}
+          >
+            <option value="USD">USD ($)</option>
+            <option value="CNY">CNY (¥)</option>
+            <option value="EUR">EUR (€)</option>
+            <option value="GBP">GBP (£)</option>
+            <option value="JPY">JPY (¥)</option>
+          </select>
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Retirement Date
+            <span className="text-slate-400 font-normal ml-1 text-xs">(optional — model cannot be used after this date)</span>
+          </label>
+          <input
+            type="datetime-local"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.retirement_time ? model.retirement_time.slice(0, 16) : ''}
+            onChange={(e) => setModel({ ...model, retirement_time: e.target.value ? e.target.value + ':00' : null })}
+          />
+        </div>
       </div>
       
+      {/* Rate limits & discount */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            RPM
+            <span className="text-slate-400 font-normal ml-1 text-xs">(req/min, blank = ∞)</span>
+          </label>
+          <input
+            type="number"
+            min="0"
+            placeholder="unlimited"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.rpm ?? ''}
+            onChange={(e) => setModel({ ...model, rpm: e.target.value ? parseInt(e.target.value) : null })}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            TPM
+            <span className="text-slate-400 font-normal ml-1 text-xs">(tok/min, blank = ∞)</span>
+          </label>
+          <input
+            type="number"
+            min="0"
+            placeholder="unlimited"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.tpm ?? ''}
+            onChange={(e) => setModel({ ...model, tpm: e.target.value ? parseInt(e.target.value) : null })}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Discount
+            <span className="text-slate-400 font-normal ml-1 text-xs">(1.0 = full, 0.9 = 10% off)</span>
+          </label>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            max="1"
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+            value={model.discount ?? 1.0}
+            onChange={(e) => setModel({ ...model, discount: parseFloat(e.target.value) || 1.0 })}
+          />
+        </div>
+      </div>
+
       <div className="mb-4">
         <label className="block text-sm font-medium text-slate-700 mb-2">Supported Features</label>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

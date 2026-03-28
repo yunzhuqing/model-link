@@ -34,6 +34,17 @@ interface ApiKey {
   request_count: number;
 }
 
+interface PricingTier {
+  label: string;
+  context_size: number;
+  input_size: number;
+  output_size: number;
+  input_price: number;
+  output_price: number;
+  cache_creation_price: number;
+  cache_hit_price: number;
+}
+
 interface Model {
   id: number;
   provider_id: number;
@@ -41,6 +52,10 @@ interface Model {
   alias: string | null;
   context_size: number;
   input_size: number;
+  output_size: number;
+  reasoning_effort: string | null;
+  supported_image_formats: string | null;
+  pricing_tiers: PricingTier[] | null;
   input_price: number;
   output_price: number;
   cache_creation_price: number;
@@ -94,15 +109,17 @@ export default function GroupDetail() {
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [viewingModel, setViewingModel] = useState<Model | null>(null);
   const [newModel, setNewModel] = useState({
-    name: '', alias: '', context_size: 4096, input_size: 4096,
+    name: '', alias: '', context_size: 4096, input_size: 4096, output_size: 4096,
+    reasoning_effort: '', supported_image_formats: '',
     input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
     support_kvcache: false, support_image: false, support_audio: false,
     support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-    support_thinking: false, support_online_image: true, support_online_video: true, support_embedding: false
+    support_thinking: false, support_online_image: false, support_online_video: false, support_embedding: false
   });
   
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [activeTpl, setActiveTpl] = useState<typeof modelTemplates[number] | null>(null);
 
   // Fetch group details
   const { data: group, isLoading: groupLoading } = useQuery({
@@ -119,6 +136,25 @@ export default function GroupDetail() {
     queryFn: async () => {
       const response = await client.get(`/api/apikeys/group/${id}`);
       return response.data as ApiKey[];
+    },
+  });
+
+  // Fetch model templates
+  const { data: modelTemplates = [] } = useQuery({
+    queryKey: ['model-templates'],
+    queryFn: async () => {
+      const response = await client.get('/api/model-templates/');
+      return response.data as Array<{
+        id: number; label: string; provider: string; name: string; alias: string | null;
+        context_size: number; input_size: number; output_size: number; input_price: number; output_price: number;
+        cache_creation_price: number; cache_hit_price: number;
+        pricing_tiers: Array<{ label: string; context_size: number; input_size: number; output_size: number;
+          input_price: number; output_price: number; cache_creation_price: number; cache_hit_price: number; }> | null;
+        support_kvcache: boolean; support_image: boolean; support_audio: boolean;
+        support_video: boolean; support_file: boolean; support_web_search: boolean;
+        support_tool_search: boolean; support_thinking: boolean;
+        support_online_image: boolean; support_online_video: boolean; support_embedding: boolean;
+      }>;
     },
   });
 
@@ -177,11 +213,12 @@ export default function GroupDetail() {
       queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
       setShowAddModel(null);
       setNewModel({
-        name: '', alias: '', context_size: 4096, input_size: 4096,
+        name: '', alias: '', context_size: 4096, input_size: 4096, output_size: 4096,
+        reasoning_effort: '', supported_image_formats: '',
         input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
         support_kvcache: false, support_image: false, support_audio: false,
         support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-        support_thinking: false, support_online_image: true, support_online_video: true, support_embedding: false
+        support_thinking: false, support_online_image: false, support_online_video: false, support_embedding: false
       });
     },
   });
@@ -935,7 +972,7 @@ export default function GroupDetail() {
                   <option value="volcengine">Volcengine</option>
                   <option value="gemini">Gemini (Google AI)</option>
                   <option value="vertexai">Vertex AI (Google Cloud)</option>
-                  <option value="tencent">Tencent</option>
+                  <option value="tencentvod">Tencent VOD</option>
                 </select>
               </div>
               <div>
@@ -963,6 +1000,11 @@ export default function GroupDetail() {
                 {(editingProvider?.type || newProvider.type) === 'azure' && (
                   <p className="text-xs text-slate-400 mt-1">
                     Format: https://&#123;resource-name&#125;.openai.azure.com
+                  </p>
+                )}
+                {(editingProvider?.type || newProvider.type) === 'tencentvod' && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)
                   </p>
                 )}
               </div>
@@ -1162,6 +1204,109 @@ export default function GroupDetail() {
                   {/* Add Model Form */}
                   {showAddModel === provider.id && (
                     <div className="bg-white p-4 rounded-xl border border-slate-200 mb-3">
+                      {/* Template selector */}
+                      <div className="mb-4 pb-4 border-b border-slate-100">
+                        <label className="block text-xs font-medium text-slate-700 mb-1">
+                          Quick Fill from Template
+                          <span className="text-slate-400 font-normal ml-1">(optional)</span>
+                        </label>
+                        <select
+                          className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          value=""
+                          onChange={(e) => {
+                            const tplId = parseInt(e.target.value);
+                            if (isNaN(tplId)) { setActiveTpl(null); return; }
+                            const tpl = modelTemplates.find((t) => t.id === tplId);
+                            if (!tpl) return;
+                            setActiveTpl(tpl);
+                            if (!tpl.pricing_tiers || tpl.pricing_tiers.length === 0) {
+                              setNewModel({
+                                ...newModel,
+                                name: tpl.name,
+                                alias: tpl.alias || '',
+                                context_size: tpl.context_size,
+                                input_size: tpl.input_size,
+                                output_size: tpl.output_size ?? 4096,
+                                input_price: tpl.input_price,
+                                output_price: tpl.output_price,
+                                cache_creation_price: tpl.cache_creation_price,
+                                cache_hit_price: tpl.cache_hit_price,
+                                support_kvcache: tpl.support_kvcache,
+                                support_image: tpl.support_image,
+                                support_audio: tpl.support_audio,
+                                support_video: tpl.support_video,
+                                support_file: tpl.support_file,
+                                support_web_search: tpl.support_web_search,
+                                support_tool_search: tpl.support_tool_search,
+                                support_thinking: tpl.support_thinking,
+                                support_online_image: tpl.support_online_image,
+                                support_online_video: tpl.support_online_video,
+                                support_embedding: tpl.support_embedding,
+                              });
+                            } else {
+                              setNewModel({ ...newModel, name: tpl.name, alias: tpl.alias || '' });
+                            }
+                          }}
+                        >
+                          <option value="">— Select a template —</option>
+                          {Array.from(new Set(modelTemplates.map((t) => t.provider))).map((providerName) => (
+                            <optgroup key={providerName} label={providerName}>
+                              {modelTemplates
+                                .filter((tpl) => tpl.provider === providerName)
+                                .map((tpl) => (
+                                  <option key={tpl.id} value={tpl.id}>
+                                    {tpl.label}
+                                  </option>
+                                ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                        {activeTpl?.pricing_tiers && activeTpl.pricing_tiers.length > 0 && (
+                          <div className="mt-2">
+                            <label className="block text-xs font-medium text-slate-600 mb-1">Select Pricing Tier</label>
+                            <select
+                              className="w-full p-2 bg-slate-50 border border-blue-300 rounded-lg text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              defaultValue=""
+                              onChange={(e) => {
+                                const idx = parseInt(e.target.value);
+                                if (isNaN(idx) || !activeTpl?.pricing_tiers) return;
+                                const tier = activeTpl.pricing_tiers[idx];
+                                setNewModel({
+                                  ...newModel,
+                                  name: activeTpl.name,
+                                  alias: activeTpl.alias || '',
+                                  context_size: tier.context_size,
+                                  input_size: tier.input_size,
+                                  output_size: tier.output_size ?? 4096,
+                                  input_price: tier.input_price,
+                                  output_price: tier.output_price,
+                                  cache_creation_price: tier.cache_creation_price,
+                                  cache_hit_price: tier.cache_hit_price,
+                                  support_kvcache: activeTpl.support_kvcache,
+                                  support_image: activeTpl.support_image,
+                                  support_audio: activeTpl.support_audio,
+                                  support_video: activeTpl.support_video,
+                                  support_file: activeTpl.support_file,
+                                  support_web_search: activeTpl.support_web_search,
+                                  support_tool_search: activeTpl.support_tool_search,
+                                  support_thinking: activeTpl.support_thinking,
+                                  support_online_image: activeTpl.support_online_image,
+                                  support_online_video: activeTpl.support_online_video,
+                                  support_embedding: activeTpl.support_embedding,
+                                });
+                              }}
+                            >
+                              <option value="">— Pick a tier —</option>
+                              {activeTpl.pricing_tiers.map((tier, idx) => (
+                                <option key={idx} value={idx}>
+                                  {tier.label} — in ${tier.input_price}/M out ${tier.output_price}/M
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
                       {/* Basic Info */}
                       <div className="mb-4">
                         <h4 className="text-sm font-semibold text-slate-700 mb-2">Basic Information</h4>
@@ -1200,6 +1345,33 @@ export default function GroupDetail() {
                               className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
                               value={newModel.input_size}
                               onChange={(e) => setNewModel({ ...newModel, input_size: parseInt(e.target.value) || 4096 })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Output Size</label>
+                            <input
+                              type="number"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.output_size}
+                              onChange={(e) => setNewModel({ ...newModel, output_size: parseInt(e.target.value) || 4096 })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Reasoning Effort</label>
+                            <input
+                              placeholder="low / medium / high"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.reasoning_effort}
+                              onChange={(e) => setNewModel({ ...newModel, reasoning_effort: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">Image Formats</label>
+                            <input
+                              placeholder="png,jpeg,webp"
+                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                              value={newModel.supported_image_formats}
+                              onChange={(e) => setNewModel({ ...newModel, supported_image_formats: e.target.value })}
                             />
                           </div>
                         </div>
@@ -1294,11 +1466,12 @@ export default function GroupDetail() {
                           onClick={() => {
                             setShowAddModel(null);
                             setNewModel({
-                              name: '', alias: '', context_size: 4096, input_size: 4096,
+                              name: '', alias: '', context_size: 4096, input_size: 4096, output_size: 4096,
+                              reasoning_effort: '', supported_image_formats: '',
                               input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
                               support_kvcache: false, support_image: false, support_audio: false,
                               support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-                              support_thinking: false, support_online_image: true, support_online_video: true, support_embedding: false
+                              support_thinking: false, support_online_image: false, support_online_video: false, support_embedding: false
                             });
                           }}
                           className="bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-300"

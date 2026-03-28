@@ -11,9 +11,11 @@ from app import create_app, db
 
 app = create_app()
 
-# Create tables if they don't exist
+# Create tables if they don't exist, then seed built-in model templates
 with app.app_context():
     db.create_all()
+    from app.routes.model_templates import seed_builtin_templates
+    seed_builtin_templates()
 
 
 if __name__ == '__main__':

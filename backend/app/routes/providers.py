@@ -1,6 +1,7 @@
 """
 Provider and Model management routes.
 """
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from functools import wraps
 import os
@@ -131,16 +132,33 @@ def create_model(current_user):
     """Create a new model."""
     data = request.get_json()
     
+    # Parse retirement_time if provided as ISO string
+    retirement_time = None
+    if data.get('retirement_time'):
+        try:
+            retirement_time = datetime.fromisoformat(data['retirement_time'].replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            return jsonify({'detail': 'Invalid retirement_time format. Use ISO 8601 (e.g. 2025-01-01T00:00:00)'}), 400
+
     model = Model(
         name=data.get('name'),
         alias=data.get('alias') if data.get('alias') else None,  # Alias for API access
         provider_id=data.get('provider_id'),
         context_size=data.get('context_size', 4096),
         input_size=data.get('input_size', 4096),
+        output_size=data.get('output_size', 4096),
+        reasoning_effort=data.get('reasoning_effort') or None,
+        supported_image_formats=data.get('supported_image_formats') or None,
+        pricing_tiers=data.get('pricing_tiers') or None,
         input_price=data.get('input_price', 0.0),
         output_price=data.get('output_price', 0.0),
         cache_creation_price=data.get('cache_creation_price', 0.0),
         cache_hit_price=data.get('cache_hit_price', 0.0),
+        currency=data.get('currency') or 'USD',
+        retirement_time=retirement_time,
+        rpm=data.get('rpm') or None,
+        tpm=data.get('tpm') or None,
+        discount=data.get('discount') if data.get('discount') is not None else 1.0,
         support_kvcache=data.get('support_kvcache', False),
         support_image=data.get('support_image', False),
         support_audio=data.get('support_audio', False),
@@ -169,18 +187,34 @@ def update_model(current_user, model_id):
         return jsonify({'detail': 'Model not found'}), 404
     
     data = request.get_json()
-    for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 
+    for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
                   'input_price', 'output_price', 'cache_creation_price', 'cache_hit_price',
+                  'currency', 'rpm', 'tpm', 'discount',
+                  'reasoning_effort', 'supported_image_formats', 'pricing_tiers',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                   'support_online_image', 'support_online_video', 'support_embedding']:
         if field in data:
-            # Handle alias - convert empty string to None
-            if field == 'alias' and data[field] == '':
+            # Handle alias/nullable strings - convert empty string to None
+            if field in ('alias', 'reasoning_effort', 'supported_image_formats') and data[field] == '':
                 setattr(model, field, None)
             else:
                 setattr(model, field, data[field])
-    
+
+    # Handle retirement_time separately (ISO string → datetime)
+    if 'retirement_time' in data:
+        rt = data['retirement_time']
+        if rt:
+            try:
+                model.retirement_time = datetime.fromisoformat(rt.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                return jsonify({'detail': 'Invalid retirement_time format. Use ISO 8601 (e.g. 2025-01-01T00:00:00)'}), 400
+        else:
+            model.retirement_time = None
+
+    if not model.currency:
+        model.currency = 'USD'
+
     db.session.commit()
     db.session.refresh(model)
     

@@ -1,10 +1,11 @@
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { LayoutDashboard, Database, LogOut, Users, Settings, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, Database, LogOut, Users, Settings, ChevronRight, LayoutTemplate } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview & Statistics' },
   { path: '/groups', label: 'Groups', icon: Users, description: 'Manage Groups, API Keys & Providers' },
+  { path: '/model-templates', label: 'Model Templates', icon: LayoutTemplate, description: 'Manage reusable model templates' },
 ];
 
 const Layout = () => {

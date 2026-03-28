@@ -95,22 +95,35 @@ class GatewayService:
             ModelNotFoundError: 如果模型未找到或不可访问
         """
         # 先尝试按别名查找，再按名称查找
-        db_model = db.session.query(Model).filter(
-            (Model.alias == model_name) | (Model.name == model_name)
-        ).first()
+        # Join with Provider so we can filter by group_id at the DB level,
+        # avoiding false misses when the same model name exists in multiple groups.
+        query = (
+            db.session.query(Model)
+            .join(Provider, Model.provider_id == Provider.id)
+            .filter((Model.alias == model_name) | (Model.name == model_name))
+        )
+
+        if group_id is not None:
+            query = query.filter(Provider.group_id == group_id)
+
+        db_model = query.first()
 
         if not db_model:
             raise ModelNotFoundError(model_name)
+
+        # Reject retired models
+        if db_model.is_retired:
+            raise GatewayServiceError(
+                f"Model '{model_name}' was retired on {db_model.retirement_time.strftime('%Y-%m-%d')} "
+                f"and can no longer be used.",
+                status_code=410  # 410 Gone
+            )
 
         db_provider = db.session.query(Provider).filter(
             Provider.id == db_model.provider_id
         ).first()
 
         if not db_provider:
-            raise ModelNotFoundError(model_name)
-
-        # 检查组访问权限
-        if group_id is not None and db_provider.group_id != group_id:
             raise ModelNotFoundError(model_name)
 
         # 创建供应商实例

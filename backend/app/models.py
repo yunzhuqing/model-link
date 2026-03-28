@@ -182,6 +182,110 @@ class Provider(db.Model):
         }
 
 
+class ModelTemplate(db.Model):
+    """Pre-defined model templates that users can select to auto-fill the Add Model form."""
+    __tablename__ = "ml_model_templates"
+
+    id = db.Column(db.Integer, primary_key=True, index=True)
+    label = db.Column(db.String(100), nullable=False)         # Display name in the UI
+    provider = db.Column(db.String(50), nullable=False)       # Provider group (OpenAI, Anthropic, …)
+    name = db.Column(db.String(100), nullable=False)          # Actual model ID sent to the API
+    alias = db.Column(db.String(100), nullable=True)          # Suggested alias
+
+    # Size
+    context_size = db.Column(db.Integer, default=4096)
+    input_size = db.Column(db.Integer, default=4096)
+    output_size = db.Column(db.Integer, default=4096)  # Maximum output tokens
+
+    # Reasoning effort default (none / low / medium / high)
+    reasoning_effort = db.Column(db.String(20), nullable=True, default=None)
+
+    # Comma-separated list of accepted image formats, e.g. "png,jpeg,webp"
+    # Empty / NULL means no restriction (all common formats accepted)
+    supported_image_formats = db.Column(db.String(255), nullable=True, default=None)
+
+    # Optional tiered pricing — list of dicts:
+    # [{"label": "<=272k", "context_size": 272000, "input_size": 272000, "output_size": 8192,
+    #   "input_price": 2.5, "output_price": 15, "cache_creation_price": 0, "cache_hit_price": 0.25}]
+    # When present, users pick a tier in the UI; the tier overrides the base price/size fields.
+    pricing_tiers = db.Column(db.JSON, nullable=True, default=None)
+
+    # Pricing ($ per 1M tokens)  — these are the default / first-tier values
+    input_price = db.Column(db.Float, default=0.0)
+    output_price = db.Column(db.Float, default=0.0)
+    cache_creation_price = db.Column(db.Float, default=0.0)
+    cache_hit_price = db.Column(db.Float, default=0.0)
+
+    # Currency for pricing (e.g. "USD", "CNY")
+    currency = db.Column(db.String(10), nullable=True, default='USD')
+
+    # Retirement time — after this datetime the template is considered obsolete
+    retirement_time = db.Column(db.DateTime, nullable=True, default=None)
+
+    # Rate limits
+    rpm = db.Column(db.Integer, nullable=True, default=None)   # requests per minute (None = unlimited)
+    tpm = db.Column(db.Integer, nullable=True, default=None)   # tokens per minute (None = unlimited)
+
+    # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
+    discount = db.Column(db.Float, nullable=True, default=1.0)
+
+    # Feature flags
+    support_kvcache = db.Column(db.Boolean, default=False)
+    support_image = db.Column(db.Boolean, default=False)
+    support_audio = db.Column(db.Boolean, default=False)
+    support_video = db.Column(db.Boolean, default=False)
+    support_file = db.Column(db.Boolean, default=False)
+    support_web_search = db.Column(db.Boolean, default=False)
+    support_tool_search = db.Column(db.Boolean, default=False)
+    support_thinking = db.Column(db.Boolean, default=False)
+    support_online_image = db.Column(db.Boolean, default=False)
+    support_online_video = db.Column(db.Boolean, default=False)
+    support_embedding = db.Column(db.Boolean, default=False)
+
+    @property
+    def is_retired(self):
+        """Returns True if the template has passed its retirement time."""
+        if self.retirement_time is None:
+            return False
+        return datetime.utcnow() >= self.retirement_time
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'label': self.label,
+            'provider': self.provider,
+            'name': self.name,
+            'alias': self.alias,
+            'context_size': self.context_size,
+            'input_size': self.input_size,
+            'output_size': self.output_size,
+            'reasoning_effort': self.reasoning_effort,
+            'supported_image_formats': self.supported_image_formats,
+            'pricing_tiers': self.pricing_tiers,
+            'input_price': self.input_price,
+            'output_price': self.output_price,
+            'cache_creation_price': self.cache_creation_price,
+            'cache_hit_price': self.cache_hit_price,
+            'currency': self.currency or 'USD',
+            'retirement_time': self.retirement_time.isoformat() if self.retirement_time else None,
+            'is_retired': self.is_retired,
+            'rpm': self.rpm,
+            'tpm': self.tpm,
+            'discount': self.discount if self.discount is not None else 1.0,
+            'support_kvcache': self.support_kvcache,
+            'support_image': self.support_image,
+            'support_audio': self.support_audio,
+            'support_video': self.support_video,
+            'support_file': self.support_file,
+            'support_web_search': self.support_web_search,
+            'support_tool_search': self.support_tool_search,
+            'support_thinking': self.support_thinking,
+            'support_online_image': self.support_online_image,
+            'support_online_video': self.support_online_video,
+            'support_embedding': self.support_embedding,
+        }
+
+
 class Model(db.Model):
     __tablename__ = "ml_models"
 
@@ -193,13 +297,39 @@ class Model(db.Model):
     # Basic properties
     context_size = db.Column(db.Integer, default=4096)
     input_size = db.Column(db.Integer, default=4096)
+    output_size = db.Column(db.Integer, default=4096)  # Maximum output tokens
     input_price = db.Column(db.Float, default=0.0)
     output_price = db.Column(db.Float, default=0.0)
-    
+
+    # Reasoning effort default (none / low / medium / high)
+    reasoning_effort = db.Column(db.String(20), nullable=True, default=None)
+
+    # Comma-separated list of accepted image formats, e.g. "png,jpeg,webp"
+    # Empty / NULL means no restriction (all common formats accepted)
+    supported_image_formats = db.Column(db.String(255), nullable=True, default=None)
+
+    # Optional tiered pricing — same structure as ModelTemplate.pricing_tiers
+    # [{"label": "<=272k", "context_size": 272000, "input_size": 272000, "output_size": 8192,
+    #   "input_price": 2.5, "output_price": 15, "cache_creation_price": 0, "cache_hit_price": 0.25}]
+    pricing_tiers = db.Column(db.JSON, nullable=True, default=None)
+
     # Cache pricing
     cache_creation_price = db.Column(db.Float, default=0.0)
     cache_hit_price = db.Column(db.Float, default=0.0)
-    
+
+    # Currency for pricing (e.g. "USD", "CNY")
+    currency = db.Column(db.String(10), nullable=True, default='USD')
+
+    # Retirement time — after this datetime the model is considered retired and cannot be used
+    retirement_time = db.Column(db.DateTime, nullable=True, default=None)
+
+    # Rate limits
+    rpm = db.Column(db.Integer, nullable=True, default=None)   # requests per minute (None = unlimited)
+    tpm = db.Column(db.Integer, nullable=True, default=None)   # tokens per minute (None = unlimited)
+
+    # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
+    discount = db.Column(db.Float, nullable=True, default=1.0)
+
     # Feature support
     support_kvcache = db.Column(db.Boolean, default=False)
     support_image = db.Column(db.Boolean, default=False)
@@ -215,6 +345,13 @@ class Model(db.Model):
 
     provider = db.relationship("Provider", back_populates="models")
 
+    @property
+    def is_retired(self):
+        """Returns True if the model has passed its retirement time."""
+        if self.retirement_time is None:
+            return False
+        return datetime.utcnow() >= self.retirement_time
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -223,10 +360,20 @@ class Model(db.Model):
             'alias': self.alias,
             'context_size': self.context_size,
             'input_size': self.input_size,
+            'output_size': self.output_size,
+            'reasoning_effort': self.reasoning_effort,
+            'supported_image_formats': self.supported_image_formats,
+            'pricing_tiers': self.pricing_tiers,
             'input_price': self.input_price,
             'output_price': self.output_price,
             'cache_creation_price': self.cache_creation_price,
             'cache_hit_price': self.cache_hit_price,
+            'currency': self.currency or 'USD',
+            'retirement_time': self.retirement_time.isoformat() if self.retirement_time else None,
+            'is_retired': self.is_retired,
+            'rpm': self.rpm,
+            'tpm': self.tpm,
+            'discount': self.discount if self.discount is not None else 1.0,
             'support_kvcache': self.support_kvcache,
             'support_image': self.support_image,
             'support_audio': self.support_audio,

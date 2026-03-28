@@ -6,6 +6,7 @@ import RegisterPage from './pages/RegisterPage';
 import Dashboard from './pages/Dashboard';
 import GroupList from './pages/GroupList';
 import GroupDetail from './pages/GroupDetail';
+import ModelTemplates from './pages/ModelTemplates';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -34,6 +35,7 @@ function App() {
               <Route index element={<Dashboard />} />
               <Route path="groups" element={<GroupList />} />
               <Route path="groups/:id" element={<GroupDetail />} />
+              <Route path="model-templates" element={<ModelTemplates />} />
             </Route>
           </Routes>
         </BrowserRouter>
