@@ -300,7 +300,7 @@ def openai_responses():
         apikey_value = api_key.key if api_key else None
 
         # Generate a stable response ID: "resp_" + 48 hex chars
-        response_id = gen_id("resp_")
+        response_id = gen_id("resp")
 
         # Build input/output storage keys via the configured backend
         storage = get_storage_backend()

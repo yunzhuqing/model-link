@@ -36,6 +36,7 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.utils import gen_id
 
 # Configure logger for VertexAI provider
 logger = logging.getLogger("vertexai")
@@ -112,6 +113,11 @@ def _log_to_file(data: Any, prefix: str, publisher: str) -> str:
     except Exception as e:
         logger.error(f"Failed to write log file: {e}")
         return ""
+
+
+# In-memory cache for thoughtSignature mapping: tool_call_id -> thoughtSignature
+# This is needed because Vertex AI requires thoughtSignature to be passed back with functionResponse
+_thought_signature_cache: Dict[str, str] = {}
 
 
 class VertexAIProvider(BaseProvider):
@@ -528,7 +534,7 @@ class VertexAIProvider(BaseProvider):
         )
 
         return ChatResponse(
-            id=response_data.get("id", f"msg_{uuid.uuid4().hex[:12]}"),
+            id=response_data.get("id", gen_id("msg")),
             model=response_data.get("model", model),
             choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls, reasoning_content=reasoning_content)],
             usage=usage, created=int(time.time()), provider=self.PROVIDER_TYPE
@@ -676,32 +682,34 @@ class VertexAIProvider(BaseProvider):
             if isinstance(message.content, list):
                 for block in message.content:
                     if block.type == ContentType.TOOL_RESULT:
+                        # Use block's tool_call_id, or fall back to message's tool_call_id
                         bid = block.tool_call_id or call_id
+                        # Get function name from block, message, or lookup by id
                         name = block.tool_name or message.name or call_id_to_name.get(bid, "")
+                        # Note: Vertex AI does not accept "id" in functionResponse
+                        # response must be an object with "result" key
                         fr: Dict[str, Any] = {
                             "name": name,
-                            "response": {"output": block.tool_result or ""}
+                            "response": {"result": block.tool_result or ""}
                         }
-                        if bid:
-                            fr["id"] = bid
                         parts.append({"functionResponse": fr})
                     elif block.type == ContentType.TEXT:
                         name = message.name or call_id_to_name.get(call_id, "")
+                        # Note: Vertex AI does not accept "id" in functionResponse
+                        # response must be an object with "result" key
                         fr = {
                             "name": name,
-                            "response": {"output": block.text or ""}
+                            "response": {"result": block.text or ""}
                         }
-                        if call_id:
-                            fr["id"] = call_id
                         parts.append({"functionResponse": fr})
             elif isinstance(message.content, str):
                 name = message.name or call_id_to_name.get(call_id, "")
+                # Note: Vertex AI does not accept "id" in functionResponse
+                # response must be an object with "result" key
                 fr = {
                     "name": name,
-                    "response": {"output": message.content}
+                    "response": {"result": message.content}
                 }
-                if call_id:
-                    fr["id"] = call_id
                 parts.append({"functionResponse": fr})
             return {"role": "user", "parts": parts} if parts else None
 
@@ -742,16 +750,19 @@ class VertexAIProvider(BaseProvider):
         elif block.type == ContentType.FILE_BASE64:
             return {"inlineData": {"data": block.data, "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.TOOL_CALL:
+            # Note: Vertex AI does not accept "id" in functionCall when sending request
             fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
-            if block.tool_call_id:
-                fc["id"] = block.tool_call_id
-            return {"functionCall": fc}
+            part: Dict[str, Any] = {"functionCall": fc}
+            # Include thoughtSignature from cache if available (required for multi-turn tool calls)
+            if block.tool_call_id and block.tool_call_id in _thought_signature_cache:
+                part["thoughtSignature"] = _thought_signature_cache[block.tool_call_id]
+            return part
         elif block.type == ContentType.TOOL_RESULT:
             bid = block.tool_call_id or ""
             name = block.tool_name or call_id_to_name.get(bid, "")
-            fr: Dict[str, Any] = {"name": name, "response": {"output": block.tool_result or ""}}
-            if bid:
-                fr["id"] = bid
+            # Note: Vertex AI does not accept "id" in functionResponse
+            # response must be an object with "result" key
+            fr: Dict[str, Any] = {"name": name, "response": {"result": block.tool_result or ""}}
             return {"functionResponse": fr}
         else:
             return {"text": block.text or ""}
@@ -786,9 +797,15 @@ class VertexAIProvider(BaseProvider):
                         message_blocks.append(ContentBlock.from_text(part["text"]))
                 elif "functionCall" in part:
                     fc = part["functionCall"]
-                    tc_id = f"call_{uuid.uuid4().hex[:8]}"
+                    # Use the id from the functionCall if provided, otherwise generate one
+                    tc_id = fc.get("id") or gen_id("call")
                     tc_name = fc.get("name", "")
                     tc_args = fc.get("args", {})
+                    # Capture thoughtSignature if present (required for multi-turn tool calls)
+                    # Store in cache for later retrieval when building functionResponse
+                    thought_sig = part.get("thoughtSignature")
+                    if thought_sig:
+                        _thought_signature_cache[tc_id] = thought_sig
                     tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, call_type="function"))
                     message_blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args))
 
@@ -814,7 +831,7 @@ class VertexAIProvider(BaseProvider):
         )
 
         return ChatResponse(
-            id=f"gemini-{uuid.uuid4().hex[:12]}",
+            id=gen_id("gemini"),
             model=model,
             choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls, reasoning_content=reasoning_content)],
             usage=usage, created=int(time.time()), provider=self.PROVIDER_TYPE
@@ -860,7 +877,12 @@ class VertexAIProvider(BaseProvider):
                     delta_content = (delta_content or "") + part["text"]
             elif "functionCall" in part:
                 fc = part["functionCall"]
-                tc_id = f"call_{uuid.uuid4().hex[:8]}"
+                tc_id = gen_id("call")
+                # Capture thoughtSignature if present (required for multi-turn tool calls)
+                # Store in cache for later retrieval when building functionResponse
+                thought_sig = part.get("thoughtSignature")
+                if thought_sig:
+                    _thought_signature_cache[tc_id] = thought_sig
                 tool_calls_data.append({
                     "index": 0, "id": tc_id, "type": "function",
                     "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False)}
@@ -993,7 +1015,7 @@ class VertexAIProvider(BaseProvider):
         )
 
         return ChatResponse(
-            id=response_data.get("id", f"chatcmpl-{uuid.uuid4().hex[:8]}"),
+            id=response_data.get("id", gen_id("chatcmpl")),
             model=model, choices=choices, usage=usage,
             created=response_data.get("created", int(time.time())),
             provider=self.PROVIDER_TYPE
@@ -1065,6 +1087,7 @@ class VertexAIProvider(BaseProvider):
         
         try:
             request_data = self.prepare_request(request)
+            print(f"[VertexAI {publisher}] Request after prepare_request: {json.dumps(request_data, ensure_ascii=False)}", file=sys.stderr)
         except Exception as e:
             print(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}", file=sys.stderr)
             traceback.print_exc()
@@ -1137,6 +1160,7 @@ class VertexAIProvider(BaseProvider):
         
         try:
             request_data = self.prepare_request(request)
+            print(f"[VertexAI {publisher} Stream] Request after prepare_request: {json.dumps(request_data, ensure_ascii=False)}", file=sys.stderr)
         except Exception as e:
             print(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}", file=sys.stderr)
             traceback.print_exc()
@@ -1151,7 +1175,7 @@ class VertexAIProvider(BaseProvider):
 
         headers = self.get_headers()
         url = self._get_api_url(request.model, streaming=True)
-        response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        response_id = gen_id("chatcmpl")
 
         print(f"[VertexAI {publisher} Stream] URL: {url}", file=sys.stderr)
         

@@ -26,4 +26,4 @@ def gen_id(prefix: str) -> str:
         >>> len(gen_id("resp_")) - len("resp_")
         48
     """
-    return f"{prefix}{os.urandom(24).hex()}"
+    return f"{prefix}_{os.urandom(24).hex()}"
