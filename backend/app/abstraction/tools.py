@@ -13,6 +13,7 @@ class ToolType(Enum):
     CODE_INTERPRETER = "code_interpreter"
     RETRIEVAL = "retrieval"
     WEB_SEARCH = "web_search"
+    IMAGE_GENERATION = "image_generation"
 
 
 @dataclass

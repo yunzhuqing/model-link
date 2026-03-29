@@ -82,6 +82,7 @@ interface Provider {
   api_key: string;
   group_id: number;
   extra_config: Record<string, any>;
+  tags: string[];
   models: Model[];
 }
 
@@ -101,7 +102,7 @@ export default function GroupDetail() {
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [newProvider, setNewProvider] = useState({ 
-    name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {} as Record<string, any>
+    name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {} as Record<string, any>, tags: [] as string[]
   });
   
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
@@ -188,7 +189,7 @@ export default function GroupDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
       setShowAddProvider(false);
-      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {} });
+      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {}, tags: [] });
     },
   });
 
@@ -283,9 +284,25 @@ export default function GroupDetail() {
   };
 
   const copyToClipboard = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopiedKey(text);
-    setTimeout(() => setCopiedKey(null), 2000);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for browsers that don't support clipboard API
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      setCopiedKey(text);
+      setTimeout(() => setCopiedKey(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
+    }
   };
 
   const formatDate = (dateStr: string | null) => {
@@ -1047,6 +1064,26 @@ export default function GroupDetail() {
                     : setNewProvider({ ...newProvider, description: e.target.value })
                   }
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Tags</label>
+                <input
+                  placeholder="Comma-separated tags (e.g. production, team-a)"
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                  value={editingProvider ? (editingProvider.tags || []).join(', ') : (newProvider.tags || []).join(', ')}
+                  onChange={(e) => {
+                    const tagsStr = e.target.value;
+                    const tags = tagsStr.split(',').map(t => t.trim()).filter(t => t);
+                    if (editingProvider) {
+                      setEditingProvider({ ...editingProvider, tags });
+                    } else {
+                      setNewProvider({ ...newProvider, tags });
+                    }
+                  }}
+                />
+                <p className="text-xs text-slate-400 mt-1">
+                  Comma-separated tags for billing usage binding (e.g. production, team-a, internal)
+                </p>
               </div>
             </div>
 

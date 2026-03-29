@@ -27,7 +27,7 @@ import uuid
 logger = logging.getLogger("gateway")
 
 from app import db
-from app.models import Provider, Model, ApiKey, User
+from app.models import Provider, Model, ApiKey, User, BackgroundResponse
 from jose import JWTError, jwt
 
 # 导入中间层
@@ -49,6 +49,8 @@ from app.adapters.responses_adapter import OpenAIResponsesAdapter
 # 导入供应商注册信息（仅用于管理端点）
 from app.providers import get_provider_class, list_providers
 from app.providers.base import ProviderConfig
+from app.storage import get_storage_backend
+from app.utils import gen_id
 
 gateway_bp = Blueprint('gateway', __name__)
 
@@ -205,6 +207,56 @@ def anthropic_messages():
     return _handle_request(AnthropicMessagesAdapter())
 
 
+def _run_background_response(app, response_id: str, input_key: str, group_id: Optional[int]):
+    """
+    Worker function executed in a background thread.
+
+    Reads the request payload via the storage backend using input_key, calls the
+    GatewayService synchronously inside the Flask application context, then writes
+    the formatted response to output_key and updates the BackgroundResponse DB record.
+
+    Args:
+        app:         The Flask application instance (needed for app context).
+        response_id: The BackgroundResponse.response_id to update when done.
+        input_key:   Storage key for the JSON request payload.
+        group_id:    Group ID for access control (from the API key, or None for JWT users).
+    """
+    with app.app_context():
+        bg_record = db.session.query(BackgroundResponse).filter_by(response_id=response_id).first()
+        if bg_record is None:
+            logger.error(f"[background] BackgroundResponse {response_id!r} not found in DB")
+            return
+
+        storage = get_storage_backend()
+
+        try:
+            # Read request payload via storage backend
+            raw = storage.read(input_key)
+            if raw is None:
+                raise RuntimeError(f"Input not found at storage key: {input_key}")
+            data = json.loads(raw)
+
+            adapter = OpenAIResponsesAdapter()
+            chat_request = adapter.parse_request(data)
+
+            response = _gateway_service.chat(chat_request, group_id)
+            formatted = adapter.format_response(response)
+
+            # Write output via storage backend
+            output_key = bg_record.output_key
+            storage.write(output_key, json.dumps(formatted, ensure_ascii=False))
+
+            bg_record.status = "completed"
+            bg_record.completed_at = datetime.utcnow()
+        except Exception as exc:
+            logger.exception(f"[background] Error processing background response {response_id!r}: {exc}")
+            bg_record.status = "failed"
+            bg_record.error = str(exc)
+            bg_record.completed_at = datetime.utcnow()
+        finally:
+            db.session.commit()
+
+
 @gateway_bp.route('/v1/responses', methods=['POST'])
 def openai_responses():
     """
@@ -212,8 +264,168 @@ def openai_responses():
 
     支持任意供应商（OpenAI、Claude、Gemini 等），
     中间层自动根据模型名称路由到正确的供应商。
+
+    When the request body contains ``"background": true``, the endpoint:
+    1. Immediately returns a ``202 Accepted`` JSON response containing the
+       ``response_id`` and ``status: "in_progress"``.
+    2. Spawns a background thread that calls the provider and stores the
+       result in the ``ml_background_responses`` table.
+    3. The client can later retrieve the result via
+       ``GET /v1/responses/{response_id}``.
     """
-    return _handle_request(OpenAIResponsesAdapter())
+    from flask import current_app
+    import threading
+
+    adapter = OpenAIResponsesAdapter()
+
+    # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
+
+    model_name = data.get('model')
+    if not model_name:
+        return jsonify(adapter.format_error_response('Model is required', 400)), 400
+
+    is_background = bool(data.get('background', False))
+
+    # 2. 认证（只做一次）
+    user, api_key, error, status = get_current_user_or_api_key()
+    if error:
+        return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
+
+    # 3. Background 异步路径
+    if is_background:
+        group_id = api_key.group_id if api_key else None
+        apikey_value = api_key.key if api_key else None
+
+        # Generate a stable response ID: "resp_" + 48 hex chars
+        response_id = gen_id("resp_")
+
+        # Build input/output storage keys via the configured backend
+        storage = get_storage_backend()
+        input_key = storage.make_key(response_id, "input")
+        output_key = storage.make_key(response_id, "output")
+
+        # Write the request payload via the storage backend
+        storage.write(input_key, json.dumps(data, ensure_ascii=False))
+
+        # Persist the initial "in_progress" record (no payload stored in DB)
+        bg_record = BackgroundResponse(
+            response_id=response_id,
+            apikey=apikey_value,
+            status="in_progress",
+            input_key=input_key,
+            output_key=output_key,
+            model=model_name,
+        )
+        db.session.add(bg_record)
+        db.session.commit()
+
+        # Launch the background worker thread
+        app = current_app._get_current_object()
+        thread = threading.Thread(
+            target=_run_background_response,
+            args=(app, response_id, input_key, group_id),
+            daemon=True,
+        )
+        thread.start()
+
+        # Return 202 immediately with the response ID and current status
+        return jsonify({
+            "id": response_id,
+            "object": "response",
+            "status": "in_progress",
+            "model": model_name,
+            "background": True,
+        }), 202
+
+    # 4. 同步路径：直接处理（不再重新认证，复用已读取的数据）
+    group_id = api_key.group_id if api_key else None
+
+    try:
+        chat_request = adapter.parse_request(data)
+    except Exception as e:
+        return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
+
+    logger.info(f"Original request logged to: {json.dumps(data, ensure_ascii=False, indent=4)}")
+
+    try:
+        if chat_request.stream:
+            chunks = _gateway_service.stream_chat(chat_request, group_id)
+            return adapter.create_stream_response(chunks, model_name)
+        else:
+            response = _gateway_service.chat(chat_request, group_id)
+            return jsonify(adapter.format_response(response))
+    except ProviderError as e:
+        return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
+    except ModelNotFoundError as e:
+        return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
+    except GatewayServiceError as e:
+        return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
+
+
+@gateway_bp.route('/v1/responses/<response_id>', methods=['GET'])
+def get_response(response_id: str):
+    """
+    Retrieve a background response by ID.
+
+    Used to poll the status and retrieve the result of a previously submitted
+    background request (``POST /v1/responses`` with ``background=true``).
+
+    Returns:
+        - 200 with the full formatted response when status is "completed".
+        - 200 with ``{"id": ..., "status": "in_progress", ...}`` while still running.
+        - 200 with ``{"id": ..., "status": "failed", "error": "..."}`` on failure.
+        - 404 if the response_id is not found.
+        - 403 if the caller is not authorised to access this response.
+    """
+    user, api_key, error, status = get_current_user_or_api_key()
+    if error:
+        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+
+    # Look up by the string response_id field, not the BigInteger pk
+    bg_record = db.session.query(BackgroundResponse).filter_by(response_id=response_id).first()
+    if bg_record is None:
+        return jsonify({'detail': f'Response {response_id!r} not found'}), 404
+
+    # Authorisation: API-key callers may only retrieve their own responses.
+    # JWT-authenticated users (admin) may retrieve any response.
+    if api_key and bg_record.apikey and bg_record.apikey != api_key.key:
+        return jsonify({'detail': 'Not authorised to access this response'}), 403
+
+    if bg_record.status == "completed":
+        # Read the output via the configured storage backend
+        storage = get_storage_backend()
+        raw = storage.read(bg_record.output_key) if bg_record.output_key else None
+        if raw:
+            try:
+                result = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                result = {"error": "Failed to parse stored response"}
+        else:
+            result = {"error": "Output not found in storage"}
+        return jsonify(result), 200
+
+    if bg_record.status == "failed":
+        return jsonify({
+            "id": bg_record.response_id,
+            "object": "response",
+            "status": "failed",
+            "model": bg_record.model,
+            "error": bg_record.error,
+            "created_at": int(bg_record.created_at.timestamp()) if bg_record.created_at else None,
+        }), 200
+
+    # Still in_progress (or queued)
+    return jsonify({
+        "id": bg_record.response_id,
+        "object": "response",
+        "status": bg_record.status,
+        "model": bg_record.model,
+        "background": True,
+        "created_at": int(bg_record.created_at.timestamp()) if bg_record.created_at else None,
+    }), 200
 
 
 # ============== 模型列表 ==============

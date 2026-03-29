@@ -5,6 +5,55 @@ from datetime import datetime
 from app import db
 
 
+class BackgroundResponse(db.Model):
+    """
+    Stores the state of async background responses for /v1/responses?background=true.
+
+    When a client sends a request with background=true, the gateway immediately returns
+    a response_id and processes the actual LLM call asynchronously in a background thread.
+    The client can later poll /v1/responses/{response_id} to retrieve the completed result.
+
+    The actual request payload and output are NOT stored in the database — they are written
+    to files (or object storage).  input_key and output_key hold the paths to those files.
+
+    Fields:
+        id          - Auto-increment BigInteger primary key.
+        response_id - Unique response identifier (e.g. "resp_xxxx"), returned to the client.
+        apikey      - The API key used to make the original request (for auth on retrieval).
+        status      - Current state: "queued" | "in_progress" | "completed" | "failed".
+        input_key   - File path where the JSON request payload is stored.
+        output_key  - File path where the JSON formatted response is stored (when completed).
+        error       - Error message when status="failed".
+        model       - Model name used in the request.
+        created_at  - Timestamp when the background job was created.
+        completed_at- Timestamp when the job finished (completed or failed).
+    """
+    __tablename__ = "ml_background_responses"
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    response_id = db.Column(db.String(100), unique=True, nullable=False, index=True)  # resp_xxx
+    apikey = db.Column(db.String(200), nullable=True)         # API key used for the request
+    status = db.Column(db.String(20), default="in_progress")  # queued / in_progress / completed / failed
+    input_key = db.Column(db.String(500), nullable=True)      # File path for request payload
+    output_key = db.Column(db.String(500), nullable=True)     # File path for output response
+    error = db.Column(db.Text, nullable=True)                 # Error message if failed
+    model = db.Column(db.String(100), nullable=True)          # Model name from the request
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.response_id,
+            "status": self.status,
+            "input_key": self.input_key,
+            "output_key": self.output_key,
+            "model": self.model,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error": self.error,
+        }
+
+
 # User-Group association table (many-to-many) with roles
 class UserGroup(db.Model):
     """Association table for User-Group with role support"""
@@ -153,6 +202,7 @@ class Provider(db.Model):
     base_url = db.Column(db.String(500))
     group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
     extra_config = db.Column(db.JSON, nullable=True)  # Provider-specific extra config (e.g. api_version for Azure)
+    tags = db.Column(db.JSON, nullable=True)  # Tags for billing usage binding (e.g. ["production", "team-a"])
 
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
     group = db.relationship("Group", back_populates="providers")
@@ -167,6 +217,7 @@ class Provider(db.Model):
             'base_url': self.base_url,
             'group_id': self.group_id,
             'extra_config': self.extra_config or {},
+            'tags': self.tags or [],
             'models': [m.to_dict() for m in self.models]
         }
 
@@ -178,7 +229,8 @@ class Provider(db.Model):
             'description': self.description,
             'base_url': self.base_url,
             'group_id': self.group_id,
-            'extra_config': self.extra_config or {}
+            'extra_config': self.extra_config or {},
+            'tags': self.tags or []
         }
 
 

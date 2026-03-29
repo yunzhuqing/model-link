@@ -17,15 +17,7 @@ import uuid
 from typing import Optional
 
 from .base import BaseAdapter
-
-
-def _gen_id(prefix: str) -> str:
-    """Generate an ID with a given prefix matching OpenAI's ~50-char format.
-
-    OpenAI IDs look like ``resp_08a90de11516ea260069c1e8c3e01c8193a407cbeddc0316a8``
-    (prefix + 48 hex chars).  We use ``os.urandom`` for speed and sufficient length.
-    """
-    return f"{prefix}{os.urandom(24).hex()}"
+from app.utils import gen_id as _gen_id
 
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
@@ -89,7 +81,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             # 4. Plain content blocks (no 'role', has 'type' like input_text/input_image)
 
             # Check if ALL items are plain content blocks (no role, no special types)
-            SPECIAL_TYPES = {'function_call', 'function_call_output'}
+            SPECIAL_TYPES = {'function_call', 'function_call_output', 'image_generation_call'}
             is_pure_content_blocks = all(
                 isinstance(item, dict)
                 and 'role' not in item
@@ -160,6 +152,36 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             call_id = item.get('call_id') or item.get('id', '')
                             tool_name = item.get('name', '')
                             block = ContentBlock.from_tool_call(call_id, tool_name, args)
+                            messages.append(Message(
+                                role=MessageRole.ASSISTANT,
+                                content=[block]
+                            ))
+
+                        elif item_type == 'image_generation_call':
+                            # Image generation call item — represents a previously executed
+                            # image generation operation in the conversation history.
+                            #
+                            # Format:
+                            # {
+                            #   "type": "image_generation_call",
+                            #   "id": "<call_id>",
+                            #   "status": "in_progress|completed|generating|failed",
+                            #   "result": "<image data or description>"
+                            # }
+                            #
+                            # We store this as a tool_call content block on an ASSISTANT message
+                            # so that multi-turn conversations that include prior image generation
+                            # results are preserved in the message history passed to the provider.
+                            call_id = item.get('id', '')
+                            status = item.get('status', 'completed')
+                            result = item.get('result', '')
+
+                            # Represent as a tool call from the assistant (the generation request)
+                            block = ContentBlock.from_tool_call(
+                                call_id,
+                                'image_generation',
+                                {'status': status, 'result': result}
+                            )
                             messages.append(Message(
                                 role=MessageRole.ASSISTANT,
                                 content=[block]
@@ -242,6 +264,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
         # 处理工具定义
         tools = []
+        accumulated_img_metadata: dict = {}  # collects image_generation tool parameters
         for tool_data in data.get('tools', []):
             tool_type = tool_data.get('type', 'function')
 
@@ -276,6 +299,55 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 # Web search tool - pass through as metadata
                 pass
 
+            elif tool_type == 'image_generation':
+                # Image generation tool — extract generation parameters into metadata.
+                # These are picked up by _execute_image_generation_direct() in the
+                # Volcengine provider and forwarded to the /v3/images/generations API.
+                #
+                # Supported fields (mirroring the Doubao API):
+                #   size             – output image dimensions, e.g. "1024x1024" or "2K"
+                #   n                – number of images to generate (aliases: number, count)
+                #   response_format  – return format: "b64_json" (default) or "url"
+                #   image_format     – image file format: "png" (default) or "jpg"
+                #   seed             – random seed for reproducibility
+                #   watermark        – bool, whether to add a watermark
+                #   reference_images – list of image URLs for image-to-image generation
+                img_metadata = {}
+
+                size = tool_data.get('size')
+                if size:
+                    img_metadata['size'] = size
+
+                # Accept `n`, `number`, or `count` for image quantity
+                n = tool_data.get('n') or tool_data.get('number') or tool_data.get('count')
+                if n is not None:
+                    img_metadata['number'] = int(n)
+
+                response_format = tool_data.get('response_format')
+                if response_format:
+                    img_metadata['response_format'] = response_format
+
+                image_format = tool_data.get('image_format') or tool_data.get('output_format')
+                if image_format:
+                    img_metadata['image_format'] = image_format
+
+                seed = tool_data.get('seed')
+                if seed is not None:
+                    img_metadata['seed'] = seed
+
+                watermark = tool_data.get('watermark')
+                if watermark is not None:
+                    img_metadata['watermark'] = bool(watermark)
+
+                reference_images = tool_data.get('reference_images') or tool_data.get('image')
+                if reference_images:
+                    if isinstance(reference_images, str):
+                        reference_images = [reference_images]
+                    img_metadata['reference_images'] = reference_images
+
+                # Accumulate image generation params; we'll merge into metadata below.
+                accumulated_img_metadata.update(img_metadata)
+
         # Parse reasoning parameter
         reasoning_effort = None
         reasoning = data.get('reasoning')
@@ -297,6 +369,11 @@ class OpenAIResponsesAdapter(BaseAdapter):
         # Store full reasoning config in metadata so providers can use all fields (e.g. summary)
         if reasoning and isinstance(reasoning, dict):
             metadata['reasoning'] = reasoning
+
+        # Merge image_generation tool parameters into metadata so the Volcengine
+        # provider can forward them to /v3/images/generations
+        if accumulated_img_metadata:
+            metadata.update(accumulated_img_metadata)
 
         return ChatRequest(
             messages=messages,
@@ -346,50 +423,96 @@ class OpenAIResponsesAdapter(BaseAdapter):
         """
         output = []
 
-        for choice in response.choices:
-            # Include reasoning output item with summary_text if available
-            if choice.reasoning_content:
+        # Detect image generation responses by ID prefix or provider type.
+        # These are returned by the Volcengine image generation provider and
+        # should be rendered as image_generation_call output items, not messages.
+        is_image_generation = (
+            response.id.startswith("img-") or
+            getattr(response, 'provider', '') == "volcengine_image"
+        )
+
+        if is_image_generation:
+            # The message content is a JSON list of image_generation_call items stored by
+            # execute_image_generation() in the provider.  Each item has:
+            #   {"type": "image_generation_call", "status": "completed", "result": "<url|b64>"}
+            items = []
+            if response.choices and response.choices[0].message:
+                msg = response.choices[0].message
+                # message.content is set to a plain JSON string by execute_image_generation().
+                # Read it directly if it's already a string; fall back to get_text_content()
+                # if the content was converted to a list of ContentBlock objects.
+                content = msg.content
+                if isinstance(content, str):
+                    raw = content
+                elif hasattr(msg, 'get_text_content'):
+                    raw = msg.get_text_content() or "[]"
+                else:
+                    raw = "[]"
+                try:
+                    items = json.loads(raw) if isinstance(raw, str) else []
+                except (json.JSONDecodeError, TypeError):
+                    items = []
+
+            for i, item in enumerate(items):
+                call_id = f"{response.id}-{i}" if i > 0 else response.id
+                if isinstance(item, dict):
+                    status = item.get("status", "completed")
+                    result = item.get("result", "")
+                else:
+                    # Fallback: item is a raw string (URL or base64)
+                    status = "completed"
+                    result = str(item)
                 output.append({
-                    'type': 'reasoning',
-                    'id': _gen_id("rs_"),
-                    'summary': [
-                        {
-                            'type': 'summary_text',
-                            'text': choice.reasoning_content
-                        }
-                    ]
+                    "type": "image_generation_call",
+                    "id": call_id,
+                    "status": status,
+                    "result": result,
                 })
-
-            if choice.message:
-                content_items = []
-                text = choice.message.get_text_content()
-
-                if text:
-                    content_items.append({
-                        'type': 'output_text',
-                        'text': text,
-                        'annotations': []
+        else:
+            for choice in response.choices:
+                # Include reasoning output item with summary_text if available
+                if choice.reasoning_content:
+                    output.append({
+                        'type': 'reasoning',
+                        'id': _gen_id("rs_"),
+                        'summary': [
+                            {
+                                'type': 'summary_text',
+                                'text': choice.reasoning_content
+                            }
+                        ]
                     })
 
-                if choice.tool_calls:
-                    for tc in choice.tool_calls:
-                        output.append({
-                            'type': 'function_call',
-                            'id': tc.id,
-                            'call_id': tc.id,
-                            'name': tc.name,
-                            'arguments': json.dumps(tc.arguments, ensure_ascii=False),
-                            'status': 'completed'
+                if choice.message:
+                    content_items = []
+                    text = choice.message.get_text_content()
+
+                    if text:
+                        content_items.append({
+                            'type': 'output_text',
+                            'text': text,
+                            'annotations': []
                         })
 
-                if content_items:
-                    output.append({
-                        'type': 'message',
-                        'id': _gen_id("msg_"),
-                        'role': 'assistant',
-                        'status': 'completed',
-                        'content': content_items
-                    })
+                    if choice.tool_calls:
+                        for tc in choice.tool_calls:
+                            output.append({
+                                'type': 'function_call',
+                                'id': tc.id,
+                                'call_id': tc.id,
+                                'name': tc.name,
+                                'arguments': json.dumps(tc.arguments, ensure_ascii=False),
+                                'status': 'completed'
+                            })
+
+                    if content_items:
+                        output.append({
+                            'type': 'message',
+                            'id': _gen_id("msg_"),
+                            'role': 'assistant',
+                            'status': 'completed',
+                            'content': content_items
+                        })
 
         # Map finish_reason to status
         status = 'completed'

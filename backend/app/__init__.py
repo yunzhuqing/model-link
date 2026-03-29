@@ -49,6 +49,12 @@ def create_app(config=None):
     migrate.init_app(app, db)
     cors.init_app(app, resources={r"/*": {"origins": "*"}})
     
+    # Initialise the storage backend eagerly so any misconfiguration
+    # (e.g. missing S3 bucket name) surfaces at startup rather than on
+    # the first background-response request.
+    from app.storage import get_storage_backend as _init_storage
+    _init_storage()
+
     # Register blueprints
     from app.routes.users import users_bp
     from app.routes.providers import providers_bp
