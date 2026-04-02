@@ -474,13 +474,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if choice.reasoning_content:
                     output.append({
                         'type': 'reasoning',
-                        'id': _gen_id("rs_"),
-                        'summary': [
-                            {
-                                'type': 'summary_text',
-                                'text': choice.reasoning_content
-                            }
-                        ]
+                    'id': _gen_id("rs"),
+                    'summary': [
+                        {
+                            'type': 'summary_text',
+                            'text': choice.reasoning_content
+                        }
+                    ]
                     })
 
                 if choice.message:
@@ -508,7 +508,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     if content_items:
                         output.append({
                             'type': 'message',
-                            'id': _gen_id("msg_"),
+                            'id': _gen_id("msg"),
                             'role': 'assistant',
                             'status': 'completed',
                             'content': content_items
@@ -572,6 +572,96 @@ class OpenAIResponsesAdapter(BaseAdapter):
         events = []
         msg_id = getattr(self, '_stream_msg_id', None)
 
+        # IMPORTANT: Process tool_calls BEFORE finish_reason
+        # so that function_call events are emitted before response.completed
+        
+        if chunk.tool_calls:
+            for tc in chunk.tool_calls:
+                call_id = tc.get('id', '')
+                func = tc.get('function', {})
+                name = func.get('name', '')
+                args = func.get('arguments', '')
+
+                if call_id:
+                    # New function call start — emit response.output_item.added
+                    output_index = getattr(self, '_stream_output_index', 1)
+                    self._stream_output_index = output_index + 1
+                    # Track call_id → output_index for arguments.delta events
+                    if not hasattr(self, '_stream_tool_output_indices'):
+                        self._stream_tool_output_indices = {}
+                    self._stream_tool_output_indices[call_id] = output_index
+                    
+                    # Store function call info for later use in response.output_item.done
+                    if not hasattr(self, '_stream_tool_calls'):
+                        self._stream_tool_calls = []
+                    fc_id = _gen_id("fc")
+                    self._stream_tool_calls.append({
+                        'id': fc_id,
+                        'call_id': call_id,
+                        'name': name,
+                        'arguments': args,
+                        'output_index': output_index
+                    })
+
+                    item_added = {
+                        'type': 'response.output_item.added',
+                        'output_index': output_index,
+                        'item': {
+                            'id': fc_id,
+                            'type': 'function_call',
+                            'status': 'in_progress',
+                            'arguments': '',
+                            'call_id': call_id,
+                            'name': name
+                        }
+                    }
+                    events.append(f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n")
+
+                if args:
+                    # Determine output_index for this arguments delta
+                    tool_indices = getattr(self, '_stream_tool_output_indices', {})
+                    tc_output_index = tool_indices.get(call_id, 1) if call_id else (max(tool_indices.values()) if tool_indices else 1)
+                    event_data = {
+                        'type': 'response.function_call_arguments.delta',
+                        'output_index': tc_output_index,
+                        'delta': args
+                    }
+                    events.append(f"event: response.function_call_arguments.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
+                    
+                    # Emit response.function_call_arguments.done after the final delta
+                    # Check if this is likely the final arguments (complete JSON)
+                    try:
+                        json.loads(args)
+                        # Valid JSON - this is the final arguments, emit done event
+                        args_done = {
+                            'type': 'response.function_call_arguments.done',
+                            'output_index': tc_output_index,
+                            'arguments': args
+                        }
+                        events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
+                        
+                        # Emit response.output_item.done for the function_call
+                        tool_calls_list = getattr(self, '_stream_tool_calls', [])
+                        for fc_info in tool_calls_list:
+                            if fc_info['call_id'] == call_id:
+                                item_done = {
+                                    'type': 'response.output_item.done',
+                                    'output_index': fc_info['output_index'],
+                                    'item': {
+                                        'id': fc_info['id'],
+                                        'type': 'function_call',
+                                        'status': 'completed',
+                                        'arguments': args,
+                                        'call_id': call_id,
+                                        'name': name
+                                    }
+                                }
+                                events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+                                break
+                    except (json.JSONDecodeError, TypeError):
+                        # Not complete JSON yet, skip done events
+                        pass
+
         if chunk.finish_reason and chunk.delta_content is not None:
             # Full-text finish chunk: emit the three closure events
             full_text = chunk.delta_content or ""
@@ -631,7 +721,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 # Include reasoning output item if accumulated during the stream
                 stream_reasoning = getattr(self, '_stream_full_reasoning', '')
                 if stream_reasoning:
-                    rs_id = getattr(self, '_stream_reasoning_id', _gen_id("rs_"))
+                    rs_id = getattr(self, '_stream_reasoning_id', _gen_id("rs"))
                     output_items.append({
                         'type': 'reasoning',
                         'id': rs_id,
@@ -644,7 +734,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 output_content = [{'type': 'output_text', 'text': full_text, 'annotations': []}]
                 output_items.append({
                     'type': 'message',
-                    'id': msg_id or _gen_id("msg_"),
+                    'id': msg_id or _gen_id("msg"),
                     'role': 'assistant',
                     'status': 'completed',
                     'content': output_content
@@ -688,57 +778,38 @@ class OpenAIResponsesAdapter(BaseAdapter):
         elif chunk.finish_reason:
             # finish_reason only (no full text) — emit response.completed directly
             resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
+            
+            # Build output array - include function_calls if any were accumulated
+            output_items = []
+            tool_calls_list = getattr(self, '_stream_tool_calls', [])
+            for fc_info in tool_calls_list:
+                output_items.append({
+                    'type': 'function_call',
+                    'id': fc_info['id'],
+                    'call_id': fc_info['call_id'],
+                    'name': fc_info['name'],
+                    'arguments': fc_info['arguments'],
+                    'status': 'completed'
+                })
+            
             completed = {
                 'type': 'response.completed',
                 'response': {
                     'id': resp_id,
                     'object': 'response',
                     'status': 'completed',
-                    'model': chunk.model
+                    'model': chunk.model,
+                    'output': output_items
                 }
             }
+            if chunk.usage:
+                usage_out: dict = {
+                    'input_tokens': chunk.usage.get('prompt_tokens', 0),
+                    'output_tokens': chunk.usage.get('completion_tokens', 0),
+                    'total_tokens': chunk.usage.get('total_tokens', 0),
+                }
+                completed['response']['usage'] = usage_out
             events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
-
-        if chunk.tool_calls:
-            for tc in chunk.tool_calls:
-                call_id = tc.get('id', '')
-                func = tc.get('function', {})
-                name = func.get('name', '')
-                args = func.get('arguments', '')
-
-                if call_id:
-                    # New function call start — emit response.output_item.added
-                    output_index = getattr(self, '_stream_output_index', 1)
-                    self._stream_output_index = output_index + 1
-                    # Track call_id → output_index for arguments.delta events
-                    if not hasattr(self, '_stream_tool_output_indices'):
-                        self._stream_tool_output_indices = {}
-                    self._stream_tool_output_indices[call_id] = output_index
-
-                    item_added = {
-                        'type': 'response.output_item.added',
-                        'output_index': output_index,
-                        'item': {
-                            'id': _gen_id("fc_"),
-                            'type': 'function_call',
-                            'status': 'in_progress',
-                            'arguments': '',
-                            'call_id': call_id,
-                            'name': name
-                        }
-                    }
-                    events.append(f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n")
-
-                if args:
-                    # Determine output_index for this arguments delta
-                    tool_indices = getattr(self, '_stream_tool_output_indices', {})
-                    tc_output_index = tool_indices.get(call_id, 1) if call_id else (max(tool_indices.values()) if tool_indices else 1)
-                    event_data = {
-                        'type': 'response.function_call_arguments.delta',
-                        'output_index': tc_output_index,
-                        'delta': args
-                    }
-                    events.append(f"event: response.function_call_arguments.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
 
         # Emit any raw SSE strings that the provider encoded for verbatim passthrough
         # (e.g. Azure reasoning_summary events that have no StreamChunk equivalent).
@@ -758,9 +829,9 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     否则自动生成一个新的 ID。
         """
         if not response_id:
-            response_id = _gen_id("resp_")
+            response_id = _gen_id("resp")
         if not msg_id:
-            msg_id = _gen_id("msg_")
+            msg_id = _gen_id("msg")
 
         now = int(time.time())
         events = []
@@ -911,7 +982,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 # we generate one here and store it on the adapter so that format_stream_chunk
                 # can include item_id in every response.output_text.delta event.
                 if not real_msg_id:
-                    real_msg_id = _gen_id("msg_")
+                    real_msg_id = _gen_id("msg")
                 self._stream_msg_id = real_msg_id
 
                 # Emit the start event using captured real IDs (or generated fallbacks)
@@ -944,7 +1015,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
                 def _emit_reasoning_start():
                     """Emit response.reasoning_summary_part.added event."""
-                    rs_id = _gen_id("rs_")
+                    rs_id = _gen_id("rs")
                     # Store on adapter so format_stream_chunk can reference it
                     self._stream_reasoning_id = rs_id
                     event_data = {

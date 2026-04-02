@@ -45,6 +45,8 @@ interface Provider {
   base_url: string;
   api_key: string;
   group_id: number;
+  authorization: string;
+  tags: string[];
   extra_config: Record<string, any>;
   models: Model[];
 }
@@ -89,7 +91,7 @@ const ProviderList = () => {
   const queryClient = useQueryClient();
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [newProvider, setNewProvider] = useState({ name: '', type: 'openai', description: '', base_url: '', api_key: '', group_id: 0, extra_config: {} as Record<string, any> });
+  const [newProvider, setNewProvider] = useState({ name: '', type: 'openai', description: '', base_url: '', api_key: '', group_id: 0, authorization: 'Authorization', tags: [] as string[], extra_config: {} as Record<string, any> });
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
   const [showAddModel, setShowAddModel] = useState<number | null>(null);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
@@ -124,7 +126,7 @@ const ProviderList = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowAddProvider(false);
-      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', group_id: 0, extra_config: {} });
+      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', group_id: 0, authorization: 'Authorization', tags: [], extra_config: {} });
     },
   });
 
@@ -341,6 +343,54 @@ const ProviderList = () => {
               {groups?.length === 0 && (
                 <p className="text-amber-600 text-sm mt-1">No groups available. Please create a group first.</p>
               )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Authorization Header
+                <span className="text-slate-400 font-normal ml-1 text-xs">(custom header name for API key)</span>
+              </label>
+              <input
+                placeholder="Authorization (default) or x-goog-api-key for Gemini"
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                value={editingProvider ? (editingProvider.authorization || 'Authorization') : newProvider.authorization}
+                onChange={(e) => editingProvider 
+                  ? setEditingProvider({ ...editingProvider, authorization: e.target.value })
+                  : setNewProvider({ ...newProvider, authorization: e.target.value })
+                }
+              />
+              <p className="text-xs text-slate-400 mt-1">
+                Use "Authorization" for Bearer token (default), or "x-goog-api-key" for Gemini API.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Tags
+                <span className="text-slate-400 font-normal ml-1 text-xs">(comma-separated, for billing usage binding)</span>
+              </label>
+              <input
+                placeholder="Comma-separated tags (e.g. production, team-a)"
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                value={editingProvider
+                  ? (editingProvider.tags || []).join(', ')
+                  : (newProvider.tags || []).join(', ')
+                }
+                onChange={(e) => {
+                  const tags = e.target.value.split(',').map((t) => t.trim()).filter(Boolean);
+                  editingProvider
+                    ? setEditingProvider({ ...editingProvider, tags })
+                    : setNewProvider({ ...newProvider, tags });
+                }}
+                onBlur={(e) => {
+                  // Re-normalize on blur so trailing commas are cleaned up
+                  const tags = e.target.value.split(',').map((t) => t.trim()).filter(Boolean);
+                  editingProvider
+                    ? setEditingProvider({ ...editingProvider, tags })
+                    : setNewProvider({ ...newProvider, tags });
+                }}
+              />
+              <p className="text-xs text-slate-400 mt-1">
+                Comma-separated tags for billing usage binding (e.g. production, team-a, internal)
+              </p>
             </div>
           </div>
 

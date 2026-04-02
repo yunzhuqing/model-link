@@ -40,14 +40,20 @@ class ProviderConfig:
     base_url: Optional[str] = None  # API 基础 URL
     timeout: int = 60  # 请求超时时间（秒）
     max_retries: int = 3  # 最大重试次数
+    authorization: str = "Authorization"  # 认证方式: "Authorization" 使用 Bearer token, "custom" 使用自定义头
     extra_config: Dict[str, Any] = field(default_factory=dict)  # 额外配置
     
     def get_headers(self) -> Dict[str, str]:
         """获取请求头"""
-        return {
+        headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
         }
+        if self.authorization == "Authorization":
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        else:
+            # Custom authorization - use the authorization value as header name
+            headers[self.authorization] = self.api_key
+        return headers
 
 
 class BaseProvider(ABC):

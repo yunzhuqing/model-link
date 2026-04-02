@@ -81,6 +81,7 @@ interface Provider {
   base_url: string;
   api_key: string;
   group_id: number;
+  authorization: string;
   extra_config: Record<string, any>;
   tags: string[];
   models: Model[];
@@ -102,7 +103,7 @@ export default function GroupDetail() {
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [newProvider, setNewProvider] = useState({ 
-    name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {} as Record<string, any>, tags: [] as string[]
+    name: '', type: 'openai', description: '', base_url: '', api_key: '', authorization: 'Authorization', extra_config: {} as Record<string, any>, tags: [] as string[]
   });
   
   const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
@@ -189,7 +190,7 @@ export default function GroupDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
       setShowAddProvider(false);
-      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', extra_config: {}, tags: [] });
+      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', authorization: 'Authorization', extra_config: {}, tags: [] });
     },
   });
 
@@ -656,6 +657,245 @@ export default function GroupDetail() {
       </div>
       )}
 
+      {/* Add/Edit Provider Modal */}
+      {(showAddProvider || editingProvider) && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-slate-200 sticky top-0 bg-white">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
+                    <Database className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-800">
+                      {editingProvider ? 'Edit Provider' : 'Add Provider'}
+                    </h2>
+                    <p className="text-sm text-slate-500">
+                      {editingProvider ? editingProvider.name : 'Configure a new AI provider'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setShowAddProvider(false); setEditingProvider(null); }}
+                  className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
+                  <input
+                    placeholder="Provider name"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    value={editingProvider ? editingProvider.name : newProvider.name}
+                    onChange={(e) => editingProvider
+                      ? setEditingProvider({ ...editingProvider, name: e.target.value })
+                      : setNewProvider({ ...newProvider, name: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Type *</label>
+                  <select
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    value={editingProvider ? editingProvider.type : newProvider.type}
+                    onChange={(e) => editingProvider
+                      ? setEditingProvider({ ...editingProvider, type: e.target.value })
+                      : setNewProvider({ ...newProvider, type: e.target.value })
+                    }
+                  >
+                    <option value="openai">OpenAI</option>
+                    <option value="azure">Azure OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="moonshot">Moonshot (Kimi)</option>
+                    <option value="glm">GLM (Zhipu AI)</option>
+                    <option value="minimax">MiniMax</option>
+                    <option value="bailian">Bailian (Alibaba)</option>
+                    <option value="volcengine">Volcengine</option>
+                    <option value="gemini">Gemini (Google AI)</option>
+                    <option value="vertexai">Vertex AI (Google Cloud)</option>
+                    <option value="tencentvod">Tencent VOD</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Base URL</label>
+                  <input
+                    placeholder={
+                      (editingProvider?.type || newProvider.type) === 'vertexai'
+                        ? 'https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}'
+                        : (editingProvider?.type || newProvider.type) === 'azure'
+                        ? 'https://your-resource.openai.azure.com'
+                        : 'https://api.example.com'
+                    }
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    value={editingProvider ? editingProvider.base_url : newProvider.base_url}
+                    onChange={(e) => editingProvider
+                      ? setEditingProvider({ ...editingProvider, base_url: e.target.value })
+                      : setNewProvider({ ...newProvider, base_url: e.target.value })
+                    }
+                  />
+                  {(editingProvider?.type || newProvider.type) === 'vertexai' && (
+                    <p className="text-xs text-slate-400 mt-1">Format: https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/REGION</p>
+                  )}
+                  {(editingProvider?.type || newProvider.type) === 'azure' && (
+                    <p className="text-xs text-slate-400 mt-1">Format: https://&#123;resource-name&#125;.openai.azure.com</p>
+                  )}
+                  {(editingProvider?.type || newProvider.type) === 'tencentvod' && (
+                    <p className="text-xs text-slate-400 mt-1">Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)</p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    {(editingProvider?.type || newProvider.type) === 'vertexai' ? 'Service Account JSON' : 'API Key'}
+                  </label>
+                  {(editingProvider?.type || newProvider.type) === 'vertexai' ? (
+                    <textarea
+                      placeholder="Paste the full JSON content of your Google Cloud service account key file, or leave empty to use Application Default Credentials (ADC)"
+                      rows={4}
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      value={editingProvider ? editingProvider.api_key : newProvider.api_key}
+                      onChange={(e) => editingProvider
+                        ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
+                        : setNewProvider({ ...newProvider, api_key: e.target.value })
+                      }
+                    />
+                  ) : (
+                    <input
+                      type="password"
+                      placeholder="sk-..."
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      value={editingProvider ? editingProvider.api_key : newProvider.api_key}
+                      onChange={(e) => editingProvider
+                        ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
+                        : setNewProvider({ ...newProvider, api_key: e.target.value })
+                      }
+                    />
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Description</label>
+                  <input
+                    placeholder="Description"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    value={editingProvider ? editingProvider.description : newProvider.description}
+                    onChange={(e) => editingProvider
+                      ? setEditingProvider({ ...editingProvider, description: e.target.value })
+                      : setNewProvider({ ...newProvider, description: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Authorization Header
+                    <span className="text-slate-400 font-normal ml-1 text-xs">(custom header name for API key)</span>
+                  </label>
+                  <input
+                    placeholder="Authorization (default) or x-goog-api-key for Gemini"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    value={editingProvider ? (editingProvider.authorization || 'Authorization') : newProvider.authorization}
+                    onChange={(e) => editingProvider
+                      ? setEditingProvider({ ...editingProvider, authorization: e.target.value })
+                      : setNewProvider({ ...newProvider, authorization: e.target.value })
+                    }
+                  />
+                  <p className="text-xs text-slate-400 mt-1">
+                    Use "Authorization" for Bearer token (default), or "x-goog-api-key" for Gemini API.
+                  </p>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Tags
+                    <span className="text-slate-400 font-normal ml-1 text-xs">(comma-separated, for billing usage binding)</span>
+                  </label>
+                  <input
+                    placeholder="Comma-separated tags (e.g. production, team-a)"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    value={editingProvider ? (editingProvider.tags || []).join(', ') : (newProvider.tags || []).join(', ')}
+                    onChange={(e) => {
+                      const tags = e.target.value.split(',').map(t => t.trim()).filter(t => t);
+                      editingProvider
+                        ? setEditingProvider({ ...editingProvider, tags })
+                        : setNewProvider({ ...newProvider, tags });
+                    }}
+                  />
+                  <p className="text-xs text-slate-400 mt-1">
+                    Comma-separated tags for billing usage binding (e.g. production, team-a, internal)
+                  </p>
+                </div>
+              </div>
+
+              {/* Azure-specific fields */}
+              {(editingProvider?.type || newProvider.type) === 'azure' && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                  <h3 className="text-sm font-semibold text-blue-800 mb-3">Azure OpenAI Configuration</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">API Version</label>
+                      <input
+                        placeholder="2025-01-01-preview"
+                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                        value={editingProvider ? (editingProvider.extra_config?.api_version || '') : (newProvider.extra_config?.api_version || '')}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          editingProvider
+                            ? setEditingProvider({ ...editingProvider, extra_config: { ...editingProvider.extra_config, api_version: val } })
+                            : setNewProvider({ ...newProvider, extra_config: { ...newProvider.extra_config, api_version: val } });
+                        }}
+                      />
+                      <p className="text-xs text-slate-400 mt-1">Default: 2025-01-01-preview</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">Region</label>
+                      <input
+                        placeholder="eastus, westeurope, etc."
+                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                        value={editingProvider ? (editingProvider.extra_config?.region || '') : (newProvider.extra_config?.region || '')}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          editingProvider
+                            ? setEditingProvider({ ...editingProvider, extra_config: { ...editingProvider.extra_config, region: val } })
+                            : setNewProvider({ ...newProvider, extra_config: { ...newProvider.extra_config, region: val } });
+                        }}
+                      />
+                      <p className="text-xs text-slate-400 mt-1">The Azure region where your resource is deployed</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex space-x-3 pt-2 border-t border-slate-200">
+                <button
+                  onClick={() => {
+                    if (editingProvider) {
+                      updateProviderMutation.mutate({ providerId: editingProvider.id, data: editingProvider });
+                    } else {
+                      createProviderMutation.mutate(newProvider);
+                    }
+                  }}
+                  disabled={editingProvider ? (!editingProvider.name || updateProviderMutation.isPending) : (!newProvider.name || createProviderMutation.isPending)}
+                  className="bg-blue-500 text-white px-5 py-2.5 rounded-xl flex items-center hover:bg-blue-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  <Save className="w-4 h-4 mr-2" />
+                  {(editingProvider ? updateProviderMutation.isPending : createProviderMutation.isPending) ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  onClick={() => { setShowAddProvider(false); setEditingProvider(null); }}
+                  className="bg-slate-100 text-slate-600 px-5 py-2.5 rounded-xl hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Model Detail/Edit Modal */}
       {(viewingModel || editingModel) && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -952,229 +1192,6 @@ export default function GroupDetail() {
           </button>
         </div>
 
-        {/* Add/Edit Provider Form */}
-        {(showAddProvider || editingProvider) && (
-          <div className="bg-slate-50 p-4 rounded-xl mb-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
-                <input
-                  placeholder="Provider name"
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={editingProvider ? editingProvider.name : newProvider.name}
-                  onChange={(e) => editingProvider 
-                    ? setEditingProvider({ ...editingProvider, name: e.target.value })
-                    : setNewProvider({ ...newProvider, name: e.target.value })
-                  }
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Type *</label>
-                <select
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={editingProvider ? editingProvider.type : newProvider.type}
-                  onChange={(e) => editingProvider 
-                    ? setEditingProvider({ ...editingProvider, type: e.target.value })
-                    : setNewProvider({ ...newProvider, type: e.target.value })
-                  }
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="azure">Azure OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="moonshot">Moonshot (Kimi)</option>
-                  <option value="glm">GLM (Zhipu AI)</option>
-                  <option value="minimax">MiniMax</option>
-                  <option value="bailian">Bailian (Alibaba)</option>
-                  <option value="volcengine">Volcengine</option>
-                  <option value="gemini">Gemini (Google AI)</option>
-                  <option value="vertexai">Vertex AI (Google Cloud)</option>
-                  <option value="tencentvod">Tencent VOD</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Base URL</label>
-                <input
-                  placeholder={
-                    (editingProvider?.type || newProvider.type) === 'vertexai'
-                      ? 'https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}'
-                      : (editingProvider?.type || newProvider.type) === 'azure'
-                      ? 'https://your-resource.openai.azure.com'
-                      : 'https://api.example.com'
-                  }
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={editingProvider ? editingProvider.base_url : newProvider.base_url}
-                  onChange={(e) => editingProvider 
-                    ? setEditingProvider({ ...editingProvider, base_url: e.target.value })
-                    : setNewProvider({ ...newProvider, base_url: e.target.value })
-                  }
-                />
-                {(editingProvider?.type || newProvider.type) === 'vertexai' && (
-                  <p className="text-xs text-slate-400 mt-1">
-                    Format: https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/REGION
-                  </p>
-                )}
-                {(editingProvider?.type || newProvider.type) === 'azure' && (
-                  <p className="text-xs text-slate-400 mt-1">
-                    Format: https://&#123;resource-name&#125;.openai.azure.com
-                  </p>
-                )}
-                {(editingProvider?.type || newProvider.type) === 'tencentvod' && (
-                  <p className="text-xs text-slate-400 mt-1">
-                    Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)
-                  </p>
-                )}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  {(editingProvider?.type || newProvider.type) === 'vertexai' ? 'Service Account JSON' : 'API Key'}
-                </label>
-                {(editingProvider?.type || newProvider.type) === 'vertexai' ? (
-                  <textarea
-                    placeholder='Paste the full JSON content of your Google Cloud service account key file, or leave empty to use Application Default Credentials (ADC)'
-                    rows={4}
-                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-mono"
-                    value={editingProvider ? editingProvider.api_key : newProvider.api_key}
-                    onChange={(e) => editingProvider 
-                      ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
-                      : setNewProvider({ ...newProvider, api_key: e.target.value })
-                    }
-                  />
-                ) : (
-                  <input
-                    type="password"
-                    placeholder="sk-..."
-                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                    value={editingProvider ? editingProvider.api_key : newProvider.api_key}
-                    onChange={(e) => editingProvider 
-                      ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
-                      : setNewProvider({ ...newProvider, api_key: e.target.value })
-                    }
-                  />
-                )}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Description</label>
-                <input
-                  placeholder="Description"
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={editingProvider ? editingProvider.description : newProvider.description}
-                  onChange={(e) => editingProvider 
-                    ? setEditingProvider({ ...editingProvider, description: e.target.value })
-                    : setNewProvider({ ...newProvider, description: e.target.value })
-                  }
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Tags</label>
-                <input
-                  placeholder="Comma-separated tags (e.g. production, team-a)"
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={editingProvider ? (editingProvider.tags || []).join(', ') : (newProvider.tags || []).join(', ')}
-                  onChange={(e) => {
-                    const tagsStr = e.target.value;
-                    const tags = tagsStr.split(',').map(t => t.trim()).filter(t => t);
-                    if (editingProvider) {
-                      setEditingProvider({ ...editingProvider, tags });
-                    } else {
-                      setNewProvider({ ...newProvider, tags });
-                    }
-                  }}
-                />
-                <p className="text-xs text-slate-400 mt-1">
-                  Comma-separated tags for billing usage binding (e.g. production, team-a, internal)
-                </p>
-              </div>
-            </div>
-
-            {/* Azure-specific fields */}
-            {(editingProvider?.type || newProvider.type) === 'azure' && (
-              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-                <h3 className="text-sm font-semibold text-blue-800 mb-3">Azure OpenAI Configuration</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">API Version</label>
-                    <input
-                      placeholder="2025-01-01-preview"
-                      className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                      value={editingProvider 
-                        ? (editingProvider.extra_config?.api_version || '') 
-                        : (newProvider.extra_config?.api_version || '')
-                      }
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (editingProvider) {
-                          setEditingProvider({ 
-                            ...editingProvider, 
-                            extra_config: { ...editingProvider.extra_config, api_version: val } 
-                          });
-                        } else {
-                          setNewProvider({ 
-                            ...newProvider, 
-                            extra_config: { ...newProvider.extra_config, api_version: val } 
-                          });
-                        }
-                      }}
-                    />
-                    <p className="text-xs text-slate-400 mt-1">
-                      Default: 2025-01-01-preview. See Azure docs for available versions.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Region</label>
-                    <input
-                      placeholder="eastus, westeurope, etc."
-                      className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                      value={editingProvider 
-                        ? (editingProvider.extra_config?.region || '') 
-                        : (newProvider.extra_config?.region || '')
-                      }
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (editingProvider) {
-                          setEditingProvider({ 
-                            ...editingProvider, 
-                            extra_config: { ...editingProvider.extra_config, region: val } 
-                          });
-                        } else {
-                          setNewProvider({ 
-                            ...newProvider, 
-                            extra_config: { ...newProvider.extra_config, region: val } 
-                          });
-                        }
-                      }}
-                    />
-                    <p className="text-xs text-slate-400 mt-1">
-                      The Azure region where your resource is deployed (e.g., eastus, westeurope).
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex space-x-3 mt-4">
-              <button
-                onClick={() => {
-                  if (editingProvider) {
-                    updateProviderMutation.mutate({ providerId: editingProvider.id, data: editingProvider });
-                  } else {
-                    createProviderMutation.mutate(newProvider);
-                  }
-                }}
-                disabled={editingProvider ? !editingProvider.name : !newProvider.name}
-                className="bg-blue-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-blue-600 disabled:bg-slate-300"
-              >
-                <Save className="w-4 h-4 mr-2 inline" /> Save
-              </button>
-              <button
-                onClick={() => { setShowAddProvider(false); setEditingProvider(null); }}
-                className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Providers List */}
         <div className="space-y-4">

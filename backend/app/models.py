@@ -201,6 +201,7 @@ class Provider(db.Model):
     api_key = db.Column(db.Text)
     base_url = db.Column(db.String(500))
     group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
+    authorization = db.Column(db.String(50), nullable=True, default="Authorization")  # "Authorization" for Bearer token, "custom" for custom header (e.g., x-goog-api-key)
     extra_config = db.Column(db.JSON, nullable=True)  # Provider-specific extra config (e.g. api_version for Azure)
     tags = db.Column(db.JSON, nullable=True)  # Tags for billing usage binding (e.g. ["production", "team-a"])
 
@@ -216,6 +217,7 @@ class Provider(db.Model):
             'api_key': '***' if self.api_key else None,  # Don't expose API key
             'base_url': self.base_url,
             'group_id': self.group_id,
+            'authorization': self.authorization or 'Authorization',
             'extra_config': self.extra_config or {},
             'tags': self.tags or [],
             'models': [m.to_dict() for m in self.models]
@@ -229,6 +231,7 @@ class Provider(db.Model):
             'description': self.description,
             'base_url': self.base_url,
             'group_id': self.group_id,
+            'authorization': self.authorization or 'Authorization',
             'extra_config': self.extra_config or {},
             'tags': self.tags or []
         }

@@ -53,6 +53,8 @@ def create_provider(current_user):
         api_key=data.get('api_key'),
         base_url=data.get('base_url'),
         group_id=group_id,
+        authorization=data.get('authorization', 'Authorization'),
+        tags=data.get('tags') or [],
         extra_config=data.get('extra_config')
     )
     db.session.add(provider)
@@ -91,6 +93,10 @@ def update_provider(current_user, provider_id):
         provider.api_key = data['api_key']
     if 'base_url' in data:
         provider.base_url = data['base_url']
+    if 'authorization' in data:
+        provider.authorization = data['authorization'] or 'Authorization'
+    if 'tags' in data:
+        provider.tags = data['tags'] or []
     if 'extra_config' in data:
         provider.extra_config = data['extra_config']
     

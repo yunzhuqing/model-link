@@ -24,9 +24,14 @@ from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolT
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
+from app.utils import gen_id
 
 # Internal metadata keys set by the gateway service.
 _GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
+
+# In-memory cache for thoughtSignature mapping: tool_call_id -> thoughtSignature
+# This is needed because Gemini requires thoughtSignature to be passed back with functionCall
+_thought_signature_cache: Dict[str, str] = {}
 
 
 class GeminiProvider(BaseProvider):
@@ -112,14 +117,6 @@ class GeminiProvider(BaseProvider):
             if config.base_url.endswith('/v1beta'):
                 config.base_url = config.base_url[:-len('/v1beta')]
         super().__init__(config)
-
-    def get_headers(self) -> Dict[str, str]:
-        """获取请求头，使用 x-goog-api-key 进行认证"""
-        return {
-            "Content-Type": "application/json",
-            "x-goog-api-key": self.config.api_key,
-            "Authorization": f"Bearer {self.config.api_key}",
-        }
 
     @property
     def client(self) -> Any:
@@ -356,7 +353,11 @@ class GeminiProvider(BaseProvider):
             fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
             if block.tool_call_id:
                 fc["id"] = block.tool_call_id
-            return {"functionCall": fc}
+            part: Dict[str, Any] = {"functionCall": fc}
+            # Include thoughtSignature from cache if available (required for multi-turn tool calls)
+            if block.tool_call_id and block.tool_call_id in _thought_signature_cache:
+                part["thoughtSignature"] = _thought_signature_cache[block.tool_call_id]
+            return part
         elif block.type == ContentType.TOOL_RESULT:
             bid = block.tool_call_id or ""
             name = block.tool_name or call_id_to_name.get(bid, "")
@@ -368,12 +369,44 @@ class GeminiProvider(BaseProvider):
             return {"text": block.text or ""}
 
     def _tool_to_gemini(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """将 ToolDefinition 转换为 Gemini 格式"""
+        """将 ToolDefinition 转换为 Gemini 格式
+        
+        Note: Gemini API 不支持 JSON Schema 的 $ref 引用，
+        需要移除所有 ref 属性，确保 schema 是完全内联的。
+        """
+        schema = tool.get_parameters_schema()
+        # Remove 'ref' attributes recursively since Gemini doesn't support $ref
+        schema = self._remove_ref_from_schema(schema)
         return {
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.get_parameters_schema()
+            "parameters": schema
         }
+    
+    def _remove_ref_from_schema(self, schema: Any) -> Any:
+        """递归移除 schema 中的 ref 和 additionalProperties 属性
+        
+        Gemini API 不支持 JSON Schema 的 $ref 引用和 additionalProperties，
+        此方法递归遍历 schema 并移除这些不支持的键。
+        
+        Args:
+            schema: JSON Schema 对象或值
+            
+        Returns:
+            清理后的 schema
+        """
+        if isinstance(schema, dict):
+            result = {}
+            for key, value in schema.items():
+                if key in ("ref", "additionalProperties"):
+                    # Skip keys not supported by Gemini API
+                    continue
+                result[key] = self._remove_ref_from_schema(value)
+            return result
+        elif isinstance(schema, list):
+            return [self._remove_ref_from_schema(item) for item in schema]
+        else:
+            return schema
 
     # ==================== 响应解析 ====================
 
@@ -398,9 +431,14 @@ class GeminiProvider(BaseProvider):
                         message_blocks.append(ContentBlock.from_text(part["text"]))
                 elif "functionCall" in part:
                     fc = part["functionCall"]
-                    tc_id = f"call_{uuid.uuid4().hex[:8]}"
+                    tc_id = gen_id("call")
                     tc_name = fc.get("name", "")
                     tc_args = fc.get("args", {})
+                    # Capture thoughtSignature if present (required for multi-turn tool calls)
+                    # Store in cache for later retrieval when building functionCall
+                    thought_sig = part.get("thoughtSignature")
+                    if thought_sig:
+                        _thought_signature_cache[tc_id] = thought_sig
                     tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, call_type="function"))
                     message_blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args))
 
@@ -426,7 +464,7 @@ class GeminiProvider(BaseProvider):
         )
 
         return ChatResponse(
-            id=f"gemini-{uuid.uuid4().hex[:12]}",
+            id=gen_id("gemini"),
             model=model,
             choices=[ChatChoice(
                 index=0,
@@ -482,7 +520,7 @@ class GeminiProvider(BaseProvider):
 
         request_data = self.prepare_request(request)
         url = self._get_api_url(request.model, streaming=True)
-        response_id = f"gemini-{uuid.uuid4().hex[:12]}"
+        response_id = gen_id("gemini")
 
         try:
             with self.client.stream("POST", url, json=request_data) as response:
@@ -571,7 +609,12 @@ class GeminiProvider(BaseProvider):
                     delta_content = (delta_content or "") + part["text"]
             elif "functionCall" in part:
                 fc = part["functionCall"]
-                tc_id = f"call_{uuid.uuid4().hex[:8]}"
+                tc_id = gen_id("call")
+                # Capture thoughtSignature if present (required for multi-turn tool calls)
+                # Store in cache for later retrieval when building functionCall
+                thought_sig = part.get("thoughtSignature")
+                if thought_sig:
+                    _thought_signature_cache[tc_id] = thought_sig
                 tool_calls_data.append({
                     "index": 0, "id": tc_id, "type": "function",
                     "function": {

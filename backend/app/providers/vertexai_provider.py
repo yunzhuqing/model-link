@@ -768,12 +768,44 @@ class VertexAIProvider(BaseProvider):
             return {"text": block.text or ""}
 
     def _tool_to_gemini(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """将 ToolDefinition 转换为 Gemini 格式"""
+        """将 ToolDefinition 转换为 Gemini 格式
+        
+        Note: Gemini API 不支持 JSON Schema 的 $ref 引用，
+        需要移除所有 ref 属性，确保 schema 是完全内联的。
+        """
+        schema = tool.get_parameters_schema()
+        # Remove 'ref' attributes recursively since Gemini doesn't support $ref
+        schema = self._remove_ref_from_schema(schema)
         return {
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.get_parameters_schema()
+            "parameters": schema
         }
+    
+    def _remove_ref_from_schema(self, schema: Any) -> Any:
+        """递归移除 schema 中的 ref 和 additionalProperties 属性
+        
+        Gemini API 不支持 JSON Schema 的 $ref 引用和 additionalProperties，
+        此方法递归遍历 schema 并移除这些不支持的键。
+        
+        Args:
+            schema: JSON Schema 对象或值
+            
+        Returns:
+            清理后的 schema
+        """
+        if isinstance(schema, dict):
+            result = {}
+            for key, value in schema.items():
+                if key in ("ref", "additionalProperties"):
+                    # Skip keys not supported by Gemini API
+                    continue
+                result[key] = self._remove_ref_from_schema(value)
+            return result
+        elif isinstance(schema, list):
+            return [self._remove_ref_from_schema(item) for item in schema]
+        else:
+            return schema
 
     def _parse_gemini_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """解析 Gemini generateContent 格式的响应"""
@@ -831,7 +863,7 @@ class VertexAIProvider(BaseProvider):
         )
 
         return ChatResponse(
-            id=gen_id("gemini"),
+            id=gen_id("resp"),
             model=model,
             choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason, tool_calls=tool_calls, reasoning_content=reasoning_content)],
             usage=usage, created=int(time.time()), provider=self.PROVIDER_TYPE
@@ -1175,7 +1207,7 @@ class VertexAIProvider(BaseProvider):
 
         headers = self.get_headers()
         url = self._get_api_url(request.model, streaming=True)
-        response_id = gen_id("chatcmpl")
+        response_id = gen_id("resp")
 
         print(f"[VertexAI {publisher} Stream] URL: {url}", file=sys.stderr)
         

@@ -316,6 +316,7 @@ class GatewayService:
             api_key=db_provider.api_key or "",
             base_url=db_provider.base_url,
             timeout=60,
+            authorization=db_provider.authorization or "Authorization",
             extra_config=db_provider.extra_config or {},
         )
 
