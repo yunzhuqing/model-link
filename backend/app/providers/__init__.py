@@ -13,7 +13,7 @@ from .vertexai_provider import VertexAIProvider
 from .moonshot_provider import MoonshotProvider
 from .glm_provider import GLMProvider
 from .minimax_provider import MiniMaxProvider
-from .gemini_provider import GeminiProvider
+from .gemini import GeminiProvider
 from .tencentvod_provider import TencentVODProvider
 
 __all__ = [

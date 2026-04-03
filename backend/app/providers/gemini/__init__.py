@@ -12,12 +12,21 @@ from .image_generation import (
     GEMINI_IMAGE_MODELS,
     is_gemini_image_model,
     has_image_generation_tool,
+    stream_image_generation,
+    parse_inline_images,
+    build_image_chat_response,
 )
 
 __all__ = [
+    # Main provider
     'GeminiProvider',
+    # Image generation config
     'GeminiImageConfig',
     'GEMINI_IMAGE_MODELS',
+    # Image generation utilities
     'is_gemini_image_model',
     'has_image_generation_tool',
+    'stream_image_generation',
+    'parse_inline_images',
+    'build_image_chat_response',
 ]
