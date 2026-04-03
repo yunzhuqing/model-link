@@ -497,8 +497,10 @@ class AzureProvider(OpenAIProvider):
                         # This triggers content_block_start (tool_use) in the Anthropic adapter.
                         call_id = item.get("call_id", "")
                         name = item.get("name", "")
+                        fc_output_index = event_data.get("output_index", 0)
                         if call_id:
                             tc: Dict[str, Any] = {
+                                "index": fc_output_index,
                                 "id": call_id,
                                 "function": {
                                     "name": name,

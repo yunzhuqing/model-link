@@ -13,6 +13,7 @@ https://ai.google.dev/gemini-api/docs
 - api_key: Google AI API Key
 """
 from typing import Optional, List, Dict, Any, Generator
+import base64
 import json
 import time
 import uuid
@@ -124,9 +125,19 @@ class GeminiProvider(BaseProvider):
             import httpx
             self._client = httpx.Client(
                 timeout=self.config.timeout,
-                headers=self.get_headers()
+                headers=self._get_headers()
             )
         return self._client
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers for Gemini API requests.
+        
+        Gemini uses x-goog-api-key header instead of Authorization: Bearer.
+        """
+        return {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.config.api_key,
+        }
 
     def supports_model(self, model: str) -> bool:
         return True
@@ -171,6 +182,54 @@ class GeminiProvider(BaseProvider):
         """构建批量嵌入 API URL"""
         base_url = self.config.base_url.rstrip('/')
         return f"{base_url}/v1beta/models/{model}:batchEmbedContents"
+
+    # ==================== Image Generation ====================
+
+    def is_image_generation_model(self, model: str) -> bool:
+        """
+        Check if the model supports native image generation.
+
+        Gemini models with native image generation include:
+        - gemini-2.0-flash-preview-image-generation
+        - Any model name containing 'image-generation' or 'imagen'
+        - Any model name containing 'native-image' (experimental naming)
+
+        The ``image_generation`` tool in the Responses API request also triggers
+        image generation mode for compatible models.
+
+        Args:
+            model: Model name
+
+        Returns:
+            True if the model supports native image generation
+        """
+        model_lower = model.lower()
+        return any(kw in model_lower for kw in (
+            "image",
+            "image-generation",
+            "imagen",
+            "native-image",
+        ))
+
+    def _has_image_generation_tool(self, request: ChatRequest) -> bool:
+        """
+        Check if the request contains an ``image_generation`` tool.
+
+        When the Responses API adapter parses an ``image_generation`` tool entry,
+        it stores the parameters in ``request.metadata`` and does NOT create a
+        ``ToolDefinition`` (the tool type is not ``function``).  The presence of
+        image-generation metadata keys (set by the adapter) is the reliable signal.
+
+        Returns:
+            True if the request was sent with an ``image_generation`` tool.
+        """
+        # The responses adapter accumulates image_generation tool params into metadata.
+        # Check for any known image-gen metadata key.
+        meta = request.metadata
+        return any(k in meta for k in (
+            'size', 'number', 'image_format', 'response_format',
+            'seed', 'watermark', 'reference_images',
+        ))
 
     # ==================== 请求准备 ====================
 
@@ -234,6 +293,12 @@ class GeminiProvider(BaseProvider):
             gen_config["thinkingConfig"] = {
                 "includeThoughts": True
             }
+
+        # Enable image generation output modality for image generation models
+        # or when the request contains an image_generation tool.
+        # Gemini native image generation requires responseModalities: ["TEXT", "IMAGE"]
+        if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
+            gen_config["responseModalities"] = ["TEXT", "IMAGE"]
 
         if gen_config:
             result["generationConfig"] = gen_config
@@ -416,6 +481,7 @@ class GeminiProvider(BaseProvider):
         message_blocks = []
         tool_calls = []
         thinking_parts = []
+        inline_images: List[Dict[str, Any]] = []  # Collected inline image data
         finish_reason = FinishReason.STOP
 
         if candidates:
@@ -429,6 +495,19 @@ class GeminiProvider(BaseProvider):
                         thinking_parts.append(part["text"])
                     else:
                         message_blocks.append(ContentBlock.from_text(part["text"]))
+                elif "inlineData" in part:
+                    # Gemini native image generation returns images as inlineData
+                    inline_data = part["inlineData"]
+                    mime_type = inline_data.get("mimeType", "image/png")
+                    b64_data = inline_data.get("data", "")
+                    if b64_data:
+                        # Build a data URI: data:<mime>;base64,<data>
+                        data_uri = f"data:{mime_type};base64,{b64_data}"
+                        inline_images.append({
+                            "type": "image_generation_call",
+                            "status": "completed",
+                            "result": data_uri,
+                        })
                 elif "functionCall" in part:
                     fc = part["functionCall"]
                     tc_id = gen_id("call")
@@ -453,15 +532,44 @@ class GeminiProvider(BaseProvider):
             if tool_calls:
                 finish_reason = FinishReason.TOOL_CALLS
 
-        message = Message(role=MessageRole.ASSISTANT, content=message_blocks if message_blocks else None)
-        reasoning_content = "\n\n".join(thinking_parts) if thinking_parts else None
-
         usage_metadata = response_data.get("usageMetadata", {})
         usage = UsageInfo(
             prompt_tokens=usage_metadata.get("promptTokenCount", 0),
             completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
             total_tokens=usage_metadata.get("totalTokenCount", 0),
         )
+
+        # If the response contains inline images, return an image generation response
+        # compatible with the Responses API image_generation_call format.
+        if inline_images:
+            # Include any text content along with images
+            text_parts = [b.text for b in message_blocks
+                          if isinstance(b, ContentBlock) and b.type == ContentType.TEXT and b.text]
+
+            # Store image_generation_call items as JSON in the message content,
+            # same format as Volcengine provider. The Responses adapter will parse
+            # and emit them as image_generation_call output items.
+            message = Message(
+                role=MessageRole.ASSISTANT,
+                content=json.dumps(inline_images, ensure_ascii=False)
+            )
+
+            return ChatResponse(
+                id=gen_id("img"),
+                model=model,
+                choices=[ChatChoice(
+                    index=0,
+                    message=message,
+                    finish_reason=finish_reason,
+                )],
+                usage=usage,
+                created=int(time.time()),
+                provider=self.PROVIDER_TYPE,
+            )
+
+        # Standard (non-image) response
+        message = Message(role=MessageRole.ASSISTANT, content=message_blocks if message_blocks else None)
+        reasoning_content = "\n\n".join(thinking_parts) if thinking_parts else None
 
         return ChatResponse(
             id=gen_id("gemini"),
@@ -518,6 +626,18 @@ class GeminiProvider(BaseProvider):
         if error:
             raise ValueError(error)
 
+        # For image generation models, use the dedicated streaming path.
+        # Gemini's native image generation doesn't truly stream images; it returns
+        # the full image in one SSE chunk. We call the API, collect all images,
+        # then emit them as image_generation_call SSE events via raw_sse_passthrough.
+        is_img_gen = (
+            self.is_image_generation_model(request.model)
+            or self._has_image_generation_tool(request)
+        )
+        if is_img_gen:
+            yield from self._stream_image_generation(request)
+            return
+
         request_data = self.prepare_request(request)
         url = self._get_api_url(request.model, streaming=True)
         response_id = gen_id("gemini")
@@ -565,6 +685,133 @@ class GeminiProvider(BaseProvider):
             raise
         except Exception as e:
             raise RuntimeError(f"Gemini streaming API error: {str(e)}")
+
+    def _stream_image_generation(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+        """
+        Execute image generation and yield the result as StreamChunks.
+
+        Gemini native image generation uses the standard generateContent API with
+        ``responseModalities: ["TEXT", "IMAGE"]``. The response contains inlineData
+        parts with base64-encoded images.
+
+        This method calls the non-streaming API, parses the image response, then
+        emits ``image_generation_call`` SSE items via raw_sse_passthrough so that
+        the Responses API adapter passes them through verbatim.
+
+        SSE event sequence (matching the Volcengine pattern):
+        1. response.created / response.in_progress   (emitted by format_stream_start)
+        2. response.output_item.added  (image_generation_call, status=generating)
+        3. response.output_item.done   (image_generation_call, status=completed)
+        4. response.completed          (emitted by finish chunk)
+        """
+        # Use the non-streaming API to get the full image result
+        response = self.chat(request)
+        response_id = response.id
+        model = response.model
+
+        # Parse the images list from the response content
+        images: List[Dict[str, Any]] = []
+        if response.choices and response.choices[0].message:
+            msg = response.choices[0].message
+            raw = msg.content if isinstance(msg.content, str) else (msg.get_text_content() or "[]")
+            try:
+                images = json.loads(raw) if isinstance(raw, str) else []
+            except (json.JSONDecodeError, TypeError):
+                images = []
+
+        # Emit role marker so create_stream_response captures the real response ID
+        yield StreamChunk(
+            id=response_id,
+            model=model,
+            delta_role="assistant",
+            event_type=StreamEventType.CONTENT_DELTA,
+        )
+
+        # Emit one image_generation_call item per image via raw SSE passthrough
+        for i, img in enumerate(images):
+            result = img.get("result", "")
+            call_id = f"{response_id}-{i}" if i > 0 else response_id
+            output_index = i
+
+            # response.output_item.added (generating)
+            item_added = {
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": {
+                    "type": "image_generation_call",
+                    "id": call_id,
+                    "status": "generating",
+                    "result": None,
+                },
+            }
+            # response.output_item.done (completed with result)
+            item_done = {
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": {
+                    "type": "image_generation_call",
+                    "id": call_id,
+                    "status": "completed",
+                    "result": result,
+                },
+            }
+
+            chunk = StreamChunk(
+                id=response_id,
+                model=model,
+                event_type=StreamEventType.CONTENT_DELTA,
+            )
+            chunk.raw_sse_passthrough = [
+                f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n",
+                f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n",
+            ]
+            yield chunk
+
+        # Build the completed response with all image_generation_call items
+        usage_dict: Dict[str, Any] = {}
+        if response.usage:
+            usage_dict = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+
+        output_items = [
+            {
+                "type": "image_generation_call",
+                "id": (f"{response_id}-{i}" if i > 0 else response_id),
+                "status": "completed",
+                "result": img.get("result", ""),
+            }
+            for i, img in enumerate(images)
+        ]
+        completed_response = {
+            "id": response_id,
+            "object": "response",
+            "status": "completed",
+            "model": model,
+            "output": output_items,
+            "usage": {
+                "input_tokens": usage_dict.get("prompt_tokens", 0),
+                "output_tokens": usage_dict.get("completion_tokens", 0),
+                "total_tokens": usage_dict.get("total_tokens", 0),
+            },
+        }
+        completed_event = {
+            "type": "response.completed",
+            "response": completed_response,
+        }
+
+        finish_chunk = StreamChunk(
+            id=response_id,
+            model=model,
+            event_type=StreamEventType.CONTENT_DELTA,
+            created=response.created,
+        )
+        finish_chunk.raw_sse_passthrough = [
+            f"event: response.completed\ndata: {json.dumps(completed_event, ensure_ascii=False)}\n\n",
+        ]
+        yield finish_chunk
 
     def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """解析 Gemini SSE 流式响应块"""

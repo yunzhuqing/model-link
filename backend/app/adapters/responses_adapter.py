@@ -301,10 +301,11 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
             elif tool_type == 'image_generation':
                 # Image generation tool — extract generation parameters into metadata.
-                # These are picked up by _execute_image_generation_direct() in the
-                # Volcengine provider and forwarded to the /v3/images/generations API.
+                # These are picked up by providers that support native image generation:
+                #   - Volcengine: _execute_image_generation_direct() → /v3/images/generations
+                #   - Gemini: prepare_request() → responseModalities: ["TEXT", "IMAGE"]
                 #
-                # Supported fields (mirroring the Doubao API):
+                # Supported fields:
                 #   size             – output image dimensions, e.g. "1024x1024" or "2K"
                 #   n                – number of images to generate (aliases: number, count)
                 #   response_format  – return format: "b64_json" (default) or "url"
@@ -424,10 +425,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
         output = []
 
         # Detect image generation responses by ID prefix or provider type.
-        # These are returned by the Volcengine image generation provider and
-        # should be rendered as image_generation_call output items, not messages.
+        # These are returned by image generation providers (Volcengine, Gemini)
+        # and should be rendered as image_generation_call output items, not messages.
+        # gen_id("img") produces "img_xxxx" format.
         is_image_generation = (
             response.id.startswith("img-") or
+            response.id.startswith("img_") or
             getattr(response, 'provider', '') == "volcengine_image"
         )
 
@@ -576,20 +579,33 @@ class OpenAIResponsesAdapter(BaseAdapter):
         # so that function_call events are emitted before response.completed
         
         if chunk.tool_calls:
+            # Track the current call_id for deltas that don't carry an id
+            # (Azure sends id only on the first chunk of each tool call)
+            if not hasattr(self, '_stream_current_tc_call_id'):
+                self._stream_current_tc_call_id = None
+            # Track index → call_id mapping for providers that use index-based deltas
+            if not hasattr(self, '_stream_tc_index_to_call_id'):
+                self._stream_tc_index_to_call_id = {}
+
             for tc in chunk.tool_calls:
                 call_id = tc.get('id', '')
+                tc_index = tc.get('index')
                 func = tc.get('function', {})
                 name = func.get('name', '')
                 args = func.get('arguments', '')
 
                 if call_id:
                     # New function call start — emit response.output_item.added
-                    output_index = getattr(self, '_stream_output_index', 1)
+                    self._stream_current_tc_call_id = call_id
+                    output_index = getattr(self, '_stream_output_index', 0)
                     self._stream_output_index = output_index + 1
                     # Track call_id → output_index for arguments.delta events
                     if not hasattr(self, '_stream_tool_output_indices'):
                         self._stream_tool_output_indices = {}
                     self._stream_tool_output_indices[call_id] = output_index
+                    # Track index → call_id for providers that use index-based deltas
+                    if tc_index is not None:
+                        self._stream_tc_index_to_call_id[tc_index] = call_id
                     
                     # Store function call info for later use in response.output_item.done
                     if not hasattr(self, '_stream_tool_calls'):
@@ -599,8 +615,9 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         'id': fc_id,
                         'call_id': call_id,
                         'name': name,
-                        'arguments': args,
-                        'output_index': output_index
+                        'arguments': '',  # will be accumulated
+                        'output_index': output_index,
+                        'done': False  # track whether done events have been emitted
                     })
 
                     item_added = {
@@ -617,10 +634,25 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     events.append(f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n")
 
+                # For deltas without call_id, resolve via index → call_id mapping,
+                # then fall back to the last known call_id
+                effective_call_id = call_id
+                if not effective_call_id and tc_index is not None:
+                    effective_call_id = self._stream_tc_index_to_call_id.get(tc_index, '')
+                if not effective_call_id:
+                    effective_call_id = self._stream_current_tc_call_id or ''
+
                 if args:
+                    # Accumulate arguments in _stream_tool_calls entry
+                    tool_calls_list = getattr(self, '_stream_tool_calls', [])
+                    for fc_info in tool_calls_list:
+                        if fc_info['call_id'] == effective_call_id:
+                            fc_info['arguments'] += args
+                            break
+
                     # Determine output_index for this arguments delta
                     tool_indices = getattr(self, '_stream_tool_output_indices', {})
-                    tc_output_index = tool_indices.get(call_id, 1) if call_id else (max(tool_indices.values()) if tool_indices else 1)
+                    tc_output_index = tool_indices.get(effective_call_id, 0) if effective_call_id else (max(tool_indices.values()) if tool_indices else 0)
                     event_data = {
                         'type': 'response.function_call_arguments.delta',
                         'output_index': tc_output_index,
@@ -628,22 +660,24 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     events.append(f"event: response.function_call_arguments.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
                     
-                    # Emit response.function_call_arguments.done after the final delta
-                    # Check if this is likely the final arguments (complete JSON)
-                    try:
-                        json.loads(args)
-                        # Valid JSON - this is the final arguments, emit done event
-                        args_done = {
-                            'type': 'response.function_call_arguments.done',
-                            'output_index': tc_output_index,
-                            'arguments': args
-                        }
-                        events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
-                        
-                        # Emit response.output_item.done for the function_call
-                        tool_calls_list = getattr(self, '_stream_tool_calls', [])
-                        for fc_info in tool_calls_list:
-                            if fc_info['call_id'] == call_id:
+                    # Check if the ACCUMULATED arguments form complete JSON.
+                    # For providers like Gemini that send all args in one chunk, this
+                    # triggers immediately. For Azure/OpenAI (incremental deltas), it
+                    # triggers only when the full JSON is assembled.
+                    for fc_info in tool_calls_list:
+                        if fc_info['call_id'] == effective_call_id and not fc_info['done']:
+                            try:
+                                json.loads(fc_info['arguments'])
+                                # Complete JSON — emit done events now
+                                fc_info['done'] = True
+                                fc_name = fc_info['name'] or name
+                                args_done = {
+                                    'type': 'response.function_call_arguments.done',
+                                    'output_index': fc_info['output_index'],
+                                    'arguments': fc_info['arguments']
+                                }
+                                events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
+                                
                                 item_done = {
                                     'type': 'response.output_item.done',
                                     'output_index': fc_info['output_index'],
@@ -651,123 +685,184 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                         'id': fc_info['id'],
                                         'type': 'function_call',
                                         'status': 'completed',
-                                        'arguments': args,
-                                        'call_id': call_id,
-                                        'name': name
+                                        'arguments': fc_info['arguments'],
+                                        'call_id': effective_call_id,
+                                        'name': fc_name
                                     }
                                 }
                                 events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
-                                break
-                    except (json.JSONDecodeError, TypeError):
-                        # Not complete JSON yet, skip done events
-                        pass
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            break
 
         if chunk.finish_reason and chunk.delta_content is not None:
-            # Full-text finish chunk: emit the three closure events
+            # Full-text finish chunk
             full_text = chunk.delta_content or ""
             resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
 
-            # 1. response.output_text.done
-            text_done: dict = {
-                'type': 'response.output_text.done',
-                'output_index': 0,
-                'content_index': 0,
-                'text': full_text
-            }
-            if msg_id:
-                text_done['item_id'] = msg_id
-            events.append(f"event: response.output_text.done\ndata: {json.dumps(text_done, ensure_ascii=False)}\n\n")
-
-            # 2. response.content_part.done
-            part_done: dict = {
-                'type': 'response.content_part.done',
-                'output_index': 0,
-                'content_index': 0,
-                'part': {
-                    'type': 'output_text',
-                    'text': full_text,
-                    'annotations': []
-                }
-            }
-            if msg_id:
-                part_done['item_id'] = msg_id
-            events.append(f"event: response.content_part.done\ndata: {json.dumps(part_done, ensure_ascii=False)}\n\n")
-
-            # 3. response.output_item.done
-            item_done: dict = {
-                'type': 'response.output_item.done',
-                'output_index': 0,
-                'item': {
-                    'type': 'message',
-                    'id': msg_id or '',
-                    'role': 'assistant',
-                    'status': 'completed',
-                    'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]
-                }
-            }
-            events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
-
-            # 4. response.completed
-            # Use the full Azure response object verbatim when available; otherwise build a
-            # complete response object that includes the full output text and usage info.
-            azure_resp = chunk.usage.get('_azure_completed_response') if chunk.usage else None
-            if azure_resp:
-                completed_resp = azure_resp
-            else:
-                # Build output array with full message text so clients receive a complete
-                # response object (mirroring what a non-streaming response would return).
-                output_items = []
-
-                # Include reasoning output item if accumulated during the stream
-                stream_reasoning = getattr(self, '_stream_full_reasoning', '')
-                if stream_reasoning:
-                    rs_id = getattr(self, '_stream_reasoning_id', _gen_id("rs"))
-                    output_items.append({
-                        'type': 'reasoning',
-                        'id': rs_id,
-                        'summary': [{
-                            'type': 'summary_text',
-                            'text': stream_reasoning
-                        }]
-                    })
-
-                output_content = [{'type': 'output_text', 'text': full_text, 'annotations': []}]
-                output_items.append({
-                    'type': 'message',
-                    'id': msg_id or _gen_id("msg"),
-                    'role': 'assistant',
-                    'status': 'completed',
-                    'content': output_content
-                })
-                completed_resp = {
-                    'id': resp_id,
-                    'object': 'response',
-                    'status': 'completed',
-                    'model': chunk.model,
-                    'output': output_items,
-                }
-                if chunk.usage:
-                    usage_out: dict = {
-                        'input_tokens': chunk.usage.get('prompt_tokens', 0),
-                        'output_tokens': chunk.usage.get('completion_tokens', 0),
-                        'total_tokens': chunk.usage.get('total_tokens', 0),
+            # Close any tool calls that haven't emitted done events yet.
+            # This handles cases where the accumulated args form valid JSON but
+            # the done events weren't emitted during delta processing (e.g. edge cases).
+            tool_calls_list = getattr(self, '_stream_tool_calls', [])
+            for fc_info in tool_calls_list:
+                if not fc_info['done'] and fc_info['arguments']:
+                    fc_info['done'] = True
+                    args_done = {
+                        'type': 'response.function_call_arguments.done',
+                        'output_index': fc_info['output_index'],
+                        'arguments': fc_info['arguments']
                     }
-                    if chunk.usage.get('cached_tokens'):
-                        usage_out['input_tokens_details'] = {'cached_tokens': chunk.usage['cached_tokens']}
-                    if chunk.usage.get('reasoning_tokens'):
-                        usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage['reasoning_tokens']}
-                    completed_resp['usage'] = usage_out
-            completed: dict = {
-                'type': 'response.completed',
-                'response': completed_resp
-            }
-            events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
+                    events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
+                    item_done = {
+                        'type': 'response.output_item.done',
+                        'output_index': fc_info['output_index'],
+                        'item': {
+                            'id': fc_info['id'],
+                            'type': 'function_call',
+                            'status': 'completed',
+                            'arguments': fc_info['arguments'],
+                            'call_id': fc_info['call_id'],
+                            'name': fc_info['name']
+                        }
+                    }
+                    events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+
+            # Only emit text/content_part/message done events if there was actual text content
+            # (i.e. _stream_text_started is True). For function-call-only responses we skip these.
+            has_text = getattr(self, '_stream_text_started', False)
+            has_tool_calls = bool(getattr(self, '_stream_tool_calls', []))
+            text_output_index = getattr(self, '_stream_text_output_index', 0)
+            if has_text:
+                # 1. response.output_text.done
+                text_done: dict = {
+                    'type': 'response.output_text.done',
+                    'output_index': text_output_index,
+                    'content_index': 0,
+                    'text': full_text
+                }
+                if msg_id:
+                    text_done['item_id'] = msg_id
+                events.append(f"event: response.output_text.done\ndata: {json.dumps(text_done, ensure_ascii=False)}\n\n")
+
+                # 2. response.content_part.done
+                part_done: dict = {
+                    'type': 'response.content_part.done',
+                    'output_index': text_output_index,
+                    'content_index': 0,
+                    'part': {
+                        'type': 'output_text',
+                        'text': full_text,
+                        'annotations': []
+                    }
+                }
+                if msg_id:
+                    part_done['item_id'] = msg_id
+                events.append(f"event: response.content_part.done\ndata: {json.dumps(part_done, ensure_ascii=False)}\n\n")
+
+                # 3. response.output_item.done (message)
+                item_done: dict = {
+                    'type': 'response.output_item.done',
+                    'output_index': text_output_index,
+                    'item': {
+                        'type': 'message',
+                        'id': msg_id or '',
+                        'role': 'assistant',
+                        'status': 'completed',
+                        'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                    }
+                }
+                events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+
+            # 4. response.completed — only emit once.
+            # When there are tool calls (function-call-only response), defer completed
+            # to the end of the stream (in generate() loop) so that ALL tool call events
+            # from all chunks are emitted before completed. This handles providers like
+            # Gemini that may send multiple chunks each with separate function calls.
+            if has_tool_calls and not has_text:
+                # Defer completed — it will be emitted at the end of generate()
+                # Store usage info for the deferred completed event
+                self._stream_deferred_usage = chunk.usage
+                self._stream_deferred_resp_id = resp_id
+                self._stream_deferred_model = chunk.model
+            elif not getattr(self, '_stream_completed_emitted', False):
+                self._stream_completed_emitted = True
+                # Use the full Azure response object verbatim when available; otherwise build a
+                # complete response object that includes the full output text and usage info.
+                azure_resp = chunk.usage.get('_azure_completed_response') if chunk.usage else None
+                if azure_resp:
+                    completed_resp = azure_resp
+                else:
+                    # Build output array with full message text so clients receive a complete
+                    # response object (mirroring what a non-streaming response would return).
+                    output_items = []
+
+                    # Include reasoning output item if accumulated during the stream
+                    stream_reasoning = getattr(self, '_stream_full_reasoning', '')
+                    if stream_reasoning:
+                        rs_id = getattr(self, '_stream_reasoning_id', _gen_id("rs"))
+                        output_items.append({
+                            'type': 'reasoning',
+                            'id': rs_id,
+                            'summary': [{
+                                'type': 'summary_text',
+                                'text': stream_reasoning
+                            }]
+                        })
+
+                    # Include function_calls in output if any were accumulated during the stream
+                    tool_calls_list = getattr(self, '_stream_tool_calls', [])
+                    for fc_info in tool_calls_list:
+                        output_items.append({
+                            'type': 'function_call',
+                            'id': fc_info['id'],
+                            'call_id': fc_info['call_id'],
+                            'name': fc_info['name'],
+                            'arguments': fc_info['arguments'],
+                            'status': 'completed'
+                        })
+
+                    # Only include message in output if there was actual text content
+                    if has_text:
+                        output_content = [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                        output_items.append({
+                            'type': 'message',
+                            'id': msg_id or _gen_id("msg"),
+                            'role': 'assistant',
+                            'status': 'completed',
+                            'content': output_content
+                        })
+                    completed_resp = {
+                        'id': resp_id,
+                        'object': 'response',
+                        'status': 'completed',
+                        'model': chunk.model,
+                        'output': output_items,
+                    }
+                    if chunk.usage:
+                        usage_out: dict = {
+                            'input_tokens': chunk.usage.get('prompt_tokens', 0),
+                            'output_tokens': chunk.usage.get('completion_tokens', 0),
+                            'total_tokens': chunk.usage.get('total_tokens', 0),
+                        }
+                        if chunk.usage.get('cached_tokens'):
+                            usage_out['input_tokens_details'] = {'cached_tokens': chunk.usage['cached_tokens']}
+                        if chunk.usage.get('reasoning_tokens'):
+                            usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage['reasoning_tokens']}
+                        completed_resp['usage'] = usage_out
+                completed: dict = {
+                    'type': 'response.completed',
+                    'response': completed_resp
+                }
+                events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
 
         elif chunk.delta_content:
-            # Regular incremental delta
+            # Regular incremental delta — lazily emit text start events on first text
+            if not getattr(self, '_stream_text_started', False):
+                events.append(self._emit_text_start_events())
+            text_oi = getattr(self, '_stream_text_output_index', 0)
             event_data: dict = {
                 'type': 'response.output_text.delta',
-                'output_index': 0,
+                'output_index': text_oi,
                 'content_index': 0,
                 'delta': chunk.delta_content
             }
@@ -777,39 +872,42 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
         elif chunk.finish_reason:
             # finish_reason only (no full text) — emit response.completed directly
-            resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
-            
-            # Build output array - include function_calls if any were accumulated
-            output_items = []
-            tool_calls_list = getattr(self, '_stream_tool_calls', [])
-            for fc_info in tool_calls_list:
-                output_items.append({
-                    'type': 'function_call',
-                    'id': fc_info['id'],
-                    'call_id': fc_info['call_id'],
-                    'name': fc_info['name'],
-                    'arguments': fc_info['arguments'],
-                    'status': 'completed'
-                })
-            
-            completed = {
-                'type': 'response.completed',
-                'response': {
-                    'id': resp_id,
-                    'object': 'response',
-                    'status': 'completed',
-                    'model': chunk.model,
-                    'output': output_items
+            # Only emit once to avoid duplicates
+            if not getattr(self, '_stream_completed_emitted', False):
+                self._stream_completed_emitted = True
+                resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
+                
+                # Build output array - include function_calls if any were accumulated
+                output_items = []
+                tool_calls_list = getattr(self, '_stream_tool_calls', [])
+                for fc_info in tool_calls_list:
+                    output_items.append({
+                        'type': 'function_call',
+                        'id': fc_info['id'],
+                        'call_id': fc_info['call_id'],
+                        'name': fc_info['name'],
+                        'arguments': fc_info['arguments'],
+                        'status': 'completed'
+                    })
+                
+                completed = {
+                    'type': 'response.completed',
+                    'response': {
+                        'id': resp_id,
+                        'object': 'response',
+                        'status': 'completed',
+                        'model': chunk.model,
+                        'output': output_items
+                    }
                 }
-            }
-            if chunk.usage:
-                usage_out: dict = {
-                    'input_tokens': chunk.usage.get('prompt_tokens', 0),
-                    'output_tokens': chunk.usage.get('completion_tokens', 0),
-                    'total_tokens': chunk.usage.get('total_tokens', 0),
-                }
-                completed['response']['usage'] = usage_out
-            events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
+                if chunk.usage:
+                    usage_out: dict = {
+                        'input_tokens': chunk.usage.get('prompt_tokens', 0),
+                        'output_tokens': chunk.usage.get('completion_tokens', 0),
+                        'total_tokens': chunk.usage.get('total_tokens', 0),
+                    }
+                    completed['response']['usage'] = usage_out
+                events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
 
         # Emit any raw SSE strings that the provider encoded for verbatim passthrough
         # (e.g. Azure reasoning_summary events that have no StreamChunk equivalent).
@@ -860,10 +958,37 @@ class OpenAIResponsesAdapter(BaseAdapter):
         }
         events.append(f"event: response.in_progress\ndata: {json.dumps(in_progress_data)}\n\n")
 
+        # NOTE: response.output_item.added (message) and response.content_part.added
+        # are NOT emitted here. They are deferred and emitted lazily when the first
+        # text content delta arrives. This avoids emitting message/content_part events
+        # for function-call-only responses (e.g. Gemini tool calls).
+        # The flag _stream_text_started tracks whether these events have been emitted.
+        self._stream_text_started = False
+        # Track whether response.completed has been emitted to avoid duplicates
+        self._stream_completed_emitted = False
+        # Initialize output index counter for function call items.
+        # Starts at 0 — if text content arrives later, the message item takes index 0
+        # and function calls shift accordingly. But for function-call-only responses,
+        # the first function call is at index 0.
+        self._stream_output_index = 0
+
+        return ''.join(events)
+
+    def _emit_text_start_events(self) -> str:
+        """Emit response.output_item.added (message) and response.content_part.added
+        events lazily on the first text delta. Returns the SSE string."""
+        msg_id = getattr(self, '_stream_msg_id', None) or ''
+        events = []
+
+        # Message takes the current output_index (after reasoning if present)
+        text_output_index = getattr(self, '_stream_output_index', 0)
+        self._stream_text_output_index = text_output_index
+        self._stream_output_index = text_output_index + 1
+
         # response.output_item.added
         item_data = {
             'type': 'response.output_item.added',
-            'output_index': 0,
+            'output_index': text_output_index,
             'item': {
                 'type': 'message',
                 'id': msg_id,
@@ -878,7 +1003,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         part_data = {
             'type': 'response.content_part.added',
             'item_id': msg_id,
-            'output_index': 0,
+            'output_index': text_output_index,
             'content_index': 0,
             'part': {
                 'type': 'output_text',
@@ -888,6 +1013,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         }
         events.append(f"event: response.content_part.added\ndata: {json.dumps(part_data)}\n\n")
 
+        self._stream_text_started = True
         return ''.join(events)
 
     def create_stream_response(self, chunks, model_name: str):
@@ -1014,43 +1140,63 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 finish_chunk = None     # buffered finish chunk waiting for usage
 
                 def _emit_reasoning_start():
-                    """Emit response.reasoning_summary_part.added event."""
+                    """Emit response.output_item.added (reasoning) + response.reasoning_summary_part.added."""
                     rs_id = _gen_id("rs")
-                    # Store on adapter so format_stream_chunk can reference it
                     self._stream_reasoning_id = rs_id
+                    # Reasoning item takes the current output_index
+                    reasoning_output_index = getattr(self, '_stream_output_index', 0)
+                    self._stream_reasoning_output_index = reasoning_output_index
+                    self._stream_output_index = reasoning_output_index + 1
+                    parts = []
+                    # 1. response.output_item.added (reasoning)
+                    item_data = {
+                        'type': 'response.output_item.added',
+                        'output_index': reasoning_output_index,
+                        'item': {
+                            'type': 'reasoning',
+                            'id': rs_id,
+                            'status': 'in_progress',
+                            'summary': []
+                        }
+                    }
+                    parts.append(f"event: response.output_item.added\ndata: {json.dumps(item_data, ensure_ascii=False)}\n\n")
+                    # 2. response.reasoning_summary_part.added
                     event_data = {
                         'type': 'response.reasoning_summary_part.added',
                         'item_id': rs_id,
-                        'output_index': 0,
+                        'output_index': reasoning_output_index,
                         'summary_index': 0,
                         'part': {
                             'type': 'summary_text',
                             'text': ''
                         }
                     }
-                    return f"event: response.reasoning_summary_part.added\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                    parts.append(f"event: response.reasoning_summary_part.added\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
+                    return ''.join(parts)
 
                 def _emit_reasoning_delta(text):
                     """Emit response.reasoning_summary_text.delta event."""
                     rs_id = getattr(self, '_stream_reasoning_id', '')
+                    reasoning_output_index = getattr(self, '_stream_reasoning_output_index', 0)
                     event_data = {
                         'type': 'response.reasoning_summary_text.delta',
                         'item_id': rs_id,
-                        'output_index': 0,
+                        'output_index': reasoning_output_index,
                         'summary_index': 0,
                         'delta': text
                     }
                     return f"event: response.reasoning_summary_text.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
                 def _emit_reasoning_done():
-                    """Emit response.reasoning_summary_text.done + part.done events."""
+                    """Emit reasoning_summary_text.done + part.done + output_item.done (reasoning)."""
                     rs_id = getattr(self, '_stream_reasoning_id', '')
+                    reasoning_output_index = getattr(self, '_stream_reasoning_output_index', 0)
                     parts = []
                     # 1. response.reasoning_summary_text.done
                     text_done = {
                         'type': 'response.reasoning_summary_text.done',
                         'item_id': rs_id,
-                        'output_index': 0,
+                        'output_index': reasoning_output_index,
                         'summary_index': 0,
                         'text': full_reasoning
                     }
@@ -1059,7 +1205,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     part_done = {
                         'type': 'response.reasoning_summary_part.done',
                         'item_id': rs_id,
-                        'output_index': 0,
+                        'output_index': reasoning_output_index,
                         'summary_index': 0,
                         'part': {
                             'type': 'summary_text',
@@ -1067,6 +1213,21 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         }
                     }
                     parts.append(f"event: response.reasoning_summary_part.done\ndata: {json.dumps(part_done, ensure_ascii=False)}\n\n")
+                    # 3. response.output_item.done (reasoning) with item.summary
+                    item_done = {
+                        'type': 'response.output_item.done',
+                        'output_index': reasoning_output_index,
+                        'item': {
+                            'type': 'reasoning',
+                            'id': rs_id,
+                            'status': 'completed',
+                            'summary': [{
+                                'type': 'summary_text',
+                                'text': full_reasoning
+                            }]
+                        }
+                    }
+                    parts.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
                     return ''.join(parts)
 
                 def _process_chunk(chunk):
@@ -1106,6 +1267,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             parts.append(_emit_reasoning_done())
                             reasoning_closed = True
                         # Combined finish+usage chunk (Azure convention or equivalent).
+                        # Clear any previously buffered finish_chunk to avoid duplicate emissions
+                        finish_chunk = None
                         combined = copy.copy(chunk)
                         combined.delta_content = full_text
                         # Store accumulated reasoning so format_stream_chunk can include it
@@ -1162,6 +1325,70 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     sse = self.format_stream_chunk(finish_chunk)
                     if sse:
                         yield sse
+
+                # If response.completed was never emitted (e.g. when all chunks were
+                # tool-call-only and completed was deferred), emit it now.
+                if not getattr(self, '_stream_completed_emitted', False):
+                    self._stream_completed_emitted = True
+                    output_items = []
+
+                    # Include reasoning if accumulated
+                    stream_reasoning = getattr(self, '_stream_full_reasoning', '') or full_reasoning
+                    if stream_reasoning:
+                        rs_id = getattr(self, '_stream_reasoning_id', _gen_id("rs"))
+                        output_items.append({
+                            'type': 'reasoning',
+                            'id': rs_id,
+                            'summary': [{
+                                'type': 'summary_text',
+                                'text': stream_reasoning
+                            }]
+                        })
+
+                    # Include function_calls
+                    tool_calls_list = getattr(self, '_stream_tool_calls', [])
+                    for fc_info in tool_calls_list:
+                        output_items.append({
+                            'type': 'function_call',
+                            'id': fc_info['id'],
+                            'call_id': fc_info['call_id'],
+                            'name': fc_info['name'],
+                            'arguments': fc_info['arguments'],
+                            'status': 'completed'
+                        })
+
+                    # Include message if there was text content
+                    if full_text and getattr(self, '_stream_text_started', False):
+                        output_items.append({
+                            'type': 'message',
+                            'id': real_msg_id or _gen_id("msg"),
+                            'role': 'assistant',
+                            'status': 'completed',
+                            'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                        })
+
+                    deferred_resp_id = getattr(self, '_stream_deferred_resp_id', _gen_id("resp"))
+                    deferred_model = getattr(self, '_stream_deferred_model', model_name)
+                    deferred_usage = getattr(self, '_stream_deferred_usage', None)
+                    completed_resp = {
+                        'id': deferred_resp_id,
+                        'object': 'response',
+                        'status': 'completed',
+                        'model': deferred_model,
+                        'output': output_items,
+                    }
+                    if deferred_usage:
+                        usage_out = {
+                            'input_tokens': deferred_usage.get('prompt_tokens', 0),
+                            'output_tokens': deferred_usage.get('completion_tokens', 0),
+                            'total_tokens': deferred_usage.get('total_tokens', 0),
+                        }
+                        completed_resp['usage'] = usage_out
+                    completed_event = {
+                        'type': 'response.completed',
+                        'response': completed_resp
+                    }
+                    yield f"event: response.completed\ndata: {json.dumps(completed_event, ensure_ascii=False)}\n\n"
 
                 yield self.format_stream_end()
 
