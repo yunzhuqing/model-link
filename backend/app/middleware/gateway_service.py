@@ -13,6 +13,7 @@
 """
 from typing import Optional, Generator, Tuple
 from dataclasses import dataclass
+import httpx
 
 from app import db
 from app.models import Provider, Model
@@ -201,6 +202,10 @@ class GatewayService:
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+            raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
+        except httpx.HTTPError as e:
+            raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
@@ -260,6 +265,10 @@ class GatewayService:
             except RuntimeError as e:
                 status_code, error_data = self._parse_provider_error(e)
                 raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+                raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
+            except httpx.HTTPError as e:
+                raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
             except Exception as e:
                 raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
