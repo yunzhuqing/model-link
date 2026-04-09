@@ -317,7 +317,7 @@ class GatewayService:
 
         if not provider_class:
             # 如果没有找到对应的供应商类，使用通用 OpenAI 兼容实现
-            from app.providers.bailian_provider import BailianProvider
+            from app.providers.bailian import BailianProvider
             provider_class = BailianProvider
 
         config = ProviderConfig(

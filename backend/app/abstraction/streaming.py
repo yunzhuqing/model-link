@@ -120,25 +120,31 @@ class StreamChunk:
             "total_tokens": usage.get("total_tokens", 0),
         }
 
-        # Build completion_tokens_details
-        completion_details: Dict[str, Any] = {}
-        if "reasoning_tokens" in usage:
-            completion_details["reasoning_tokens"] = usage["reasoning_tokens"]
-        # Pass through any pre-nested completion details from upstream
-        for k, v in usage.get("completion_tokens_details", {}).items():
-            completion_details.setdefault(k, v)
-        if completion_details:
-            formatted["completion_tokens_details"] = completion_details
-
-        # Build prompt_tokens_details
-        prompt_details: Dict[str, Any] = {}
+        # Build prompt_tokens_details (always include with defaults)
+        prompt_details: Dict[str, Any] = {
+            "cached_tokens": 0,
+            "audio_tokens": 0,
+        }
         if "cached_tokens" in usage:
             prompt_details["cached_tokens"] = usage["cached_tokens"]
         # Pass through any pre-nested prompt details from upstream
         for k, v in usage.get("prompt_tokens_details", {}).items():
-            prompt_details.setdefault(k, v)
-        if prompt_details:
-            formatted["prompt_tokens_details"] = prompt_details
+            prompt_details[k] = v
+        formatted["prompt_tokens_details"] = prompt_details
+
+        # Build completion_tokens_details (always include with defaults)
+        completion_details: Dict[str, Any] = {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0,
+        }
+        if "reasoning_tokens" in usage:
+            completion_details["reasoning_tokens"] = usage["reasoning_tokens"]
+        # Pass through any pre-nested completion details from upstream
+        for k, v in usage.get("completion_tokens_details", {}).items():
+            completion_details[k] = v
+        formatted["completion_tokens_details"] = completion_details
 
         return formatted
     

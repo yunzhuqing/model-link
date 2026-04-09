@@ -17,6 +17,7 @@ Google Vertex AI 供应商模块 (VertexAI Provider Module)
 
 from .base import (
     VertexAIProvider,
+    VertexAIClaudeProvider,
     ModelPublisher,
     MODEL_PUBLISHER_MAP,
     detect_publisher,
@@ -26,6 +27,7 @@ from .base import (
 
 __all__ = [
     'VertexAIProvider',
+    'VertexAIClaudeProvider',
     'ModelPublisher',
     'MODEL_PUBLISHER_MAP',
     'detect_publisher',

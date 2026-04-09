@@ -604,6 +604,11 @@ class GeminiProvider(BaseProvider):
         url = self._get_api_url(request.model, streaming=True)
         response_id = gen_id("gemini")
 
+        # Track whether any tool calls were seen so we can fix the trailing
+        # end-of-stream STOP marker (Gemini emits finishReason=STOP on the
+        # final empty chunk even when the response was actually tool_calls).
+        gemini_saw_tool_calls = False
+
         try:
             with self.client.stream("POST", url, json=request_data) as response:
                 if response.status_code >= 400:
@@ -641,6 +646,16 @@ class GeminiProvider(BaseProvider):
 
                         chunk = self._parse_stream_chunk(event_data, response_id, request.model)
                         if chunk:
+                            if chunk.tool_calls:
+                                gemini_saw_tool_calls = True
+                            # The trailing end-of-stream chunk has finish_reason=STOP but no
+                            # content.  If we already saw tool calls earlier, upgrade it.
+                            if (gemini_saw_tool_calls and
+                                    chunk.finish_reason == FinishReason.STOP and
+                                    not chunk.tool_calls and
+                                    not chunk.delta_content and
+                                    not chunk.delta_reasoning_content):
+                                chunk.finish_reason = FinishReason.TOOL_CALLS
                             yield chunk
 
         except RuntimeError:
@@ -704,8 +719,13 @@ class GeminiProvider(BaseProvider):
                         "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
                     }
                 })
-                if not finish_reason:
-                    finish_reason = FinishReason.TOOL_CALLS
+
+        # When tool calls are present, correct the finish_reason:
+        # - If Gemini set a finish reason (e.g. "STOP"), override it to TOOL_CALLS.
+        # - If Gemini did NOT set a finish reason (intermediate chunk), leave it as None
+        #   so we don't emit a premature finish_reason on non-final tool-call chunks.
+        if tool_calls_data and finish_reason is not None:
+            finish_reason = FinishReason.TOOL_CALLS
 
         delta_role = content.get("role")
         if delta_role == "model":
@@ -715,11 +735,27 @@ class GeminiProvider(BaseProvider):
         usage = None
         usage_metadata = data.get("usageMetadata")
         if usage_metadata:
-            usage = {
-                "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                "total_tokens": usage_metadata.get("totalTokenCount", 0),
-            }
+            pt = usage_metadata.get("promptTokenCount", 0)
+            ct = usage_metadata.get("candidatesTokenCount", 0)
+            tt = usage_metadata.get("totalTokenCount", 0)
+            if pt or ct or tt:
+                usage = {
+                    "prompt_tokens": pt,
+                    "completion_tokens": ct,
+                    "total_tokens": tt,
+                }
+
+        # When there are no content parts and finish_reason is STOP, Gemini is sending
+        # an end-of-stream marker.  Use falsy check so empty-string text ("") is also
+        # caught.  Always return the chunk so stream_chat() can override STOP→TOOL_CALLS.
+        if (not delta_content and not delta_reasoning_content and
+                not tool_calls_data and finish_reason == FinishReason.STOP):
+            return StreamChunk(
+                id=response_id, model=model,
+                finish_reason=finish_reason,  # preserved; stream_chat may override
+                usage=usage,
+                event_type=StreamEventType.USAGE,
+            )
 
         return StreamChunk(
             id=response_id, model=model,

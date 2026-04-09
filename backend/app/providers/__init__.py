@@ -7,9 +7,9 @@ from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider
 from .azure_provider import AzureProvider
 from .anthropic_provider import AnthropicProvider
-from .bailian_provider import BailianProvider
-from .volcengine_provider import VolcengineProvider
-from .vertexai_provider import VertexAIProvider
+from .bailian import BailianProvider
+from .volcengine import VolcengineProvider
+from .vertexai import VertexAIProvider
 from .moonshot_provider import MoonshotProvider
 from .glm_provider import GLMProvider
 from .minimax_provider import MiniMaxProvider

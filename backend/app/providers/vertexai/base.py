@@ -1,5 +1,5 @@
 """
-Google Vertex AI 供应商实现 (Vertex AI Provider)
+Google Vertex AI 供应商基础实现 (Vertex AI Base Provider)
 实现通过 Google Vertex AI 调用多种模型的 API。
 
 Vertex AI 提供多种模型的托管服务，包括：
@@ -31,7 +31,7 @@ import os
 import sys
 import traceback
 
-from .base import BaseProvider, ProviderConfig, ProviderCapability
+from ..base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -337,8 +337,7 @@ class VertexAIProvider(BaseProvider):
     def get_headers(self) -> Dict[str, str]:
         """获取请求头（包含 OAuth2 Bearer token）"""
         access_token = self._get_access_token()
-        # Log access token for debugging
-        logger.info(f"Obtained access token for Vertex AI: {access_token}")
+        logger.debug(f"Obtained access token for Vertex AI")
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}"
@@ -647,6 +646,10 @@ class VertexAIProvider(BaseProvider):
             gen_config["thinkingConfig"] = {
                 "includeThoughts": reasoning_effort != 'none'
             }
+        elif request.reasoning_effort and request.reasoning_effort != 'none':
+            gen_config["thinkingConfig"] = {
+                "includeThoughts": True
+            }
 
         if gen_config:
             result["generationConfig"] = gen_config
@@ -873,14 +876,19 @@ class VertexAIProvider(BaseProvider):
         """解析 Gemini SSE 流式响应块"""
         candidates = data.get("candidates", [])
         if not candidates:
-            # Could be a usage-only chunk
+            # Could be a usage-only chunk (no candidates)
             usage_metadata = data.get("usageMetadata")
             if usage_metadata:
+                pt = usage_metadata.get("promptTokenCount", 0)
+                ct = usage_metadata.get("candidatesTokenCount", 0)
+                tt = usage_metadata.get("totalTokenCount", 0)
+                # Skip intermediate acknowledgment chunks where all usage values are zero;
+                # these are empty ACK frames Vertex AI inserts between tool-call turns.
+                if pt == 0 and ct == 0 and tt == 0:
+                    return None
                 return StreamChunk(
                     id=response_id, model=model,
-                    usage={"prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                           "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                           "total_tokens": usage_metadata.get("totalTokenCount", 0)},
+                    usage={"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt},
                     event_type=StreamEventType.USAGE
                 )
             return None
@@ -919,8 +927,43 @@ class VertexAIProvider(BaseProvider):
                     "index": 0, "id": tc_id, "type": "function",
                     "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False)}
                 })
-                if not finish_reason:
-                    finish_reason = FinishReason.TOOL_CALLS
+
+        # When tool calls are present, correct the finish_reason:
+        # - If Gemini set a finish reason (e.g. "STOP"), override it to TOOL_CALLS.
+        # - If Gemini did NOT set a finish reason (intermediate chunk), leave it as None
+        #   so we don't emit a premature finish_reason on non-final tool-call chunks.
+        if tool_calls_data and finish_reason is not None:
+            finish_reason = FinishReason.TOOL_CALLS
+
+        # Parse usage if present in this chunk.
+        # Only include non-zero usage to avoid the to_sse split-logic generating a
+        # spurious empty-choices usage chunk for tool-call ACK frames (which carry
+        # all-zero usageMetadata as acknowledgment, not real token counts).
+        usage = None
+        usage_metadata = data.get("usageMetadata")
+        if usage_metadata:
+            pt = usage_metadata.get("promptTokenCount", 0)
+            ct = usage_metadata.get("candidatesTokenCount", 0)
+            tt = usage_metadata.get("totalTokenCount", 0)
+            if pt or ct or tt:
+                usage = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+
+        # When there are no content parts and finish_reason is STOP, Vertex AI Gemini is
+        # sending an end-of-stream marker.  Use "not delta_content" (falsy check) so that
+        # an empty-string text part emitted by Gemini ({"text": ""}) is treated the same
+        # as a missing text part.
+        #
+        # We always return a StreamChunk so that stream_chat() can:
+        #   a) override finish_reason STOP→TOOL_CALLS when tool calls were seen earlier
+        #   b) split finish + usage into two SSE events via to_sse()
+        if (not delta_content and not delta_reasoning_content and
+                not tool_calls_data and finish_reason == FinishReason.STOP):
+            return StreamChunk(
+                id=response_id, model=model,
+                finish_reason=finish_reason,  # preserved; stream_chat may override
+                usage=usage,  # may be None if separate usage frame follows
+                event_type=StreamEventType.USAGE
+            )
 
         # Determine role from content
         delta_role = content.get("role")
@@ -933,6 +976,7 @@ class VertexAIProvider(BaseProvider):
             delta_reasoning_content=delta_reasoning_content,
             tool_calls=tool_calls_data if tool_calls_data else [],
             finish_reason=finish_reason,
+            usage=usage,
             event_type=StreamEventType.CONTENT_DELTA
         )
 
@@ -1112,17 +1156,14 @@ class VertexAIProvider(BaseProvider):
         """执行非流式对话请求"""
         error = self.validate_request(request)
         if error:
-            print(f"[VertexAI] Validation error: {error}", file=sys.stderr)
             raise ValueError(error)
 
         publisher = self._get_publisher_for_model(request.model)
-        
+
         try:
             request_data = self.prepare_request(request)
-            print(f"[VertexAI {publisher}] Request after prepare_request: {json.dumps(request_data, ensure_ascii=False)}", file=sys.stderr)
         except Exception as e:
-            print(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc()
+            logger.error(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}")
             raise
 
         # Anthropic rawPredict 不需要 stream 参数
@@ -1132,19 +1173,13 @@ class VertexAIProvider(BaseProvider):
         headers = self.get_headers()
         url = self._get_api_url(request.model, streaming=False)
 
-        print(f"[VertexAI {publisher}] URL: {url}", file=sys.stderr)
-        
-        # Log request data to file
-        log_file = _log_to_file(request_data, "request", publisher)
-        print(f"[VertexAI {publisher}] Request data logged to: {log_file}", file=sys.stderr)
+        logger.debug(f"[VertexAI {publisher}] URL: {url}")
 
         try:
             response = self.client.post(url, json=request_data, headers=headers)
 
             if response.status_code >= 400:
                 error_text = response.text
-                log_file = _log_to_file({"status_code": response.status_code, "error": error_text}, "error", publisher)
-                print(f"[VertexAI {publisher}] HTTP Error {response.status_code}, details logged to: {log_file}", file=sys.stderr)
                 try:
                     error_data = response.json()
                     raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
@@ -1154,48 +1189,28 @@ class VertexAIProvider(BaseProvider):
             try:
                 response_data = response.json()
             except json.JSONDecodeError as e:
-                print(f"[VertexAI {publisher}] Failed to parse response JSON: {e}", file=sys.stderr)
-                raw_text = response.text
-                log_file = _log_to_file({"raw_response": raw_text}, "raw_response", publisher)
-                print(f"[VertexAI {publisher}] Raw response logged to: {log_file}", file=sys.stderr)
-                raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {raw_text[:500]}")
+                raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {response.text[:500]}")
 
-            # Log response data to file
-            log_file = _log_to_file(response_data, "response", publisher)
-            print(f"[VertexAI {publisher}] Response data logged to: {log_file}", file=sys.stderr)
-
-            try:
-                return self.parse_response(response_data, request.model)
-            except Exception as e:
-                print(f"[VertexAI {publisher}] Response parsing error: {type(e).__name__}: {e}", file=sys.stderr)
-                # Log response data to file for debugging
-                log_file = _log_to_file(response_data, "parse_error", publisher)
-                print(f"[VertexAI {publisher}] Response data that failed to parse logged to: {log_file}", file=sys.stderr)
-                traceback.print_exc()
-                raise
+            return self.parse_response(response_data, request.model)
 
         except RuntimeError:
             raise
         except Exception as e:
-            print(f"[VertexAI {publisher}] Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc()
+            logger.error(f"[VertexAI {publisher}] Unexpected error: {type(e).__name__}: {e}")
             raise RuntimeError(f"Vertex AI API error ({publisher}): {str(e)}")
 
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
-            print(f"[VertexAI] Validation error: {error}", file=sys.stderr)
             raise ValueError(error)
 
         publisher = self._get_publisher_for_model(request.model)
-        
+
         try:
             request_data = self.prepare_request(request)
-            print(f"[VertexAI {publisher} Stream] Request after prepare_request: {json.dumps(request_data, ensure_ascii=False)}", file=sys.stderr)
         except Exception as e:
-            print(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc()
+            logger.error(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}")
             raise
 
         # Ensure stream flag is set appropriately
@@ -1209,10 +1224,12 @@ class VertexAIProvider(BaseProvider):
         url = self._get_api_url(request.model, streaming=True)
         response_id = gen_id("resp")
 
-        print(f"[VertexAI {publisher} Stream] URL: {url}", file=sys.stderr)
-        
-        # Log request data to file
-        logger.info(f"VertexAI {publisher} streaming request data logged to: {json.dumps(request_data, ensure_ascii=False)}")
+        logger.debug(f"[VertexAI {publisher} Stream] URL: {url}")
+
+        # Track whether any tool calls were seen during this Gemini stream so we can fix
+        # the trailing end-of-stream STOP marker (Gemini emits finishReason=STOP on the
+        # final empty chunk even when the response was actually tool_calls).
+        gemini_saw_tool_calls = False
 
         try:
             with self.client.stream("POST", url, json=request_data, headers=headers) as response:
@@ -1221,13 +1238,10 @@ class VertexAIProvider(BaseProvider):
                     for chunk in response.iter_bytes():
                         if chunk:
                             error_text += chunk.decode('utf-8')
-                    print(f"[VertexAI {publisher} Stream] HTTP Error {response.status_code}: {error_text}", file=sys.stderr)
                     try:
                         error_data = json.loads(error_text)
-                        print(f"[VertexAI {publisher} Stream] Error JSON: {json.dumps(error_data, ensure_ascii=False)}", file=sys.stderr)
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                     except json.JSONDecodeError:
-                        print(f"[VertexAI {publisher} Stream] Error response is not valid JSON, raw text: {error_text}", file=sys.stderr)
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text}")
 
                 for line in response.iter_lines():
@@ -1245,25 +1259,33 @@ class VertexAIProvider(BaseProvider):
                         try:
                             event_data = json.loads(data_str)
                         except json.JSONDecodeError as e:
-                            print(f"[VertexAI {publisher} Stream] Failed to parse SSE data as JSON: {e}", file=sys.stderr)
-                            print(f"[VertexAI {publisher} Stream] Raw data: {data_str}", file=sys.stderr)
+                            logger.warning(f"[VertexAI {publisher} Stream] Failed to parse SSE data: {e}")
                             continue
 
                         try:
                             chunk = self._dispatch_stream_parse(publisher, event_data, response_id, request.model)
                             if chunk:
+                                # For Gemini: track tool calls and fix trailing STOP→TOOL_CALLS.
+                                if publisher == ModelPublisher.GOOGLE:
+                                    if chunk.tool_calls:
+                                        gemini_saw_tool_calls = True
+                                    # The trailing end-of-stream chunk has finish_reason=STOP but no
+                                    # content.  If we already saw tool calls earlier, upgrade it.
+                                    if (gemini_saw_tool_calls and
+                                            chunk.finish_reason == FinishReason.STOP and
+                                            not chunk.tool_calls and
+                                            not chunk.delta_content and
+                                            not chunk.delta_reasoning_content):
+                                        chunk.finish_reason = FinishReason.TOOL_CALLS
                                 yield chunk
                         except Exception as e:
-                            print(f"[VertexAI {publisher} Stream] Stream chunk parse error: {type(e).__name__}: {e}", file=sys.stderr)
-                            print(f"[VertexAI {publisher} Stream] Event data that failed: {json.dumps(event_data, ensure_ascii=False)}", file=sys.stderr)
-                            traceback.print_exc()
+                            logger.error(f"[VertexAI {publisher} Stream] Stream chunk parse error: {type(e).__name__}: {e}")
                             raise
 
         except RuntimeError:
             raise
         except Exception as e:
-            print(f"[VertexAI {publisher} Stream] Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc()
+            logger.error(f"[VertexAI {publisher} Stream] Unexpected error: {type(e).__name__}: {e}")
             raise RuntimeError(f"Vertex AI streaming API error ({publisher}): {str(e)}")
 
     def _dispatch_stream_parse(self, publisher: str, event_data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
