@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
-import { 
-  ArrowLeft, Plus, Edit2, Trash2, X, Save, Key, Database, Cpu, 
-  Eye, EyeOff, Copy, Check, Link as LinkIcon, Users, UserPlus, Mail
+import {
+  ArrowLeft, Plus, Edit2, Trash2, Key, Database,
+  Eye, EyeOff, Copy, Check, Users, UserPlus, Mail
 } from 'lucide-react';
+import ProviderList from './ProviderList';
 
 interface Group {
   id: number;
@@ -34,64 +35,11 @@ interface ApiKey {
   request_count: number;
 }
 
-interface PricingTier {
-  label: string;
-  context_size: number;
-  input_size: number;
-  output_size: number;
-  input_price: number;
-  output_price: number;
-  cache_creation_price: number;
-  cache_hit_price: number;
-}
-
-interface Model {
-  id: number;
-  provider_id: number;
-  name: string;
-  alias: string | null;
-  context_size: number;
-  input_size: number;
-  output_size: number;
-  reasoning_effort: string | null;
-  supported_image_formats: string | null;
-  pricing_tiers: PricingTier[] | null;
-  input_price: number;
-  output_price: number;
-  cache_creation_price: number;
-  cache_hit_price: number;
-  support_kvcache: boolean;
-  support_image: boolean;
-  support_audio: boolean;
-  support_video: boolean;
-  support_file: boolean;
-  support_web_search: boolean;
-  support_tool_search: boolean;
-  support_thinking: boolean;
-  support_online_image: boolean;
-  support_online_video: boolean;
-  support_embedding: boolean;
-}
-
-interface Provider {
-  id: number;
-  name: string;
-  type: string;
-  description: string;
-  base_url: string;
-  api_key: string;
-  group_id: number;
-  authorization: string;
-  extra_config: Record<string, any>;
-  tags: string[];
-  models: Model[];
-}
-
 export default function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  
+
   const [activeTab, setActiveTab] = useState<'members' | 'apikeys' | 'providers'>('members');
   const [showInviteMember, setShowInviteMember] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
@@ -99,31 +47,11 @@ export default function GroupDetail() {
   const [editingMemberRole, setEditingMemberRole] = useState<number | null>(null);
   const [showAddApiKey, setShowAddApiKey] = useState(false);
   const [newApiKey, setNewApiKey] = useState({ name: '', expires_at: '' });
-  
-  const [showAddProvider, setShowAddProvider] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [newProvider, setNewProvider] = useState({ 
-    name: '', type: 'openai', description: '', base_url: '', api_key: '', authorization: 'Authorization', extra_config: {} as Record<string, any>, tags: [] as string[]
-  });
-  
-  const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
-  const [showAddModel, setShowAddModel] = useState<number | null>(null);
-  const [editingModel, setEditingModel] = useState<Model | null>(null);
-  const [viewingModel, setViewingModel] = useState<Model | null>(null);
-  const [newModel, setNewModel] = useState({
-    name: '', alias: '', context_size: 4096, input_size: 4096, output_size: 4096,
-    reasoning_effort: '', supported_image_formats: '',
-    input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
-    support_kvcache: false, support_image: false, support_audio: false,
-    support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-    support_thinking: false, support_online_image: false, support_online_video: false, support_embedding: false
-  });
-  
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [activeTpl, setActiveTpl] = useState<typeof modelTemplates[number] | null>(null);
 
-  // Fetch group details
+  // ── Queries ─────────────────────────────────────────────────────────────────
+
   const { data: group, isLoading: groupLoading } = useQuery({
     queryKey: ['group', id],
     queryFn: async () => {
@@ -132,7 +60,6 @@ export default function GroupDetail() {
     },
   });
 
-  // Fetch API keys for this group
   const { data: apiKeys, isLoading: apiKeysLoading } = useQuery({
     queryKey: ['api-keys', 'group', id],
     queryFn: async () => {
@@ -141,35 +68,17 @@ export default function GroupDetail() {
     },
   });
 
-  // Fetch model templates
-  const { data: modelTemplates = [] } = useQuery({
-    queryKey: ['model-templates'],
-    queryFn: async () => {
-      const response = await client.get('/api/model-templates/');
-      return response.data as Array<{
-        id: number; label: string; provider: string; name: string; alias: string | null;
-        context_size: number; input_size: number; output_size: number; input_price: number; output_price: number;
-        cache_creation_price: number; cache_hit_price: number;
-        pricing_tiers: Array<{ label: string; context_size: number; input_size: number; output_size: number;
-          input_price: number; output_price: number; cache_creation_price: number; cache_hit_price: number; }> | null;
-        support_kvcache: boolean; support_image: boolean; support_audio: boolean;
-        support_video: boolean; support_file: boolean; support_web_search: boolean;
-        support_tool_search: boolean; support_thinking: boolean;
-        support_online_image: boolean; support_online_video: boolean; support_embedding: boolean;
-      }>;
-    },
-  });
-
-  // Fetch providers for this group
-  const { data: providers, isLoading: providersLoading } = useQuery({
+  // providers count for tab badge — ProviderList handles the full fetch itself
+  const { data: providers } = useQuery({
     queryKey: ['providers', 'group', id],
     queryFn: async () => {
-      const response = await client.get(`/api/providers/`, { params: { group_id: id } });
-      return response.data as Provider[];
+      const response = await client.get('/api/providers/', { params: { group_id: id } });
+      return response.data as { id: number }[];
     },
   });
 
-  // API Key mutations
+  // ── Mutations ────────────────────────────────────────────────────────────────
+
   const createApiKeyMutation = useMutation({
     mutationFn: (data: any) => client.post('/api/apikeys/', { ...data, group_id: parseInt(id!) }),
     onSuccess: () => {
@@ -184,65 +93,8 @@ export default function GroupDetail() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['api-keys', 'group', id] }),
   });
 
-  // Provider mutations
-  const createProviderMutation = useMutation({
-    mutationFn: (data: any) => client.post('/api/providers/', { ...data, group_id: parseInt(id!) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
-      setShowAddProvider(false);
-      setNewProvider({ name: '', type: 'openai', description: '', base_url: '', api_key: '', authorization: 'Authorization', extra_config: {}, tags: [] });
-    },
-  });
-
-  const updateProviderMutation = useMutation({
-    mutationFn: ({ providerId, data }: { providerId: number; data: any }) => 
-      client.put(`/api/providers/${providerId}`, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
-      setEditingProvider(null);
-    },
-  });
-
-  const deleteProviderMutation = useMutation({
-    mutationFn: (providerId: number) => client.delete(`/api/providers/${providerId}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] }),
-  });
-
-  // Model mutations
-  const createModelMutation = useMutation({
-    mutationFn: (data: any) => client.post('/api/models/', data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
-      setShowAddModel(null);
-      setNewModel({
-        name: '', alias: '', context_size: 4096, input_size: 4096, output_size: 4096,
-        reasoning_effort: '', supported_image_formats: '',
-        input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
-        support_kvcache: false, support_image: false, support_audio: false,
-        support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-        support_thinking: false, support_online_image: false, support_online_video: false, support_embedding: false
-      });
-    },
-  });
-
-  const updateModelMutation = useMutation({
-    mutationFn: ({ modelId, data }: { modelId: number; data: any }) => 
-      client.put(`/api/models/${modelId}`, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] });
-      setEditingModel(null);
-      setViewingModel(null);
-    },
-  });
-
-  const deleteModelMutation = useMutation({
-    mutationFn: (modelId: number) => client.delete(`/api/models/${modelId}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers', 'group', id] }),
-  });
-
-  // Member mutations
   const inviteMemberMutation = useMutation({
-    mutationFn: ({ email, role }: { email: string; role: string }) => 
+    mutationFn: ({ email, role }: { email: string; role: string }) =>
       client.post(`/api/groups/${id}/invite`, { email, role }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['group', id] });
@@ -258,13 +110,15 @@ export default function GroupDetail() {
   });
 
   const updateRoleMutation = useMutation({
-    mutationFn: ({ userId, role }: { userId: number; role: string }) => 
+    mutationFn: ({ userId, role }: { userId: number; role: string }) =>
       client.put(`/api/groups/${id}/users/${userId}/role`, { role }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['group', id] });
       setEditingMemberRole(null);
     },
   });
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
 
   const getRoleBadgeColor = (role: string) => {
     switch (role) {
@@ -275,29 +129,24 @@ export default function GroupDetail() {
   };
 
   const toggleKeyVisibility = (keyId: number) => {
-    const newSet = new Set(visibleKeys);
-    if (newSet.has(keyId)) {
-      newSet.delete(keyId);
-    } else {
-      newSet.add(keyId);
-    }
-    setVisibleKeys(newSet);
+    const s = new Set(visibleKeys);
+    s.has(keyId) ? s.delete(keyId) : s.add(keyId);
+    setVisibleKeys(s);
   };
 
   const copyToClipboard = async (text: string) => {
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
+      if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback for browsers that don't support clipboard API
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-9999px';
-        document.body.appendChild(textArea);
-        textArea.select();
+        const el = document.createElement('textarea');
+        el.value = text;
+        el.style.position = 'fixed';
+        el.style.left = '-9999px';
+        document.body.appendChild(el);
+        el.select();
         document.execCommand('copy');
-        document.body.removeChild(textArea);
+        document.body.removeChild(el);
       }
       setCopiedKey(text);
       setTimeout(() => setCopiedKey(null), 2000);
@@ -306,14 +155,12 @@ export default function GroupDetail() {
     }
   };
 
-  const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleString();
-  };
+  const formatDate = (dateStr: string | null) =>
+    dateStr ? new Date(dateStr).toLocaleString() : 'Never';
 
-  const isLoading = groupLoading || apiKeysLoading || providersLoading;
+  // ── Loading / Not Found ──────────────────────────────────────────────────────
 
-  if (isLoading) {
+  if (groupLoading || apiKeysLoading) {
     return (
       <div className="flex justify-center items-center h-64">
         <div className="text-slate-500">Loading...</div>
@@ -333,14 +180,13 @@ export default function GroupDetail() {
     );
   }
 
+  // ── Render ───────────────────────────────────────────────────────────────────
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center space-x-4">
-        <button
-          onClick={() => navigate('/groups')}
-          className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
-        >
+        <button onClick={() => navigate('/groups')} className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
           <ArrowLeft className="w-5 h-5 text-slate-600" />
         </button>
         <div>
@@ -352,1245 +198,282 @@ export default function GroupDetail() {
       {/* Tabs */}
       <div className="border-b border-slate-200">
         <nav className="flex space-x-8">
-          <button
-            onClick={() => setActiveTab('members')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 transition-colors ${
-              activeTab === 'members'
-                ? 'border-violet-500 text-violet-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>Members</span>
-            <span className={`px-2 py-0.5 rounded-full text-xs ${
-              activeTab === 'members' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'
-            }`}>
-              {group?.users?.length || 0}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('apikeys')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 transition-colors ${
-              activeTab === 'apikeys'
-                ? 'border-emerald-500 text-emerald-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-            }`}
-          >
-            <Key className="w-4 h-4" />
-            <span>API Keys</span>
-            <span className={`px-2 py-0.5 rounded-full text-xs ${
-              activeTab === 'apikeys' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
-            }`}>
-              {apiKeys?.length || 0}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('providers')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 transition-colors ${
-              activeTab === 'providers'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-            }`}
-          >
-            <Database className="w-4 h-4" />
-            <span>Providers</span>
-            <span className={`px-2 py-0.5 rounded-full text-xs ${
-              activeTab === 'providers' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
-            }`}>
-              {providers?.length || 0}
-            </span>
-          </button>
+          {[
+            { key: 'members', label: 'Members', icon: Users, color: 'violet', count: group?.users?.length || 0 },
+            { key: 'apikeys', label: 'API Keys', icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
+            { key: 'providers', label: 'Providers', icon: Database, color: 'blue', count: providers?.length || 0 },
+          ].map(({ key, label, icon: Icon, color, count }) => {
+            const active = activeTab === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key as typeof activeTab)}
+                className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 transition-colors ${
+                  active
+                    ? `border-${color}-500 text-${color}-600`
+                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{label}</span>
+                <span className={`px-2 py-0.5 rounded-full text-xs ${active ? `bg-${color}-100 text-${color}-700` : 'bg-slate-100 text-slate-600'}`}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
         </nav>
       </div>
 
-      {/* Members Tab Content */}
+      {/* ── Members Tab ─────────────────────────────────────────────────────── */}
       {activeTab === 'members' && (
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex justify-between items-center mb-6">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center">
-              <Users className="w-5 h-5 text-violet-600" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">Members</h2>
-              <p className="text-sm text-slate-500">{group?.users?.length || 0} members</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setShowInviteMember(true)}
-            className="bg-violet-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-violet-600 transition-colors shadow-sm"
-          >
-            <UserPlus className="w-4 h-4 mr-2" /> Invite Member
-          </button>
-        </div>
-
-        {/* Invite Member Form */}
-        {showInviteMember && (
-          <div className="bg-slate-50 p-4 rounded-xl mb-4">
-            <div className="flex gap-4">
-              <div className="flex-1">
-                <label className="block text-sm font-medium text-slate-700 mb-2">Email Address *</label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="email"
-                    placeholder="user@example.com"
-                    className="w-full pl-10 p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                  />
-                </div>
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex justify-between items-center mb-6">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center">
+                <Users className="w-5 h-5 text-violet-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">Members</h2>
+                <p className="text-sm text-slate-500">{group?.users?.length || 0} members</p>
               </div>
             </div>
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-slate-700 mb-2">Role</label>
-              <select
-                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm mb-4"
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value as 'root' | 'admin' | 'member')}
-              >
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-                <option value="root">Root</option>
-              </select>
-            </div>
-            <div className="flex space-x-3">
-              <button
-                onClick={() => inviteMemberMutation.mutate({ email: inviteEmail, role: inviteRole })}
-                disabled={!inviteEmail || inviteMemberMutation.isPending}
-                className="bg-violet-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-600 disabled:bg-slate-300"
-              >
-                {inviteMemberMutation.isPending ? 'Inviting...' : 'Send Invite'}
-              </button>
-              <button
-                onClick={() => { setShowInviteMember(false); setInviteEmail(''); setInviteRole('member'); }}
-                className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
-              >
-                Cancel
-              </button>
-            </div>
-            {inviteMemberMutation.isError && (
-              <p className="text-red-500 text-sm mt-2">Failed to invite member. Please check the email address.</p>
-            )}
+            <button
+              onClick={() => setShowInviteMember(true)}
+              className="bg-violet-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-violet-600 transition-colors shadow-sm"
+            >
+              <UserPlus className="w-4 h-4 mr-2" /> Invite Member
+            </button>
           </div>
-        )}
 
-        {/* Members List */}
-        <div className="space-y-3">
-          {group?.users?.map((member) => (
-            <div key={member.id} className="bg-slate-50 p-4 rounded-xl flex items-center justify-between">
-              <div className="flex items-center space-x-4">
-                <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-semibold text-sm">
-                    {member.username?.charAt(0).toUpperCase() || member.email?.charAt(0).toUpperCase()}
-                  </span>
+          {showInviteMember && (
+            <div className="bg-slate-50 p-4 rounded-xl mb-4">
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Email Address *</label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="email"
+                      placeholder="user@example.com"
+                      className="w-full pl-10 p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                    />
+                  </div>
                 </div>
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <h4 className="font-medium text-slate-800">{member.username || 'Unknown'}</h4>
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${getRoleBadgeColor(member.role)}`}>
-                      {member.role}
+              </div>
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-slate-700 mb-2">Role</label>
+                <select
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm mb-4"
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}
+                >
+                  <option value="member">Member</option>
+                  <option value="admin">Admin</option>
+                  <option value="root">Root</option>
+                </select>
+              </div>
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => inviteMemberMutation.mutate({ email: inviteEmail, role: inviteRole })}
+                  disabled={!inviteEmail || inviteMemberMutation.isPending}
+                  className="bg-violet-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-600 disabled:bg-slate-300"
+                >
+                  {inviteMemberMutation.isPending ? 'Inviting...' : 'Send Invite'}
+                </button>
+                <button
+                  onClick={() => { setShowInviteMember(false); setInviteEmail(''); setInviteRole('member'); }}
+                  className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
+                >
+                  Cancel
+                </button>
+              </div>
+              {inviteMemberMutation.isError && (
+                <p className="text-red-500 text-sm mt-2">Failed to invite member. Please check the email address.</p>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {group?.users?.map((member) => (
+              <div key={member.id} className="bg-slate-50 p-4 rounded-xl flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-full flex items-center justify-center">
+                    <span className="text-white font-semibold text-sm">
+                      {(member.username || member.email).charAt(0).toUpperCase()}
                     </span>
                   </div>
-                  <p className="text-sm text-slate-500">{member.email}</p>
-                </div>
-              </div>
-              <div className="flex items-center space-x-2">
-                {editingMemberRole === member.id ? (
-                  <select
-                    className="p-2 bg-white border border-slate-200 rounded-lg text-sm"
-                    value={member.role}
-                    onChange={(e) => {
-                      updateRoleMutation.mutate({ userId: member.id, role: e.target.value });
-                    }}
-                    onBlur={() => setEditingMemberRole(null)}
-                  >
-                    <option value="member">Member</option>
-                    <option value="admin">Admin</option>
-                    <option value="root">Root</option>
-                  </select>
-                ) : (
-                  <button
-                    onClick={() => setEditingMemberRole(member.id)}
-                    className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
-                    title="Change role"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    if (confirm(`Remove ${member.username || member.email} from this group?`)) {
-                      removeMemberMutation.mutate(member.id);
-                    }
-                  }}
-                  className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
-                  title="Remove member"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
-          {(!group?.users || group.users.length === 0) && !showInviteMember && (
-            <div className="text-center py-8 text-slate-500">
-              <Users className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p>No members yet.</p>
-            </div>
-          )}
-        </div>
-      </div>
-      )}
-
-      {/* API Keys Tab Content */}
-      {activeTab === 'apikeys' && (
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex justify-between items-center mb-6">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
-              <Key className="w-5 h-5 text-emerald-600" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">API Keys</h2>
-              <p className="text-sm text-slate-500">{apiKeys?.length || 0} keys</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setShowAddApiKey(true)}
-            className="bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-emerald-600 transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4 mr-2" /> New Key
-          </button>
-        </div>
-
-        {/* Add API Key Form */}
-        {showAddApiKey && (
-          <div className="bg-slate-50 p-4 rounded-xl mb-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
-                <input
-                  placeholder="Key name"
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={newApiKey.name}
-                  onChange={(e) => setNewApiKey({ ...newApiKey, name: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Expires At (optional)</label>
-                <input
-                  type="datetime-local"
-                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                  value={newApiKey.expires_at}
-                  onChange={(e) => setNewApiKey({ ...newApiKey, expires_at: e.target.value })}
-                />
-              </div>
-            </div>
-            <div className="flex space-x-3 mt-4">
-              <button
-                onClick={() => createApiKeyMutation.mutate(newApiKey)}
-                disabled={!newApiKey.name}
-                className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-emerald-600 disabled:bg-slate-300"
-              >
-                Create
-              </button>
-              <button
-                onClick={() => { setShowAddApiKey(false); setNewApiKey({ name: '', expires_at: '' }); }}
-                className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* API Keys List */}
-        <div className="space-y-3">
-          {apiKeys?.map((apiKey) => (
-            <div key={apiKey.id} className="bg-slate-50 p-4 rounded-xl flex items-center justify-between">
-              <div className="flex items-center space-x-4">
-                <div className={`w-3 h-3 rounded-full ${apiKey.is_active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                <div>
-                  <h4 className="font-medium text-slate-800">{apiKey.name}</h4>
-                  <div className="flex items-center space-x-2 mt-1">
-                    <code className="text-sm text-slate-600 bg-white px-2 py-0.5 rounded">
-                      {visibleKeys.has(apiKey.id) ? apiKey.key : `${apiKey.key.slice(0, 8)}...${apiKey.key.slice(-4)}`}
-                    </code>
-                    <button
-                      onClick={() => toggleKeyVisibility(apiKey.id)}
-                      className="text-slate-400 hover:text-slate-600"
-                    >
-                      {visibleKeys.has(apiKey.id) ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                    <button
-                      onClick={() => copyToClipboard(apiKey.key)}
-                      className="text-slate-400 hover:text-slate-600"
-                    >
-                      {copiedKey === apiKey.key ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center space-x-4 text-sm text-slate-500">
-                <span>{apiKey.request_count} requests</span>
-                <span>Last used: {formatDate(apiKey.last_used_at)}</span>
-                <button
-                  onClick={() => {
-                    if (confirm('Delete this API key?')) {
-                      deleteApiKeyMutation.mutate(apiKey.id);
-                    }
-                  }}
-                  className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
-          {(!apiKeys || apiKeys.length === 0) && !showAddApiKey && (
-            <div className="text-center py-8 text-slate-500">
-              <Key className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p>No API keys yet.</p>
-            </div>
-          )}
-        </div>
-      </div>
-      )}
-
-      {/* Add/Edit Provider Modal */}
-      {(showAddProvider || editingProvider) && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-slate-200 sticky top-0 bg-white">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
-                    <Database className="w-5 h-5 text-white" />
-                  </div>
                   <div>
-                    <h2 className="text-lg font-bold text-slate-800">
-                      {editingProvider ? 'Edit Provider' : 'Add Provider'}
-                    </h2>
-                    <p className="text-sm text-slate-500">
-                      {editingProvider ? editingProvider.name : 'Configure a new AI provider'}
-                    </p>
+                    <div className="flex items-center space-x-2">
+                      <h4 className="font-medium text-slate-800">{member.username || 'Unknown'}</h4>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${getRoleBadgeColor(member.role)}`}>
+                        {member.role}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-500">{member.email}</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => { setShowAddProvider(false); setEditingProvider(null); }}
-                  className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <div className="flex items-center space-x-2">
+                  {editingMemberRole === member.id ? (
+                    <select
+                      className="p-2 bg-white border border-slate-200 rounded-lg text-sm"
+                      value={member.role}
+                      onChange={(e) => updateRoleMutation.mutate({ userId: member.id, role: e.target.value })}
+                      onBlur={() => setEditingMemberRole(null)}
+                    >
+                      <option value="member">Member</option>
+                      <option value="admin">Admin</option>
+                      <option value="root">Root</option>
+                    </select>
+                  ) : (
+                    <button
+                      onClick={() => setEditingMemberRole(member.id)}
+                      className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="Change role"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { if (confirm(`Remove ${member.username || member.email} from this group?`)) removeMemberMutation.mutate(member.id); }}
+                    className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Remove member"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {(!group?.users || group.users.length === 0) && !showInviteMember && (
+              <div className="text-center py-8 text-slate-500">
+                <Users className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                <p>No members yet.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── API Keys Tab ─────────────────────────────────────────────────────── */}
+      {activeTab === 'apikeys' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex justify-between items-center mb-6">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
+                <Key className="w-5 h-5 text-emerald-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">API Keys</h2>
+                <p className="text-sm text-slate-500">{apiKeys?.length || 0} keys</p>
               </div>
             </div>
+            <button
+              onClick={() => setShowAddApiKey(true)}
+              className="bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-emerald-600 transition-colors shadow-sm"
+            >
+              <Plus className="w-4 h-4 mr-2" /> New Key
+            </button>
+          </div>
 
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {showAddApiKey && (
+            <div className="bg-slate-50 p-4 rounded-xl mb-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
                   <input
-                    placeholder="Provider name"
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                    value={editingProvider ? editingProvider.name : newProvider.name}
-                    onChange={(e) => editingProvider
-                      ? setEditingProvider({ ...editingProvider, name: e.target.value })
-                      : setNewProvider({ ...newProvider, name: e.target.value })
-                    }
+                    placeholder="Key name"
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                    value={newApiKey.name}
+                    onChange={(e) => setNewApiKey({ ...newApiKey, name: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Type *</label>
-                  <select
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                    value={editingProvider ? editingProvider.type : newProvider.type}
-                    onChange={(e) => editingProvider
-                      ? setEditingProvider({ ...editingProvider, type: e.target.value })
-                      : setNewProvider({ ...newProvider, type: e.target.value })
-                    }
-                  >
-                    <option value="openai">OpenAI</option>
-                    <option value="azure">Azure OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="moonshot">Moonshot (Kimi)</option>
-                    <option value="glm">GLM (Zhipu AI)</option>
-                    <option value="minimax">MiniMax</option>
-                    <option value="bailian">Bailian (Alibaba)</option>
-                    <option value="volcengine">Volcengine</option>
-                    <option value="gemini">Gemini (Google AI)</option>
-                    <option value="vertexai">Vertex AI (Google Cloud)</option>
-                    <option value="tencentvod">Tencent VOD</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Base URL</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Expires At (optional)</label>
                   <input
-                    placeholder={
-                      (editingProvider?.type || newProvider.type) === 'vertexai'
-                        ? 'https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}'
-                        : (editingProvider?.type || newProvider.type) === 'azure'
-                        ? 'https://your-resource.openai.azure.com'
-                        : 'https://api.example.com'
-                    }
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                    value={editingProvider ? editingProvider.base_url : newProvider.base_url}
-                    onChange={(e) => editingProvider
-                      ? setEditingProvider({ ...editingProvider, base_url: e.target.value })
-                      : setNewProvider({ ...newProvider, base_url: e.target.value })
-                    }
+                    type="datetime-local"
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
+                    value={newApiKey.expires_at}
+                    onChange={(e) => setNewApiKey({ ...newApiKey, expires_at: e.target.value })}
                   />
-                  {(editingProvider?.type || newProvider.type) === 'vertexai' && (
-                    <p className="text-xs text-slate-400 mt-1">Format: https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/REGION</p>
-                  )}
-                  {(editingProvider?.type || newProvider.type) === 'azure' && (
-                    <p className="text-xs text-slate-400 mt-1">Format: https://&#123;resource-name&#125;.openai.azure.com</p>
-                  )}
-                  {(editingProvider?.type || newProvider.type) === 'tencentvod' && (
-                    <p className="text-xs text-slate-400 mt-1">Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)</p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    {(editingProvider?.type || newProvider.type) === 'vertexai' ? 'Service Account JSON' : 'API Key'}
-                  </label>
-                  {(editingProvider?.type || newProvider.type) === 'vertexai' ? (
-                    <textarea
-                      placeholder="Paste the full JSON content of your Google Cloud service account key file, or leave empty to use Application Default Credentials (ADC)"
-                      rows={4}
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                      value={editingProvider ? editingProvider.api_key : newProvider.api_key}
-                      onChange={(e) => editingProvider
-                        ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
-                        : setNewProvider({ ...newProvider, api_key: e.target.value })
-                      }
-                    />
-                  ) : (
-                    <input
-                      type="password"
-                      placeholder="sk-..."
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                      value={editingProvider ? editingProvider.api_key : newProvider.api_key}
-                      onChange={(e) => editingProvider
-                        ? setEditingProvider({ ...editingProvider, api_key: e.target.value })
-                        : setNewProvider({ ...newProvider, api_key: e.target.value })
-                      }
-                    />
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Description</label>
-                  <input
-                    placeholder="Description"
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                    value={editingProvider ? editingProvider.description : newProvider.description}
-                    onChange={(e) => editingProvider
-                      ? setEditingProvider({ ...editingProvider, description: e.target.value })
-                      : setNewProvider({ ...newProvider, description: e.target.value })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    Authorization Header
-                    <span className="text-slate-400 font-normal ml-1 text-xs">(custom header name for API key)</span>
-                  </label>
-                  <input
-                    placeholder="Authorization (default) or x-goog-api-key for Gemini"
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                    value={editingProvider ? (editingProvider.authorization || 'Authorization') : newProvider.authorization}
-                    onChange={(e) => editingProvider
-                      ? setEditingProvider({ ...editingProvider, authorization: e.target.value })
-                      : setNewProvider({ ...newProvider, authorization: e.target.value })
-                    }
-                  />
-                  <p className="text-xs text-slate-400 mt-1">
-                    Use "Authorization" for Bearer token (default), or "x-goog-api-key" for Gemini API.
-                  </p>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    Tags
-                    <span className="text-slate-400 font-normal ml-1 text-xs">(comma-separated, for billing usage binding)</span>
-                  </label>
-                  <input
-                    placeholder="Comma-separated tags (e.g. production, team-a)"
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                    value={editingProvider ? (editingProvider.tags || []).join(', ') : (newProvider.tags || []).join(', ')}
-                    onChange={(e) => {
-                      const tags = e.target.value.split(',').map(t => t.trim()).filter(t => t);
-                      editingProvider
-                        ? setEditingProvider({ ...editingProvider, tags })
-                        : setNewProvider({ ...newProvider, tags });
-                    }}
-                  />
-                  <p className="text-xs text-slate-400 mt-1">
-                    Comma-separated tags for billing usage binding (e.g. production, team-a, internal)
-                  </p>
                 </div>
               </div>
-
-              {/* Azure-specific fields */}
-              {(editingProvider?.type || newProvider.type) === 'azure' && (
-                <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
-                  <h3 className="text-sm font-semibold text-blue-800 mb-3">Azure OpenAI Configuration</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-2">API Version</label>
-                      <input
-                        placeholder="2025-01-01-preview"
-                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                        value={editingProvider ? (editingProvider.extra_config?.api_version || '') : (newProvider.extra_config?.api_version || '')}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          editingProvider
-                            ? setEditingProvider({ ...editingProvider, extra_config: { ...editingProvider.extra_config, api_version: val } })
-                            : setNewProvider({ ...newProvider, extra_config: { ...newProvider.extra_config, api_version: val } });
-                        }}
-                      />
-                      <p className="text-xs text-slate-400 mt-1">Default: 2025-01-01-preview</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-2">Region</label>
-                      <input
-                        placeholder="eastus, westeurope, etc."
-                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                        value={editingProvider ? (editingProvider.extra_config?.region || '') : (newProvider.extra_config?.region || '')}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          editingProvider
-                            ? setEditingProvider({ ...editingProvider, extra_config: { ...editingProvider.extra_config, region: val } })
-                            : setNewProvider({ ...newProvider, extra_config: { ...newProvider.extra_config, region: val } });
-                        }}
-                      />
-                      <p className="text-xs text-slate-400 mt-1">The Azure region where your resource is deployed</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex space-x-3 pt-2 border-t border-slate-200">
+              <div className="flex space-x-3 mt-4">
                 <button
-                  onClick={() => {
-                    if (editingProvider) {
-                      updateProviderMutation.mutate({ providerId: editingProvider.id, data: editingProvider });
-                    } else {
-                      createProviderMutation.mutate(newProvider);
-                    }
-                  }}
-                  disabled={editingProvider ? (!editingProvider.name || updateProviderMutation.isPending) : (!newProvider.name || createProviderMutation.isPending)}
-                  className="bg-blue-500 text-white px-5 py-2.5 rounded-xl flex items-center hover:bg-blue-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors shadow-sm"
+                  onClick={() => createApiKeyMutation.mutate(newApiKey)}
+                  disabled={!newApiKey.name}
+                  className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-emerald-600 disabled:bg-slate-300"
                 >
-                  <Save className="w-4 h-4 mr-2" />
-                  {(editingProvider ? updateProviderMutation.isPending : createProviderMutation.isPending) ? 'Saving...' : 'Save'}
+                  Create
                 </button>
                 <button
-                  onClick={() => { setShowAddProvider(false); setEditingProvider(null); }}
-                  className="bg-slate-100 text-slate-600 px-5 py-2.5 rounded-xl hover:bg-slate-200 transition-colors"
+                  onClick={() => { setShowAddApiKey(false); setNewApiKey({ name: '', expires_at: '' }); }}
+                  className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
                 >
                   Cancel
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* Model Detail/Edit Modal */}
-      {(viewingModel || editingModel) && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-slate-200 sticky top-0 bg-white">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center">
-                    <Cpu className="w-5 h-5 text-white" />
-                  </div>
+          <div className="space-y-3">
+            {apiKeys?.map((apiKey) => (
+              <div key={apiKey.id} className="bg-slate-50 p-4 rounded-xl flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <div className={`w-3 h-3 rounded-full ${apiKey.is_active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
                   <div>
-                    <h2 className="text-lg font-bold text-slate-800">
-                      {editingModel ? 'Edit Model' : 'Model Details'}
-                    </h2>
-                    <p className="text-sm text-slate-500">{viewingModel?.name || editingModel?.name}</p>
+                    <h4 className="font-medium text-slate-800">{apiKey.name}</h4>
+                    <div className="flex items-center space-x-2 mt-1">
+                      <code className="text-sm text-slate-600 bg-white px-2 py-0.5 rounded">
+                        {visibleKeys.has(apiKey.id) ? apiKey.key : `${apiKey.key.slice(0, 8)}...${apiKey.key.slice(-4)}`}
+                      </code>
+                      <button onClick={() => toggleKeyVisibility(apiKey.id)} className="text-slate-400 hover:text-slate-600">
+                        {visibleKeys.has(apiKey.id) ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => copyToClipboard(apiKey.key)} className="text-slate-400 hover:text-slate-600">
+                        {copiedKey === apiKey.key ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => { setViewingModel(null); setEditingModel(null); }}
-                  className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {editingModel ? (
-              /* Edit Form */
-              <div className="p-6 space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
-                    <input
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.name}
-                      onChange={(e) => setEditingModel({ ...editingModel, name: e.target.value })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Alias</label>
-                    <input
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.alias || ''}
-                      onChange={(e) => setEditingModel({ ...editingModel, alias: e.target.value || null })}
-                      placeholder="Custom alias for API access"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Context Size</label>
-                    <input
-                      type="number"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.context_size}
-                      onChange={(e) => setEditingModel({ ...editingModel, context_size: parseInt(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Input Size</label>
-                    <input
-                      type="number"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.input_size}
-                      onChange={(e) => setEditingModel({ ...editingModel, input_size: parseInt(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Input Price ($/M)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.input_price}
-                      onChange={(e) => setEditingModel({ ...editingModel, input_price: parseFloat(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Output Price ($/M)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.output_price}
-                      onChange={(e) => setEditingModel({ ...editingModel, output_price: parseFloat(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Cache Create ($/M)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.cache_creation_price}
-                      onChange={(e) => setEditingModel({ ...editingModel, cache_creation_price: parseFloat(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">Cache Hit ($/M)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm"
-                      value={editingModel.cache_hit_price}
-                      onChange={(e) => setEditingModel({ ...editingModel, cache_hit_price: parseFloat(e.target.value) })}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Supported Features</label>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {[
-                      { key: 'support_kvcache', label: 'KV Cache' },
-                      { key: 'support_image', label: 'Image' },
-                      { key: 'support_audio', label: 'Audio' },
-                      { key: 'support_video', label: 'Video' },
-                      { key: 'support_file', label: 'File' },
-                      { key: 'support_web_search', label: 'Web Search' },
-                      { key: 'support_tool_search', label: 'Tool Search' },
-                      { key: 'support_thinking', label: 'Thinking' },
-                      { key: 'support_online_image', label: 'Online Image URL' },
-                      { key: 'support_online_video', label: 'Online Video URL' },
-                      { key: 'support_embedding', label: 'Embedding' },
-                    ].map((feature) => (
-                      <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
-                        <input
-                          type="checkbox"
-                          checked={!!editingModel[feature.key as keyof Model]}
-                          onChange={(e) => setEditingModel({ ...editingModel, [feature.key]: e.target.checked })}
-                          className="w-4 h-4 rounded border-slate-300 text-blue-600"
-                        />
-                        <span className="text-sm text-slate-600">{feature.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex space-x-3 pt-4 border-t border-slate-200">
+                <div className="flex items-center space-x-4 text-sm text-slate-500">
+                  <span>{apiKey.request_count} requests</span>
+                  <span>Last used: {formatDate(apiKey.last_used_at)}</span>
                   <button
-                    onClick={() => updateModelMutation.mutate({ modelId: editingModel.id, data: editingModel })}
-                    disabled={!editingModel.name || updateModelMutation.isPending}
-                    className="bg-blue-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-blue-600 disabled:bg-slate-300"
-                  >
-                    <Save className="w-4 h-4 mr-2 inline" /> {updateModelMutation.isPending ? 'Saving...' : 'Save Changes'}
-                  </button>
-                  <button
-                    onClick={() => setEditingModel(null)}
-                    className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : viewingModel ? (
-              /* View Details */
-              <div className="p-6 space-y-6">
-                {/* Basic Info */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-slate-50 p-4 rounded-xl">
-                    <span className="text-sm text-slate-500">Model Name</span>
-                    <p className="text-lg font-semibold text-slate-800">{viewingModel.name}</p>
-                  </div>
-                  <div className="bg-slate-50 p-4 rounded-xl">
-                    <span className="text-sm text-slate-500">Alias</span>
-                    <p className="text-lg font-semibold text-slate-800">
-                      {viewingModel.alias ? `@${viewingModel.alias}` : <span className="text-slate-400">Not set</span>}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Pricing */}
-                <div>
-                  <h3 className="text-sm font-medium text-slate-700 mb-3">Pricing</h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-emerald-50 p-4 rounded-xl">
-                      <span className="text-sm text-emerald-600">Input Price</span>
-                      <p className="text-2xl font-bold text-emerald-700">${viewingModel.input_price}/M</p>
-                    </div>
-                    <div className="bg-blue-50 p-4 rounded-xl">
-                      <span className="text-sm text-blue-600">Output Price</span>
-                      <p className="text-2xl font-bold text-blue-700">${viewingModel.output_price}/M</p>
-                    </div>
-                    <div className="bg-violet-50 p-4 rounded-xl">
-                      <span className="text-sm text-violet-600">Cache Create Price</span>
-                      <p className="text-2xl font-bold text-violet-700">${viewingModel.cache_creation_price}/M</p>
-                    </div>
-                    <div className="bg-amber-50 p-4 rounded-xl">
-                      <span className="text-sm text-amber-600">Cache Hit Price</span>
-                      <p className="text-2xl font-bold text-amber-700">${viewingModel.cache_hit_price}/M</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Context & Size */}
-                <div>
-                  <h3 className="text-sm font-medium text-slate-700 mb-3">Context & Size</h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-slate-50 p-4 rounded-xl">
-                      <span className="text-sm text-slate-500">Context Size</span>
-                      <p className="text-lg font-semibold text-slate-800">{viewingModel.context_size?.toLocaleString()}</p>
-                    </div>
-                    <div className="bg-slate-50 p-4 rounded-xl">
-                      <span className="text-sm text-slate-500">Input Size</span>
-                      <p className="text-lg font-semibold text-slate-800">{viewingModel.input_size?.toLocaleString()}</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Features */}
-                <div>
-                  <h3 className="text-sm font-medium text-slate-700 mb-3">Supported Features</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { key: 'support_kvcache', label: 'KV Cache', color: 'violet' },
-                      { key: 'support_image', label: 'Image', color: 'blue' },
-                      { key: 'support_audio', label: 'Audio', color: 'emerald' },
-                      { key: 'support_video', label: 'Video', color: 'rose' },
-                      { key: 'support_file', label: 'File', color: 'amber' },
-                      { key: 'support_web_search', label: 'Web Search', color: 'indigo' },
-                      { key: 'support_tool_search', label: 'Tool Search', color: 'pink' },
-                      { key: 'support_thinking', label: 'Thinking', color: 'cyan' },
-                      { key: 'support_online_image', label: 'Online Image URL', color: 'teal' },
-                      { key: 'support_online_video', label: 'Online Video URL', color: 'lime' },
-                      { key: 'support_embedding', label: 'Embedding', color: 'emerald' },
-                    ].map((feature) => {
-                      const enabled = !!viewingModel[feature.key as keyof Model];
-                          const colors: Record<string, string> = {
-                        violet: 'bg-violet-100 text-violet-700',
-                        blue: 'bg-blue-100 text-blue-700',
-                        emerald: 'bg-emerald-100 text-emerald-700',
-                        rose: 'bg-rose-100 text-rose-700',
-                        amber: 'bg-amber-100 text-amber-700',
-                        indigo: 'bg-indigo-100 text-indigo-700',
-                        pink: 'bg-pink-100 text-pink-700',
-                        cyan: 'bg-cyan-100 text-cyan-700',
-                        teal: 'bg-teal-100 text-teal-700',
-                        lime: 'bg-lime-100 text-lime-700',
-                      };
-                      return (
-                        <span
-                          key={feature.key}
-                          className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                            enabled ? colors[feature.color] : 'bg-slate-100 text-slate-400'
-                          }`}
-                        >
-                          {feature.label}
-                        </span>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex space-x-3 pt-4 border-t border-slate-200">
-                  <button
-                    onClick={() => setEditingModel(viewingModel)}
-                    className="bg-blue-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-blue-600"
-                  >
-                    <Edit2 className="w-4 h-4 mr-2 inline" /> Edit Model
-                  </button>
-                  <button
-                    onClick={() => setViewingModel(null)}
-                    className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      )}
-
-      {/* Providers Tab Content */}
-      {activeTab === 'providers' && (
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex justify-between items-center mb-6">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-              <Database className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">Providers</h2>
-              <p className="text-sm text-slate-500">{providers?.length || 0} providers</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setShowAddProvider(true)}
-            className="bg-blue-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-blue-600 transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4 mr-2" /> Add Provider
-          </button>
-        </div>
-
-
-        {/* Providers List */}
-        <div className="space-y-4">
-          {providers?.map((provider) => (
-            <div key={provider.id} className="border border-slate-200 rounded-xl overflow-hidden">
-              <div
-                className="p-4 flex justify-between items-center cursor-pointer hover:bg-slate-50"
-                onClick={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
-              >
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
-                    <Database className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <div className="flex items-center space-x-2">
-                      <h4 className="font-semibold text-slate-800">{provider.name}</h4>
-                      <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-medium uppercase">
-                        {provider.type}
-                      </span>
-                    </div>
-                    <p className="text-sm text-slate-500">
-                      {provider.base_url ? (
-                        <span className="flex items-center"><LinkIcon className="w-3 h-3 mr-1" />{provider.base_url}</span>
-                      ) : 'No base URL'}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
-                  <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-sm font-medium">
-                    {provider.models.length} models
-                  </span>
-                  <button
-                    onClick={() => setEditingProvider(provider)}
-                    className="text-slate-400 hover:text-blue-600 p-1 hover:bg-blue-50 rounded"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm('Delete this provider?')) {
-                        deleteProviderMutation.mutate(provider.id);
-                      }
-                    }}
+                    onClick={() => { if (confirm('Delete this API key?')) deleteApiKeyMutation.mutate(apiKey.id); }}
                     className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>
-
-              {/* Expanded Provider - Models */}
-              {expandedProvider === provider.id && (
-                <div className="p-4 bg-slate-50 border-t border-slate-200">
-                  <div className="flex justify-between items-center mb-4">
-                    <h5 className="font-medium text-slate-700">Models</h5>
-                    <button
-                      onClick={() => setShowAddModel(provider.id)}
-                      className="bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm flex items-center hover:bg-blue-600"
-                    >
-                      <Plus className="w-3 h-3 mr-1" /> Add Model
-                    </button>
-                  </div>
-
-                  {/* Add Model Form */}
-                  {showAddModel === provider.id && (
-                    <div className="bg-white p-4 rounded-xl border border-slate-200 mb-3">
-                      {/* Template selector */}
-                      <div className="mb-4 pb-4 border-b border-slate-100">
-                        <label className="block text-xs font-medium text-slate-700 mb-1">
-                          Quick Fill from Template
-                          <span className="text-slate-400 font-normal ml-1">(optional)</span>
-                        </label>
-                        <select
-                          className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                          value=""
-                          onChange={(e) => {
-                            const tplId = parseInt(e.target.value);
-                            if (isNaN(tplId)) { setActiveTpl(null); return; }
-                            const tpl = modelTemplates.find((t) => t.id === tplId);
-                            if (!tpl) return;
-                            setActiveTpl(tpl);
-                            if (!tpl.pricing_tiers || tpl.pricing_tiers.length === 0) {
-                              setNewModel({
-                                ...newModel,
-                                name: tpl.name,
-                                alias: tpl.alias || '',
-                                context_size: tpl.context_size,
-                                input_size: tpl.input_size,
-                                output_size: tpl.output_size ?? 4096,
-                                input_price: tpl.input_price,
-                                output_price: tpl.output_price,
-                                cache_creation_price: tpl.cache_creation_price,
-                                cache_hit_price: tpl.cache_hit_price,
-                                support_kvcache: tpl.support_kvcache,
-                                support_image: tpl.support_image,
-                                support_audio: tpl.support_audio,
-                                support_video: tpl.support_video,
-                                support_file: tpl.support_file,
-                                support_web_search: tpl.support_web_search,
-                                support_tool_search: tpl.support_tool_search,
-                                support_thinking: tpl.support_thinking,
-                                support_online_image: tpl.support_online_image,
-                                support_online_video: tpl.support_online_video,
-                                support_embedding: tpl.support_embedding,
-                              });
-                            } else {
-                              setNewModel({ ...newModel, name: tpl.name, alias: tpl.alias || '' });
-                            }
-                          }}
-                        >
-                          <option value="">— Select a template —</option>
-                          {Array.from(new Set(modelTemplates.map((t) => t.provider))).map((providerName) => (
-                            <optgroup key={providerName} label={providerName}>
-                              {modelTemplates
-                                .filter((tpl) => tpl.provider === providerName)
-                                .map((tpl) => (
-                                  <option key={tpl.id} value={tpl.id}>
-                                    {tpl.label}
-                                  </option>
-                                ))}
-                            </optgroup>
-                          ))}
-                        </select>
-                        {activeTpl?.pricing_tiers && activeTpl.pricing_tiers.length > 0 && (
-                          <div className="mt-2">
-                            <label className="block text-xs font-medium text-slate-600 mb-1">Select Pricing Tier</label>
-                            <select
-                              className="w-full p-2 bg-slate-50 border border-blue-300 rounded-lg text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                              defaultValue=""
-                              onChange={(e) => {
-                                const idx = parseInt(e.target.value);
-                                if (isNaN(idx) || !activeTpl?.pricing_tiers) return;
-                                const tier = activeTpl.pricing_tiers[idx];
-                                setNewModel({
-                                  ...newModel,
-                                  name: activeTpl.name,
-                                  alias: activeTpl.alias || '',
-                                  context_size: tier.context_size,
-                                  input_size: tier.input_size,
-                                  output_size: tier.output_size ?? 4096,
-                                  input_price: tier.input_price,
-                                  output_price: tier.output_price,
-                                  cache_creation_price: tier.cache_creation_price,
-                                  cache_hit_price: tier.cache_hit_price,
-                                  support_kvcache: activeTpl.support_kvcache,
-                                  support_image: activeTpl.support_image,
-                                  support_audio: activeTpl.support_audio,
-                                  support_video: activeTpl.support_video,
-                                  support_file: activeTpl.support_file,
-                                  support_web_search: activeTpl.support_web_search,
-                                  support_tool_search: activeTpl.support_tool_search,
-                                  support_thinking: activeTpl.support_thinking,
-                                  support_online_image: activeTpl.support_online_image,
-                                  support_online_video: activeTpl.support_online_video,
-                                  support_embedding: activeTpl.support_embedding,
-                                });
-                              }}
-                            >
-                              <option value="">— Pick a tier —</option>
-                              {activeTpl.pricing_tiers.map((tier, idx) => (
-                                <option key={idx} value={idx}>
-                                  {tier.label} — in ${tier.input_price}/M out ${tier.output_price}/M
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Basic Info */}
-                      <div className="mb-4">
-                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Basic Information</h4>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Name *</label>
-                            <input
-                              placeholder="gpt-4o"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.name}
-                              onChange={(e) => setNewModel({ ...newModel, name: e.target.value })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Alias</label>
-                            <input
-                              placeholder="my-gpt4"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.alias}
-                              onChange={(e) => setNewModel({ ...newModel, alias: e.target.value })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Context Size</label>
-                            <input
-                              type="number"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.context_size}
-                              onChange={(e) => setNewModel({ ...newModel, context_size: parseInt(e.target.value) || 4096 })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Input Size</label>
-                            <input
-                              type="number"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.input_size}
-                              onChange={(e) => setNewModel({ ...newModel, input_size: parseInt(e.target.value) || 4096 })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Output Size</label>
-                            <input
-                              type="number"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.output_size}
-                              onChange={(e) => setNewModel({ ...newModel, output_size: parseInt(e.target.value) || 4096 })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Reasoning Effort</label>
-                            <input
-                              placeholder="low / medium / high"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.reasoning_effort}
-                              onChange={(e) => setNewModel({ ...newModel, reasoning_effort: e.target.value })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Image Formats</label>
-                            <input
-                              placeholder="png,jpeg,webp"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.supported_image_formats}
-                              onChange={(e) => setNewModel({ ...newModel, supported_image_formats: e.target.value })}
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Pricing */}
-                      <div className="mb-4">
-                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Pricing ($ per 1M tokens)</h4>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Input Price</label>
-                            <input
-                              type="number"
-                              step="0.01"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.input_price}
-                              onChange={(e) => setNewModel({ ...newModel, input_price: parseFloat(e.target.value) || 0 })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Output Price</label>
-                            <input
-                              type="number"
-                              step="0.01"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.output_price}
-                              onChange={(e) => setNewModel({ ...newModel, output_price: parseFloat(e.target.value) || 0 })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Cache Creation Price</label>
-                            <input
-                              type="number"
-                              step="0.01"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.cache_creation_price}
-                              onChange={(e) => setNewModel({ ...newModel, cache_creation_price: parseFloat(e.target.value) || 0 })}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Cache Hit Price</label>
-                            <input
-                              type="number"
-                              step="0.01"
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                              value={newModel.cache_hit_price}
-                              onChange={(e) => setNewModel({ ...newModel, cache_hit_price: parseFloat(e.target.value) || 0 })}
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Features */}
-                      <div className="mb-4">
-                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Supported Features</h4>
-                        <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
-                          {[
-                            { key: 'support_kvcache', label: 'KV Cache' },
-                            { key: 'support_image', label: 'Image' },
-                            { key: 'support_audio', label: 'Audio' },
-                            { key: 'support_video', label: 'Video' },
-                            { key: 'support_file', label: 'File' },
-                            { key: 'support_web_search', label: 'Web Search' },
-                            { key: 'support_tool_search', label: 'Tool Search' },
-                            { key: 'support_thinking', label: 'Thinking' },
-                            { key: 'support_online_image', label: 'Online Image URL' },
-                            { key: 'support_online_video', label: 'Online Video URL' },
-                            { key: 'support_embedding', label: 'Embedding' },
-                          ].map((feature) => (
-                            <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-slate-100">
-                              <input
-                                type="checkbox"
-                                checked={!!newModel[feature.key as keyof typeof newModel]}
-                                onChange={(e) => setNewModel({ ...newModel, [feature.key]: e.target.checked })}
-                                className="w-4 h-4 rounded border-slate-300 text-blue-600"
-                              />
-                              <span className="text-xs text-slate-600">{feature.label}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="flex space-x-2 pt-3 border-t border-slate-200">
-                        <button
-                          onClick={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
-                          disabled={!newModel.name || createModelMutation.isPending}
-                          className="bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-emerald-600 disabled:bg-slate-300"
-                        >
-                          {createModelMutation.isPending ? 'Adding...' : 'Add Model'}
-                        </button>
-                        <button
-                          onClick={() => {
-                            setShowAddModel(null);
-                            setNewModel({
-                              name: '', alias: '', context_size: 4096, input_size: 4096, output_size: 4096,
-                              reasoning_effort: '', supported_image_formats: '',
-                              input_price: 0, output_price: 0, cache_creation_price: 0, cache_hit_price: 0,
-                              support_kvcache: false, support_image: false, support_audio: false,
-                              support_video: false, support_file: false, support_web_search: false, support_tool_search: false,
-                              support_thinking: false, support_online_image: false, support_online_video: false, support_embedding: false
-                            });
-                          }}
-                          className="bg-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-300"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Models List */}
-                  <div className="space-y-2">
-                    {provider.models.map((model) => (
-                      <div 
-                        key={model.id} 
-                        className="bg-white p-3 rounded-lg border border-slate-200 flex items-center justify-between cursor-pointer hover:border-blue-300 transition-colors"
-                        onClick={() => setViewingModel(model)}
-                      >
-                        <div className="flex items-center space-x-3">
-                          <Cpu className="w-4 h-4 text-slate-400" />
-                          <span className="font-medium text-slate-800">{model.name}</span>
-                          {model.alias && (
-                            <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs">@{model.alias}</span>
-                          )}
-                          <span className="text-xs text-slate-500">{model.context_size?.toLocaleString()} ctx</span>
-                          <span className="text-xs text-slate-500">${model.input_price}/${model.output_price} per M</span>
-                        </div>
-                        <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            onClick={() => setEditingModel(model)}
-                            className="text-slate-400 hover:text-blue-600 p-1 hover:bg-blue-50 rounded"
-                            title="Edit"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (confirm('Delete this model?')) {
-                                deleteModelMutation.mutate(model.id);
-                              }
-                            }}
-                            className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                    {provider.models.length === 0 && !showAddModel && (
-                      <p className="text-center text-slate-500 py-4 text-sm">No models added.</p>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-          {(!providers || providers.length === 0) && !showAddProvider && (
-            <div className="text-center py-8 text-slate-500">
-              <Database className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p>No providers yet.</p>
-            </div>
-          )}
+            ))}
+            {(!apiKeys || apiKeys.length === 0) && !showAddApiKey && (
+              <div className="text-center py-8 text-slate-500">
+                <Key className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                <p>No API keys yet.</p>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ── Providers Tab ────────────────────────────────────────────────────── */}
+      {activeTab === 'providers' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+              <Database className="w-5 h-5 text-blue-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">Providers</h2>
+              <p className="text-sm text-slate-500">Manage AI providers and models for this group</p>
+            </div>
+          </div>
+          {/* ProviderList handles all provider + model CRUD internally */}
+          <ProviderList groupId={parseInt(id!)} />
+        </div>
       )}
     </div>
   );

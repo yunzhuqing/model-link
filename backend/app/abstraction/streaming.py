@@ -215,7 +215,10 @@ class StreamChunk:
                     "stop_reason": stop_reason,
                     "stop_sequence": None,
                 },
-                "usage": {"output_tokens": usage.get("output_tokens", 0)},
+                "usage": {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                },
             }
             return [event]
 
@@ -290,8 +293,10 @@ class StreamChunk:
                     "stop_reason": stop_reason,
                     "stop_sequence": None,
                 },
-                # Anthropic SDK's MessageDeltaUsage only expects output_tokens
-                "usage": {"output_tokens": usage.get("output_tokens", 0)},
+                "usage": {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                },
             }
             events.append(message_delta)
 

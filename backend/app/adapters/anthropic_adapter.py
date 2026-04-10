@@ -463,57 +463,25 @@ class AnthropicMessagesAdapter(BaseAdapter):
         _chunk_iter = chunk_iter
 
         def generate():
-            accumulated_usage = {}
+            # 发送 message_start。
+            # input_tokens 在此时可能还不可知（非 Claude 供应商的 usage 在流末尾才到达），
+            # 所以先填 0，真实的 input_tokens 将在最后的 message_delta 里和 output_tokens 一起上报。
+            message_id = _first_chunk.id if _first_chunk else None
+            start_event = self.format_stream_start(model_name, message_id=message_id, input_tokens=0)
+            if start_event:
+                yield start_event
+
+            accumulated_usage: dict = {}
             pending_finish_chunk = None
             text_block_started = False  # 跟踪是否已发送 text 的 content_block_start
             thinking_block_started = False  # 跟踪是否已发送 thinking 的 content_block_start
             block_open = False  # 是否有内容块处于打开状态
             content_block_index = 0  # 当前内容块索引
 
+            # 实时流式处理所有 chunk（包含第一个已预取的 chunk）
+            all_chunks = itertools.chain([_first_chunk], _chunk_iter) if _first_chunk else iter(_chunk_iter)
+
             try:
-                # Use the eagerly consumed first chunk (already validated above).
-                first_chunk = _first_chunk
-
-                # Extract usage info from the first chunk
-                message_id = None
-                input_tokens = 0
-                cache_read_input_tokens = 0
-                cache_creation_input_tokens = 0
-
-                if first_chunk:
-                    message_id = first_chunk.id
-                    if first_chunk.usage:
-                        # Accumulate usage from first chunk
-                        for k, v in first_chunk.usage.items():
-                            accumulated_usage[k] = v
-                        input_tokens = first_chunk.usage.get(
-                            'input_tokens',
-                            first_chunk.usage.get('prompt_tokens', 0))
-                        cache_read_input_tokens = first_chunk.usage.get(
-                            'cache_read_input_tokens',
-                            first_chunk.usage.get('cache_read_tokens', 0))
-                        cache_creation_input_tokens = first_chunk.usage.get(
-                            'cache_creation_input_tokens',
-                            first_chunk.usage.get('cache_write_tokens', 0))
-
-                # 发送 message_start (with actual usage from first chunk)
-                start_event = self.format_stream_start(
-                    model_name,
-                    message_id=message_id,
-                    input_tokens=input_tokens,
-                    cache_read_input_tokens=cache_read_input_tokens,
-                    cache_creation_input_tokens=cache_creation_input_tokens,
-                )
-                if start_event:
-                    yield start_event
-
-                # Build an iterator that includes the first chunk
-                import itertools
-                if first_chunk:
-                    all_chunks = itertools.chain([first_chunk], _chunk_iter)
-                else:
-                    all_chunks = _chunk_iter
-
                 for chunk in all_chunks:
                     # 从每个 chunk 累积 usage 信息
                     if chunk.usage:
@@ -548,26 +516,26 @@ class AnthropicMessagesAdapter(BaseAdapter):
                         block_open = True
                         if new_block_type == "thinking":
                             thinking_block_started = True
-                            start_event = {
+                            block_start_event = {
                                 "type": "content_block_start",
                                 "index": content_block_index,
                                 "content_block": {"type": "thinking", "thinking": ""}
                             }
-                            yield f"event: content_block_start\ndata: {json.dumps(start_event)}\n\n"
+                            yield f"event: content_block_start\ndata: {json.dumps(block_start_event)}\n\n"
                         elif new_block_type == "text":
                             text_block_started = True
-                            start_event = {
+                            block_start_event = {
                                 "type": "content_block_start",
                                 "index": content_block_index,
                                 "content_block": {"type": "text", "text": ""}
                             }
-                            yield f"event: content_block_start\ndata: {json.dumps(start_event)}\n\n"
+                            yield f"event: content_block_start\ndata: {json.dumps(block_start_event)}\n\n"
                         # tool_use content_block_start 由 to_anthropic_events() 生成
 
                     # 设置当前内容块索引，确保 to_anthropic_events() 使用正确的索引
                     chunk.anthropic_index = content_block_index
 
-                    # 实时输出内容 chunk
+                    # 输出内容 chunk
                     formatted = self.format_stream_chunk(chunk)
                     if formatted:
                         yield formatted
@@ -595,19 +563,20 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     # Fallback: always emit message_delta before message_stop.
                     # Anthropic SDK clients expect a message_delta event with
                     # stop_reason and usage before the final message_stop.
-                    usage = {}
-                    if accumulated_usage:
-                        output_tokens = accumulated_usage.get("output_tokens",
-                                        accumulated_usage.get("completion_tokens", 0))
-                    else:
-                        output_tokens = 0
+                    input_tokens = accumulated_usage.get("input_tokens",
+                                   accumulated_usage.get("prompt_tokens", 0))
+                    output_tokens = accumulated_usage.get("output_tokens",
+                                    accumulated_usage.get("completion_tokens", 0))
                     fallback_delta = {
                         "type": "message_delta",
                         "delta": {
                             "stop_reason": "end_turn",
                             "stop_sequence": None,
                         },
-                        "usage": {"output_tokens": output_tokens},
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                        },
                     }
                     yield f"event: message_delta\ndata: {json.dumps(fallback_delta)}\n\n"
 

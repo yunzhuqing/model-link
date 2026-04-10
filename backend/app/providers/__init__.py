@@ -14,7 +14,7 @@ from .moonshot_provider import MoonshotProvider
 from .glm_provider import GLMProvider
 from .minimax_provider import MiniMaxProvider
 from .gemini import GeminiProvider
-from .tencentvod_provider import TencentVODProvider
+from .tencentvod import TencentVODProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',

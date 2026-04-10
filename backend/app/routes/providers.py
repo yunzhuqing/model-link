@@ -10,6 +10,43 @@ from app import db
 from app.models import Provider, Model, Group
 from app.routes.users import token_required
 
+
+def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
+    """
+    For TencentVOD providers, auto-create an ApiToken via CreateAigcApiToken API
+    if one hasn't been stored yet.
+
+    Reads secret_id (AK), secret_key (SK), and optionally app_id from
+    provider.extra_config and calls the TencentVOD API to get a permanent
+    ApiToken, which is then stored in provider.api_key.
+
+    Does nothing if api_key is already set.
+    """
+    if provider.type != 'tencentvod':
+        return
+
+    # Skip if api_key already exists
+    if provider.api_key:
+        return
+
+    extra = provider.extra_config or {}
+    secret_id = extra.get('secret_id', '').strip()
+    secret_key = extra.get('secret_key', '').strip()
+    app_id = extra.get('app_id')
+
+    if not secret_id or not secret_key:
+        return  # Cannot create token without credentials
+
+    try:
+        from app.providers.tencentvod.image_generation import create_aigc_api_token
+        sub_app_id = int(app_id) if app_id else None
+        api_token = create_aigc_api_token(secret_id, secret_key, sub_app_id)
+        provider.api_key = api_token
+    except Exception as e:
+        # Log error but don't fail the provider save
+        import sys
+        print(f"[TencentVOD] Failed to create ApiToken: {e}", file=sys.stderr)
+
 providers_bp = Blueprint('providers', __name__)
 
 
@@ -58,6 +95,11 @@ def create_provider(current_user):
         extra_config=data.get('extra_config')
     )
     db.session.add(provider)
+    db.session.flush()  # Get provider.id without committing
+
+    # Auto-create ApiToken for TencentVOD providers
+    _maybe_create_tencentvod_api_token(provider)
+
     db.session.commit()
     db.session.refresh(provider)
     
@@ -98,8 +140,19 @@ def update_provider(current_user, provider_id):
     if 'tags' in data:
         provider.tags = data['tags'] or []
     if 'extra_config' in data:
+        # For tencentvod: if credentials changed, clear api_key so it gets regenerated
+        if provider.type == 'tencentvod' and 'extra_config' in data:
+            old_extra = provider.extra_config or {}
+            new_extra = data['extra_config'] or {}
+            if (old_extra.get('secret_id') != new_extra.get('secret_id') or
+                    old_extra.get('secret_key') != new_extra.get('secret_key') or
+                    old_extra.get('app_id') != new_extra.get('app_id')):
+                provider.api_key = None  # Clear so it gets regenerated
         provider.extra_config = data['extra_config']
-    
+
+    # Auto-create ApiToken for TencentVOD providers if not already set
+    _maybe_create_tencentvod_api_token(provider)
+
     db.session.commit()
     db.session.refresh(provider)
     

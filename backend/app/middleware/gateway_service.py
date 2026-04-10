@@ -259,6 +259,7 @@ class GatewayService:
                     # 根据模型能力和请求参数过滤 reasoning_content
                     if not include_reasoning:
                         chunk.delta_reasoning_content = None
+                    print(f"Yielding chunk: {chunk}")  # Debug log for each chunk
                     yield chunk
             except ValueError as e:
                 raise GatewayServiceError(str(e), status_code=400)
