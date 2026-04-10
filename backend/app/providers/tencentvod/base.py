@@ -7,16 +7,22 @@
 配置说明:
 - base_url: API 基础 URL（默认 https://text-aigc.vod-qcloud.com/v1）
 - api_key:  聊天模型使用点播 AI API Key；
-            图像生成模型使用 "SecretId:SecretKey" 格式（腾讯云主账号/子账号密钥）
+            图像/视频生成模型使用 "SecretId:SecretKey" 格式（腾讯云主账号/子账号密钥）
 
 图像生成说明:
 - 通过腾讯云点播 CreateAigcImageTask + DescribeTaskDetail API 实现
 - 兼容 /v1/responses image_generation 工具
 - extra_config["sub_app_id"]: 点播子应用 ID（可选）
 
+视频生成说明:
+- 通过腾讯云点播 CreateAigcVideoTask + DescribeTaskDetail API 实现
+- 兼容 /v1/responses video_generation 工具
+- 支持 Kling（GV）、HunyuanVideo 等模型
+
 API 文档：
   聊天: https://text-aigc.vod-qcloud.com
   图像: https://cloud.tencent.com/document/product/266/73185
+  视频: https://cloud.tencent.com/document/product/266/
 """
 import json
 import time
@@ -33,6 +39,12 @@ from .image_generation import (
     execute_tencentvod_image_generation,
     stream_image_generation,
 )
+from .video_generation import (
+    is_tencentvod_video_model,
+    has_video_generation_tool,
+    execute_tencentvod_video_generation,
+    stream_video_generation,
+)
 
 
 class TencentVODProvider(OpenAIProvider):
@@ -46,12 +58,15 @@ class TencentVODProvider(OpenAIProvider):
     - 腾讯云点播 AI 图像生成（GEM / Mingmou 等模型）
       通过 CreateAigcImageTask + DescribeTaskDetail API 实现，
       兼容 /v1/responses image_generation 工具。
+    - 腾讯云点播 AI 视频生成（Kling / HunyuanVideo 等模型）
+      通过 CreateAigcVideoTask + DescribeTaskDetail API 实现，
+      兼容 /v1/responses video_generation 工具。
 
     配置:
         base_url:               https://text-aigc.vod-qcloud.com/v1（默认）
         api_key（聊天模型）:     腾讯云点播 AI API Key
-        api_key（图像生成）:     "SecretId:SecretKey" 格式
-        extra_config.sub_app_id: 点播子应用 ID（图像生成可选）
+        api_key（图像/视频生成）: "SecretId:SecretKey" 格式
+        extra_config.sub_app_id: 点播子应用 ID（图像/视频生成可选）
     """
 
     PROVIDER_TYPE: str = "tencentvod"
@@ -121,6 +136,75 @@ class TencentVODProvider(OpenAIProvider):
             "supports_vision": True,
             "is_image_model": True,
         },
+        # 视频生成模型 — 可灵 Kling (ModelName=Kling)
+        "kling-v3-omni": {
+            "description": "可灵 v3 旗舰版 Omni 视频生成模型（Kling 3.0-Omni）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v3-omini": {
+            "description": "可灵 v3 Omini 视频生成模型（Kling 3.0-Omini）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v3": {
+            "description": "可灵 v3 标准版视频生成模型（Kling 3.0）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v2.1-pro": {
+            "description": "可灵 v2.1 Pro 视频生成模型（Kling 2.1-Pro）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v2.1-standard": {
+            "description": "可灵 v2.1 Standard 视频生成模型（Kling 2.1-Standard）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v1.6-pro": {
+            "description": "可灵 v1.6 Pro 视频生成模型（Kling 1.6-Pro）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v1.6-standard": {
+            "description": "可灵 v1.6 Standard 视频生成模型（Kling 1.6-Standard）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "kling-v1.5-pro": {
+            "description": "可灵 v1.5 Pro 视频生成模型（Kling 1.5-Pro）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        # 视频生成模型 — Google Veo (ModelName=GV)
+        "veo-3.1-generate-001": {
+            "description": "Google Veo 3.1 视频生成模型（GV 3.1）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "veo-3.1-fast-generate-001": {
+            "description": "Google Veo 3.1 Fast 视频生成模型（GV 3.1-fast）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        # 视频生成模型 — 混元视频 Hunyuan
+        "hy-video-v1.0": {
+            "description": "混元视频 v1.0 视频生成模型（Hunyuan 1.0）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
     }
 
     def __init__(self, config: ProviderConfig):
@@ -136,15 +220,23 @@ class TencentVODProvider(OpenAIProvider):
 
         super().__init__(config)
 
-    # ==================== 图像生成检测 ====================
+    # ==================== 图像/视频生成检测 ====================
 
     def is_image_generation_model(self, model: str) -> bool:
         """Check if the model is a TencentVOD image generation model."""
         return is_tencentvod_image_model(model)
 
+    def is_video_generation_model(self, model: str) -> bool:
+        """Check if the model is a TencentVOD video generation model."""
+        return is_tencentvod_video_model(model)
+
     def _has_image_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request contains an image_generation tool."""
         return has_image_generation_tool(request)
+
+    def _has_video_generation_tool(self, request: ChatRequest) -> bool:
+        """Check if the request contains a video_generation tool."""
+        return has_video_generation_tool(request)
 
     def _get_sub_app_id(self, request: ChatRequest) -> Optional[int]:
         """
@@ -179,20 +271,31 @@ class TencentVODProvider(OpenAIProvider):
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         """
-        执行对话/图像生成请求
+        执行对话/图像生成/视频生成请求
 
-        如果模型是图像生成模型（GEM / Mingmou 等），走腾讯云点播图像生成路径。
-        否则走 OpenAI 兼容格式的对话路径。
+        优先级:
+        1. 如果模型是视频生成模型或请求包含 video_generation 工具 → 视频生成路径
+        2. 如果模型是图像生成模型或请求包含 image_generation 工具 → 图像生成路径
+        3. 否则走 OpenAI 兼容格式的对话路径
 
         Args:
             request: 对话请求对象
 
         Returns:
-            对话/图像生成响应对象
+            对话/图像/视频生成响应对象
         """
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
+            return execute_tencentvod_video_generation(
+                api_key=self._get_image_api_key(),
+                model=request.model,
+                messages=request.messages,
+                metadata=request.metadata,
+                sub_app_id=self._get_sub_app_id(request),
+            )
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
             return execute_tencentvod_image_generation(
@@ -210,10 +313,12 @@ class TencentVODProvider(OpenAIProvider):
 
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """
-        执行流式对话/图像生成请求
+        执行流式对话/图像生成/视频生成请求
 
-        如果模型是图像生成模型，使用专用流式图像生成路径（模拟 SSE 事件流）。
-        否则走 OpenAI 兼容格式的流式对话路径。
+        优先级:
+        1. 如果模型是视频生成模型或请求包含 video_generation 工具 → 视频生成路径
+        2. 如果模型是图像生成模型或请求包含 image_generation 工具 → 图像生成路径
+        3. 否则走 OpenAI 兼容格式的流式对话路径
 
         Args:
             request: 对话请求对象
@@ -224,6 +329,10 @@ class TencentVODProvider(OpenAIProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
+            yield from stream_video_generation(self.chat, request)
+            return
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
             yield from stream_image_generation(self.chat, request)

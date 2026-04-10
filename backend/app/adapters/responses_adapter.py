@@ -81,7 +81,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             # 4. Plain content blocks (no 'role', has 'type' like input_text/input_image)
 
             # Check if ALL items are plain content blocks (no role, no special types)
-            SPECIAL_TYPES = {'function_call', 'function_call_output', 'image_generation_call'}
+            SPECIAL_TYPES = {'function_call', 'function_call_output', 'image_generation_call', 'video_generation_call'}
             is_pure_content_blocks = all(
                 isinstance(item, dict)
                 and 'role' not in item
@@ -187,6 +187,31 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                 content=[block]
                             ))
 
+                        elif item_type == 'video_generation_call':
+                            # Video generation call item — represents a previously executed
+                            # video generation operation in the conversation history.
+                            #
+                            # Format:
+                            # {
+                            #   "type": "video_generation_call",
+                            #   "id": "<call_id>",
+                            #   "status": "in_progress|completed|generating|failed",
+                            #   "result": "<video_url>"
+                            # }
+                            call_id = item.get('id', '')
+                            status = item.get('status', 'completed')
+                            result = item.get('result', '')
+
+                            block = ContentBlock.from_tool_call(
+                                call_id,
+                                'video_generation',
+                                {'status': status, 'result': result}
+                            )
+                            messages.append(Message(
+                                role=MessageRole.ASSISTANT,
+                                content=[block]
+                            ))
+
                         elif item_type == 'function_call_output':
                             # Tool result item — convert to tool message
                             call_id = item.get('call_id', '')
@@ -262,9 +287,39 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                 tool_call_id=tool_call_id
                             ))
 
+        # Collect file_id → image_url mappings from input_image blocks for video generation.
+        # These are used to build ObjectId aliases (e.g. {{woman}}) in prompt-referenced images.
+        # We scan all input items once before parsing tools so we can use the result below.
+        _file_id_image_map: dict = {}  # file_id → image_url
+        for _top_item in data.get('input', []) if isinstance(data.get('input'), list) else []:
+            if not isinstance(_top_item, dict):
+                continue
+            # Scan content blocks inside role-based messages
+            _content = _top_item.get('content', [])
+            if isinstance(_content, list):
+                for _blk in _content:
+                    if not isinstance(_blk, dict):
+                        continue
+                    if _blk.get('type') in ('input_image', 'image'):
+                        _fid = _blk.get('file_id', '')
+                        _url = _blk.get('image_url', '')
+                        if isinstance(_url, dict):
+                            _url = _url.get('url', '')
+                        if _fid and _url:
+                            _file_id_image_map[_fid] = _url
+            # Also scan top-level plain image blocks (no role)
+            if _top_item.get('type') in ('input_image', 'image') and 'role' not in _top_item:
+                _fid = _top_item.get('file_id', '')
+                _url = _top_item.get('image_url', '')
+                if isinstance(_url, dict):
+                    _url = _url.get('url', '')
+                if _fid and _url:
+                    _file_id_image_map[_fid] = _url
+
         # 处理工具定义
         tools = []
         accumulated_img_metadata: dict = {}  # collects image_generation tool parameters
+        accumulated_vid_metadata: dict = {}  # collects video_generation tool parameters
         for tool_data in data.get('tools', []):
             tool_type = tool_data.get('type', 'function')
 
@@ -298,6 +353,103 @@ class OpenAIResponsesAdapter(BaseAdapter):
             elif tool_type == 'web_search_preview':
                 # Web search tool - pass through as metadata
                 pass
+
+            elif tool_type == 'video_generation':
+                # Video generation tool — extract generation parameters into metadata.
+                # These are picked up by TencentVOD provider when routing to
+                # CreateAigcVideoTask.
+                #
+                # Supported fields:
+                #   size / video_size – output video dimensions (WxH), used to derive AspectRatio
+                #   aspect_ratio      – explicit AspectRatio ("16:9", "9:16", etc.)
+                #   seconds           – video duration in seconds
+                #   resolution        – resolution tier ("720p", "1080p", etc.)
+                #   n / number        – number of videos (currently 1)
+                #   audio_generation  – "Enabled" | "Disabled"
+                #   person_generation – "AllowAdult" | "Disallow"
+                #   enhance_prompt    – "Enabled"
+                #   negative_prompt   – negative prompt string
+                #   reference_images  – list of image URLs for reference (image-to-video)
+                #   reference_videos  – list of video URLs for reference (video-to-video)
+                #   last_frame_url    – URL of last frame image (tail frame)
+                #   last_frame_file_id – FileId of last frame image
+                vid_metadata: dict = {'_video_generation': True}
+
+                size = tool_data.get('size') or tool_data.get('video_size')
+                if size:
+                    vid_metadata['size'] = size
+                    vid_metadata['video_size'] = size
+
+                aspect_ratio = tool_data.get('aspect_ratio')
+                if aspect_ratio:
+                    vid_metadata['aspect_ratio'] = aspect_ratio
+
+                seconds = tool_data.get('seconds') or tool_data.get('video_seconds')
+                if seconds is not None:
+                    vid_metadata['seconds'] = str(seconds)
+
+                resolution = tool_data.get('resolution')
+                if resolution:
+                    vid_metadata['resolution'] = resolution
+
+                n = tool_data.get('n') or tool_data.get('number') or tool_data.get('count')
+                if n is not None:
+                    vid_metadata['number'] = int(n)
+
+                # generate_audio: bool, default True.
+                # Maps to TencentVOD OutputConfig.AudioGeneration ("Enabled" | "Disabled").
+                # Accept both generate_audio (new) and audio_generation (legacy).
+                generate_audio = tool_data.get('generate_audio')
+                if generate_audio is None:
+                    generate_audio = True  # default: audio enabled
+                audio_generation = tool_data.get('audio_generation')
+                if audio_generation:
+                    # Legacy explicit value takes precedence
+                    vid_metadata['audio_generation'] = audio_generation
+                else:
+                    vid_metadata['audio_generation'] = "Enabled" if generate_audio else "Disabled"
+
+                person_generation = tool_data.get('person_generation')
+                if person_generation:
+                    vid_metadata['person_generation'] = person_generation
+
+                enhance_prompt = tool_data.get('enhance_prompt')
+                if enhance_prompt:
+                    vid_metadata['enhance_prompt'] = enhance_prompt
+
+                negative_prompt = tool_data.get('negative_prompt')
+                if negative_prompt:
+                    vid_metadata['negative_prompt'] = negative_prompt
+
+                reference_images = tool_data.get('reference_images')
+                if reference_images:
+                    if isinstance(reference_images, str):
+                        reference_images = [reference_images]
+                    vid_metadata['reference_images'] = reference_images
+
+                reference_videos = tool_data.get('reference_videos')
+                if reference_videos:
+                    if isinstance(reference_videos, str):
+                        reference_videos = [reference_videos]
+                    vid_metadata['reference_videos'] = reference_videos
+
+                last_frame_url = tool_data.get('last_frame_url')
+                if last_frame_url:
+                    vid_metadata['last_frame_url'] = last_frame_url
+
+                last_frame_file_id = tool_data.get('last_frame_file_id')
+                if last_frame_file_id:
+                    vid_metadata['last_frame_file_id'] = last_frame_file_id
+
+                # Build reference_image_ids list from file_id → image_url mappings
+                # collected from input_image blocks earlier.
+                if _file_id_image_map:
+                    vid_metadata['reference_image_ids'] = [
+                        {'file_id': fid, 'url': url}
+                        for fid, url in _file_id_image_map.items()
+                    ]
+
+                accumulated_vid_metadata.update(vid_metadata)
 
             elif tool_type == 'image_generation':
                 # Image generation tool — extract generation parameters into metadata.
@@ -376,6 +528,11 @@ class OpenAIResponsesAdapter(BaseAdapter):
         if accumulated_img_metadata:
             metadata.update(accumulated_img_metadata)
 
+        # Merge video_generation tool parameters into metadata so the TencentVOD
+        # provider can forward them to CreateAigcVideoTask
+        if accumulated_vid_metadata:
+            metadata.update(accumulated_vid_metadata)
+
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),
@@ -434,7 +591,48 @@ class OpenAIResponsesAdapter(BaseAdapter):
             getattr(response, 'provider', '') == "volcengine_image"
         )
 
-        if is_image_generation:
+        # Detect video generation responses by ID prefix.
+        # gen_id("vid") produces "vid_xxxx" format.
+        is_video_generation = (
+            response.id.startswith("vid-") or
+            response.id.startswith("vid_")
+        )
+
+        if is_video_generation:
+            # The message content is a JSON list of video_generation_call items stored by
+            # execute_tencentvod_video_generation() in the provider.  Each item has:
+            #   {"type": "video_generation_call", "status": "completed", "result": "<url>"}
+            items = []
+            if response.choices and response.choices[0].message:
+                msg = response.choices[0].message
+                content = msg.content
+                if isinstance(content, str):
+                    raw = content
+                elif hasattr(msg, 'get_text_content'):
+                    raw = msg.get_text_content() or "[]"
+                else:
+                    raw = "[]"
+                try:
+                    items = json.loads(raw) if isinstance(raw, str) else []
+                except (json.JSONDecodeError, TypeError):
+                    items = []
+
+            for i, item in enumerate(items):
+                call_id = f"{response.id}-{i}" if i > 0 else response.id
+                if isinstance(item, dict):
+                    status = item.get("status", "completed")
+                    result = item.get("result", "")
+                else:
+                    status = "completed"
+                    result = str(item)
+                output.append({
+                    "type": "video_generation_call",
+                    "id": call_id,
+                    "status": status,
+                    "result": result,
+                })
+
+        elif is_image_generation:
             # The message content is a JSON list of image_generation_call items stored by
             # execute_image_generation() in the provider.  Each item has:
             #   {"type": "image_generation_call", "status": "completed", "result": "<url|b64>"}

@@ -37,6 +37,7 @@ from app.abstraction.chat import (
 from app.abstraction.messages import Message, MessageRole
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.utils import gen_id
+from app.providers.image_size_utils import resolve_image_size
 
 
 # =============================================================================
@@ -60,7 +61,12 @@ _POLL_MAX_WAIT_S = 300   # 最大等待时间（秒）
 
 # Known TencentVOD image generation model name prefixes (case-insensitive).
 # Add new prefixes here when TencentVOD releases additional image models.
-_TENCENTVOD_IMAGE_MODEL_PREFIXES = ("gem-", "mingmou-")
+_TENCENTVOD_IMAGE_MODEL_PREFIXES = (
+    "gem-",
+    "mingmou-",
+    "gemini-",   # Gemini image models routed via TencentVOD (model_name=GG)
+    "hy-image-", # Hunyuan image models
+)
 
 
 def is_tencentvod_image_model(model: str) -> bool:
@@ -73,6 +79,9 @@ def is_tencentvod_image_model(model: str) -> bool:
       - GEM-3.0
       - Mingmou-4.0
       - Mingmou-5.0
+      - gemini-2.5-flash-image
+      - gemini-3-pro-image-preview
+      - hy-image-v3.0
 
     Args:
         model: Model name (case-insensitive)
@@ -102,6 +111,7 @@ def has_image_generation_tool(request: ChatRequest) -> bool:
     return any(k in meta for k in (
         "size", "number", "image_format", "response_format",
         "seed", "watermark", "reference_images",
+        "aspect_ratio", "resolution",
     ))
 
 
@@ -109,13 +119,42 @@ def has_image_generation_tool(request: ChatRequest) -> bool:
 # 辅助: 解析模型名称 / 版本
 # =============================================================================
 
+# Explicit lookup table: input model identifier (case-insensitive) →
+# (TencentVOD ModelName, TencentVOD ModelVersion).
+#
+# Models with complex names (e.g. gemini-2.5-flash-image) cannot be parsed
+# reliably by splitting on "-", so they are listed here explicitly.
+# For models not in this table the legacy split-on-"-" heuristic is used as
+# a fallback (suitable for simple names like "GEM-2.5", "Mingmou-4.0").
+_MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
+    # ── Gemini image models routed via TencentVOD ──────────────────────────
+    "gemini-2.5-flash-image":          ("GG", "2.5"),
+    "gemini-3-pro-image-preview":      ("GG", "3.0"),
+    "gemini-3.1-flash-image-preview":  ("GG", "3.1"),
+    # ── Hunyuan image models ───────────────────────────────────────────────
+    "hy-image-v3.0":                   ("Hunyuan", "3.0"),
+}
+
+
 def _parse_model_name_version(model: str) -> Tuple[str, str]:
     """
     Derive TencentVOD ModelName and ModelVersion from a model identifier.
 
-    Convention: "<ModelName>-<Version>" e.g. "GEM-2.5", "Mingmou-4.0".
-    If no version suffix is detected the whole string becomes ModelName and
+    First checks the explicit ``_MODEL_NAME_VERSION_MAP`` lookup table
+    (case-insensitive).  If the model is not listed there, falls back to the
+    legacy convention of splitting on the last "-" when the trailing segment
+    looks like a version number (digits and dots only), e.g.:
+      - "GEM-2.5"     → ("GEM", "2.5")
+      - "Mingmou-4.0" → ("Mingmou", "4.0")
+
+    If neither rule matches the whole string becomes ModelName and
     ModelVersion defaults to "latest".
+
+    Explicit mappings:
+      - gemini-2.5-flash-image         → ("GG", "2.5")
+      - gemini-3-pro-image-preview      → ("GG", "3.0")
+      - gemini-3.1-flash-image-preview  → ("GG", "3.1")
+      - hy-image-v3.0                   → ("Hunyuan", "3.0")
 
     Args:
         model: Model identifier string
@@ -123,9 +162,17 @@ def _parse_model_name_version(model: str) -> Tuple[str, str]:
     Returns:
         (model_name, model_version) tuple
     """
+    # 1. Explicit lookup (case-insensitive)
+    key = model.lower().strip()
+    if key in _MODEL_NAME_VERSION_MAP:
+        return _MODEL_NAME_VERSION_MAP[key]
+
+    # 2. Legacy heuristic: split on last "-" when suffix is a version number
     parts = model.rsplit("-", 1)
     if len(parts) == 2 and parts[1].replace(".", "").isdigit():
         return parts[0], parts[1]
+
+    # 3. Fallback: treat the whole string as ModelName
     return model, "latest"
 
 
@@ -312,6 +359,7 @@ def _create_aigc_image_task(
     prompt: str,
     negative_prompt: str = "",
     aspect_ratio: str = "",
+    resolution: str = "",
     file_ids: Optional[List[str]] = None,
     file_urls: Optional[List[str]] = None,
     session_id: str = "",
@@ -330,6 +378,7 @@ def _create_aigc_image_task(
         prompt:          正向 Prompt
         negative_prompt: 负向 Prompt
         aspect_ratio:    输出宽高比，如 "16:9"、"1:1"
+        resolution:      输出分辨率，如 "1024x1024"
         file_ids:        参考图片的 FileId 列表
         file_urls:       参考图片的 URL 列表
         session_id:      会话 ID（可选）
@@ -374,6 +423,8 @@ def _create_aigc_image_task(
     }
     if aspect_ratio:
         output_config["AspectRatio"] = aspect_ratio
+    if resolution:
+        output_config["Resolution"] = resolution
     body["OutputConfig"] = output_config
 
     payload_str = json.dumps(body, ensure_ascii=False)
@@ -595,14 +646,20 @@ def execute_tencentvod_image_generation(
     if not prompt:
         raise RuntimeError("TencentVOD image generation: no prompt found in user messages")
 
-    # Aspect ratio / size from metadata
-    size = metadata.get("size", "")
-    aspect_ratio = ""
-    if size:
-        # Accept "16:9" directly or "1024x576" → convert to "16:9" not done here;
-        # keep as-is: if it's already "16:9" format pass through, otherwise ignore
-        if ":" in str(size):
-            aspect_ratio = str(size)
+    # Resolve aspect_ratio and resolution from user-supplied metadata.
+    # Priority (handled by resolve_image_size):
+    #   1. metadata["resolution"] explicitly set (e.g. "1024x1024")
+    #   2. metadata["aspect_ratio"] explicitly set (e.g. "16:9")
+    #   3. metadata["size"]:
+    #      a. "WxH"  → used as resolution, aspect_ratio derived from table
+    #      b. "W:H"  → used as aspect_ratio, resolution derived from table
+    #      c. "1K" / "2K" / "4K" / "512" → quality tier, look up resolution
+    aspect_ratio, resolution = resolve_image_size(
+        model=model,
+        size=str(metadata.get("size", "") or ""),
+        aspect_ratio=str(metadata.get("aspect_ratio", "") or ""),
+        resolution=str(metadata.get("resolution", "") or ""),
+    )
 
     # Reference images from metadata
     reference_images: List[str] = metadata.get("reference_images") or []
@@ -625,6 +682,7 @@ def execute_tencentvod_image_generation(
             prompt=prompt,
             negative_prompt=negative_prompt,
             aspect_ratio=aspect_ratio,
+            resolution=resolution,
             file_ids=file_ids or None,
             file_urls=file_urls or None,
             session_id=session_id,

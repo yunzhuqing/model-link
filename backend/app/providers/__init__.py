@@ -15,12 +15,13 @@ from .glm_provider import GLMProvider
 from .minimax_provider import MiniMaxProvider
 from .gemini import GeminiProvider
 from .tencentvod import TencentVODProvider
+from .vllm_provider import VLLMProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
     'OpenAIProvider', 'AzureProvider', 'AnthropicProvider', 'BailianProvider',
     'VolcengineProvider', 'VertexAIProvider', 'MoonshotProvider', 'GLMProvider',
-    'MiniMaxProvider', 'GeminiProvider', 'TencentVODProvider'
+    'MiniMaxProvider', 'GeminiProvider', 'TencentVODProvider', 'VLLMProvider'
 ]
 
 # 供应商注册表
@@ -36,6 +37,7 @@ PROVIDER_REGISTRY = {
     'minimax': MiniMaxProvider,
     'gemini': GeminiProvider,
     'tencentvod': TencentVODProvider,
+    'vllm': VLLMProvider,
 }
 
 
