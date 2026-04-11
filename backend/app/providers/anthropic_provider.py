@@ -539,16 +539,23 @@ class AnthropicProvider(BaseProvider):
         if event_type == "message_start":
             message = event_data.get("message", {})
             usage = message.get("usage", {})
+            usage_dict = None
+            if usage:
+                usage_dict = {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+                    "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+                }
+                # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
+                if "cache_creation" in usage:
+                    usage_dict["cache_creation"] = usage["cache_creation"]
             return StreamChunk(
                 id=message.get("id", response_id),
                 model=message.get("model", model),
                 delta_role="assistant",
                 event_type=StreamEventType.CONTENT_DELTA,
-                usage={
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": 0,
-                    "total_tokens": usage.get("input_tokens", 0),
-                } if usage else None,
+                usage=usage_dict,
+                is_first_chunk=True,
             )
 
         elif event_type == "content_block_start":
@@ -626,9 +633,7 @@ class AnthropicProvider(BaseProvider):
                 model=model,
                 finish_reason=finish_reason,
                 usage={
-                    "prompt_tokens": 0,
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("output_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
                 } if usage else None,
                 event_type=StreamEventType.USAGE,
             )

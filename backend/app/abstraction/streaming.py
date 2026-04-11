@@ -40,6 +40,7 @@ class StreamChunk:
     finish_reason: Optional[FinishReason] = None
     usage: Optional[Dict[str, int]] = None
     event_type: StreamEventType = StreamEventType.CONTENT_DELTA
+    is_first_chunk: bool = False  # 标识是否为流的第一个 chunk（携带 message_start 元信息）
     created: int = field(default_factory=lambda: int(time.time()))
     # Pre-formatted SSE event strings that adapters should pass through verbatim.
     # Used by providers (e.g. Azure) to forward Responses API events that have no
@@ -148,35 +149,56 @@ class StreamChunk:
 
         return formatted
     
-    def _build_anthropic_usage(self) -> Dict[str, int]:
+    def _build_anthropic_usage(self) -> Dict[str, Any]:
         """
         构建 Anthropic 格式的 usage 字典。
         
-        将 OpenAI 格式的 usage 字段映射为 Anthropic 格式：
-        - prompt_tokens → input_tokens
-        - completion_tokens → output_tokens
-        - 同时支持 cache_read_input_tokens, cache_creation_input_tokens
+        将内部 usage 字段映射为 Anthropic 格式，始终包含所有标准字段（零值也输出），
+        并透传 cache_creation 嵌套对象（如果存在）。
+
+        Anthropic usage 格式:
+        {
+            "input_tokens": N,
+            "cache_creation_input_tokens": N,
+            "cache_read_input_tokens": N,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": N,
+                "ephemeral_1h_input_tokens": N
+            },
+            "output_tokens": N
+        }
         """
-        usage = {}
-        if self.usage:
-            # input_tokens: 优先使用 input_tokens，其次 prompt_tokens
-            usage["input_tokens"] = self.usage.get("input_tokens",
-                                    self.usage.get("prompt_tokens", 0))
-            # output_tokens: 优先使用 output_tokens，其次 completion_tokens
-            usage["output_tokens"] = self.usage.get("output_tokens",
-                                     self.usage.get("completion_tokens", 0))
-            # cache tokens
-            cache_read = self.usage.get("cache_read_input_tokens",
-                         self.usage.get("cache_read_tokens", 0))
-            if cache_read:
-                usage["cache_read_input_tokens"] = cache_read
-            cache_creation = self.usage.get("cache_creation_input_tokens",
-                             self.usage.get("cache_write_tokens", 0))
-            if cache_creation:
-                usage["cache_creation_input_tokens"] = cache_creation
-        else:
-            usage["input_tokens"] = 0
-            usage["output_tokens"] = 0
+        if not self.usage:
+            return {
+                "input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 0,
+            }
+
+        # input_tokens: 优先使用 input_tokens，其次 prompt_tokens
+        input_tokens = self.usage.get("input_tokens",
+                       self.usage.get("prompt_tokens", 0))
+        # output_tokens: 优先使用 output_tokens，其次 completion_tokens
+        output_tokens = self.usage.get("output_tokens",
+                        self.usage.get("completion_tokens", 0))
+        # cache tokens
+        cache_read = self.usage.get("cache_read_input_tokens",
+                     self.usage.get("cache_read_tokens", 0))
+        cache_creation_tokens = self.usage.get("cache_creation_input_tokens",
+                                self.usage.get("cache_write_tokens", 0))
+
+        usage: Dict[str, Any] = {
+            "input_tokens": input_tokens,
+            "cache_creation_input_tokens": cache_creation_tokens,
+            "cache_read_input_tokens": cache_read,
+            "output_tokens": output_tokens,
+        }
+
+        # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
+        if "cache_creation" in self.usage:
+            usage["cache_creation"] = self.usage["cache_creation"]
+
         return usage
 
     def _map_finish_reason_to_anthropic(self) -> Optional[str]:
@@ -215,10 +237,7 @@ class StreamChunk:
                     "stop_reason": stop_reason,
                     "stop_sequence": None,
                 },
-                "usage": {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                },
+                "usage": usage,
             }
             return [event]
 
@@ -293,10 +312,7 @@ class StreamChunk:
                     "stop_reason": stop_reason,
                     "stop_sequence": None,
                 },
-                "usage": {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                },
+                "usage": usage,
             }
             events.append(message_delta)
 

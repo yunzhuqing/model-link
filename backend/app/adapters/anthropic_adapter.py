@@ -300,23 +300,35 @@ class AnthropicMessagesAdapter(BaseAdapter):
         }
 
     def format_stream_start(self, model_name: str, message_id: Optional[str] = None,
-                            input_tokens: int = 0, cache_read_input_tokens: int = 0,
-                            cache_creation_input_tokens: int = 0) -> Optional[str]:
+                            usage: Optional[dict] = None) -> Optional[str]:
         """
         发送 Anthropic 消息开始事件。
 
         Anthropic SDK (pydantic) 要求 message_start 事件中的 message 对象
         包含完整的 Message 字段，否则客户端会抛出验证错误。
         必须包含: id, type, role, content, model, stop_reason, stop_sequence, usage
+
+        Args:
+            model_name: 模型名称
+            message_id: 消息 ID（可选）
+            usage: 完整的 Anthropic usage 字典（从 is_first_chunk 的 chunk 中获取）
+                   例如 {"input_tokens": 744, "cache_creation_input_tokens": 0,
+                          "cache_read_input_tokens": 0, "cache_creation": {...}}
         """
-        usage = {
-            'input_tokens': input_tokens,
+        # 构建 message_start 的 usage，始终包含 output_tokens: 0
+        start_usage: dict = {
+            'input_tokens': 0,
+            'cache_creation_input_tokens': 0,
+            'cache_read_input_tokens': 0,
             'output_tokens': 0,
         }
-        if cache_read_input_tokens:
-            usage['cache_read_input_tokens'] = cache_read_input_tokens
-        if cache_creation_input_tokens:
-            usage['cache_creation_input_tokens'] = cache_creation_input_tokens
+        if usage:
+            start_usage['input_tokens'] = usage.get('input_tokens', 0)
+            start_usage['cache_creation_input_tokens'] = usage.get('cache_creation_input_tokens', 0)
+            start_usage['cache_read_input_tokens'] = usage.get('cache_read_input_tokens', 0)
+            # 透传 cache_creation 嵌套对象
+            if 'cache_creation' in usage:
+                start_usage['cache_creation'] = usage['cache_creation']
 
         msg_id = message_id or ('msg_' + str(int(time.time())))
         # Normalize ID to msg_ prefix
@@ -337,7 +349,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
                 'model': model_name,
                 'stop_reason': None,
                 'stop_sequence': None,
-                'usage': usage,
+                'usage': start_usage,
             }
         }
         return f"event: message_start\ndata: {json.dumps(start_data)}\n\n"
@@ -464,10 +476,15 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
         def generate():
             # 发送 message_start。
-            # input_tokens 在此时可能还不可知（非 Claude 供应商的 usage 在流末尾才到达），
-            # 所以先填 0，真实的 input_tokens 将在最后的 message_delta 里和 output_tokens 一起上报。
+            # 如果第一个 chunk 携带 is_first_chunk=True（Anthropic 原生 provider 的 message_start 事件），
+            # 则直接使用其中的 usage（含真实 input_tokens、cache tokens 等）。
+            # 否则（非 Claude 供应商，usage 在流末尾才到达），先填 0，
+            # 真实的 input_tokens 将在最后的 message_delta 里和 output_tokens 一起上报。
             message_id = _first_chunk.id if _first_chunk else None
-            start_event = self.format_stream_start(model_name, message_id=message_id, input_tokens=0)
+            first_chunk_usage = None
+            if _first_chunk and _first_chunk.is_first_chunk and _first_chunk.usage:
+                first_chunk_usage = _first_chunk.usage
+            start_event = self.format_stream_start(model_name, message_id=message_id, usage=first_chunk_usage)
             if start_event:
                 yield start_event
 
@@ -567,16 +584,26 @@ class AnthropicMessagesAdapter(BaseAdapter):
                                    accumulated_usage.get("prompt_tokens", 0))
                     output_tokens = accumulated_usage.get("output_tokens",
                                     accumulated_usage.get("completion_tokens", 0))
+                    cache_creation_input_tokens = accumulated_usage.get("cache_creation_input_tokens",
+                                                  accumulated_usage.get("cache_write_tokens", 0))
+                    cache_read_input_tokens = accumulated_usage.get("cache_read_input_tokens",
+                                             accumulated_usage.get("cache_read_tokens", 0))
+                    fallback_usage = {
+                        "input_tokens": input_tokens,
+                        "cache_creation_input_tokens": cache_creation_input_tokens,
+                        "cache_read_input_tokens": cache_read_input_tokens,
+                        "output_tokens": output_tokens,
+                    }
+                    # 透传 cache_creation 嵌套对象（如果存在）
+                    if "cache_creation" in accumulated_usage:
+                        fallback_usage["cache_creation"] = accumulated_usage["cache_creation"]
                     fallback_delta = {
                         "type": "message_delta",
                         "delta": {
                             "stop_reason": "end_turn",
                             "stop_sequence": None,
                         },
-                        "usage": {
-                            "input_tokens": input_tokens,
-                            "output_tokens": output_tokens,
-                        },
+                        "usage": fallback_usage,
                     }
                     yield f"event: message_delta\ndata: {json.dumps(fallback_delta)}\n\n"
 
