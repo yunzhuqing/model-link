@@ -51,6 +51,7 @@ from app.adapters.responses_adapter import OpenAIResponsesAdapter
 # 导入供应商注册信息（仅用于管理端点）
 from app.providers import get_provider_class, list_providers
 from app.providers.base import ProviderConfig
+from app.providers.hunyuan.threed_generation import is_hunyuan3d_model
 from app.storage import get_storage_backend
 from app.utils import gen_id
 
@@ -300,6 +301,22 @@ def openai_responses():
         return jsonify(adapter.format_error_response('Model is required', 400)), 400
 
     is_background = bool(data.get('background', False))
+
+    # Check if this is a 3D generation request (hunyuan model or 3d_generation tool).
+    # 3D generation is a long-running async task and ONLY supports background=true.
+    _tools = data.get('tools', [])
+    _has_3d_tool = any(
+        isinstance(t, dict) and t.get('type') == '3d_generation'
+        for t in _tools
+    )
+    _is_3d_model = is_hunyuan3d_model(model_name)
+    if (_is_3d_model or _has_3d_tool) and not is_background:
+        return jsonify(adapter.format_error_response(
+            '3D generation only supports asynchronous mode. '
+            'Please set "background": true in your request and poll '
+            'GET /v1/responses/{response_id} for the result.',
+            400
+        )), 400
 
     # 2. 认证（只做一次）
     user, api_key, error, status = get_current_user_or_api_key()

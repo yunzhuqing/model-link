@@ -12,8 +12,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'basic-request', label: '基础对话请求' },
   { id: 'streaming', label: '流式响应' },
   { id: 'with-tools', label: '工具调用' },
-  { id: 'image-generation', label: '图片生成' },
-  { id: 'video-generation', label: '视频生成' },
+  { id: 'generation-tools', label: '生成功能工具' },
   { id: 'background', label: '后台异步请求' },
   { id: 'get-response', label: '查询异步结果' },
   { id: 'response-format', label: '响应格式' },
@@ -475,46 +474,45 @@ export default function HelpResponses() {
           <CurlSection body={WITH_TOOLS} />
         </SectionCard>
 
-        {/* Image generation */}
-        <SectionCard
-          id="image-generation"
-          title="图片生成"
-          badge="image_generation"
-          badgeColor="bg-pink-100 text-pink-700"
-          description='通过 tools 中的 image_generation 类型触发图片生成，模型会根据用户指令生成图片并以 image_generation_call 类型输出图片 URL。'
-        >
-          <CurlSection body={IMAGE_GENERATION} />
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-            <strong>注意：</strong>图片生成功能需要供应商支持图像生成能力（如百炼的 qwen-image-2.0-pro 模型）。
+        {/* Generation tools redirect */}
+        <div id="generation-tools" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-lg font-semibold text-slate-800">生成功能工具</h3>
+            <p className="text-sm text-slate-500 mt-1">图片生成、视频生成、3D 生成已独立成专题页面，请前往帮助中心查看。</p>
           </div>
-        </SectionCard>
-
-        {/* Video generation */}
-        <SectionCard
-          id="video-generation"
-          title="视频生成"
-          badge="video_generation"
-          badgeColor="bg-cyan-100 text-cyan-700"
-          description='通过 tools 中的 video_generation 类型触发视频生成。支持纯文本描述，也支持传入参考图片、视频、音频等多模态素材，通过 file_id 在文本中引用。'
-        >
-          <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
-            <strong>提示：</strong>视频生成耗时通常在数十秒到数分钟，建议设置 <code>background: true</code>，通过 <code>GET /v1/responses/{'{response_id}'}</code> 轮询获取结果。
+          <div className="p-6 flex flex-col sm:flex-row gap-3">
+            <button
+              onClick={() => navigate('/help/image-generation')}
+              className="flex-1 flex items-center gap-3 p-4 bg-pink-50 border border-pink-200 rounded-xl hover:bg-pink-100 transition-colors text-left"
+            >
+              <span className="text-2xl">🖼️</span>
+              <div>
+                <p className="font-semibold text-pink-800 text-sm">图片生成</p>
+                <p className="text-xs text-pink-600">image_generation tool</p>
+              </div>
+            </button>
+            <button
+              onClick={() => navigate('/help/video-generation')}
+              className="flex-1 flex items-center gap-3 p-4 bg-cyan-50 border border-cyan-200 rounded-xl hover:bg-cyan-100 transition-colors text-left"
+            >
+              <span className="text-2xl">🎬</span>
+              <div>
+                <p className="font-semibold text-cyan-800 text-sm">视频生成</p>
+                <p className="text-xs text-cyan-600">video_generation tool</p>
+              </div>
+            </button>
+            <button
+              onClick={() => navigate('/help/3d-generation')}
+              className="flex-1 flex items-center gap-3 p-4 bg-purple-50 border border-purple-200 rounded-xl hover:bg-purple-100 transition-colors text-left"
+            >
+              <span className="text-2xl">📦</span>
+              <div>
+                <p className="font-semibold text-purple-800 text-sm">3D 生成</p>
+                <p className="text-xs text-purple-600">3d_generation tool</p>
+              </div>
+            </button>
           </div>
-
-          <div>
-            <p className="text-sm font-medium text-slate-700 mb-2">示例一：文本描述生成视频</p>
-            <CurlSection body={VIDEO_GENERATION} />
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-slate-700 mb-2">示例二：多模态素材引用（图片 / 视频 / 音频参考）</p>
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700 mb-2">
-              通过 <code>file_id</code> 给素材命名，在文本 prompt 中用 <code>{'{{'} file_id {'}}'}</code> 格式引用，让模型知道每段素材的角色。
-              支持的 content type：<code>input_image</code>、<code>input_video</code>、<code>input_audio</code>。
-            </div>
-            <CurlSection body={VIDEO_GENERATION_REF} />
-          </div>
-        </SectionCard>
+        </div>
 
         {/* Background */}
         <SectionCard

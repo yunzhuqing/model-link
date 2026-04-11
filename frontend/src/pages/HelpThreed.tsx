@@ -1,0 +1,455 @@
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Copy, Check, ArrowLeft, Box } from 'lucide-react';
+
+const BASE_URL = 'http://localhost:8000';
+
+interface TocItem { id: string; label: string }
+const TOC_ITEMS: TocItem[] = [
+  { id: 'overview', label: '功能说明' },
+  { id: 'models', label: '支持的模型' },
+  { id: 'single-image', label: '单图生成（Rapid/Pro）' },
+  { id: 'multi-view', label: '多视角图生成（Pro）' },
+  { id: 'text-to-3d', label: '文本生成 3D（Pro）' },
+  { id: 'params', label: '工具参数' },
+  { id: 'response-format', label: '响应格式' },
+];
+
+const THREED_SINGLE = `{
+  "model": "hunyuan-3d-3.1-pro",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/dog.jpg"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "3d_generation",
+      "output_format": "GLB",
+      "pbr": true,
+      "face_count": 500000,
+      "generate_type": "Normal"
+    }
+  ]
+}`;
+
+const THREED_MULTI_VIEW = `{
+  "model": "hunyuan-3d-3.1-pro",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/front.jpg"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/back.jpg",
+          "view": "back"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/left.jpg",
+          "view": "left"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "3d_generation",
+      "output_format": "GLB",
+      "pbr": true,
+      "face_count": 500000,
+      "generate_type": "Normal"
+    }
+  ]
+}`;
+
+const THREED_TEXT = `{
+  "model": "hunyuan-3d-3.1-pro",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "一只可爱的柴犬玩具"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "3d_generation",
+      "output_format": "GLB",
+      "generate_type": "Sketch"
+    }
+  ]
+}`;
+
+const THREED_RESPONSE = `{
+  "id": "3d_abc123...",
+  "object": "response",
+  "status": "completed",
+  "model": "hunyuan-3d-3.1-pro",
+  "output": [
+    {
+      "type": "3d_generation_call",
+      "id": "job_xxx",
+      "status": "completed",
+      "content": [
+        {
+          "type": "GLB",
+          "url": "https://...",
+          "preview_url": "https://..."
+        }
+      ]
+    }
+  ]
+}`;
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white transition-colors"
+      title="复制"
+    >
+      {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+    </button>
+  );
+}
+
+function CodeBlock({ code, lang = 'json' }: { code: string; lang?: string }) {
+  return (
+    <div className="relative">
+      <pre className={`language-${lang} bg-slate-900 text-slate-100 rounded-xl p-4 pr-12 text-sm overflow-x-auto leading-relaxed`}>
+        <code>{code}</code>
+      </pre>
+      <CopyButton text={code} />
+    </div>
+  );
+}
+
+function SectionCard({ id, title, description, badge, badgeColor, children }: {
+  id: string; title: string; description: string; badge?: string; badgeColor?: string; children: React.ReactNode;
+}) {
+  return (
+    <div id={id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+      <div className="p-6 border-b border-slate-100">
+        <div className="flex items-center gap-3 mb-1">
+          <h3 className="text-lg font-semibold text-slate-800">{title}</h3>
+          {badge && <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${badgeColor}`}>{badge}</span>}
+        </div>
+        <p className="text-sm text-slate-500">{description}</p>
+      </div>
+      <div className="p-6 space-y-4">{children}</div>
+    </div>
+  );
+}
+
+function CurlSection({ body }: { body: string }) {
+  const [show, setShow] = useState(false);
+  const curl = `curl -X POST ${BASE_URL}/v1/responses \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">请求体</span>
+        <button onClick={() => setShow(v => !v)} className="text-xs text-blue-500 hover:text-blue-700 underline underline-offset-2">
+          {show ? '隐藏 cURL' : '查看 cURL'}
+        </button>
+      </div>
+      <CodeBlock code={body} />
+      {show && (
+        <div className="mt-3">
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
+          <CodeBlock code={curl} lang="bash" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TableOfContents({ items }: { items: TocItem[] }) {
+  const [active, setActive] = useState(items[0]?.id ?? '');
+  const scrollRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    scrollRef.current = document.querySelector('main') as HTMLElement;
+    const container = scrollRef.current;
+    if (!container) return;
+    const onScroll = () => {
+      let cur = items[0]?.id ?? '';
+      for (const item of items) {
+        const el = document.getElementById(item.id);
+        if (el) {
+          const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
+          if (top <= 80) cur = item.id;
+        }
+      }
+      setActive(cur);
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [items]);
+
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id);
+    const container = scrollRef.current;
+    if (el && container) {
+      const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      container.scrollTo({ top: container.scrollTop + top - 16, behavior: 'smooth' });
+    }
+  };
+
+  return (
+    <aside className="w-52 flex-shrink-0 hidden xl:block">
+      <div className="sticky top-0">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3 px-1">本页内容</p>
+        <nav className="space-y-0.5">
+          {items.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => scrollTo(item.id)}
+              className={`w-full text-left px-3 py-1.5 rounded-lg text-sm transition-all duration-150 ${
+                active === item.id
+                  ? 'bg-purple-50 text-purple-600 font-medium border-l-2 border-purple-500'
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+    </aside>
+  );
+}
+
+export default function HelpThreed() {
+  const navigate = useNavigate();
+
+  return (
+    <div className="flex gap-8 max-w-6xl mx-auto">
+      <div className="flex-1 min-w-0 space-y-8">
+        {/* Back + header */}
+        <div>
+          <button
+            onClick={() => navigate('/help')}
+            className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-purple-600 mb-4 transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            返回帮助中心
+          </button>
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-gradient-to-br from-purple-500 to-violet-600 rounded-2xl shadow-lg shadow-purple-500/25">
+              <Box className="w-7 h-7 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900">3D 生成</h1>
+              <p className="text-slate-500 text-sm mt-0.5">通过 Responses API 的 3d_generation 工具生成 3D 模型（混元 3D）</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Endpoint info */}
+        <div className="bg-purple-50 border border-purple-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
+          <div>
+            <span className="text-xs font-semibold text-purple-500 uppercase tracking-wide">Endpoint</span>
+            <p className="font-mono text-sm text-purple-900 mt-0.5">{BASE_URL}/v1/responses</p>
+          </div>
+          <div className="h-8 w-px bg-purple-200 hidden sm:block" />
+          <div>
+            <span className="text-xs font-semibold text-purple-500 uppercase tracking-wide">Tool Type</span>
+            <p className="font-mono text-sm text-purple-900 mt-0.5">3d_generation</p>
+          </div>
+          <div className="h-8 w-px bg-purple-200 hidden sm:block" />
+          <div>
+            <span className="text-xs font-semibold text-purple-500 uppercase tracking-wide">必须</span>
+            <p className="font-mono text-sm text-purple-900 mt-0.5">background: true</p>
+          </div>
+        </div>
+
+        {/* Overview */}
+        <div id="overview" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-lg font-semibold text-slate-800 mb-1">功能说明</h3>
+            <p className="text-sm text-slate-500">
+              通过在 tools 中指定 3d_generation 类型，触发混元 3D 模型生成功能。支持从单张图片、多视角图片或文本描述生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
+            </p>
+          </div>
+          <div className="p-6 space-y-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+              <strong>重要：</strong>3D 生成为异步长时任务，<strong>必须设置 <code>background: true</code></strong>。
+              提交后立即返回 <code>response_id</code>，通过 <code>GET /v1/responses/{'{response_id}'}</code> 轮询结果。
+            </div>
+            <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm text-purple-800">
+              <strong>Provider 配置：</strong>在供应商管理页面选择类型 <code>Hunyuan 3D (Tencent)</code>，填写腾讯云 Secret ID（AK）、Secret Key（SK）及可选的 Region（默认 ap-guangzhou）。
+            </div>
+          </div>
+        </div>
+
+        {/* Models */}
+        <SectionCard
+          id="models"
+          title="支持的模型"
+          description="混元 3D 包含 Rapid（快速）和 Pro（高质量）两个系列。"
+        >
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">模型名称</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">API Action</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">API Model 字段</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {[
+                  { name: 'hunyuan-3d-rapid',   action: 'Rapid', model: '—', desc: 'Rapid 系列（快速生成）' },
+                  { name: 'hy-3d-express',       action: 'Rapid', model: '—', desc: 'Rapid 系列（快速生成）' },
+                  { name: 'hunyuan-3d-pro',      action: 'Pro',   model: '不传', desc: 'Pro 系列（兼容旧版）' },
+                  { name: 'hunyuan-3d-3.0-pro',  action: 'Pro',   model: '3.0', desc: 'Pro 3.0 版本' },
+                  { name: 'hunyuan-3d-3.1-pro',  action: 'Pro',   model: '3.1', desc: 'Pro 3.1 版本（推荐）' },
+                  { name: 'hy-3d-3.0',           action: 'Pro',   model: '3.1', desc: '注意：模型名与 API Model 字段有差异' },
+                  { name: 'hy-3d-3.1',           action: 'Pro',   model: '3.0', desc: '注意：模型名与 API Model 字段有差异' },
+                ].map((r) => (
+                  <tr key={r.name} className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5"><code className="text-purple-600 font-semibold text-xs">{r.name}</code></td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${r.action === 'Rapid' ? 'bg-orange-100 text-orange-700' : 'bg-purple-100 text-purple-700'}`}>
+                        {r.action}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-slate-500 text-xs">{r.model}</td>
+                    <td className="px-4 py-2.5 text-slate-600 text-xs">{r.desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </SectionCard>
+
+        {/* Single image */}
+        <SectionCard
+          id="single-image"
+          title="单图生成 3D（Rapid / Pro）"
+          badge="ImageUrl"
+          badgeColor="bg-purple-100 text-purple-700"
+          description="传入一张图片（无 view 字段），生成对应 3D 模型。Rapid 和 Pro 模型均支持。"
+        >
+          <CurlSection body={THREED_SINGLE} />
+        </SectionCard>
+
+        {/* Multi-view */}
+        <SectionCard
+          id="multi-view"
+          title="多视角图片生成 3D（Pro 专用）"
+          badge="MultiViewImages"
+          badgeColor="bg-indigo-100 text-indigo-700"
+          description="在 input_image 块中添加 view 字段指定视角，质量更高。主图（无 view）同时设置为 ImageUrl，带 view 的图作为 MultiViewImages。"
+        >
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700">
+            <strong>视角枚举值（view 字段）：</strong>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {['front', 'back', 'left', 'right', 'up', 'down', 'left_front', 'right_front'].map((v) => (
+                <code key={v} className="bg-white border border-slate-200 px-2 py-0.5 rounded text-xs text-purple-600">{v}</code>
+              ))}
+            </div>
+          </div>
+          <CurlSection body={THREED_MULTI_VIEW} />
+        </SectionCard>
+
+        {/* Text to 3D */}
+        <SectionCard
+          id="text-to-3d"
+          title="文本生成 3D（Pro 专用）"
+          badge="Prompt"
+          badgeColor="bg-teal-100 text-teal-700"
+          description="当不传入图片时，使用文本描述生成 3D 模型。generate_type: Sketch 模式下 prompt 和图片可同时传入。"
+        >
+          <CurlSection body={THREED_TEXT} />
+        </SectionCard>
+
+        {/* Params */}
+        <SectionCard
+          id="params"
+          title="工具参数（3d_generation tool）"
+          description="3d_generation tool 支持以下参数。Pro-only 参数仅对 Pro 系列模型生效。"
+        >
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">参数</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">类型</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">适用</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {[
+                  { name: 'type',             type: 'string',  scope: '通用',     desc: '固定为 "3d_generation"' },
+                  { name: 'output_format',    type: 'string',  scope: '通用',     desc: 'OBJ | GLB | STL | USDZ | FBX | MP4；别名：result_format' },
+                  { name: 'pbr',              type: 'boolean', scope: '通用',     desc: '是否开启 PBR 材质生成；别名：enable_pbr' },
+                  { name: 'enable_geometry',  type: 'boolean', scope: '通用',     desc: '开启白模（无纹理几何）生成，开启后不支持 OBJ 格式；别名：geometry' },
+                  { name: 'face_count',       type: 'number',  scope: 'Pro-only', desc: '生成面数（3000–1500000，LowPoly 模式下无效）' },
+                  { name: 'generate_type',    type: 'string',  scope: 'Pro-only', desc: 'Normal | LowPoly | Geometry | Sketch' },
+                  { name: 'polygon_type',     type: 'string',  scope: 'Pro-only', desc: 'triangle | quadrilateral（仅 LowPoly 模式有效）' },
+                ].map((r) => (
+                  <tr key={r.name} className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5"><code className="text-purple-600 font-semibold">{r.name}</code></td>
+                    <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{r.type}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${r.scope === '通用' ? 'bg-slate-100 text-slate-600' : 'bg-purple-100 text-purple-700'}`}>
+                        {r.scope}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700">
+            <strong>多视角图片传入方式：</strong>多视角图片不在 tool 参数中传入，而是在 <code>input</code> 的 <code>input_image</code> 内容块中添加 <code>view</code> 字段指定视角：
+            <ul className="list-disc list-inside mt-1.5 space-y-1 text-slate-600">
+              <li>无 <code>view</code> 字段的 input_image → <code>ImageUrl</code>（主图）</li>
+              <li>有 <code>view</code> 字段的 input_image → <code>MultiViewImages</code>（仅 Pro 模型）</li>
+            </ul>
+          </div>
+        </SectionCard>
+
+        {/* Response format */}
+        <div id="response-format" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-lg font-semibold text-slate-800">响应格式</h3>
+            <p className="text-sm text-slate-500 mt-1">output 包含 3d_generation_call 类型的输出项，content 为生成的 3D 文件列表，每项含 type、url 和 preview_url。</p>
+          </div>
+          <div className="p-6">
+            <CodeBlock code={THREED_RESPONSE} />
+          </div>
+        </div>
+      </div>
+
+      <TableOfContents items={TOC_ITEMS} />
+    </div>
+  );
+}

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight } from 'lucide-react';
+import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box } from 'lucide-react';
 
 interface HelpItem {
   path: string;
@@ -40,7 +40,7 @@ const helpItems: HelpItem[] = [
     icon: <Zap className="w-6 h-6 text-white" />,
     iconBg: 'from-emerald-500 to-teal-600',
     title: 'Responses API',
-    description: '兼容 OpenAI Responses API，支持基础对话、流式响应（SSE）、工具调用（Function Calling）、图片生成及后台异步请求等功能。',
+    description: '兼容 OpenAI Responses API，支持基础对话、流式响应（SSE）、工具调用（Function Calling）及后台异步请求等功能。',
     tags: [
       { label: '流式 SSE', color: 'bg-blue-100 text-blue-700' },
       { label: '工具调用', color: 'bg-violet-100 text-violet-700' },
@@ -73,6 +73,46 @@ const helpItems: HelpItem[] = [
   },
 ];
 
+interface GenerationItem {
+  path: string;
+  icon: React.ReactNode;
+  iconBg: string;
+  title: string;
+  description: string;
+  badge: string;
+  badgeColor: string;
+}
+
+const generationItems: GenerationItem[] = [
+  {
+    path: '/help/image-generation',
+    icon: <ImageIcon className="w-5 h-5 text-white" />,
+    iconBg: 'from-pink-500 to-rose-600',
+    title: '图片生成',
+    description: '通过 image_generation 工具触发图片生成，支持文本描述生图及图生图，返回图片 URL 或 base64。',
+    badge: 'image_generation',
+    badgeColor: 'bg-pink-100 text-pink-700',
+  },
+  {
+    path: '/help/video-generation',
+    icon: <Video className="w-5 h-5 text-white" />,
+    iconBg: 'from-cyan-500 to-teal-600',
+    title: '视频生成',
+    description: '通过 video_generation 工具触发视频生成，支持文本描述及多模态素材（图片/视频/音频）参考，异步模式。',
+    badge: 'video_generation',
+    badgeColor: 'bg-cyan-100 text-cyan-700',
+  },
+  {
+    path: '/help/3d-generation',
+    icon: <Box className="w-5 h-5 text-white" />,
+    iconBg: 'from-purple-500 to-violet-600',
+    title: '3D 生成',
+    description: '通过 3d_generation 工具调用混元 3D 生成 3D 模型，支持单图/多视角图/文本输入，仅支持异步模式（background: true）。',
+    badge: '3d_generation',
+    badgeColor: 'bg-purple-100 text-purple-700',
+  },
+];
+
 export default function HelpCenter() {
   const navigate = useNavigate();
 
@@ -89,7 +129,7 @@ export default function HelpCenter() {
         </div>
       </div>
 
-      {/* Card list */}
+      {/* API guides */}
       <div className="space-y-4">
         {helpItems.map((item) => (
           <button
@@ -98,12 +138,9 @@ export default function HelpCenter() {
             className="w-full text-left bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-200 overflow-hidden group"
           >
             <div className="p-6 flex items-start gap-5">
-              {/* Icon */}
               <div className={`flex-shrink-0 w-12 h-12 bg-gradient-to-br ${item.iconBg} rounded-xl flex items-center justify-center shadow-lg`}>
                 {item.icon}
               </div>
-
-              {/* Content */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between mb-1">
                   <h3 className="text-lg font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">
@@ -114,10 +151,7 @@ export default function HelpCenter() {
                 <p className="text-sm text-slate-500 leading-relaxed mb-3">{item.description}</p>
                 <div className="flex flex-wrap gap-2">
                   {item.tags.map((tag) => (
-                    <span
-                      key={tag.label}
-                      className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${tag.color}`}
-                    >
+                    <span key={tag.label} className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${tag.color}`}>
                       {tag.label}
                     </span>
                   ))}
@@ -126,6 +160,40 @@ export default function HelpCenter() {
             </div>
           </button>
         ))}
+      </div>
+
+      {/* Generation features group */}
+      <div>
+        <div className="flex items-center gap-3 mb-3">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest px-2">Responses API 生成功能</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+        <div className="space-y-3">
+          {generationItems.map((item) => (
+            <button
+              key={item.path}
+              onClick={() => navigate(item.path)}
+              className="w-full text-left bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-200 overflow-hidden group"
+            >
+              <div className="p-5 flex items-center gap-4">
+                <div className={`flex-shrink-0 w-10 h-10 bg-gradient-to-br ${item.iconBg} rounded-xl flex items-center justify-center shadow-md`}>
+                  {item.icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <h3 className="text-base font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">
+                      {item.title}
+                    </h3>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${item.badgeColor}`}>{item.badge}</span>
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">{item.description}</p>
+                </div>
+                <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-400 transition-colors flex-shrink-0" />
+              </div>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

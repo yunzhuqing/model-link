@@ -41,6 +41,9 @@ const navItems: NavItem[] = [
       { path: '/help/responses', label: 'Responses API' },
       { path: '/help/embedding', label: 'Embedding API' },
       { path: '/help/rerank', label: 'Rerank API' },
+      { path: '/help/image-generation', label: '图片生成' },
+      { path: '/help/video-generation', label: '视频生成' },
+      { path: '/help/3d-generation', label: '3D 生成' },
     ],
   },
 ];

@@ -262,6 +262,7 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
             <option value="gemini">Gemini (Google AI)</option>
             <option value="vertexai">Vertex AI (Google Cloud)</option>
             <option value="tencentvod">Tencent VOD</option>
+            <option value="hunyuan">Hunyuan 3D (Tencent)</option>
             <option value="vllm">vLLM (self-hosted)</option>
           </select>
         </div>
@@ -298,6 +299,11 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
               Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)
             </p>
           )}
+          {data.type === 'hunyuan' && (
+            <p className="text-xs text-slate-400 mt-1">
+              Leave blank to use the default Hunyuan 3D API endpoint.
+            </p>
+          )}
           {data.type === 'vllm' && (
             <p className="text-xs text-slate-400 mt-1">
               Default: http://localhost:8000/v1 — set to your vLLM server address.
@@ -305,8 +311,8 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
           )}
         </div>
 
-        {/* API Key — hidden for tencentvod (uses AK/SK instead) */}
-        {data.type !== 'tencentvod' && (
+        {/* API Key — hidden for tencentvod and hunyuan (uses AK/SK instead) */}
+        {data.type !== 'tencentvod' && data.type !== 'hunyuan' && (
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
               {data.type === 'vertexai' ? 'Service Account JSON' : 'API Key'}
@@ -447,6 +453,55 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
             <br />
             <strong>API Key</strong> is optional — leave it blank if your vLLM deployment does not require authentication.
           </p>
+        </div>
+      )}
+
+      {/* Hunyuan 3D-specific fields */}
+      {data.type === 'hunyuan' && (
+        <div className="mt-4 p-4 bg-purple-50 border border-purple-200 rounded-xl">
+          <h3 className="text-sm font-semibold text-purple-800 mb-1">Hunyuan 3D Credentials</h3>
+          <p className="text-xs text-purple-600 mb-3">
+            Enter your Tencent Cloud SecretId &amp; SecretKey to use the Hunyuan 3D generation API
+            (<code className="bg-purple-100 px-1 rounded font-mono">hunyuan-3d-rapid</code> / <code className="bg-purple-100 px-1 rounded font-mono">hunyuan-3d-pro</code>).
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Secret ID (AK) <span className="text-red-500">*</span>
+              </label>
+              <input
+                placeholder="AKIDxxxxxxxxxxxxxxxx"
+                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                value={data.extra_config?.secret_id || ''}
+                onChange={(e) => setExtra({ secret_id: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Secret Key (SK) <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="password"
+                placeholder="Your Tencent Cloud SecretKey"
+                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                value={data.extra_config?.secret_key || ''}
+                onChange={(e) => setExtra({ secret_key: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Region
+                <span className="text-slate-400 font-normal ml-1 text-xs">(optional)</span>
+              </label>
+              <input
+                placeholder="ap-guangzhou"
+                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                value={data.extra_config?.region || ''}
+                onChange={(e) => setExtra({ region: e.target.value })}
+              />
+              <p className="text-xs text-slate-400 mt-1">Default: ap-guangzhou</p>
+            </div>
+          </div>
         </div>
       )}
 

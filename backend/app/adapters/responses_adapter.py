@@ -81,7 +81,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             # 4. Plain content blocks (no 'role', has 'type' like input_text/input_image)
 
             # Check if ALL items are plain content blocks (no role, no special types)
-            SPECIAL_TYPES = {'function_call', 'function_call_output', 'image_generation_call', 'video_generation_call'}
+            SPECIAL_TYPES = {'function_call', 'function_call_output', 'image_generation_call', 'video_generation_call', '3d_generation_call'}
             is_pure_content_blocks = all(
                 isinstance(item, dict)
                 and 'role' not in item
@@ -206,6 +206,31 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                 call_id,
                                 'video_generation',
                                 {'status': status, 'result': result}
+                            )
+                            messages.append(Message(
+                                role=MessageRole.ASSISTANT,
+                                content=[block]
+                            ))
+
+                        elif item_type == '3d_generation_call':
+                            # 3D generation call item — represents a previously executed
+                            # 3D generation operation in the conversation history.
+                            #
+                            # Format:
+                            # {
+                            #   "type": "3d_generation_call",
+                            #   "id": "<call_id>",
+                            #   "status": "in_progress|completed|generating|failed",
+                            #   "content": [{"type": "OBJ", "url": "...", "preview_url": "..."}]
+                            # }
+                            call_id = item.get('id', '')
+                            status = item.get('status', 'completed')
+                            content = item.get('content', [])
+
+                            block = ContentBlock.from_tool_call(
+                                call_id,
+                                '3d_generation',
+                                {'status': status, 'content': content}
                             )
                             messages.append(Message(
                                 role=MessageRole.ASSISTANT,
@@ -557,6 +582,95 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 # Accumulate image generation params; we'll merge into metadata below.
                 accumulated_img_metadata.update(img_metadata)
 
+            elif tool_type == '3d_generation':
+                # 3D generation tool — extract generation parameters into metadata.
+                # These are picked up by HunyuanProvider when routing to
+                # SubmitHunyuanTo3DRapidJob / SubmitHunyuanTo3DProJob.
+                #
+                # Tool fields:
+                #   pbr             – bool, enable PBR material generation
+                #   output_format   – "OBJ"|"GLB"|"STL"|"USDZ"|"FBX"|"MP4"
+                #   enable_geometry – bool, geometry-only (白模) generation (alias: geometry)
+                #   face_count      – int (Pro only, not effective for LowPoly): 3000–1500000
+                #   generate_type   – "Normal"|"LowPoly"|"Geometry"|"Sketch" (Pro only)
+                #   polygon_type    – "triangle"|"quadrilateral" (Pro+LowPoly only)
+                #
+                # Multi-view images are NOT passed in the tool definition.
+                # They are collected from the input content blocks where each
+                # input_image block carries a "view" field:
+                #   {"type": "input_image", "image_url": "...", "view": "back"|"left"|"right"}
+                threed_metadata: dict = {'_3d_generation': True}
+
+                # pbr (accept both 'pbr' and 'enable_pbr')
+                pbr = tool_data.get('pbr')
+                if pbr is None:
+                    pbr = tool_data.get('enable_pbr')
+                if pbr is not None:
+                    threed_metadata['enable_pbr'] = bool(pbr)
+                    threed_metadata['pbr'] = bool(pbr)
+
+                # output_format (accept both 'output_format' and 'result_format')
+                output_format = tool_data.get('output_format') or tool_data.get('result_format')
+                if output_format:
+                    threed_metadata['output_format'] = output_format
+                    threed_metadata['result_format'] = output_format
+
+                # enable_geometry (accept both 'enable_geometry' and 'geometry')
+                enable_geometry = tool_data.get('enable_geometry')
+                if enable_geometry is None:
+                    enable_geometry = tool_data.get('geometry')
+                if enable_geometry is not None:
+                    threed_metadata['enable_geometry'] = bool(enable_geometry)
+
+                # face_count (Pro only)
+                face_count = tool_data.get('face_count')
+                if face_count is not None:
+                    threed_metadata['face_count'] = int(face_count)
+
+                # generate_type (Pro only): Normal | LowPoly | Geometry | Sketch
+                generate_type = tool_data.get('generate_type')
+                if generate_type:
+                    threed_metadata['generate_type'] = generate_type
+
+                # polygon_type (Pro+LowPoly only): triangle | quadrilateral
+                polygon_type = tool_data.get('polygon_type')
+                if polygon_type:
+                    threed_metadata['polygon_type'] = polygon_type
+
+                # Collect multi-view images from the input content blocks.
+                # Each input_image block that has a "view" field contributes one
+                # multi-view entry. Supported view values:
+                #   front, back, left, right, up, down, left_front, right_front
+                # These are used by hunyuan-3d-pro as MultiViewImages.
+                _multi_view_images = []
+                for _top_item in data.get('input', []) if isinstance(data.get('input'), list) else []:
+                    if not isinstance(_top_item, dict):
+                        continue
+                    _item_content = _top_item.get('content', [])
+                    if isinstance(_item_content, list):
+                        for _blk in _item_content:
+                            if not isinstance(_blk, dict):
+                                continue
+                            if _blk.get('type') in ('input_image', 'image'):
+                                _view = _blk.get('view', '')
+                                if not _view:
+                                    continue  # skip images without a view angle
+                                _img_url = _blk.get('image_url', '')
+                                if isinstance(_img_url, dict):
+                                    _img_url = _img_url.get('url', '')
+                                _img_b64 = _blk.get('image_base64', '')
+                                if _img_url or _img_b64:
+                                    _multi_view_images.append({
+                                        'url': _img_url,
+                                        'image_base64': _img_b64,
+                                        'view': _view,
+                                    })
+
+                if _multi_view_images:
+                    threed_metadata['multi_view_images'] = _multi_view_images
+
+                accumulated_vid_metadata.update(threed_metadata)
+
         # Parse reasoning parameter
         reasoning_effort = None
         reasoning = data.get('reasoning')
@@ -654,7 +768,54 @@ class OpenAIResponsesAdapter(BaseAdapter):
             response.id.startswith("vid_")
         )
 
-        if is_video_generation:
+        # Detect 3D generation responses by ID prefix.
+        # gen_id("3d") produces "3d_xxxx" format.
+        is_3d_generation = (
+            response.id.startswith("3d-") or
+            response.id.startswith("3d_")
+        )
+
+        if is_3d_generation:
+            # The message content is a JSON list of 3d_generation_call items stored by
+            # execute_hunyuan3d_generation() in the provider. Each item has:
+            # {
+            #   "type": "3d_generation_call",
+            #   "id": "<job_id>",
+            #   "status": "completed",
+            #   "content": [{"type": "OBJ", "url": "...", "preview_url": "..."}]
+            # }
+            items = []
+            if response.choices and response.choices[0].message:
+                msg = response.choices[0].message
+                content = msg.content
+                if isinstance(content, str):
+                    raw = content
+                elif hasattr(msg, 'get_text_content'):
+                    raw = msg.get_text_content() or "[]"
+                else:
+                    raw = "[]"
+                try:
+                    items = json.loads(raw) if isinstance(raw, str) else []
+                except (json.JSONDecodeError, TypeError):
+                    items = []
+
+            for i, item in enumerate(items):
+                if isinstance(item, dict):
+                    call_id = item.get("id", f"{response.id}-{i}" if i > 0 else response.id)
+                    status = item.get("status", "completed")
+                    content_list = item.get("content", [])
+                else:
+                    call_id = f"{response.id}-{i}" if i > 0 else response.id
+                    status = "completed"
+                    content_list = []
+                output.append({
+                    "type": "3d_generation_call",
+                    "id": call_id,
+                    "status": status,
+                    "content": content_list,
+                })
+
+        elif is_video_generation:
             # The message content is a JSON list of video_generation_call items stored by
             # execute_tencentvod_video_generation() in the provider.  Each item has:
             #   {"type": "video_generation_call", "status": "completed", "result": "<url>"}
