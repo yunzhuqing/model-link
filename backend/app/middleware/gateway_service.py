@@ -22,6 +22,7 @@ from app.providers.base import BaseProvider, ProviderConfig
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
+from app.abstraction.rerank import RerankRequest, RerankResponse
 
 
 @dataclass
@@ -498,6 +499,46 @@ class GatewayService:
 
             message.content = new_blocks
 
+    def rerank(self, request: RerankRequest, group_id: Optional[int] = None) -> RerankResponse:
+        """
+        执行 Rerank 请求。
+
+        Args:
+            request: Rerank 请求对象
+            group_id: 可选的组 ID（用于访问控制）
+
+        Returns:
+            Rerank 响应对象
+
+        Raises:
+            ModelNotFoundError: 模型未找到
+            GatewayServiceError: 供应商不支持 rerank
+            ProviderError: 供应商 API 调用失败
+        """
+        # 1. 解析模型
+        resolved = self.resolve_model(request.model, group_id)
+
+        # 2. 替换为真实模型名称
+        request.model = resolved.real_model_name
+
+        # 3. 检查供应商是否支持 rerank
+        if not hasattr(resolved.provider_instance, 'rerank'):
+            raise GatewayServiceError(
+                f"Provider '{resolved.db_provider.name}' does not support rerank",
+                status_code=400
+            )
+
+        # 4. 调用供应商 API
+        try:
+            return resolved.provider_instance.rerank(request)
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+        except Exception as e:
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+
     def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None) -> EmbeddingResponse:
         """
         执行嵌入请求。
@@ -519,6 +560,11 @@ class GatewayService:
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
+
+        # 2.5. 传递模型多模态能力标志到请求元数据，供 Provider 判断是否走多模态 API
+        request.metadata['support_image'] = getattr(resolved.db_model, 'support_image', False)
+        request.metadata['support_video'] = getattr(resolved.db_model, 'support_video', False)
+        request.metadata['support_audio'] = getattr(resolved.db_model, 'support_audio', False)
 
         # 3. 检查模型是否标记为嵌入模型
         if not getattr(resolved.db_model, 'support_embedding', False):

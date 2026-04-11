@@ -1,0 +1,383 @@
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Copy, Check, ArrowLeft, MessagesSquare } from 'lucide-react';
+
+const BASE_URL = 'http://localhost:8000';
+
+// ---------- TOC ----------
+
+interface TocItem { id: string; label: string }
+
+const TOC_ITEMS: TocItem[] = [
+  { id: 'basic-request', label: '基础对话请求' },
+  { id: 'streaming', label: '流式响应' },
+  { id: 'with-tools', label: '工具调用' },
+  { id: 'vision', label: '图片理解' },
+  { id: 'response-format', label: '响应格式' },
+];
+
+// ---------- code samples ----------
+
+const BASIC_REQUEST = `{
+  "model": "claude-3-5-sonnet-20241022",
+  "max_tokens": 1024,
+  "system": "你是一个专业的 AI 助手。",
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好，请介绍一下你自己"
+    }
+  ]
+}`;
+
+const MULTI_TURN = `{
+  "model": "claude-3-5-sonnet-20241022",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user",      "content": "1+1等于多少？"},
+    {"role": "assistant", "content": "1+1等于2。"},
+    {"role": "user",      "content": "那2+2呢？"}
+  ]
+}`;
+
+const STREAMING_REQUEST = `{
+  "model": "claude-3-5-sonnet-20241022",
+  "max_tokens": 1024,
+  "stream": true,
+  "messages": [
+    {"role": "user", "content": "写一首关于春天的诗"}
+  ]
+}`;
+
+const WITH_TOOLS = `{
+  "model": "claude-3-5-sonnet-20241022",
+  "max_tokens": 1024,
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "获取指定城市的天气信息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "城市名称"
+          }
+        },
+        "required": ["city"]
+      }
+    }
+  ],
+  "messages": [
+    {"role": "user", "content": "今天北京天气怎么样？"}
+  ]
+}`;
+
+const VISION_REQUEST = `{
+  "model": "claude-3-5-sonnet-20241022",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "image",
+          "source": {
+            "type": "url",
+            "url": "https://example.com/image.jpg"
+          }
+        },
+        {
+          "type": "text",
+          "text": "这张图片里有什么？"
+        }
+      ]
+    }
+  ]
+}`;
+
+const BASIC_RESPONSE = `{
+  "id": "msg_abc123...",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-3-5-sonnet-20241022",
+  "content": [
+    {
+      "type": "text",
+      "text": "你好！我是 Claude，一个由 Anthropic 开发的 AI 助手..."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 48
+  }
+}`;
+
+const STREAMING_RESPONSE = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_abc","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"usage":{"input_tokens":20,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"！"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":48}}
+
+event: message_stop
+data: {"type":"message_stop"}`;
+
+// ---------- sub-components ----------
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white transition-colors"
+      title="复制"
+    >
+      {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+    </button>
+  );
+}
+
+function CodeBlock({ code, lang = 'json' }: { code: string; lang?: string }) {
+  return (
+    <div className="relative">
+      <pre className={`language-${lang} bg-slate-900 text-slate-100 rounded-xl p-4 pr-12 text-sm overflow-x-auto leading-relaxed`}>
+        <code>{code}</code>
+      </pre>
+      <CopyButton text={code} />
+    </div>
+  );
+}
+
+interface SectionCardProps {
+  id: string; title: string; description: string;
+  badge?: string; badgeColor?: string; children: React.ReactNode;
+}
+
+function SectionCard({ id, title, description, badge, badgeColor, children }: SectionCardProps) {
+  return (
+    <div id={id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+      <div className="p-6 border-b border-slate-100">
+        <div className="flex items-center gap-3 mb-1">
+          <h3 className="text-lg font-semibold text-slate-800">{title}</h3>
+          {badge && <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${badgeColor}`}>{badge}</span>}
+        </div>
+        <p className="text-sm text-slate-500">{description}</p>
+      </div>
+      <div className="p-6 space-y-4">{children}</div>
+    </div>
+  );
+}
+
+function CurlSection({ body }: { body: string }) {
+  const [show, setShow] = useState(false);
+  const curl = `curl -X POST ${BASE_URL}/v1/messages \\\n  -H "x-api-key: <YOUR_API_KEY>" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">请求体</span>
+        <button onClick={() => setShow(v => !v)} className="text-xs text-blue-500 hover:text-blue-700 underline underline-offset-2">
+          {show ? '隐藏 cURL' : '查看 cURL'}
+        </button>
+      </div>
+      <CodeBlock code={body} />
+      {show && (
+        <div className="mt-3">
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
+          <CodeBlock code={curl} lang="bash" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TableOfContents({ items }: { items: TocItem[] }) {
+  const [active, setActive] = useState(items[0]?.id ?? '');
+  const scrollRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    scrollRef.current = document.querySelector('main') as HTMLElement;
+    const container = scrollRef.current;
+    if (!container) return;
+    const onScroll = () => {
+      let cur = items[0]?.id ?? '';
+      for (const item of items) {
+        const el = document.getElementById(item.id);
+        if (el && el.getBoundingClientRect().top - container.getBoundingClientRect().top <= 80) cur = item.id;
+      }
+      setActive(cur);
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [items]);
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id);
+    const container = scrollRef.current;
+    if (el && container) container.scrollTo({ top: container.scrollTop + el.getBoundingClientRect().top - container.getBoundingClientRect().top - 16, behavior: 'smooth' });
+  };
+  return (
+    <aside className="w-52 flex-shrink-0 hidden xl:block">
+      <div className="sticky top-0">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3 px-1">本页内容</p>
+        <nav className="space-y-0.5">
+          {items.map((item) => (
+            <button key={item.id} onClick={() => scrollTo(item.id)}
+              className={`w-full text-left px-3 py-1.5 rounded-lg text-sm transition-all duration-150 ${active === item.id ? 'bg-blue-50 text-blue-600 font-medium border-l-2 border-blue-500' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'}`}>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+    </aside>
+  );
+}
+
+// ---------- main ----------
+
+export default function HelpMessages() {
+  const navigate = useNavigate();
+  return (
+    <div className="flex gap-8 max-w-6xl mx-auto">
+      <div className="flex-1 min-w-0 space-y-8">
+        <div>
+          <button onClick={() => navigate('/help')} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-blue-600 mb-4 transition-colors">
+            <ArrowLeft className="w-4 h-4" />返回帮助中心
+          </button>
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-gradient-to-br from-amber-500 to-orange-600 rounded-2xl shadow-lg shadow-amber-500/25">
+              <MessagesSquare className="w-7 h-7 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900">Messages API</h1>
+              <p className="text-slate-500 text-sm mt-0.5">Anthropic Messages API 兼容接口使用指南</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Endpoint info */}
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
+          <div><span className="text-xs font-semibold text-amber-500 uppercase tracking-wide">Endpoint</span>
+            <p className="font-mono text-sm text-amber-900 mt-0.5">{BASE_URL}/v1/messages</p></div>
+          <div className="h-8 w-px bg-amber-200 hidden sm:block" />
+          <div><span className="text-xs font-semibold text-amber-500 uppercase tracking-wide">Method</span>
+            <p className="text-sm font-medium text-amber-900 mt-0.5">POST</p></div>
+          <div className="h-8 w-px bg-amber-200 hidden sm:block" />
+          <div><span className="text-xs font-semibold text-amber-500 uppercase tracking-wide">Auth</span>
+            <p className="font-mono text-sm text-amber-900 mt-0.5">x-api-key: &lt;API_KEY&gt;</p></div>
+        </div>
+
+        <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
+          <strong>兼容说明：</strong>本接口兼容 Anthropic Claude SDK，可直接替换 base URL 使用。认证方式为 <code>x-api-key</code> 请求头，或 <code>Authorization: Bearer</code> 均可。
+        </div>
+
+        {/* Basic request */}
+        <SectionCard id="basic-request" title="基础对话请求" description="messages 数组仅包含 user / assistant 角色，系统提示词通过顶层 system 字段传入。">
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">参数</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">类型</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">必填</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {[
+                  { name: 'model',      required: true,  type: 'string',  desc: '模型名称或别名' },
+                  { name: 'messages',   required: true,  type: 'array',   desc: '对话消息列表（仅 user / assistant）' },
+                  { name: 'max_tokens', required: true,  type: 'number',  desc: '最大输出 token 数（Anthropic 要求必填）' },
+                  { name: 'system',     required: false, type: 'string',  desc: '系统提示词（替代 messages 中的 system 角色）' },
+                  { name: 'stream',     required: false, type: 'boolean', desc: '是否流式输出，默认 false' },
+                  { name: 'temperature',required: false, type: 'number',  desc: '采样温度，0~1' },
+                  { name: 'tools',      required: false, type: 'array',   desc: '工具列表（Function Calling）' },
+                ].map((r) => (
+                  <tr key={r.name} className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">{r.name}</code></td>
+                    <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{r.type}</td>
+                    <td className="px-4 py-2.5">{r.required ? <span className="text-red-500">是</span> : <span className="text-slate-400">否</span>}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-700 mb-2">单轮对话</p>
+            <CurlSection body={BASIC_REQUEST} />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-700 mb-2">多轮对话（携带历史消息）</p>
+            <CurlSection body={MULTI_TURN} />
+          </div>
+        </SectionCard>
+
+        {/* Streaming */}
+        <SectionCard id="streaming" title="流式响应" badge="SSE" badgeColor="bg-blue-100 text-blue-700"
+          description='设置 "stream": true，服务端以 Server-Sent Events 格式推送内容，事件类型与 Anthropic 官方 SDK 完全兼容。'>
+          <CurlSection body={STREAMING_REQUEST} />
+          <div>
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">SSE 事件格式</span>
+            <CodeBlock code={STREAMING_RESPONSE} lang="bash" />
+          </div>
+          <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
+            <strong>主要 SSE 事件类型：</strong>
+            <ul className="mt-1.5 space-y-1 list-disc list-inside text-blue-700">
+              <li><code>message_start</code> — 消息开始</li>
+              <li><code>content_block_start</code> — 内容块开始</li>
+              <li><code>content_block_delta</code> — 文本增量</li>
+              <li><code>content_block_stop</code> — 内容块结束</li>
+              <li><code>message_delta</code> — 消息元数据更新（stop_reason、usage）</li>
+              <li><code>message_stop</code> — 消息结束</li>
+            </ul>
+          </div>
+        </SectionCard>
+
+        {/* Tools */}
+        <SectionCard id="with-tools" title="工具调用（Function Calling）" badge="Tools" badgeColor="bg-violet-100 text-violet-700"
+          description="通过 tools 字段声明工具，工具参数格式使用 input_schema（而非 OpenAI 的 parameters）。">
+          <CurlSection body={WITH_TOOLS} />
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700">
+            <strong>与 OpenAI 格式的主要差异：</strong>
+            <ul className="mt-1.5 space-y-1 list-disc list-inside">
+              <li>工具参数字段为 <code>input_schema</code>（而非 <code>parameters</code>）</li>
+              <li>工具名称直接放在工具对象顶层（无 <code>function</code> 包裹）</li>
+              <li>无 <code>tool_choice</code> 字段，由模型自动决策</li>
+            </ul>
+          </div>
+        </SectionCard>
+
+        {/* Vision */}
+        <SectionCard id="vision" title="图片理解（Vision）" badge="Vision" badgeColor="bg-pink-100 text-pink-700"
+          description="content 支持数组格式，图片通过 type: image + source 传入（支持 url 和 base64 两种来源）。">
+          <CurlSection body={VISION_REQUEST} />
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>与 OpenAI 格式的差异：</strong>图片使用 <code>{"{'type': 'image', 'source': {...}}"}</code> 格式，而非 <code>image_url</code>。
+            source 的 type 可为 <code>url</code>（图片链接）或 <code>base64</code>（base64 数据）。
+          </div>
+        </SectionCard>
+
+        {/* Response format */}
+        <div id="response-format" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-lg font-semibold text-slate-800">响应格式</h3>
+            <p className="text-sm text-slate-500 mt-1">兼容 Anthropic Messages API 响应格式，content 为内容块数组。</p>
+          </div>
+          <div className="p-6"><CodeBlock code={BASIC_RESPONSE} /></div>
+        </div>
+      </div>
+      <TableOfContents items={TOC_ITEMS} />
+    </div>
+  );
+}

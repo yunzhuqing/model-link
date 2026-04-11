@@ -15,12 +15,10 @@ import time
 import uuid
 import sys
 
-from ..base import BaseProvider, ProviderConfig, ProviderCapability
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
-from app.abstraction.tools import ToolDefinition, ToolCall
-from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
-from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
+from ..base import ProviderConfig, ProviderCapability
+from app.abstraction.chat import ChatRequest, ChatResponse
+from app.abstraction.streaming import StreamChunk
+from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 from app.providers.openai_provider import OpenAIProvider
 from .image_generation import (
     is_qwen_image_model,
@@ -28,6 +26,9 @@ from .image_generation import (
     execute_qwen_image_generation,
     stream_image_generation,
 )
+from .embedding import execute_bailian_multimodal_embed
+from .rerank import execute_bailian_text_rerank, execute_bailian_multimodal_rerank
+from app.abstraction.rerank import RerankRequest, RerankResponse
 
 
 class BailianProvider(OpenAIProvider):
@@ -63,6 +64,15 @@ class BailianProvider(OpenAIProvider):
     BAILIAN_MULTIMODAL_EMBEDDING_URL = (
         "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
         "multimodal-embedding/multimodal-embedding"
+    )
+
+    # 百炼文本 Rerank API 的默认 URL（compatible-api 模式，注意与 compatible-mode 不同）
+    BAILIAN_TEXT_RERANK_URL = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+
+    # 百炼多模态 Rerank API 的默认 URL（Dashscope 专用格式）
+    BAILIAN_MULTIMODAL_RERANK_URL = (
+        "https://dashscope.aliyuncs.com/api/v1/services/rerank/"
+        "text-rerank/text-rerank"
     )
 
     # 百炼支持的模型列表
@@ -130,6 +140,28 @@ class BailianProvider(OpenAIProvider):
         """
         if not config.base_url:
             config.base_url = self.DEFAULT_BASE_URL
+            self._multimodal_embedding_url = self.BAILIAN_MULTIMODAL_EMBEDDING_URL
+            self._text_rerank_url = self.BAILIAN_TEXT_RERANK_URL
+            self._multimodal_rerank_url = self.BAILIAN_MULTIMODAL_RERANK_URL
+        else:
+            base = config.base_url.rstrip("/")
+            # 提取基础域名（去掉 /compatible-mode/v1 后缀，如果有的话）
+            if base.endswith("/compatible-mode/v1"):
+                domain = base[: -len("/compatible-mode/v1")]
+            else:
+                domain = base
+                # 如果用户提供了基础域名（如 https://xxxx），自动追加 /compatible-mode/v1 后缀
+                config.base_url = base + "/compatible-mode/v1"
+            # 多模态嵌入/Rerank URL 根据基础域名动态生成
+            self._multimodal_embedding_url = (
+                f"{domain}/api/v1/services/embeddings/"
+                "multimodal-embedding/multimodal-embedding"
+            )
+            # 文本 Rerank 走 compatible-api 路径（非 compatible-mode）
+            self._text_rerank_url = f"{domain}/compatible-api/v1/reranks"
+            self._multimodal_rerank_url = (
+                f"{domain}/api/v1/services/rerank/text-rerank/text-rerank"
+            )
         super().__init__(config)
 
     # ==================== 图像生成检测 ====================
@@ -377,22 +409,13 @@ class BailianProvider(OpenAIProvider):
         """
         执行嵌入请求
 
-        对于文本嵌入，使用 OpenAI 兼容格式（继承父类）。
-        对于多模态嵌入，使用百炼专用 API 格式。
+        根据模型配置中的能力标志（support_image / support_video / support_audio）
+        决定是否走多模态嵌入 API：
+        - 若模型支持图片/视频/音频输入（由管理员在模型配置中勾选），则走百炼专用多模态嵌入 API
+        - 否则走 OpenAI 兼容格式的纯文本嵌入 API（继承父类）
 
-        百炼多模态嵌入 API 格式：
-        POST https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding
-        {
-            "model": "tongyi-embedding-vision-plus",
-            "input": {
-                "contents": [
-                    {"text": "文本内容"},
-                    {"image": "https://..."},
-                    {"video": "https://..."},
-                    {"multi_images": ["https://...", "https://..."]}
-                ]
-            }
-        }
+        能力标志由 GatewayService 从数据库读取后注入 request.metadata：
+            metadata['support_image'], metadata['support_video'], metadata['support_audio']
 
         Args:
             request: 嵌入请求对象
@@ -400,169 +423,48 @@ class BailianProvider(OpenAIProvider):
         Returns:
             嵌入响应对象
         """
-        if not request.is_multimodal:
-            return super().embed(request)
-
-        # 多模态嵌入使用百炼专用 API
-        contents = self._convert_messages_to_bailian_contents(request.messages)
-
-        request_data = {
-            "model": request.model,
-            "input": {
-                "contents": contents
-            },
-            "parameters": {
-                "enable_fusion": True
-            }
-        }
-
-        print("\n" + "=" * 50, file=sys.stderr)
-        print("[Bailian Multimodal Embedding Request Body]", file=sys.stderr)
-        print("=" * 50, file=sys.stderr)
-        print(json.dumps(request_data, ensure_ascii=False, indent=2), file=sys.stderr)
-        print("=" * 50 + "\n", file=sys.stderr)
-
-        url = self.BAILIAN_MULTIMODAL_EMBEDDING_URL
-
-        try:
-            response = self.client.post(url, json=request_data)
-
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(
-                        f"Bailian multimodal embedding API error ({response.status_code}): "
-                        f"{json.dumps(error_data, ensure_ascii=False)}"
-                    )
-                except json.JSONDecodeError:
-                    raise RuntimeError(
-                        f"Bailian multimodal embedding API error ({response.status_code}): "
-                        f"{response.text}"
-                    )
-
-            response.raise_for_status()
-            response_data = response.json()
-            return self._parse_bailian_multimodal_embedding_response(response_data, request.model)
-
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"Bailian multimodal embedding API error: {str(e)}")
-
-    def _convert_messages_to_bailian_contents(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        将 OpenAI 格式的 messages 转换为百炼多模态嵌入的 contents 格式。
-
-        输入格式 (OpenAI messages):
-        [{"role": "user", "content": [
-            {"type": "text", "text": "描述"},
-            {"type": "image_url", "image_url": {"url": "https://..."}},
-            {"type": "video_url", "video_url": {"url": "https://..."}}
-        ]}]
-
-        输出格式 (百炼 contents):
-        [
-            {"text": "描述"},
-            {"image": "https://..."},
-            {"video": "https://..."}
-        ]
-
-        Args:
-            messages: OpenAI 格式的消息列表
-
-        Returns:
-            百炼格式的 contents 列表
-        """
-        contents = []
-
-        for message in messages:
-            content = message.get("content", [])
-
-            if isinstance(content, str):
-                contents.append({"text": content})
-                continue
-
-            if isinstance(content, list):
-                image_urls = []
-                for item in content:
-                    item_type = item.get("type", "text")
-
-                    if item_type == "text":
-                        text = item.get("text", "")
-                        if text:
-                            contents.append({"text": text})
-                    elif item_type == "image_url":
-                        image_url = item.get("image_url", {})
-                        url = image_url.get("url", "")
-                        if url:
-                            image_urls.append(url)
-                    elif item_type == "video_url":
-                        video_url = item.get("video_url", {})
-                        url = video_url.get("url", "")
-                        if url:
-                            contents.append({"video": url})
-
-                # 多张图片使用 multi_images，单张使用 image
-                if len(image_urls) > 1:
-                    contents.append({"multi_images": image_urls})
-                elif len(image_urls) == 1:
-                    contents.append({"image": image_urls[0]})
-
-        return contents
-
-    def _parse_bailian_multimodal_embedding_response(
-        self, data: Dict[str, Any], model: str
-    ) -> EmbeddingResponse:
-        """
-        解析百炼多模态嵌入响应。
-
-        百炼响应格式:
-        {
-            "output": {
-                "embeddings": [
-                    {"index": 0, "embedding": [...], "type": "text"},
-                    {"index": 1, "embedding": [...], "type": "image"}
-                ]
-            },
-            "usage": {
-                "input_tokens": 10,
-                "image_tokens": 896
-            }
-        }
-
-        Args:
-            data: 百炼响应数据
-            model: 模型名称
-
-        Returns:
-            统一的嵌入响应对象
-        """
-        embedding_data = []
-        output = data.get("output", {})
-
-        for item in output.get("embeddings", []):
-            embedding_data.append(EmbeddingData(
-                index=item.get("index", 0),
-                embedding=item.get("embedding", []),
-                object="embedding"
-            ))
-
-        usage_data = data.get("usage", {})
-        input_tokens = usage_data.get("input_tokens", 0)
-        image_tokens = usage_data.get("image_tokens", 0)
-        video_tokens = usage_data.get("video_tokens", 0)
-        total_tokens = input_tokens + image_tokens + video_tokens
-
-        usage = EmbeddingUsage(
-            prompt_tokens=total_tokens,
-            total_tokens=total_tokens
+        is_multimodal_model = (
+            request.metadata.get('support_image', False)
+            or request.metadata.get('support_video', False)
+            or request.metadata.get('support_audio', False)
         )
 
-        return EmbeddingResponse(
-            object="list",
-            data=embedding_data,
-            model=model,
-            usage=usage
+        if not is_multimodal_model:
+            return super().embed(request)
+
+        return execute_bailian_multimodal_embed(
+            api_key=self.config.api_key,
+            multimodal_embedding_url=self._multimodal_embedding_url,
+            request=request,
+        )
+
+    # ==================== Rerank 接口 ====================
+
+    def rerank(self, request: RerankRequest) -> RerankResponse:
+        """
+        执行 Rerank 请求。
+
+        - 非多模态（纯文本）：走 /compatible-mode/v1/reranks（兼容模式）
+        - 多模态（含图片/视频）：走 Dashscope 专用 API
+
+        Args:
+            request: Rerank 请求对象
+
+        Returns:
+            Rerank 响应对象
+        """
+        if request.is_multimodal:
+            return execute_bailian_multimodal_rerank(
+                api_key=self.config.api_key,
+                multimodal_rerank_url=self._multimodal_rerank_url,
+                request=request,
+            )
+
+        # 文本 Rerank：使用 compatible-api 模式 URL（https://xxx/compatible-api/v1/reranks）
+        return execute_bailian_text_rerank(
+            api_key=self.config.api_key,
+            rerank_url=self._text_rerank_url,
+            request=request,
         )
 
     # ==================== 模型列表 ====================

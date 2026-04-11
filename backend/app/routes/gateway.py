@@ -39,8 +39,9 @@ from app.middleware.gateway_service import (
     ProviderError,
 )
 
-# 导入嵌入抽象
+# 导入嵌入/Rerank 抽象
 from app.abstraction.embedding import EmbeddingRequest
+from app.abstraction.rerank import RerankRequest
 
 # 导入适配器
 from app.adapters.openai_adapter import OpenAIChatAdapter
@@ -599,13 +600,47 @@ def create_embeddings():
     if input_data is None and messages is None:
         return jsonify({'detail': 'Either "input" or "messages" is required'}), 400
 
-    # Detect multimodal input: if input is a list of dicts with "type" keys,
-    # normalize it into the messages format for unified downstream handling.
-    # e.g. "input": [{"type":"text","text":"..."}, {"type":"image_url","image_url":{"url":"..."}}]
-    if input_data is not None and isinstance(input_data, list) and len(input_data) > 0 and isinstance(input_data[0], dict) and 'type' in input_data[0]:
-        # Convert content blocks array into messages format
-        messages = [{"role": "user", "content": input_data}]
-        input_data = None  # Clear input since we moved it to messages
+    # Normalize multimodal input formats into the messages format for unified downstream handling.
+    #
+    # Format 1: input is an object with "content" key (content block array)
+    #   {"input": {"content": [{"type": "text", "text": "..."}, {"type": "image_url", ...}]}}
+    #
+    # Format 2: input is an array of content blocks (OpenAI-style)
+    #   {"input": [{"type": "text", "text": "..."}, {"type": "image_url", ...}]}
+    #
+    # Both are converted to messages format:
+    #   messages = [{"role": "user", "content": [...content blocks...]}]
+    if input_data is not None and messages is None:
+        content_blocks = None
+        messages_from_input = None
+
+        if isinstance(input_data, dict) and ('content' in input_data or 'contents' in input_data):
+            # Format 1: {"input": {"content": [...]}} or {"input": {"contents": [...]}}
+            # e.g. {"input": {"content": [{"type": "text", ...}, {"type": "image_url", ...}]}}
+            content_blocks = input_data.get('content') or input_data.get('contents')
+
+        elif isinstance(input_data, list) and len(input_data) > 0 and isinstance(input_data[0], dict):
+            first = input_data[0]
+
+            if 'content' in first:
+                # Format 3: input is an array of message-like objects with "content" key (no role)
+                # e.g. {"input": [{"content": [{"type": "text", ...}, {"type": "image_url", ...}]}]}
+                # Treat each item as a message (role defaults to "user")
+                messages_from_input = [
+                    {"role": item.get("role", "user"), "content": item["content"]}
+                    for item in input_data
+                    if "content" in item
+                ]
+            elif 'type' in first:
+                # Format 2: {"input": [{"type": ..., ...}, ...]}  — flat content block array
+                content_blocks = input_data
+
+        if content_blocks is not None:
+            messages = [{"role": "user", "content": content_blocks}]
+            input_data = None  # moved to messages
+        elif messages_from_input is not None:
+            messages = messages_from_input
+            input_data = None  # moved to messages
 
     # 3. 构建嵌入请求
     embedding_request = EmbeddingRequest(
@@ -623,6 +658,96 @@ def create_embeddings():
     # 5. 调用中间层
     try:
         response = _gateway_service.embed(embedding_request, group_id)
+        return jsonify(response.to_dict())
+    except ModelNotFoundError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except GatewayServiceError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except ProviderError as e:
+        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
+
+
+# ============== Rerank API ==============
+
+@gateway_bp.route('/v1/rerank', methods=['POST'])
+def create_rerank():
+    """
+    Rerank endpoint (compatible with vLLM /v1/rerank API format).
+
+    Supports both text-only and multimodal rerank models.
+    Routes to the appropriate provider API based on the model.
+
+    Request body (text rerank):
+    {
+        "model": "qwen3-rerank",
+        "query": "什么是文本排序模型",
+        "documents": ["文本一", "文本二", "文本三"],
+        "top_n": 2,
+        "return_documents": true,
+        "instruct": "Given a web search query, retrieve relevant passages that answer the query."
+    }
+
+    Request body (multimodal rerank):
+    {
+        "model": "qwen3-vl-rerank",
+        "query": {"text": "什么是文本排序模型"},
+        "documents": [
+            {"text": "文本一"},
+            {"image": "https://..."},
+            {"video": "https://..."}
+        ],
+        "top_n": 2,
+        "return_documents": true
+    }
+
+    Response (vLLM compatible format):
+    {
+        "id": "rerank-xxx",
+        "model": "qwen3-rerank",
+        "usage": {"total_tokens": 79},
+        "results": [
+            {"index": 0, "document": {"text": "..."}, "relevance_score": 0.93}
+        ]
+    }
+    """
+    # 1. 认证
+    user, api_key, error, status = get_current_user_or_api_key()
+    if error:
+        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+
+    # 2. 获取请求数据
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+
+    model_name = data.get('model')
+    if not model_name:
+        return jsonify({'detail': 'Model is required'}), 400
+
+    query = data.get('query')
+    if not query:
+        return jsonify({'detail': '"query" is required'}), 400
+
+    documents = data.get('documents')
+    if not documents or not isinstance(documents, list):
+        return jsonify({'detail': '"documents" must be a non-empty list'}), 400
+
+    # 3. 构建 Rerank 请求
+    rerank_request = RerankRequest(
+        model=model_name,
+        query=query,
+        documents=documents,
+        top_n=data.get('top_n'),
+        return_documents=data.get('return_documents', True),
+        instruct=data.get('instruct'),
+    )
+
+    # 4. 获取组 ID（用于访问控制）
+    group_id = api_key.group_id if api_key else None
+
+    # 5. 调用中间层
+    try:
+        response = _gateway_service.rerank(rerank_request, group_id)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         return jsonify({'detail': e.message}), e.status_code

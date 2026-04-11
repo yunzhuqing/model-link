@@ -7,6 +7,12 @@ import Dashboard from './pages/Dashboard';
 import GroupList from './pages/GroupList';
 import GroupDetail from './pages/GroupDetail';
 import ModelTemplates from './pages/ModelTemplates';
+import HelpCenter from './pages/HelpCenter';
+import HelpEmbedding from './pages/HelpEmbedding';
+import HelpRerank from './pages/HelpRerank';
+import HelpResponses from './pages/HelpResponses';
+import HelpChat from './pages/HelpChat';
+import HelpMessages from './pages/HelpMessages';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -36,6 +42,12 @@ function App() {
               <Route path="groups" element={<GroupList />} />
               <Route path="groups/:id" element={<GroupDetail />} />
               <Route path="model-templates" element={<ModelTemplates />} />
+              <Route path="help" element={<HelpCenter />} />
+              <Route path="help/embedding" element={<HelpEmbedding />} />
+              <Route path="help/rerank" element={<HelpRerank />} />
+              <Route path="help/responses" element={<HelpResponses />} />
+              <Route path="help/chat" element={<HelpChat />} />
+              <Route path="help/messages" element={<HelpMessages />} />
             </Route>
           </Routes>
         </BrowserRouter>
