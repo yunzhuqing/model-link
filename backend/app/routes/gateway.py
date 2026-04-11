@@ -28,6 +28,7 @@ logger = logging.getLogger("gateway")
 
 from app import db
 from app.models import Provider, Model, ApiKey, User, BackgroundResponse
+import app.background_response_dao as _bg_dao
 from jose import JWTError, jwt
 
 # 导入中间层
@@ -207,30 +208,32 @@ def anthropic_messages():
     return _handle_request(AnthropicMessagesAdapter())
 
 
-def _run_background_response(app, response_id: str, input_key: str, group_id: Optional[int]):
+def _run_background_response(app, response_id: str, input_key: str, output_key: str, group_id: Optional[int]):
     """
     Worker function executed in a background thread.
 
-    Reads the request payload via the storage backend using input_key, calls the
-    GatewayService synchronously inside the Flask application context, then writes
-    the formatted response to output_key and updates the BackgroundResponse DB record.
+    Reads the request payload via the storage backend, calls the GatewayService,
+    writes the result to storage, then updates the BackgroundResponse DB record.
+
+    All DB operations are performed via background_response_dao (NullPool engine),
+    so no long-lived DB connection is held during the LLM/video generation work.
 
     Args:
         app:         The Flask application instance (needed for app context).
         response_id: The BackgroundResponse.response_id to update when done.
         input_key:   Storage key for the JSON request payload.
+        output_key:  Storage key for the JSON response output.
         group_id:    Group ID for access control (from the API key, or None for JWT users).
     """
     with app.app_context():
-        bg_record = db.session.query(BackgroundResponse).filter_by(response_id=response_id).first()
-        if bg_record is None:
-            logger.error(f"[background] BackgroundResponse {response_id!r} not found in DB")
-            return
-
+        db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
         storage = get_storage_backend()
 
+        final_error: Optional[str] = None
+        formatted_output: Optional[str] = None
+
         try:
-            # Read request payload via storage backend
+            # Read request payload — no DB connection held during this
             raw = storage.read(input_key)
             if raw is None:
                 raise RuntimeError(f"Input not found at storage key: {input_key}")
@@ -239,22 +242,30 @@ def _run_background_response(app, response_id: str, input_key: str, group_id: Op
             adapter = OpenAIResponsesAdapter()
             chat_request = adapter.parse_request(data)
 
+            # ── Long-running LLM / video generation call ──────────────────
+            # No DB connection is open at this point.
             response = _gateway_service.chat(chat_request, group_id)
             formatted = adapter.format_response(response)
+            formatted_output = json.dumps(formatted, ensure_ascii=False)
 
-            # Write output via storage backend
-            output_key = bg_record.output_key
-            storage.write(output_key, json.dumps(formatted, ensure_ascii=False))
-
-            bg_record.status = "completed"
-            bg_record.completed_at = datetime.utcnow()
         except Exception as exc:
-            logger.exception(f"[background] Error processing background response {response_id!r}: {exc}")
-            bg_record.status = "failed"
-            bg_record.error = str(exc)
-            bg_record.completed_at = datetime.utcnow()
-        finally:
-            db.session.commit()
+            logger.exception(f"[background] Error processing {response_id!r}: {exc}")
+            final_error = str(exc)
+
+        # Write output to storage (outside any DB transaction)
+        if formatted_output is not None:
+            try:
+                storage.write(output_key, formatted_output)
+            except Exception as write_exc:
+                logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
+                final_error = str(write_exc)
+                formatted_output = None
+
+        # Update DB — each call opens a brand-new NullPool connection
+        if final_error:
+            _bg_dao.mark_failed(db_url, response_id, final_error)
+        else:
+            _bg_dao.mark_completed(db_url, response_id)
 
 
 @gateway_bp.route('/v1/responses', methods=['POST'])
@@ -310,23 +321,22 @@ def openai_responses():
         # Write the request payload via the storage backend
         storage.write(input_key, json.dumps(data, ensure_ascii=False))
 
-        # Persist the initial "in_progress" record (no payload stored in DB)
-        bg_record = BackgroundResponse(
+        # Persist the initial "in_progress" record via DAO (NullPool — short-lived connection)
+        db_url = current_app.config.get("SQLALCHEMY_DATABASE_URI", "")
+        _bg_dao.create_record(
+            db_url=db_url,
             response_id=response_id,
             apikey=apikey_value,
-            status="in_progress",
+            model=model_name,
             input_key=input_key,
             output_key=output_key,
-            model=model_name,
         )
-        db.session.add(bg_record)
-        db.session.commit()
 
         # Launch the background worker thread
         app = current_app._get_current_object()
         thread = threading.Thread(
             target=_run_background_response,
-            args=(app, response_id, input_key, group_id),
+            args=(app, response_id, input_key, output_key, group_id),
             daemon=True,
         )
         thread.start()
@@ -385,19 +395,22 @@ def get_response(response_id: str):
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # Look up by the string response_id field, not the BigInteger pk
-    bg_record = db.session.query(BackgroundResponse).filter_by(response_id=response_id).first()
+    db_url = db.engine.url.render_as_string(hide_password=False)
+    bg_record = _bg_dao.get_record(db_url, response_id)
     if bg_record is None:
         return jsonify({'detail': f'Response {response_id!r} not found'}), 404
 
     # Authorisation: API-key callers may only retrieve their own responses.
     # JWT-authenticated users (admin) may retrieve any response.
-    if api_key and bg_record.apikey and bg_record.apikey != api_key.key:
+    if api_key and bg_record.get("apikey") and bg_record["apikey"] != api_key.key:
         return jsonify({'detail': 'Not authorised to access this response'}), 403
 
-    if bg_record.status == "completed":
+    record_status = bg_record.get("status", "")
+
+    if record_status == "completed":
         # Read the output via the configured storage backend
         storage = get_storage_backend()
-        raw = storage.read(bg_record.output_key) if bg_record.output_key else None
+        raw = storage.read(bg_record["output_key"]) if bg_record.get("output_key") else None
         if raw:
             try:
                 result = json.loads(raw)
@@ -407,24 +420,26 @@ def get_response(response_id: str):
             result = {"error": "Output not found in storage"}
         return jsonify(result), 200
 
-    if bg_record.status == "failed":
+    if record_status == "failed":
+        created_at = bg_record.get("created_at")
         return jsonify({
-            "id": bg_record.response_id,
+            "id": bg_record["response_id"],
             "object": "response",
             "status": "failed",
-            "model": bg_record.model,
-            "error": bg_record.error,
-            "created_at": int(bg_record.created_at.timestamp()) if bg_record.created_at else None,
+            "model": bg_record.get("model", ""),
+            "error": bg_record.get("error"),
+            "created_at": int(created_at.timestamp()) if created_at else None,
         }), 200
 
     # Still in_progress (or queued)
+    created_at = bg_record.get("created_at")
     return jsonify({
-        "id": bg_record.response_id,
+        "id": bg_record["response_id"],
         "object": "response",
-        "status": bg_record.status,
-        "model": bg_record.model,
+        "status": record_status,
+        "model": bg_record.get("model", ""),
         "background": True,
-        "created_at": int(bg_record.created_at.timestamp()) if bg_record.created_at else None,
+        "created_at": int(created_at.timestamp()) if created_at else None,
     }), 200
 
 

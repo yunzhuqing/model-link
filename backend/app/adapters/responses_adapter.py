@@ -287,10 +287,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                 tool_call_id=tool_call_id
                             ))
 
-        # Collect file_id → image_url mappings from input_image blocks for video generation.
-        # These are used to build ObjectId aliases (e.g. {{woman}}) in prompt-referenced images.
-        # We scan all input items once before parsing tools so we can use the result below.
-        _file_id_image_map: dict = {}  # file_id → image_url
+        # Collect file_id → {type, url} mappings from all media input blocks.
+        # Supports input_image, input_video, input_audio blocks that carry a file_id field.
+        # Insertion order is preserved so that Seedance variable numbering (图片1, 视频1, …)
+        # matches the order the media blocks appear in the input array.
+        #
+        # Shape: { file_id: {'type': 'image'|'video'|'audio', 'url': str} }
+        _file_id_media_map: dict = {}
         for _top_item in data.get('input', []) if isinstance(data.get('input'), list) else []:
             if not isinstance(_top_item, dict):
                 continue
@@ -300,21 +303,55 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 for _blk in _content:
                     if not isinstance(_blk, dict):
                         continue
-                    if _blk.get('type') in ('input_image', 'image'):
-                        _fid = _blk.get('file_id', '')
+                    _blk_type = _blk.get('type', '')
+                    _fid = _blk.get('file_id', '')
+                    if not _fid:
+                        continue
+                    _blk_role = _blk.get('role', '')
+                    if _blk_type in ('input_image', 'image'):
                         _url = _blk.get('image_url', '')
                         if isinstance(_url, dict):
                             _url = _url.get('url', '')
-                        if _fid and _url:
-                            _file_id_image_map[_fid] = _url
-            # Also scan top-level plain image blocks (no role)
-            if _top_item.get('type') in ('input_image', 'image') and 'role' not in _top_item:
-                _fid = _top_item.get('file_id', '')
-                _url = _top_item.get('image_url', '')
-                if isinstance(_url, dict):
-                    _url = _url.get('url', '')
-                if _fid and _url:
-                    _file_id_image_map[_fid] = _url
+                        if _url:
+                            _file_id_media_map[_fid] = {'type': 'image', 'url': _url, 'role': _blk_role}
+                    elif _blk_type in ('input_video', 'video'):
+                        _url = _blk.get('video_url', '')
+                        if isinstance(_url, dict):
+                            _url = _url.get('url', '')
+                        if _url:
+                            _file_id_media_map[_fid] = {'type': 'video', 'url': _url, 'role': _blk_role}
+                    elif _blk_type in ('input_audio', 'audio'):
+                        _url = _blk.get('audio_url', '') or _blk.get('url', '')
+                        if isinstance(_url, dict):
+                            _url = _url.get('url', '')
+                        if _url:
+                            _file_id_media_map[_fid] = {'type': 'audio', 'url': _url, 'role': _blk_role}
+            # Also scan top-level plain blocks (no 'role' used as message-role,
+            # but the block itself may carry a media role like 'first_frame')
+            _top_type = _top_item.get('type', '')
+            _top_fid = _top_item.get('file_id', '')
+            _top_role = _top_item.get('role', '')
+            # Only treat as a plain media block when the role is a media role or absent
+            _MEDIA_ROLES = {'first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio', ''}
+            if _top_fid and _top_role in _MEDIA_ROLES:
+                if _top_type in ('input_image', 'image'):
+                    _url = _top_item.get('image_url', '')
+                    if isinstance(_url, dict):
+                        _url = _url.get('url', '')
+                    if _url:
+                        _file_id_media_map[_top_fid] = {'type': 'image', 'url': _url, 'role': _top_role}
+                elif _top_type in ('input_video', 'video'):
+                    _url = _top_item.get('video_url', '')
+                    if isinstance(_url, dict):
+                        _url = _url.get('url', '')
+                    if _url:
+                        _file_id_media_map[_top_fid] = {'type': 'video', 'url': _url, 'role': _top_role}
+                elif _top_type in ('input_audio', 'audio'):
+                    _url = _top_item.get('audio_url', '') or _top_item.get('url', '')
+                    if isinstance(_url, dict):
+                        _url = _url.get('url', '')
+                    if _url:
+                        _file_id_media_map[_top_fid] = {'type': 'audio', 'url': _url, 'role': _top_role}
 
         # 处理工具定义
         tools = []
@@ -380,13 +417,16 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     vid_metadata['size'] = size
                     vid_metadata['video_size'] = size
 
-                aspect_ratio = tool_data.get('aspect_ratio')
+                # Accept both 'aspect_ratio' (TencentVOD) and 'ratio' (Seedance) field names.
+                aspect_ratio = tool_data.get('aspect_ratio') or tool_data.get('ratio')
                 if aspect_ratio:
                     vid_metadata['aspect_ratio'] = aspect_ratio
+                    vid_metadata['ratio'] = aspect_ratio  # also store under Seedance key
 
-                seconds = tool_data.get('seconds') or tool_data.get('video_seconds')
+                seconds = tool_data.get('seconds') or tool_data.get('video_seconds') or tool_data.get('duration')
                 if seconds is not None:
                     vid_metadata['seconds'] = str(seconds)
+                    vid_metadata['duration'] = seconds  # also store under Seedance key
 
                 resolution = tool_data.get('resolution')
                 if resolution:
@@ -397,17 +437,21 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     vid_metadata['number'] = int(n)
 
                 # generate_audio: bool, default True.
-                # Maps to TencentVOD OutputConfig.AudioGeneration ("Enabled" | "Disabled").
+                # - For Seedance API: stored as generate_audio (bool)
+                # - For TencentVOD API: mapped to OutputConfig.AudioGeneration ("Enabled" | "Disabled")
                 # Accept both generate_audio (new) and audio_generation (legacy).
                 generate_audio = tool_data.get('generate_audio')
                 if generate_audio is None:
                     generate_audio = True  # default: audio enabled
                 audio_generation = tool_data.get('audio_generation')
                 if audio_generation:
-                    # Legacy explicit value takes precedence
+                    # Legacy explicit string value takes precedence for TencentVOD
                     vid_metadata['audio_generation'] = audio_generation
+                    # Also derive bool for Seedance
+                    vid_metadata['generate_audio'] = (audio_generation == "Enabled")
                 else:
                     vid_metadata['audio_generation'] = "Enabled" if generate_audio else "Disabled"
+                    vid_metadata['generate_audio'] = bool(generate_audio)
 
                 person_generation = tool_data.get('person_generation')
                 if person_generation:
@@ -441,13 +485,25 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if last_frame_file_id:
                     vid_metadata['last_frame_file_id'] = last_frame_file_id
 
-                # Build reference_image_ids list from file_id → image_url mappings
-                # collected from input_image blocks earlier.
-                if _file_id_image_map:
-                    vid_metadata['reference_image_ids'] = [
-                        {'file_id': fid, 'url': url}
-                        for fid, url in _file_id_image_map.items()
-                    ]
+                reference_audios = tool_data.get('reference_audios')
+                if reference_audios:
+                    if isinstance(reference_audios, str):
+                        reference_audios = [reference_audios]
+                    vid_metadata['reference_audios'] = reference_audios
+
+                seed = tool_data.get('seed')
+                if seed is not None:
+                    vid_metadata['seed'] = seed
+
+                watermark = tool_data.get('watermark')
+                if watermark is not None:
+                    vid_metadata['watermark'] = bool(watermark)
+
+                # Pass file_id → media info map so the provider can:
+                #   1. Substitute {{file_id}} → 图片n / 视频n / 音频n in prompts
+                #   2. Build reference_images / reference_videos / reference_audios lists
+                if _file_id_media_map:
+                    vid_metadata['file_id_media_map'] = _file_id_media_map
 
                 accumulated_vid_metadata.update(vid_metadata)
 

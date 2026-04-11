@@ -24,6 +24,11 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from .image_generation import (
     DoubaoImageProvider,
 )
+from .video_generation import (
+    is_seedance_video_model,
+    execute_seedance_video_generation,
+    stream_seedance_video_generation,
+)
 
 # Internal metadata keys that must NOT be forwarded to the upstream API.
 _INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
@@ -346,11 +351,25 @@ class VolcengineProvider(BaseProvider):
     # Non-streaming
     # ----------------------------------------------------------------
 
+    def _has_video_generation_tool(self, request: ChatRequest) -> bool:
+        """Check if the request carries a video_generation tool flag."""
+        return bool(request.metadata.get("_video_generation"))
+
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Execute non-streaming request via /responses."""
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        # Seedance video generation models → dedicated video generation path
+        if is_seedance_video_model(request.model) or self._has_video_generation_tool(request):
+            return execute_seedance_video_generation(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                model=request.model,
+                messages=request.messages,
+                metadata=request.metadata,
+            )
 
         # For image generation models (e.g. Seedream), bypass the Responses API
         # and call the image generation API directly.
@@ -656,6 +675,11 @@ class VolcengineProvider(BaseProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        # Seedance video generation models → dedicated video generation path
+        if is_seedance_video_model(request.model) or self._has_video_generation_tool(request):
+            yield from stream_seedance_video_generation(self.chat, request)
+            return
 
         # For image generation models (e.g. Seedream), bypass the Responses API
         # and emit the result as stream chunks.

@@ -1,0 +1,206 @@
+"""
+BackgroundResponse 数据库操作模块
+
+所有 BackgroundResponse 相关的 DB 操作均使用 NullPool 引擎，
+每次操作独立建立一个全新的物理连接，用完立即关闭。
+
+这样做的好处：
+- LLM 对话、视频生成等长耗时任务无需在整个处理过程中保持 DB 连接
+- 彻底消除 "MySQL server has gone away" 问题
+- 线程安全：每次调用均使用独立连接，无连接共享
+
+典型使用场景：
+  1. 创建 in_progress 记录 (请求收到时)
+  2. 更新 completed / failed 状态 (任务结束时)
+  3. 查询记录状态 (GET 轮询时)
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from sqlalchemy import create_engine, text as _sa_text
+from sqlalchemy.pool import NullPool
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# 内部辅助：获取一次性引擎
+# =============================================================================
+
+def _make_engine(db_url: str):
+    """
+    创建一个使用 NullPool 的 SQLAlchemy 引擎。
+
+    NullPool 完全禁用连接池，connect() 每次都建立全新的物理 TCP 连接，
+    close() / dispose() 后立即关闭，不保留连接供复用。
+
+    Args:
+        db_url: SQLAlchemy 数据库 URL
+
+    Returns:
+        SQLAlchemy Engine（NullPool）
+    """
+    return create_engine(db_url, poolclass=NullPool)
+
+
+def _execute_with_retry(db_url: str, sql, params: dict, retries: int = 3) -> None:
+    """
+    用 NullPool 引擎执行一条 SQL（写操作），失败时最多重试 ``retries`` 次。
+
+    每次重试都建立全新连接，彻底规避连接断开问题。
+
+    Args:
+        db_url: 数据库 URL
+        sql:    SQLAlchemy text() SQL 对象
+        params: 绑定参数字典
+        retries: 最大重试次数（默认 3）
+
+    Raises:
+        最后一次重试失败时，记录 exception 日志并静默返回。
+    """
+    for attempt in range(retries):
+        engine = None
+        try:
+            engine = _make_engine(db_url)
+            with engine.connect() as conn:
+                conn.execute(sql, params)
+                conn.commit()
+            return
+        except Exception as exc:
+            logger.warning(
+                f"[background_response_dao] DB write attempt {attempt + 1}/{retries} failed: {exc}"
+            )
+            if attempt == retries - 1:
+                logger.exception(
+                    f"[background_response_dao] All {retries} DB write attempts failed"
+                )
+        finally:
+            if engine is not None:
+                engine.dispose()
+
+
+def _query_one(db_url: str, sql, params: dict) -> Optional[Dict[str, Any]]:
+    """
+    用 NullPool 引擎查询一行记录，返回字典或 None。
+
+    Args:
+        db_url: 数据库 URL
+        sql:    SQLAlchemy text() SQL 对象
+        params: 绑定参数字典
+
+    Returns:
+        行字典（列名→值），未找到时返回 None
+    """
+    engine = None
+    try:
+        engine = _make_engine(db_url)
+        with engine.connect() as conn:
+            row = conn.execute(sql, params).mappings().first()
+            return dict(row) if row else None
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+
+# =============================================================================
+# 公共 API
+# =============================================================================
+
+def create_record(
+    db_url: str,
+    response_id: str,
+    apikey: Optional[str],
+    model: str,
+    input_key: str,
+    output_key: str,
+    status: str = "in_progress",
+) -> None:
+    """
+    插入一条新的 BackgroundResponse 记录。
+
+    Args:
+        db_url:      数据库 URL
+        response_id: 响应唯一 ID
+        apikey:      调用者的 API Key（可为 None）
+        model:       模型名称
+        input_key:   存储输入 payload 的 key
+        output_key:  存储输出结果的 key
+        status:      初始状态，默认 "in_progress"
+    """
+    sql = _sa_text(
+        "INSERT INTO ml_background_responses "
+        "(response_id, apikey, model, status, input_key, output_key, created_at) "
+        "VALUES (:response_id, :apikey, :model, :status, :input_key, :output_key, :created_at)"
+    )
+    _execute_with_retry(db_url, sql, {
+        "response_id": response_id,
+        "apikey": apikey,
+        "model": model,
+        "status": status,
+        "input_key": input_key,
+        "output_key": output_key,
+        "created_at": datetime.utcnow(),
+    })
+
+
+def mark_completed(db_url: str, response_id: str) -> None:
+    """
+    将 BackgroundResponse 记录标记为 completed。
+
+    Args:
+        db_url:      数据库 URL
+        response_id: 响应唯一 ID
+    """
+    sql = _sa_text(
+        "UPDATE ml_background_responses "
+        "SET status='completed', completed_at=:completed_at "
+        "WHERE response_id=:response_id"
+    )
+    _execute_with_retry(db_url, sql, {
+        "completed_at": datetime.utcnow(),
+        "response_id": response_id,
+    })
+
+
+def mark_failed(db_url: str, response_id: str, error: str) -> None:
+    """
+    将 BackgroundResponse 记录标记为 failed 并记录错误信息。
+
+    Args:
+        db_url:      数据库 URL
+        response_id: 响应唯一 ID
+        error:       错误描述（自动截断至 4096 字符）
+    """
+    sql = _sa_text(
+        "UPDATE ml_background_responses "
+        "SET status='failed', completed_at=:completed_at, error=:error "
+        "WHERE response_id=:response_id"
+    )
+    _execute_with_retry(db_url, sql, {
+        "completed_at": datetime.utcnow(),
+        "response_id": response_id,
+        "error": (error or "")[:4096],
+    })
+
+
+def get_record(db_url: str, response_id: str) -> Optional[Dict[str, Any]]:
+    """
+    查询 BackgroundResponse 记录。
+
+    Args:
+        db_url:      数据库 URL
+        response_id: 响应唯一 ID
+
+    Returns:
+        包含所有字段的字典，未找到时返回 None
+    """
+    sql = _sa_text(
+        "SELECT response_id, apikey, model, status, input_key, output_key, "
+        "error, created_at, completed_at "
+        "FROM ml_background_responses "
+        "WHERE response_id=:response_id"
+    )
+    return _query_one(db_url, sql, {"response_id": response_id})

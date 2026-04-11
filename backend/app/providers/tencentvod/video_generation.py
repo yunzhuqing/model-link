@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import sys
 import time
-from math import gcd
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import httpx
@@ -51,6 +50,8 @@ from app.abstraction.chat import (
 from app.abstraction.messages import Message, MessageRole, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.utils import gen_id
+
+from app.providers.video_size_utils import resolve_video_size, derive_aspect_ratio
 
 # Re-use shared auth/network helpers from image_generation to avoid duplication.
 from .image_generation import (
@@ -250,158 +251,6 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
 
     # 4. Fallback
     return model, "latest"
-
-
-# =============================================================================
-# 尺寸 → 宽高比 / 分辨率转换
-# =============================================================================
-
-_ASPECT_RATIO_MAP: Dict[Tuple[int, int], str] = {
-    (16, 9):  "16:9",
-    (9, 16):  "9:16",
-    (1, 1):   "1:1",
-    (4, 3):   "4:3",
-    (3, 4):   "3:4",
-    (3, 2):   "3:2",
-    (2, 3):   "2:3",
-    (21, 9):  "21:9",
-    (9, 21):  "9:21",
-}
-
-# Canonical video size lookup table.
-# Keys are "WxH" (lowercase). Values are (aspect_ratio, resolution_tier).
-# resolution_tier is the standard name used by TencentVOD API (e.g. "480p", "1080p", "4K").
-# Covers landscape and portrait orientations of common video standards.
-_VIDEO_SIZE_TABLE: Dict[str, Tuple[str, str]] = {
-    # ── SD ───────────────────────────────────────────────────────────────
-    "854x480":   ("16:9",  "480p"),
-    "480x854":   ("9:16",  "480p"),
-    "640x480":   ("4:3",   "480p"),
-    "480x640":   ("3:4",   "480p"),
-    # ── HD (720p) ────────────────────────────────────────────────────────
-    "1280x720":  ("16:9",  "720p"),
-    "720x1280":  ("9:16",  "720p"),
-    # ── Full HD (1080p) ──────────────────────────────────────────────────
-    "1920x1080": ("16:9",  "1080p"),
-    "1080x1920": ("9:16",  "1080p"),
-    # ── QHD / 2K ─────────────────────────────────────────────────────────
-    "2560x1440": ("16:9",  "2K"),
-    "1440x2560": ("9:16",  "2K"),
-    # ── DCI 2K ───────────────────────────────────────────────────────────
-    "2048x1080": ("17:9",  "2K"),
-    "1080x2048": ("9:17",  "2K"),
-    # ── 4K UHD ───────────────────────────────────────────────────────────
-    "3840x2160": ("16:9",  "4K"),
-    "2160x3840": ("9:16",  "4K"),
-    # ── DCI 4K ───────────────────────────────────────────────────────────
-    "4096x2160": ("17:9",  "4K"),
-    "2160x4096": ("9:17",  "4K"),
-    # ── 8K ───────────────────────────────────────────────────────────────
-    "7680x4320": ("16:9",  "8K"),
-    "4320x7680": ("9:16",  "8K"),
-    # ── Square ───────────────────────────────────────────────────────────
-    "1080x1080": ("1:1",   "1080p"),
-    "720x720":   ("1:1",   "720p"),
-}
-
-# Named tier → canonical WxH (used to resolve "1080p" → lookup in _VIDEO_SIZE_TABLE)
-_VIDEO_NAME_TO_SIZE: Dict[str, str] = {
-    "480p":  "854x480",
-    "720p":  "1280x720",
-    "1080p": "1920x1080",
-    "2k":    "2560x1440",
-    "qhd":   "2560x1440",
-    "4k":    "3840x2160",
-    "uhd":   "3840x2160",
-    "8k":    "7680x4320",
-}
-
-# Named tier → resolution_tier (for named inputs that don't go through WxH lookup)
-_VIDEO_NAME_TO_TIER: Dict[str, str] = {
-    "480p":  "480p",
-    "720p":  "720p",
-    "1080p": "1080p",
-    "2k":    "2K",
-    "qhd":   "2K",
-    "4k":    "4K",
-    "uhd":   "4K",
-    "8k":    "8K",
-}
-
-
-def _resolve_video_size(size: str) -> Tuple[str, str]:
-    """
-    Resolve a video size string to (aspect_ratio, resolution_tier).
-
-    ``resolution_tier`` is the standard name used by the TencentVOD API
-    (e.g. "480p", "720p", "1080p", "2K", "4K", "8K").
-
-    Accepts the following formats:
-      1. Named tier – case-insensitive shorthand, e.g. "1080p", "4K", "720p"
-         * Resolved via ``_VIDEO_NAME_TO_SIZE`` → ``_VIDEO_SIZE_TABLE``.
-      2. ``WxH``  – explicit pixel dimensions, e.g. "1920x1080", "1080x1920"
-         * Looked up in ``_VIDEO_SIZE_TABLE`` (exact match) to get the tier.
-         * Falls back to deriving aspect_ratio from the GCD ratio;
-           resolution_tier is left empty when no standard tier matches.
-      3. Anything else returns ("", "").
-
-    Args:
-        size: User-supplied size string.
-
-    Returns:
-        (aspect_ratio, resolution_tier) tuple — either or both may be empty
-        strings if the value cannot be resolved.
-    """
-    if not size:
-        return "", ""
-
-    normalized = size.strip().lower().replace(" ", "")
-
-    # 1. Named tier (e.g. "1080p", "4K") → resolve to WxH first, then table lookup
-    if normalized in _VIDEO_NAME_TO_SIZE:
-        canonical_wxh = _VIDEO_NAME_TO_SIZE[normalized]
-        if canonical_wxh in _VIDEO_SIZE_TABLE:
-            ar, _ = _VIDEO_SIZE_TABLE[canonical_wxh]
-            return ar, _VIDEO_NAME_TO_TIER.get(normalized, "")
-        return "", _VIDEO_NAME_TO_TIER.get(normalized, "")
-
-    # 2. Exact WxH lookup in the table
-    if normalized in _VIDEO_SIZE_TABLE:
-        return _VIDEO_SIZE_TABLE[normalized]
-
-    # 3. Parse WxH and derive aspect_ratio; no standard tier available
-    if "x" in normalized:
-        try:
-            parts = normalized.split("x", 1)
-            w, h = int(parts[0].strip()), int(parts[1].strip())
-            if w > 0 and h > 0:
-                g = gcd(w, h)
-                ratio = (w // g, h // g)
-                ar = _ASPECT_RATIO_MAP.get(ratio, f"{ratio[0]}:{ratio[1]}")
-                return ar, ""   # no standard tier for custom resolutions
-        except (ValueError, TypeError):
-            pass
-
-    return "", ""
-
-
-def _derive_aspect_ratio(size: str) -> str:
-    """
-    Derive AspectRatio string from a ``WxH`` size spec (backward-compat wrapper).
-
-    Examples:
-      "720x1080"  → "9:16"
-      "1280x720"  → "16:9"
-      "1080x1080" → "1:1"
-
-    Args:
-        size: Size string like "720x1080"
-
-    Returns:
-        AspectRatio string like "9:16", or "" if derivation fails
-    """
-    ar, _ = _resolve_video_size(size)
-    return ar
 
 
 # =============================================================================
@@ -803,7 +652,7 @@ def execute_tencentvod_video_generation(
     resolution = str(metadata.get("resolution") or "")
 
     if video_size and (not aspect_ratio or not resolution):
-        derived_ar, derived_res = _resolve_video_size(video_size)
+        derived_ar, derived_res = resolve_video_size(video_size)
         if not aspect_ratio:
             aspect_ratio = derived_ar
         if not resolution:
