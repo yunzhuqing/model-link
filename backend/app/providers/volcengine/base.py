@@ -631,13 +631,9 @@ class VolcengineProvider(BaseProvider):
             yield chunk
 
         # Yield finish chunk with usage so the adapter emits response.completed
-        usage: Dict[str, Any] = {}
+        finish_usage = UsageInfo()
         if response.usage:
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
+            finish_usage = response.usage
 
         # Build the completed response output with all image_generation_call items
         output_items = [
@@ -656,9 +652,9 @@ class VolcengineProvider(BaseProvider):
             "model": model,
             "output": output_items,
             "usage": {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
+                "input_tokens": finish_usage.prompt_tokens,
+                "output_tokens": finish_usage.completion_tokens,
+                "total_tokens": finish_usage.total_tokens,
             }
         }
         completed_event = {
@@ -931,18 +927,18 @@ class VolcengineProvider(BaseProvider):
             resp = data.get("response", {})
             usage_data = resp.get("usage", {})
 
-            usage = {
-                "prompt_tokens": usage_data.get("input_tokens", 0),
-                "completion_tokens": usage_data.get("output_tokens", 0),
-                "total_tokens": usage_data.get("total_tokens", 0),
-            }
-            # Include detailed breakdowns
+            input_tokens = usage_data.get("input_tokens", 0)
+            output_tokens = usage_data.get("output_tokens", 0)
+            total_tokens = usage_data.get("total_tokens", 0)
             input_details = usage_data.get("input_tokens_details", {})
-            if input_details.get("cached_tokens"):
-                usage["cached_tokens"] = input_details["cached_tokens"]
             output_details = usage_data.get("output_tokens_details", {})
-            if output_details.get("reasoning_tokens"):
-                usage["reasoning_tokens"] = output_details["reasoning_tokens"]
+            usage_info = UsageInfo(
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_tokens=input_details.get("cached_tokens", 0),
+                reasoning_tokens=output_details.get("reasoning_tokens", 0),
+            )
 
             status = resp.get("status", "completed")
             finish = FinishReason.STOP
@@ -970,7 +966,7 @@ class VolcengineProvider(BaseProvider):
                 model=resp.get("model", model),
                 delta_content=full_text,
                 finish_reason=finish,
-                usage=usage,
+                usage=usage_info,
                 event_type=StreamEventType.CONTENT_DELTA,
                 created=resp.get("created_at", int(time.time()))
             )

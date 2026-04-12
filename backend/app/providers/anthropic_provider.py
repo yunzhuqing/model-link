@@ -539,22 +539,28 @@ class AnthropicProvider(BaseProvider):
         if event_type == "message_start":
             message = event_data.get("message", {})
             usage = message.get("usage", {})
-            usage_dict = None
+            usage_info = None
             if usage:
-                usage_dict = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
-                    "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
-                }
+                extra: Dict[str, Any] = {}
                 # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
                 if "cache_creation" in usage:
-                    usage_dict["cache_creation"] = usage["cache_creation"]
+                    extra["cache_creation"] = usage["cache_creation"]
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                usage_info = UsageInfo(
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                    total_tokens=input_tokens + output_tokens,
+                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
+                    extra=extra,
+                )
             return StreamChunk(
                 id=message.get("id", response_id),
                 model=message.get("model", model),
                 delta_role="assistant",
                 event_type=StreamEventType.CONTENT_DELTA,
-                usage=usage_dict,
+                usage=usage_info,
                 is_first_chunk=True,
             )
 
@@ -628,13 +634,22 @@ class AnthropicProvider(BaseProvider):
                 }
                 finish_reason = finish_reason_map.get(stop_reason, FinishReason.STOP)
 
+            usage_info = None
+            if usage:
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                usage_info = UsageInfo(
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                    total_tokens=input_tokens + output_tokens,
+                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
+                )
             return StreamChunk(
                 id=response_id,
                 model=model,
                 finish_reason=finish_reason,
-                usage={
-                    "output_tokens": usage.get("output_tokens", 0),
-                } if usage else None,
+                usage=usage_info,
                 event_type=StreamEventType.USAGE,
             )
 

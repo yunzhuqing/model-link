@@ -31,7 +31,58 @@ class UsageInfo:
     cache_write_tokens: int = 0
     # Detailed token breakdown
     reasoning_tokens: int = 0          # output tokens used for reasoning
-    cached_tokens: int = 0             # input tokens served from cache
+    cached_tokens: int = 0             # cached prompt tokens (OpenAI / Azure)
+    # Arbitrary extra key-value pairs for provider-specific data
+    # (e.g. "_azure_completed_response", "cache_creation", …)
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-compatible .get() for backward compatibility."""
+        # Check known dataclass fields first, then fall back to extra dict
+        _FIELDS = {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "cached_tokens",
+        }
+        if key in _FIELDS:
+            return getattr(self, key, default)
+        return self.extra.get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        """Dict-compatible [] access for backward compatibility."""
+        result = self.get(key)
+        if result is None and key not in self:
+            raise KeyError(key)
+        return result
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to a plain dict (excludes empty extra keys prefixed with '_')."""
+        d: Dict[str, Any] = {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+        }
+        if self.cache_read_tokens:
+            d["cache_read_tokens"] = self.cache_read_tokens
+        if self.cache_write_tokens:
+            d["cache_write_tokens"] = self.cache_write_tokens
+        if self.reasoning_tokens:
+            d["reasoning_tokens"] = self.reasoning_tokens
+        if self.cached_tokens:
+            d["cached_tokens"] = self.cached_tokens
+        d.update(self.extra)
+        return d
+
+    def items(self):
+        """Dict-compatible .items() — iterates over to_dict()."""
+        return self.to_dict().items()
+
+    def __contains__(self, key: str) -> bool:
+        """Support `key in usage` syntax."""
+        _FIELDS = {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "cached_tokens",
+        }
+        return key in _FIELDS or key in self.extra
 
 
 @dataclass

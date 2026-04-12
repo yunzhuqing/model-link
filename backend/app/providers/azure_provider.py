@@ -177,6 +177,37 @@ class AzureProvider(OpenAIProvider):
         # Build `input` array
         input_items = []
         for msg in non_system_messages:
+            # Handle tool role messages → function_call_output
+            # OpenAI Chat Completions uses role=tool with tool_call_id;
+            # Responses API uses {"type": "function_call_output", "call_id": ..., "output": ...}
+            if msg.role == MessageRole.TOOL:
+                call_id = msg.tool_call_id or ""
+                # Extract text content from the message
+                if isinstance(msg.content, str):
+                    output_text = msg.content
+                elif isinstance(msg.content, list):
+                    # Content may be text blocks or tool_result blocks
+                    text_parts = []
+                    for b in msg.content:
+                        if hasattr(b, 'type'):
+                            if b.type == ContentType.TOOL_RESULT and b.tool_result:
+                                text_parts.append(b.tool_result)
+                            elif b.type == ContentType.TEXT and b.text:
+                                text_parts.append(b.text)
+                        elif isinstance(b, dict):
+                            # Handle raw dict blocks (e.g. from input_text format)
+                            text_parts.append(b.get("text", ""))
+                    output_text = " ".join(text_parts)
+                else:
+                    output_text = str(msg.content) if msg.content else ""
+
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output_text,
+                })
+                continue
+
             if isinstance(msg.content, list):
                 # Check for tool_call blocks → becomes function_call top-level item
                 tool_call_blocks = [b for b in msg.content if b.type == ContentType.TOOL_CALL]
@@ -572,20 +603,18 @@ class AzureProvider(OpenAIProvider):
                     if usage_data:
                         input_details = usage_data.get("input_tokens_details", {})
                         output_details = usage_data.get("output_tokens_details", {})
-                        usage: Dict[str, Any] = {
-                            "prompt_tokens": usage_data.get("input_tokens", 0),
-                            "completion_tokens": usage_data.get("output_tokens", 0),
-                            "total_tokens": usage_data.get("total_tokens", 0),
-                        }
-                        if input_details.get("cached_tokens"):
-                            usage["cached_tokens"] = input_details["cached_tokens"]
-                        if output_details.get("reasoning_tokens"):
-                            usage["reasoning_tokens"] = output_details["reasoning_tokens"]
-                        # Carry the full Azure response object so the adapter can emit it
+                        # Carry the full Azure response object in extra so the adapter can emit it
                         # verbatim in the response.completed SSE event.
-                        usage["_azure_completed_response"] = resp
+                        usage: Optional['UsageInfo'] = UsageInfo(
+                            prompt_tokens=usage_data.get("input_tokens", 0),
+                            completion_tokens=usage_data.get("output_tokens", 0),
+                            total_tokens=usage_data.get("total_tokens", 0),
+                            cached_tokens=input_details.get("cached_tokens", 0),
+                            reasoning_tokens=output_details.get("reasoning_tokens", 0),
+                            extra={"_azure_completed_response": resp},
+                        )
                     else:
-                        usage = {"_azure_completed_response": resp} if resp else None
+                        usage = UsageInfo(extra={"_azure_completed_response": resp}) if resp else None
 
                     # Determine finish_reason: TOOL_CALLS if the response output
                     # contains any function_call items, otherwise STOP.

@@ -3,7 +3,7 @@
 提供统一的流式响应处理接口。
 """
 from enum import Enum
-from typing import Optional, List, Dict, Any, Generator, Callable, AsyncGenerator
+from typing import Optional, List, Dict, Any, Generator, Callable, AsyncGenerator, Union
 from dataclasses import dataclass, field
 import json
 import time
@@ -11,7 +11,7 @@ import uuid
 
 from .messages import Message, MessageRole
 from .tools import ToolCall
-from .chat import FinishReason
+from .chat import FinishReason, UsageInfo
 
 
 class StreamEventType(Enum):
@@ -21,6 +21,35 @@ class StreamEventType(Enum):
     USAGE = "usage"
     ERROR = "error"
     DONE = "done"
+
+
+# Known UsageInfo field names (excluding 'extra') for dict-to-UsageInfo conversion
+_USAGE_INFO_FIELDS = frozenset({
+    "prompt_tokens", "completion_tokens", "total_tokens",
+    "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "cached_tokens",
+})
+
+
+def _dict_to_usage_info(d: Dict[str, Any]) -> UsageInfo:
+    """
+    Convert a plain dict to a UsageInfo dataclass instance.
+
+    Known fields are mapped to UsageInfo attributes; unknown / provider-specific
+    keys (e.g. "_azure_completed_response", "cache_creation") are stored in
+    UsageInfo.extra so they can be retrieved via usage.get() or usage["key"].
+    """
+    if not d:
+        return UsageInfo()
+    kwargs: Dict[str, Any] = {}
+    extra: Dict[str, Any] = {}
+    for key, value in d.items():
+        if key in _USAGE_INFO_FIELDS:
+            kwargs[key] = value
+        else:
+            extra[key] = value
+    if extra:
+        kwargs["extra"] = extra
+    return UsageInfo(**kwargs)
 
 
 @dataclass
@@ -38,7 +67,7 @@ class StreamChunk:
     anthropic_index: int = 0  # Anthropic 格式的内容块索引（由适配器设置）
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: Optional[FinishReason] = None
-    usage: Optional[Dict[str, int]] = None
+    usage: Optional[UsageInfo] = None
     event_type: StreamEventType = StreamEventType.CONTENT_DELTA
     is_first_chunk: bool = False  # 标识是否为流的第一个 chunk（携带 message_start 元信息）
     created: int = field(default_factory=lambda: int(time.time()))
@@ -46,7 +75,12 @@ class StreamChunk:
     # Used by providers (e.g. Azure) to forward Responses API events that have no
     # equivalent in the StreamChunk data model (e.g. reasoning_summary events).
     raw_sse_passthrough: List[str] = field(default_factory=list)
-    
+
+    def __post_init__(self):
+        """Convert dict usage to UsageInfo for backward compatibility."""
+        if isinstance(self.usage, dict):
+            self.usage = _dict_to_usage_info(self.usage)
+
     # Standard role values that are valid in OpenAI Chat Completions delta chunks.
     # Non-standard values (e.g. Azure internal msg_xxx IDs encoded in delta_role) are
     # silently dropped so they never leak into the client-facing /v1/chat/completions
@@ -89,19 +123,17 @@ class StreamChunk:
         }
 
         if self.usage:
-            # Strip internal implementation keys (e.g. _azure_completed_response) that
-            # are only meaningful to the Responses API adapter and must never be sent to
-            # clients via the Chat Completions stream.
-            clean_usage = {k: v for k, v in self.usage.items() if not k.startswith('_')}
-            if clean_usage:
-                result["usage"] = self._format_openai_usage(clean_usage)
+            # Build formatted usage from UsageInfo, excluding internal keys (e.g. _azure_completed_response)
+            formatted = self._format_openai_usage(self.usage)
+            if formatted:
+                result["usage"] = formatted
 
         return result
 
     @staticmethod
-    def _format_openai_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
+    def _format_openai_usage(usage: 'UsageInfo') -> Dict[str, Any]:
         """
-        Format a flat usage dict into the OpenAI Chat Completions nested structure.
+        Format a UsageInfo object into the OpenAI Chat Completions nested structure.
 
         OpenAI standard:
         {
@@ -112,38 +144,34 @@ class StreamChunk:
             "completion_tokens_details": {"reasoning_tokens": N, ...}
         }
 
-        Our internal flat representation uses top-level "reasoning_tokens" and
-        "cached_tokens" keys which must be moved into the nested detail dicts.
+        Internal keys prefixed with '_' (e.g. _azure_completed_response) are excluded
+        as they are only meaningful to adapter-internal logic.
         """
         formatted: Dict[str, Any] = {
-            "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
         }
 
         # Build prompt_tokens_details (always include with defaults)
         prompt_details: Dict[str, Any] = {
-            "cached_tokens": 0,
+            "cached_tokens": usage.cached_tokens,
             "audio_tokens": 0,
         }
-        if "cached_tokens" in usage:
-            prompt_details["cached_tokens"] = usage["cached_tokens"]
-        # Pass through any pre-nested prompt details from upstream
-        for k, v in usage.get("prompt_tokens_details", {}).items():
+        # Pass through any pre-nested prompt details from upstream (stored in extra)
+        for k, v in usage.extra.get("prompt_tokens_details", {}).items():
             prompt_details[k] = v
         formatted["prompt_tokens_details"] = prompt_details
 
         # Build completion_tokens_details (always include with defaults)
         completion_details: Dict[str, Any] = {
-            "reasoning_tokens": 0,
+            "reasoning_tokens": usage.reasoning_tokens,
             "audio_tokens": 0,
             "accepted_prediction_tokens": 0,
             "rejected_prediction_tokens": 0,
         }
-        if "reasoning_tokens" in usage:
-            completion_details["reasoning_tokens"] = usage["reasoning_tokens"]
-        # Pass through any pre-nested completion details from upstream
-        for k, v in usage.get("completion_tokens_details", {}).items():
+        # Pass through any pre-nested completion details from upstream (stored in extra)
+        for k, v in usage.extra.get("completion_tokens_details", {}).items():
             completion_details[k] = v
         formatted["completion_tokens_details"] = completion_details
 
@@ -153,8 +181,8 @@ class StreamChunk:
         """
         构建 Anthropic 格式的 usage 字典。
         
-        将内部 usage 字段映射为 Anthropic 格式，始终包含所有标准字段（零值也输出），
-        并透传 cache_creation 嵌套对象（如果存在）。
+        将 UsageInfo 字段映射为 Anthropic 格式，始终包含所有标准字段（零值也输出），
+        并透传 cache_creation 嵌套对象（如果存在于 extra 中）。
 
         Anthropic usage 格式:
         {
@@ -176,30 +204,27 @@ class StreamChunk:
                 "output_tokens": 0,
             }
 
-        # input_tokens: 优先使用 input_tokens，其次 prompt_tokens
-        input_tokens = self.usage.get("input_tokens",
-                       self.usage.get("prompt_tokens", 0))
-        # output_tokens: 优先使用 output_tokens，其次 completion_tokens
-        output_tokens = self.usage.get("output_tokens",
-                        self.usage.get("completion_tokens", 0))
-        # cache tokens
-        cache_read = self.usage.get("cache_read_input_tokens",
-                     self.usage.get("cache_read_tokens", 0))
-        cache_creation_tokens = self.usage.get("cache_creation_input_tokens",
-                                self.usage.get("cache_write_tokens", 0))
+        # prompt_tokens → input_tokens
+        input_tokens = self.usage.prompt_tokens
+        # completion_tokens → output_tokens
+        output_tokens = self.usage.completion_tokens
+        # cache_read_tokens (Anthropic-native) takes priority; fall back to cached_tokens (OpenAI/Azure)
+        cache_read = self.usage.cache_read_tokens or self.usage.cached_tokens
+        # cache_write_tokens → cache_creation_input_tokens
+        cache_creation_tokens = self.usage.cache_write_tokens
 
-        usage: Dict[str, Any] = {
+        result: Dict[str, Any] = {
             "input_tokens": input_tokens,
             "cache_creation_input_tokens": cache_creation_tokens,
             "cache_read_input_tokens": cache_read,
             "output_tokens": output_tokens,
         }
 
-        # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
-        if "cache_creation" in self.usage:
-            usage["cache_creation"] = self.usage["cache_creation"]
+        # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等），存储在 extra 中
+        if "cache_creation" in self.usage.extra:
+            result["cache_creation"] = self.usage.extra["cache_creation"]
 
-        return usage
+        return result
 
     def _map_finish_reason_to_anthropic(self) -> Optional[str]:
         """将 finish_reason 映射为 Anthropic stop_reason"""
@@ -353,11 +378,21 @@ class StreamChunk:
             #
             # This keeps compatibility with OpenAI clients that expect usage in a trailing
             # empty-choices chunk.
-            clean_usage = None
-            if self.usage:
-                clean_usage = {k: v for k, v in self.usage.items() if not k.startswith('_')}
+            # Usage is considered "clean" (client-visible) when the UsageInfo contains
+            # meaningful token counts; internal-only keys (e.g. _azure_completed_response
+            # stored in extra) must not trigger a spurious usage chunk.
+            has_client_visible_usage = (
+                self.usage is not None
+                and (
+                    self.usage.prompt_tokens > 0
+                    or self.usage.completion_tokens > 0
+                    or self.usage.total_tokens > 0
+                    or self.usage.cached_tokens > 0
+                    or self.usage.reasoning_tokens > 0
+                )
+            )
 
-            if self.finish_reason and clean_usage:
+            if self.finish_reason and has_client_visible_usage:
                 # Emit finish chunk without usage
                 finish_data = self.to_openai_format()
                 finish_data.pop("usage", None)
@@ -370,7 +405,7 @@ class StreamChunk:
                     "created": self.created,
                     "model": self.model,
                     "choices": [],
-                    "usage": self._format_openai_usage(clean_usage),
+                    "usage": self._format_openai_usage(self.usage),
                 }
                 parts.append(f"data: {json.dumps(usage_data, ensure_ascii=False)}\n\n")
                 return "".join(parts)

@@ -1204,7 +1204,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 self._stream_completed_emitted = True
                 # Use the full Azure response object verbatim when available; otherwise build a
                 # complete response object that includes the full output text and usage info.
-                azure_resp = chunk.usage.get('_azure_completed_response') if chunk.usage else None
+                azure_resp = chunk.usage.extra.get('_azure_completed_response') if chunk.usage else None
                 if azure_resp:
                     completed_resp = azure_resp
                 else:
@@ -1256,14 +1256,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     if chunk.usage:
                         usage_out: dict = {
-                            'input_tokens': chunk.usage.get('prompt_tokens', 0),
-                            'output_tokens': chunk.usage.get('completion_tokens', 0),
-                            'total_tokens': chunk.usage.get('total_tokens', 0),
+                            'input_tokens': chunk.usage.prompt_tokens,
+                            'output_tokens': chunk.usage.completion_tokens,
+                            'total_tokens': chunk.usage.total_tokens,
                         }
-                        if chunk.usage.get('cached_tokens'):
-                            usage_out['input_tokens_details'] = {'cached_tokens': chunk.usage['cached_tokens']}
-                        if chunk.usage.get('reasoning_tokens'):
-                            usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage['reasoning_tokens']}
+                        if chunk.usage.cached_tokens:
+                            usage_out['input_tokens_details'] = {'cached_tokens': chunk.usage.cached_tokens}
+                        if chunk.usage.reasoning_tokens:
+                            usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage.reasoning_tokens}
                         completed_resp['usage'] = usage_out
                 completed: dict = {
                     'type': 'response.completed',
@@ -1318,9 +1318,9 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 }
                 if chunk.usage:
                     usage_out: dict = {
-                        'input_tokens': chunk.usage.get('prompt_tokens', 0),
-                        'output_tokens': chunk.usage.get('completion_tokens', 0),
-                        'total_tokens': chunk.usage.get('total_tokens', 0),
+                        'input_tokens': chunk.usage.prompt_tokens,
+                        'output_tokens': chunk.usage.completion_tokens,
+                        'total_tokens': chunk.usage.total_tokens,
                     }
                     completed['response']['usage'] = usage_out
                 events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
@@ -1795,9 +1795,9 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     if deferred_usage:
                         usage_out = {
-                            'input_tokens': deferred_usage.get('prompt_tokens', 0),
-                            'output_tokens': deferred_usage.get('completion_tokens', 0),
-                            'total_tokens': deferred_usage.get('total_tokens', 0),
+                            'input_tokens': deferred_usage.prompt_tokens,
+                            'output_tokens': deferred_usage.completion_tokens,
+                            'total_tokens': deferred_usage.total_tokens,
                         }
                         completed_resp['usage'] = usage_out
                     completed_event = {

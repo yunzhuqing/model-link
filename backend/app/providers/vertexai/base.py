@@ -558,10 +558,22 @@ class VertexAIProvider(BaseProvider):
         if event_type == "message_start":
             message = event_data.get("message", {})
             usage = message.get("usage", {})
+            usage_info = None
+            if usage:
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                usage_info = UsageInfo(
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                    total_tokens=input_tokens + output_tokens,
+                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
+                )
             return StreamChunk(
                 id=message.get("id", response_id), model=message.get("model", model),
                 delta_role="assistant", event_type=StreamEventType.CONTENT_DELTA,
-                usage={"prompt_tokens": usage.get("input_tokens", 0), "completion_tokens": 0, "total_tokens": usage.get("input_tokens", 0)} if usage else None
+                is_first_chunk=True,
+                usage=usage_info
             )
 
         elif event_type == "content_block_start":
@@ -593,8 +605,19 @@ class VertexAIProvider(BaseProvider):
             finish_reason = None
             if stop_reason:
                 finish_reason = {"end_turn": FinishReason.STOP, "max_tokens": FinishReason.LENGTH, "tool_use": FinishReason.TOOL_CALLS, "stop_sequence": FinishReason.STOP}.get(stop_reason, FinishReason.STOP)
+            usage_info = None
+            if usage:
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                usage_info = UsageInfo(
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                    total_tokens=input_tokens + output_tokens,
+                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
+                )
             return StreamChunk(id=response_id, model=model, finish_reason=finish_reason,
-                usage={"prompt_tokens": 0, "completion_tokens": usage.get("output_tokens", 0), "total_tokens": usage.get("output_tokens", 0)} if usage else None,
+                usage=usage_info,
                 event_type=StreamEventType.USAGE)
 
         elif event_type == "error":
@@ -900,7 +923,7 @@ class VertexAIProvider(BaseProvider):
                     return None
                 return StreamChunk(
                     id=response_id, model=model,
-                    usage={"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt},
+                    usage=UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt),
                     event_type=StreamEventType.USAGE
                 )
             return None
@@ -951,14 +974,14 @@ class VertexAIProvider(BaseProvider):
         # Only include non-zero usage to avoid the to_sse split-logic generating a
         # spurious empty-choices usage chunk for tool-call ACK frames (which carry
         # all-zero usageMetadata as acknowledgment, not real token counts).
-        usage = None
+        usage_info: Optional[UsageInfo] = None
         usage_metadata = data.get("usageMetadata")
         if usage_metadata:
             pt = usage_metadata.get("promptTokenCount", 0)
             ct = usage_metadata.get("candidatesTokenCount", 0)
             tt = usage_metadata.get("totalTokenCount", 0)
             if pt or ct or tt:
-                usage = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt)
 
         # When there are no content parts and finish_reason is STOP, Vertex AI Gemini is
         # sending an end-of-stream marker.  Use "not delta_content" (falsy check) so that
@@ -973,7 +996,7 @@ class VertexAIProvider(BaseProvider):
             return StreamChunk(
                 id=response_id, model=model,
                 finish_reason=finish_reason,  # preserved; stream_chat may override
-                usage=usage,  # may be None if separate usage frame follows
+                usage=usage_info,  # may be None if separate usage frame follows
                 event_type=StreamEventType.USAGE
             )
 
@@ -988,7 +1011,7 @@ class VertexAIProvider(BaseProvider):
             delta_reasoning_content=delta_reasoning_content,
             tool_calls=tool_calls_data if tool_calls_data else [],
             finish_reason=finish_reason,
-            usage=usage,
+            usage=usage_info,
             event_type=StreamEventType.CONTENT_DELTA
         )
 

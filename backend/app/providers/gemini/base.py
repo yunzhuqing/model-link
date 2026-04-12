@@ -701,11 +701,11 @@ class GeminiProvider(BaseProvider):
             if usage_metadata:
                 return StreamChunk(
                     id=response_id, model=model,
-                    usage={
-                        "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                        "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                        "total_tokens": usage_metadata.get("totalTokenCount", 0),
-                    },
+                    usage=UsageInfo(
+                        prompt_tokens=usage_metadata.get("promptTokenCount", 0),
+                        completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
+                        total_tokens=usage_metadata.get("totalTokenCount", 0),
+                    ),
                     event_type=StreamEventType.USAGE,
                 )
             return None
@@ -762,18 +762,14 @@ class GeminiProvider(BaseProvider):
             delta_role = "assistant"
 
         # Parse usage if present
-        usage = None
+        usage_info: Optional[UsageInfo] = None
         usage_metadata = data.get("usageMetadata")
         if usage_metadata:
             pt = usage_metadata.get("promptTokenCount", 0)
             ct = usage_metadata.get("candidatesTokenCount", 0)
             tt = usage_metadata.get("totalTokenCount", 0)
             if pt or ct or tt:
-                usage = {
-                    "prompt_tokens": pt,
-                    "completion_tokens": ct,
-                    "total_tokens": tt,
-                }
+                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt)
 
         # When there are no content parts and finish_reason is STOP, Gemini is sending
         # an end-of-stream marker.  Use falsy check so empty-string text ("") is also
@@ -783,7 +779,7 @@ class GeminiProvider(BaseProvider):
             return StreamChunk(
                 id=response_id, model=model,
                 finish_reason=finish_reason,  # preserved; stream_chat may override
-                usage=usage,
+                usage=usage_info,
                 event_type=StreamEventType.USAGE,
             )
 
@@ -794,7 +790,7 @@ class GeminiProvider(BaseProvider):
             delta_reasoning_content=delta_reasoning_content,
             tool_calls=tool_calls_data if tool_calls_data else [],
             finish_reason=finish_reason,
-            usage=usage,
+            usage=usage_info,
             event_type=StreamEventType.CONTENT_DELTA,
         )
 
