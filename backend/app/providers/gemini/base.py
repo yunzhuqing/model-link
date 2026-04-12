@@ -25,6 +25,11 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 from app.utils import gen_id
 from .image_generation import is_gemini_image_model, has_image_generation_tool, stream_image_generation
+from .video_generation import (
+    is_veo_video_model,
+    execute_veo_video_generation,
+    stream_veo_video_generation,
+)
 
 
 # Internal metadata keys set by the gateway service.
@@ -192,6 +197,16 @@ class GeminiProvider(BaseProvider):
     def _has_image_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request contains an image_generation tool."""
         return has_image_generation_tool(request)
+
+    # ==================== Video Generation ====================
+
+    def is_video_generation_model(self, model: str) -> bool:
+        """Check if the model is a Veo video generation model."""
+        return is_veo_video_model(model)
+
+    def _has_video_generation_tool(self, request: ChatRequest) -> bool:
+        """Check if the request carries a video_generation tool flag."""
+        return bool(request.metadata.get("_video_generation"))
 
     # ==================== 请求准备 ====================
 
@@ -556,6 +571,16 @@ class GeminiProvider(BaseProvider):
         if error:
             raise ValueError(error)
 
+        # Veo video generation models → dedicated video generation path
+        if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
+            return execute_veo_video_generation(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                model=request.model,
+                messages=request.messages,
+                metadata=request.metadata,
+            )
+
         request_data = self.prepare_request(request)
         url = self._get_api_url(request.model, streaming=False)
 
@@ -587,6 +612,11 @@ class GeminiProvider(BaseProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        # Veo video generation models → dedicated video generation path
+        if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
+            yield from stream_veo_video_generation(self.chat, request)
+            return
 
         # For image generation models, use the dedicated streaming path.
         # Gemini's native image generation doesn't truly stream images; it returns

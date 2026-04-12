@@ -866,6 +866,46 @@ def edit_images():
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
 
+# ============== File Serving API ==============
+
+@gateway_bp.route('/v1/files/<path:filename>', methods=['GET'])
+def serve_file(filename: str):
+    """
+    Serve a binary file (e.g. generated video) stored by the local storage backend.
+
+    Files are stored under ``{BACKGROUND_RESPONSE_STORAGE_DIR}/files/{filename}``.
+    This endpoint is only meaningful for the local storage backend; when S3 is
+    configured the provider returns a direct S3 (pre-signed) URL instead.
+
+    No authentication is required — the filename itself acts as an unguessable
+    token (it is derived from a securely generated response ID).
+    """
+    import mimetypes
+    from flask import send_file
+
+    storage = get_storage_backend()
+
+    # Only LocalStorageBackend has a base_dir attribute; for S3 the video URL
+    # is a direct S3/CDN link so this endpoint is never called.
+    base_dir = getattr(storage, "base_dir", None)
+    if base_dir is None:
+        return jsonify({"detail": "File serving is only supported for local storage backend"}), 404
+
+    # Prevent directory traversal
+    safe_filename = os.path.normpath(filename).lstrip("/").lstrip("\\")
+    if ".." in safe_filename:
+        return jsonify({"detail": "Invalid filename"}), 400
+
+    file_path = os.path.join(base_dir, "files", safe_filename)
+    if not os.path.isfile(file_path):
+        return jsonify({"detail": f"File not found: {filename}"}), 404
+
+    mime_type, _ = mimetypes.guess_type(file_path)
+    mime_type = mime_type or "application/octet-stream"
+
+    return send_file(file_path, mimetype=mime_type)
+
+
 # ============== Rerank API ==============
 
 @gateway_bp.route('/v1/rerank', methods=['POST'])

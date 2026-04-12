@@ -65,3 +65,27 @@ class StorageBackend(ABC):
         Returns:
             A string key suitable for write() / read().
         """
+
+    def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        """
+        Persist binary *data* under *key* and return a URL / path that
+        callers can use to retrieve the file.
+
+        The default implementation raises NotImplementedError so that
+        subclasses can opt-in to binary storage support.
+
+        Args:
+            key:          Storage key / path / object name (no extension required).
+            data:         Raw bytes to store.
+            content_type: MIME type of the data.
+
+        Returns:
+            A URL or path string that can be used to access the stored file.
+
+        Raises:
+            NotImplementedError: If the backend does not support binary storage.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support write_binary(). "
+            "Configure a storage backend that supports binary writes."
+        )

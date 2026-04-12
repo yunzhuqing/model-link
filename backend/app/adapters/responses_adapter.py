@@ -524,6 +524,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if watermark is not None:
                     vid_metadata['watermark'] = bool(watermark)
 
+                # Accept a 'parameters' dict that is forwarded verbatim to the
+                # upstream provider API (e.g. Gemini Veo predictLongRunning).
+                # Individual top-level fields (aspect_ratio, seconds, …) take
+                # precedence over keys inside 'parameters' when both are set.
+                raw_parameters = tool_data.get('parameters')
+                if isinstance(raw_parameters, dict):
+                    vid_metadata['parameters'] = raw_parameters
+
                 # Pass file_id → media info map so the provider can:
                 #   1. Substitute {{file_id}} → 图片n / 视频n / 音频n in prompts
                 #   2. Build reference_images / reference_videos / reference_audios lists

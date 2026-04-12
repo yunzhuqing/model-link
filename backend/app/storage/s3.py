@@ -113,3 +113,46 @@ class S3StorageBackend(StorageBackend):
             # Swallow unexpected errors (e.g. access denied) and return None
             # so callers don't crash — the gateway will surface "not found".
             return None
+
+    def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        """
+        Upload binary *data* to S3 under ``{prefix}/files/{key}`` and return
+        a presigned URL (valid for 7 days) so clients can download the file.
+
+        If the ``STORAGE_S3_PUBLIC_BASE_URL`` environment variable is set, a
+        plain public URL is returned instead of a presigned URL:
+            ``{STORAGE_S3_PUBLIC_BASE_URL}/{s3_key}``
+
+        This is useful when the bucket is served via a CDN or has a public
+        access policy.
+
+        Args:
+            key:          Object filename (e.g. ``"vid_abc123.mp4"``).
+            data:         Raw bytes to upload.
+            content_type: MIME type for the S3 object.
+
+        Returns:
+            A URL string that can be used to download the file.
+        """
+        import os as _os
+        s3_key = f"{self.prefix}/files/{key}"
+        client = self._get_client()
+        client.put_object(
+            Bucket=self.bucket,
+            Key=s3_key,
+            Body=data,
+            ContentType=content_type,
+        )
+
+        # If a public base URL is configured, return a plain public URL
+        public_base = _os.getenv("STORAGE_S3_PUBLIC_BASE_URL", "").rstrip("/")
+        if public_base:
+            return f"{public_base}/{s3_key}"
+
+        # Otherwise return a presigned URL valid for 7 days
+        presigned_url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": s3_key},
+            ExpiresIn=7 * 24 * 3600,  # 7 days
+        )
+        return presigned_url

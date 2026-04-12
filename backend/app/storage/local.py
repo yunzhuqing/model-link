@@ -6,6 +6,7 @@ Stores each payload as a plain JSON file under a configurable base directory.
 Directory layout:
   {base_dir}/{response_id}/input.json
   {base_dir}/{response_id}/output.json
+  {base_dir}/videos/{filename}         (binary video files)
 """
 import os
 from typing import Optional
@@ -49,3 +50,26 @@ class LocalStorageBackend(StorageBackend):
                 return fh.read()
         except (FileNotFoundError, OSError):
             return None
+
+    def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        """
+        Write binary *data* to *key* on the local filesystem.
+
+        Binary files are stored under ``{base_dir}/files/{key}``.
+        The method returns a relative URL path ``/v1/files/{key}`` that the
+        Flask gateway serves via the ``GET /v1/files/<path:filename>`` route.
+
+        Args:
+            key:          Filename (e.g. ``"vid_abc123.mp4"``).
+            data:         Raw bytes.
+            content_type: MIME type (unused for local storage, kept for API compat).
+
+        Returns:
+            URL path string, e.g. ``/v1/files/vid_abc123.mp4``.
+        """
+        files_dir = os.path.join(self.base_dir, "files")
+        os.makedirs(files_dir, exist_ok=True)
+        file_path = os.path.join(files_dir, key)
+        with open(file_path, "wb") as fh:
+            fh.write(data)
+        return f"/v1/files/{key}"

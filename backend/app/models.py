@@ -257,7 +257,7 @@ class ModelTemplate(db.Model):
 
     # Comma-separated list of accepted image formats, e.g. "png,jpeg,webp"
     # Empty / NULL means no restriction (all common formats accepted)
-    supported_image_formats = db.Column(db.String(255), nullable=True, default=None)
+    supported_image_formats = db.Column(db.Text, nullable=True, default=None)
 
     # Optional tiered pricing — list of dicts:
     # [{"label": "<=272k", "context_size": 272000, "input_size": 272000, "output_size": 8192,
@@ -361,7 +361,7 @@ class Model(db.Model):
 
     # Comma-separated list of accepted image formats, e.g. "png,jpeg,webp"
     # Empty / NULL means no restriction (all common formats accepted)
-    supported_image_formats = db.Column(db.String(255), nullable=True, default=None)
+    supported_image_formats = db.Column(db.Text, nullable=True, default=None)
 
     # Optional tiered pricing — same structure as ModelTemplate.pricing_tiers
     # [{"label": "<=272k", "context_size": 272000, "input_size": 272000, "output_size": 8192,

@@ -9,7 +9,11 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'overview', label: '功能说明' },
   { id: 'text-to-video', label: '文本生成视频' },
   { id: 'multimodal', label: '多模态素材引用' },
+  { id: 'gemini-veo', label: 'Gemini Veo 视频生成' },
+  { id: 'vertexai-veo', label: 'VertexAI Veo 视频生成' },
+  { id: 'veo-limits', label: '模型限制说明' },
   { id: 'params', label: '请求参数' },
+  { id: 'veo-params', label: 'Veo 专属参数' },
   { id: 'response-format', label: '响应格式' },
 ];
 
@@ -79,6 +83,58 @@ const VIDEO_GENERATION_REF = `{
   ]
 }`;
 
+const VEO_TEXT_TO_VIDEO = `{
+  "model": "veo-3.1-generate-preview",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "A cinematic, haunting video. A ghostly woman with long white hair and a flowing dress swings gently on a rope swing beneath a massive, gnarled tree in a foggy, moonlit clearing."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "video_generation",
+      "aspect_ratio": "16:9",
+      "seconds": 8
+    }
+  ]
+}`;
+
+const VEO_IMAGE_TO_VIDEO = `{
+  "model": "veo-3.1-generate-preview",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "The woman slowly turns and walks into the forest."
+        },
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,<first_frame_base64>"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "video_generation",
+      "aspect_ratio": "16:9",
+      "seconds": 8
+    }
+  ]
+}`;
+
 const VIDEO_GENERATION_RESPONSE = `{
   "id": "vid_abc123...",
   "object": "response",
@@ -90,6 +146,21 @@ const VIDEO_GENERATION_RESPONSE = `{
       "id": "vid_abc123...",
       "status": "completed",
       "result": "https://..."
+    }
+  ]
+}`;
+
+const VEO_RESPONSE = `{
+  "id": "vid_abc123...",
+  "object": "response",
+  "status": "completed",
+  "model": "veo-3.1-generate-preview",
+  "output": [
+    {
+      "type": "video_generation_call",
+      "id": "vid_abc123...",
+      "status": "completed",
+      "result": "https://generativelanguage.googleapis.com/..."
     }
   ]
 }`;
@@ -263,9 +334,37 @@ export default function HelpVideoGeneration() {
             <h3 className="text-lg font-semibold text-slate-800 mb-1">功能说明</h3>
             <p className="text-sm text-slate-500">通过在 tools 中指定 video_generation 类型触发视频生成。支持纯文本描述，也支持传入参考图片、视频、音频等多模态素材。</p>
           </div>
-          <div className="p-6">
+          <div className="p-6 space-y-3">
             <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
               <strong>提示：</strong>视频生成耗时通常在数十秒到数分钟，必须设置 <code>background: true</code>，通过 <code>GET /v1/responses/{'{response_id}'}</code> 轮询获取结果。
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">供应商</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">支持模型</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">特性</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  <tr className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">火山引擎 (Volcengine)</td>
+                    <td className="px-4 py-2.5 text-slate-600">doubao-seedance-2.0, doubao-seedance-1.5-pro, ...</td>
+                    <td className="px-4 py-2.5 text-slate-500">文本/图片/视频/音频多模态，file_id 引用</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">Google Gemini (Veo)</td>
+                    <td className="px-4 py-2.5 text-slate-600">veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview</td>
+                    <td className="px-4 py-2.5 text-slate-500">文生视频，图生视频（首帧/尾帧插值）</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">Google VertexAI (Veo)</td>
+                    <td className="px-4 py-2.5 text-slate-600">veo-3.1-generate-001, veo-3.1-fast-generate-001, veo-3.1-lite-generate-001</td>
+                    <td className="px-4 py-2.5 text-slate-500">文生视频，图生视频，支持 720p/1080p/4K 输出</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -296,11 +395,239 @@ export default function HelpVideoGeneration() {
           <CurlSection body={VIDEO_GENERATION_REF} />
         </SectionCard>
 
+        {/* Gemini Veo */}
+        <div id="gemini-veo" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">Gemini Veo 视频生成</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">Google</span>
+            </div>
+            <p className="text-sm text-slate-500">
+              使用 Google Gemini Veo 模型生成高质量视频。支持纯文本生成和图像引导生成（首帧/尾帧插值）。
+            </p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* Model list */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">支持的模型</p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">模型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { model: 'veo-3.1-generate-preview', desc: '高质量视频生成，最佳画面效果' },
+                      { model: 'veo-3.1-fast-generate-preview', desc: '快速视频生成，速度与质量平衡' },
+                      { model: 'veo-3.1-lite-generate-preview', desc: '轻量级视频生成，最快速度' },
+                    ].map(r => (
+                      <tr key={r.model} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">{r.model}</code></td>
+                        <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Text to video */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">文本生成视频</p>
+              <CurlSection body={VEO_TEXT_TO_VIDEO} />
+            </div>
+
+            {/* Image to video */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">图像引导生成（首帧插值）</p>
+              <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-sm text-amber-800 mb-3">
+                <strong>图生视频：</strong>在 content 中传入 base64 编码的图片作为首帧（第一张图片），Veo 会以该图像为起始帧生成视频。
+                传入两张图片时，第一张作为首帧，第二张作为尾帧（插值生成）。
+              </div>
+              <CurlSection body={VEO_IMAGE_TO_VIDEO} />
+            </div>
+
+            {/* Response */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Veo 响应格式</p>
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700 mb-3">
+                result 字段为 Google 生成的视频 URI，需携带 API Key 才能下载。
+              </div>
+              <CodeBlock code={VEO_RESPONSE} />
+            </div>
+          </div>
+        </div>
+
+        {/* VertexAI Veo */}
+        <div id="vertexai-veo" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">VertexAI Veo 视频生成</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Google Cloud</span>
+            </div>
+            <p className="text-sm text-slate-500">
+              使用 Google Cloud VertexAI 平台上的 Veo 模型生成视频。与 Gemini Veo 使用相同的 API 接口，但通过 VertexAI 服务调用，模型名称以 <code>-generate-001</code> 结尾。
+            </p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* Model list */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">支持的模型</p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">模型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { model: 'veo-3.1-generate-001', desc: '高质量视频生成，支持 4K 输出，图生视频仅支持 8 秒' },
+                      { model: 'veo-3.1-fast-generate-001', desc: '快速视频生成，速度与质量平衡，支持 4K 输出' },
+                      { model: 'veo-3.1-lite-generate-001', desc: '轻量级视频生成，支持 720p/1080p 输出' },
+                    ].map(r => (
+                      <tr key={r.model} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5"><code className="text-green-600 font-semibold">{r.model}</code></td>
+                        <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="bg-green-50 border border-green-100 rounded-lg p-3 text-sm text-green-800">
+              <strong>使用说明：</strong>VertexAI Veo 与 Gemini Veo 使用相同的请求格式，仅需将 <code>model</code> 字段替换为对应的 <code>*-generate-001</code> 模型名称，并配置 VertexAI 供应商即可。
+            </div>
+          </div>
+        </div>
+
+        {/* Veo model limits */}
+        <div id="veo-limits" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">模型限制说明</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">VertexAI Veo</span>
+            </div>
+            <p className="text-sm text-slate-500">各 VertexAI Veo 模型的能力边界与参数约束。</p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* veo-3.1-generate-001 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-green-600 normal-case text-sm font-bold">veo-3.1-generate-001</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 w-56">限制项</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { label: '视频时长',           value: '4、6 或 8 秒；图生视频仅支持 8 秒' },
+                      { label: '每次最大生成数量',   value: '4 个' },
+                      { label: '图生视频最大图片大小', value: '20 MB' },
+                      { label: '支持宽高比',         value: '9:16、16:9' },
+                      { label: '支持输入分辨率',     value: '720p、1080p、4K（预览）' },
+                      { label: '支持输出分辨率',     value: '720p、1080p、4K（预览）' },
+                      { label: '支持帧率',           value: '24 FPS' },
+                      { label: '输出格式',           value: 'video/mp4' },
+                    ].map(r => (
+                      <tr key={r.label} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{r.label}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{r.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* veo-3.1-fast-generate-001 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-green-600 normal-case text-sm font-bold">veo-3.1-fast-generate-001</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 w-56">限制项</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { label: '视频时长',           value: '4、6 或 8 秒' },
+                      { label: '每次最大生成数量',   value: '4 个' },
+                      { label: '图生视频最大图片大小', value: '20 MB' },
+                      { label: '支持宽高比',         value: '9:16、16:9' },
+                      { label: '支持输入分辨率',     value: '720p、1080p、4K（预览）' },
+                      { label: '支持输出分辨率',     value: '720p、1080p、4K（预览）' },
+                      { label: '支持帧率',           value: '24 FPS' },
+                      { label: '输出格式',           value: 'video/mp4' },
+                    ].map(r => (
+                      <tr key={r.label} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{r.label}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{r.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* veo-3.1-lite-generate-001 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-green-600 normal-case text-sm font-bold">veo-3.1-lite-generate-001</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 w-56">限制项</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { label: '视频时长',           value: '4、6 或 8 秒' },
+                      { label: '每次最大生成数量',   value: '4 个' },
+                      { label: '图生视频最大图片大小', value: '20 MB' },
+                      { label: '支持宽高比',         value: '9:16、16:9' },
+                      { label: '支持输入分辨率',     value: '720p、1080p' },
+                      { label: '支持输出分辨率',     value: '720p、1080p' },
+                      { label: '支持帧率',           value: '24 FPS' },
+                      { label: '输出格式',           value: 'video/mp4' },
+                    ].map(r => (
+                      <tr key={r.label} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{r.label}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{r.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-sm text-amber-800">
+              <strong>注意：</strong><code>veo-3.1-lite-generate-001</code> 不支持 4K 分辨率，最高仅支持 1080p 输入/输出。<code>veo-3.1-generate-001</code> 的图生视频模式仅支持 8 秒时长。
+            </div>
+          </div>
+        </div>
+
         {/* Params */}
         <SectionCard
           id="params"
           title="请求参数（video_generation tool）"
-          description="video_generation tool 支持以下参数。"
+          description="video_generation tool 支持以下通用参数。"
         >
           <div className="overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">
@@ -315,16 +642,16 @@ export default function HelpVideoGeneration() {
               <tbody className="divide-y divide-slate-100">
                 {[
                   { name: 'type',              required: true,  type: 'string',  desc: '固定为 "video_generation"' },
-                  { name: 'size / video_size', required: false, type: 'string',  desc: '视频尺寸（WxH），如 "496x864"' },
+                  { name: 'size / video_size', required: false, type: 'string',  desc: '视频尺寸（WxH），如 "496x864"（Seedance）' },
                   { name: 'aspect_ratio',      required: false, type: 'string',  desc: '宽高比，如 "16:9"、"9:16"；别名：ratio' },
                   { name: 'seconds',           required: false, type: 'number',  desc: '视频时长（秒）；别名：duration' },
-                  { name: 'resolution',        required: false, type: 'string',  desc: '分辨率等级，如 "720p"、"1080p"' },
+                  { name: 'resolution',        required: false, type: 'string',  desc: '分辨率等级，如 "720p"、"1080p"（Seedance）' },
                   { name: 'n / number',        required: false, type: 'number',  desc: '生成视频数量' },
-                  { name: 'generate_audio',    required: false, type: 'boolean', desc: '是否生成音频，默认 true；别名：audio_generation' },
+                  { name: 'generate_audio',    required: false, type: 'boolean', desc: '是否生成音频，默认 true（Seedance）' },
                   { name: 'negative_prompt',   required: false, type: 'string',  desc: '负面提示词' },
-                  { name: 'reference_images',  required: false, type: 'array',   desc: '参考图片 URL 列表（图生视频）' },
-                  { name: 'reference_videos',  required: false, type: 'array',   desc: '参考视频 URL 列表（视频参考）' },
-                  { name: 'last_frame_url',    required: false, type: 'string',  desc: '尾帧图片 URL' },
+                  { name: 'reference_images',  required: false, type: 'array',   desc: '参考图片 URL 列表（图生视频，Seedance）' },
+                  { name: 'reference_videos',  required: false, type: 'array',   desc: '参考视频 URL 列表（视频参考，Seedance）' },
+                  { name: 'last_frame_url',    required: false, type: 'string',  desc: '尾帧图片 URL（Seedance）' },
                   { name: 'seed',              required: false, type: 'number',  desc: '随机种子' },
                   { name: 'watermark',         required: false, type: 'boolean', desc: '是否添加水印' },
                 ].map((r) => (
@@ -340,11 +667,54 @@ export default function HelpVideoGeneration() {
           </div>
         </SectionCard>
 
+        {/* Veo specific params */}
+        <SectionCard
+          id="veo-params"
+          title="Gemini Veo 专属参数"
+          badge="Veo only"
+          badgeColor="bg-blue-100 text-blue-700"
+          description="以下参数仅适用于 Gemini Veo 模型（veo-3.1-* 系列）。"
+        >
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">参数</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">类型</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {[
+                  { name: 'aspect_ratio',     type: 'string',  desc: '宽高比，如 "16:9"、"9:16"、"1:1"。若未提供，Veo 使用默认比例。' },
+                  { name: 'seconds',          type: 'number',  desc: '视频时长（秒，整数），对应 API 的 durationSeconds 参数。' },
+                  { name: 'n / sampleCount',  type: 'number',  desc: '生成视频数量，对应 API 的 sampleCount 参数。' },
+                  { name: 'negative_prompt',  type: 'string',  desc: '负面提示词，描述不希望出现的内容。' },
+                  { name: 'enhance_prompt',   type: 'boolean', desc: '是否让模型增强/改写提示词（默认 false）。' },
+                  { name: 'video_fidelity',   type: 'string',  desc: '视频质量级别，如 "HIGH"（高质量）、"MEDIUM"、"LOW"。' },
+                  { name: 'first_frame',      type: 'string',  desc: '首帧图片 base64 数据（不含 data URI 前缀），用于图生视频。也可在 content 中传入 input_image。' },
+                  { name: 'last_frame',       type: 'string',  desc: '尾帧图片 base64 数据（插值生成），与 first_frame 配合使用。' },
+                ].map((r) => (
+                  <tr key={r.name} className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">{r.name}</code></td>
+                    <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{r.type}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700">
+            <strong>图生视频说明：</strong>可在 <code>input</code> 的 content 中传入 <code>input_image</code>（base64 格式），
+            第一张图片作为首帧，第二张（如有）作为尾帧。也可以通过 tool 参数中的 <code>first_frame</code> / <code>last_frame</code> 传入纯 base64 数据。
+          </div>
+        </SectionCard>
+
         {/* Response format */}
         <div id="response-format" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800">响应格式</h3>
-            <p className="text-sm text-slate-500 mt-1">output 包含 video_generation_call 类型的输出项，result 为视频 URL。</p>
+            <p className="text-sm text-slate-500 mt-1">output 包含 video_generation_call 类型的输出项，result 为视频 URL 或 URI。</p>
           </div>
           <div className="p-6">
             <CodeBlock code={VIDEO_GENERATION_RESPONSE} />
