@@ -85,15 +85,6 @@ const IMAGES_RESPONSE = `{
   "output_format": "png"
 }`;
 
-const IMAGES_B64_REQUEST = `{
-  "model": "seedream-5.0",
-  "prompt": "一幅水墨画风格的山水画",
-  "n": 1,
-  "size": "1024x1024",
-  "response_format": "b64_json",
-  "output_format": "png"
-}`;
-
 const IMAGES_B64_RESPONSE = `{
   "created": 1712345678,
   "data": [
