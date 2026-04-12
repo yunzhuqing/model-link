@@ -131,7 +131,7 @@ def has_image_generation_tool(request: ChatRequest) -> bool:
     meta = request.metadata
     return any(k in meta for k in (
         'size', 'number', 'image_format', 'response_format',
-        'seed', 'watermark', 'reference_images',
+        'seed', 'watermark',
     ))
 
 

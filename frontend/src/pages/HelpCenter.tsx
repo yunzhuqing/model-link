@@ -89,7 +89,7 @@ const generationItems: GenerationItem[] = [
     icon: <ImageIcon className="w-5 h-5 text-white" />,
     iconBg: 'from-pink-500 to-rose-600',
     title: '图片生成',
-    description: '通过 image_generation 工具触发图片生成，支持文本描述生图及图生图，返回图片 URL 或 base64。',
+    description: '支持 Responses API image_generation 工具（推荐）、/v1/images/generations 和 /v1/images/edits 三种方式，文生图、图编辑，返回 URL 或 base64。',
     badge: 'image_generation',
     badgeColor: 'bg-pink-100 text-pink-700',
   },

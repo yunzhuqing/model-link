@@ -684,6 +684,188 @@ def create_embeddings():
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
 
+# ============== Images Generations API ==============
+
+@gateway_bp.route('/v1/images/generations', methods=['POST'])
+def create_images():
+    """
+    OpenAI-compatible image generation endpoint.
+
+    Request body:
+    {
+        "model": "seedream-5.0",
+        "prompt": "A cute cat",
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "url",        // "url" or "b64_json"
+        "output_format": "png",           // "png", "jpeg", "webp"
+        "quality": "standard",            // optional
+        "style": "vivid",                 // optional
+        "user": "user-id"                 // optional
+    }
+
+    Response:
+    {
+        "created": 1234567890,
+        "data": [
+            {"url": "https://...", "revised_prompt": "..."},
+            // or {"b64_json": "data:image/png;base64,..."}
+        ],
+        "output_format": "png"
+    }
+    """
+    # 1. 认证
+    user, api_key, error, status = get_current_user_or_api_key()
+    if error:
+        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+
+    # 2. 获取请求数据
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+
+    model_name = data.get('model')
+    if not model_name:
+        return jsonify({'detail': 'Model is required'}), 400
+
+    prompt = data.get('prompt')
+    if not prompt:
+        return jsonify({'detail': 'Prompt is required'}), 400
+
+    # 3. 提取参数
+    images = data.get('images')  # optional list of {"image_url": "..."}
+    n = data.get('n', 1)
+    size = data.get('size', '1024x1024')
+    response_format = data.get('response_format', 'url')
+    output_format = data.get('output_format', 'png')
+    quality = data.get('quality')
+    style = data.get('style')
+    user_id = data.get('user')
+
+    # 4. 获取组 ID（用于访问控制）
+    group_id = api_key.group_id if api_key else None
+
+    # 5. 调用中间层
+    try:
+        result = _gateway_service.generate_images(
+            model_name=model_name,
+            prompt=prompt,
+            images=images,
+            n=n,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            quality=quality,
+            style=style,
+            user=user_id,
+            group_id=group_id,
+        )
+        return jsonify(result)
+    except ModelNotFoundError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except GatewayServiceError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except ProviderError as e:
+        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
+
+
+# ============== Images Edits API ==============
+
+@gateway_bp.route('/v1/images/edits', methods=['POST'])
+def edit_images():
+    """
+    OpenAI-compatible image editing endpoint.
+
+    Request body:
+    {
+        "model": "gpt-image-1",
+        "prompt": "Add a red hat to the person",
+        "images": [{"image_url": "https://..."}],
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "url",
+        "output_format": "png",
+        "quality": "auto",
+        "background": "auto",
+        "input_fidelity": "high",
+        "mask": {"image_url": "https://..."},
+        "moderation": "auto",
+        "user": "user-id"
+    }
+
+    Response:
+    {
+        "created": 1234567890,
+        "data": [
+            {"url": "https://...", "revised_prompt": "..."}
+        ],
+        "output_format": "png",
+        "size": "1024x1024",
+        "quality": "auto",
+        "background": "opaque"
+    }
+    """
+    # 1. 认证
+    user, api_key, error, status = get_current_user_or_api_key()
+    if error:
+        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+
+    # 2. 获取请求数据
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+
+    model_name = data.get('model')
+    if not model_name:
+        return jsonify({'detail': 'Model is required'}), 400
+
+    prompt = data.get('prompt')
+    if not prompt:
+        return jsonify({'detail': 'Prompt is required'}), 400
+
+    # 3. 提取参数
+    images = data.get('images')  # list of {"image_url": "...", "file_id": "..."}
+    mask = data.get('mask')      # {"image_url": "...", "file_id": "..."}
+    n = data.get('n', 1)
+    size = data.get('size', '1024x1024')
+    response_format = data.get('response_format', 'url')
+    output_format = data.get('output_format', 'png')
+    quality = data.get('quality')
+    background = data.get('background')
+    input_fidelity = data.get('input_fidelity')
+    moderation = data.get('moderation')
+    user_id = data.get('user')
+
+    # 4. 获取组 ID（用于访问控制）
+    group_id = api_key.group_id if api_key else None
+
+    # 5. 调用中间层
+    try:
+        result = _gateway_service.edit_images(
+            model_name=model_name,
+            prompt=prompt,
+            images=images,
+            mask=mask,
+            n=n,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            quality=quality,
+            background=background,
+            input_fidelity=input_fidelity,
+            moderation=moderation,
+            user=user_id,
+            group_id=group_id,
+        )
+        return jsonify(result)
+    except ModelNotFoundError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except GatewayServiceError as e:
+        return jsonify({'detail': e.message}), e.status_code
+    except ProviderError as e:
+        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
+
+
 # ============== Rerank API ==============
 
 @gateway_bp.route('/v1/rerank', methods=['POST'])

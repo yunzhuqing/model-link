@@ -545,7 +545,6 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 #   image_format     – image file format: "png" (default) or "jpg"
                 #   seed             – random seed for reproducibility
                 #   watermark        – bool, whether to add a watermark
-                #   reference_images – list of image URLs for image-to-image generation
                 img_metadata = {}
 
                 size = tool_data.get('size')
@@ -572,12 +571,6 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 watermark = tool_data.get('watermark')
                 if watermark is not None:
                     img_metadata['watermark'] = bool(watermark)
-
-                reference_images = tool_data.get('reference_images') or tool_data.get('image')
-                if reference_images:
-                    if isinstance(reference_images, str):
-                        reference_images = [reference_images]
-                    img_metadata['reference_images'] = reference_images
 
                 # Accumulate image generation params; we'll merge into metadata below.
                 accumulated_img_metadata.update(img_metadata)

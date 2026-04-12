@@ -34,7 +34,7 @@ from app.abstraction.chat import (
     FinishReason,
     UsageInfo,
 )
-from app.abstraction.messages import Message, MessageRole
+from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.utils import gen_id
 from app.providers.image_size_utils import resolve_image_size
@@ -110,8 +110,7 @@ def has_image_generation_tool(request: ChatRequest) -> bool:
     meta = request.metadata
     return any(k in meta for k in (
         "size", "number", "image_format", "response_format",
-        "seed", "watermark", "reference_images",
-        "aspect_ratio", "resolution",
+        "seed", "watermark", "aspect_ratio", "resolution",
     ))
 
 
@@ -627,9 +626,13 @@ def execute_tencentvod_image_generation(
     # Parse model name / version
     model_name, model_version = _parse_model_name_version(model)
 
-    # Extract prompt from the last user message
+    # Extract prompt and reference images from the last user message.
+    # Reference images are passed as IMAGE_URL / IMAGE_BASE64 content blocks.
     prompt = ""
     negative_prompt = metadata.get("negative_prompt", "")
+    msg_file_urls: List[str] = []   # image URLs extracted from message content
+    msg_file_ids: List[str] = []    # file IDs (non-URL strings) from message content
+
     for msg in reversed(messages):
         role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
         if role == "user":
@@ -638,7 +641,19 @@ def execute_tencentvod_image_generation(
             elif isinstance(msg.content, list):
                 text_parts = []
                 for block in msg.content:
-                    if hasattr(block, "text") and block.text:
+                    if isinstance(block, ContentBlock):
+                        if block.type == ContentType.TEXT and block.text:
+                            text_parts.append(block.text)
+                        elif block.type == ContentType.IMAGE_URL and block.url:
+                            if block.url.startswith("http"):
+                                msg_file_urls.append(block.url)
+                            else:
+                                msg_file_ids.append(block.url)
+                        elif block.type == ContentType.IMAGE_BASE64 and block.data:
+                            # Base64 images cannot be sent as FileId/Url to TencentVOD;
+                            # skip silently (or could upload to VOD first if needed).
+                            pass
+                    elif hasattr(block, "text") and block.text:
                         text_parts.append(block.text)
                 prompt = " ".join(text_parts)
             break
@@ -661,10 +676,10 @@ def execute_tencentvod_image_generation(
         resolution=str(metadata.get("resolution", "") or ""),
     )
 
-    # Reference images from metadata
-    reference_images: List[str] = metadata.get("reference_images") or []
-    file_urls = [img for img in reference_images if img.startswith("http")]
-    file_ids = [img for img in reference_images if not img.startswith("http")]
+    # Reference images: merge from message content blocks (primary source)
+    # and any legacy metadata entries.
+    file_urls: List[str] = msg_file_urls[:]
+    file_ids: List[str] = msg_file_ids[:]
 
     # Session id
     session_id = metadata.get("session_id", "")

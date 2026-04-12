@@ -593,6 +593,268 @@ class GatewayService:
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
+    def generate_images(
+        self,
+        model_name: str,
+        prompt: str,
+        images: Optional[list] = None,
+        n: int = 1,
+        size: str = "1024x1024",
+        response_format: str = "url",
+        output_format: str = "png",
+        quality: Optional[str] = None,
+        style: Optional[str] = None,
+        user: Optional[str] = None,
+        group_id: Optional[int] = None,
+    ) -> dict:
+        """
+        Execute image generation and return an OpenAI-compatible response.
+
+        Builds a ``ChatRequest`` with image-generation metadata, routes it
+        through the standard provider pipeline (which already knows how to
+        detect image-generation models and metadata), then converts the
+        ``ChatResponse`` to OpenAI ``/v1/images/generations`` format.
+
+        Args:
+            model_name: Model name or alias.
+            prompt: Text description for the image to generate.
+            n: Number of images to generate.
+            size: Output image dimensions (e.g. "1024x1024").
+            response_format: "url" or "b64_json".
+            output_format: Image file format: "png", "jpeg", "webp".
+            quality: Quality tier (provider-specific).
+            style: Style preset (provider-specific).
+            user: Optional end-user identifier.
+            group_id: Optional group ID for access control.
+
+        Returns:
+            Dict matching the OpenAI images response schema::
+
+                {
+                    "created": <unix_ts>,
+                    "data": [{"url": "...", "b64_json": "...", "revised_prompt": "..."}],
+                    "output_format": "png"
+                }
+
+        Raises:
+            ModelNotFoundError, GatewayServiceError, ProviderError
+        """
+        import json as _json
+        from app.abstraction.messages import Message, MessageRole, ContentBlock
+
+        # Build message content: text prompt + optional reference images
+        if images:
+            content_blocks: list = [ContentBlock.from_text(prompt)]
+            for img in images:
+                img_url = img.get("image_url") or img.get("url")
+                if img_url:
+                    content_blocks.append(ContentBlock.from_image_url(img_url))
+            messages = [Message(role=MessageRole.USER, content=content_blocks)]
+        else:
+            messages = [Message(role=MessageRole.USER, content=prompt)]
+
+        # These metadata keys are the same ones the Responses-API adapter sets
+        # when it parses an ``image_generation`` tool.  Providers detect them
+        # via ``has_image_generation_tool()`` and route to their image-gen path.
+        metadata: dict = {
+            "size": size,
+            "number": n,
+            "response_format": response_format,
+            "image_format": output_format,
+        }
+
+        chat_request = ChatRequest(
+            messages=messages,
+            model=model_name,
+            metadata=metadata,
+            user=user,
+        )
+
+        # Route through the standard chat pipeline.
+        # Providers that support image generation (Volcengine, Bailian, Gemini,
+        # …) will detect the metadata and call their image-gen API.
+        try:
+            chat_response = self.chat(chat_request, group_id)
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+
+        # ── Convert ChatResponse → OpenAI images format ──────────────
+        data: list = []
+        if chat_response.choices and chat_response.choices[0].message:
+            msg = chat_response.choices[0].message
+            # Message.__post_init__ converts string content to
+            # [ContentBlock.from_text(...)], so msg.content is always a list.
+            # Use get_text_content() to retrieve the JSON string.
+            text_content = msg.get_text_content()
+            if text_content:
+                try:
+                    items = _json.loads(text_content)
+                    if not isinstance(items, list):
+                        items = [items]
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        result = item.get("result", "")
+                        img_entry: dict = {}
+                        if result.startswith("data:"):
+                            img_entry["b64_json"] = result
+                        elif result:
+                            img_entry["url"] = result
+                        revised = item.get("revised_prompt")
+                        if revised:
+                            img_entry["revised_prompt"] = revised
+                        if img_entry:
+                            data.append(img_entry)
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+
+        return {
+            "created": chat_response.created,
+            "data": data,
+            "output_format": output_format,
+        }
+
+    def edit_images(
+        self,
+        model_name: str,
+        prompt: str,
+        images: Optional[list] = None,
+        mask: Optional[dict] = None,
+        n: int = 1,
+        size: str = "1024x1024",
+        response_format: str = "url",
+        output_format: str = "png",
+        quality: Optional[str] = None,
+        background: Optional[str] = None,
+        input_fidelity: Optional[str] = None,
+        moderation: Optional[str] = None,
+        user: Optional[str] = None,
+        group_id: Optional[int] = None,
+    ) -> dict:
+        """
+        Execute image editing and return an OpenAI-compatible response.
+
+        Builds a ``ChatRequest`` with image-editing metadata (including
+        reference images and mask), routes it through the standard provider
+        pipeline, then converts the ``ChatResponse`` to the OpenAI
+        ``/v1/images/edits`` response format.
+
+        Args:
+            model_name: Model name or alias.
+            prompt: Text description for how to edit the image.
+            images: List of input images, each dict may contain
+                ``image_url`` (str) and/or ``file_id`` (str).
+            mask: Optional mask image dict with ``image_url`` / ``file_id``.
+            n: Number of images to generate.
+            size: Output image dimensions (e.g. "1024x1024").
+            response_format: "url" or "b64_json".
+            output_format: Image file format: "png", "jpeg", "webp".
+            quality: Quality tier (provider-specific).
+            background: "transparent", "opaque", or "auto".
+            input_fidelity: "high" or "low".
+            moderation: "low" or "auto".
+            user: Optional end-user identifier.
+            group_id: Optional group ID for access control.
+
+        Returns:
+            Dict matching the OpenAI images/edits response schema.
+
+        Raises:
+            ModelNotFoundError, GatewayServiceError, ProviderError
+        """
+        import json as _json
+        from app.abstraction.messages import Message, MessageRole, ContentBlock
+
+        # Build message content: text prompt + reference images
+        content_blocks: list = [ContentBlock.from_text(prompt)]
+
+        if images:
+            for img in images:
+                img_url = img.get("image_url") or img.get("url")
+                if img_url:
+                    content_blocks.append(ContentBlock.from_image_url(img_url))
+
+        messages = [Message(role=MessageRole.USER, content=content_blocks)]
+
+        # Metadata keys recognised by image-generation providers
+        metadata: dict = {
+            "size": size,
+            "number": n,
+            "response_format": response_format,
+            "image_format": output_format,
+        }
+
+        # Image-editing specific metadata
+        if quality:
+            metadata["quality"] = quality
+        if background:
+            metadata["background"] = background
+        if input_fidelity:
+            metadata["input_fidelity"] = input_fidelity
+        if moderation:
+            metadata["moderation"] = moderation
+        if mask:
+            metadata["mask"] = mask
+
+        chat_request = ChatRequest(
+            messages=messages,
+            model=model_name,
+            metadata=metadata,
+            user=user,
+        )
+
+        # Route through the standard chat pipeline
+        try:
+            chat_response = self.chat(chat_request, group_id)
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+
+        # ── Convert ChatResponse → OpenAI images/edits format ────────
+        data: list = []
+        if chat_response.choices and chat_response.choices[0].message:
+            msg = chat_response.choices[0].message
+            text_content = msg.get_text_content()
+            if text_content:
+                try:
+                    items = _json.loads(text_content)
+                    if not isinstance(items, list):
+                        items = [items]
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        result = item.get("result", "")
+                        img_entry: dict = {}
+                        if result.startswith("data:"):
+                            img_entry["b64_json"] = result
+                        elif result:
+                            img_entry["url"] = result
+                        revised = item.get("revised_prompt")
+                        if revised:
+                            img_entry["revised_prompt"] = revised
+                        if img_entry:
+                            data.append(img_entry)
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+
+        result_dict: dict = {
+            "created": chat_response.created,
+            "data": data,
+            "output_format": output_format,
+            "size": size,
+        }
+        if quality:
+            result_dict["quality"] = quality
+        if background and background != "auto":
+            result_dict["background"] = background
+
+        return result_dict
+
     @staticmethod
     def _parse_provider_error(error: RuntimeError) -> Tuple[int, Optional[dict]]:
         """

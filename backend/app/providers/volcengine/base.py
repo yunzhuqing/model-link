@@ -481,9 +481,9 @@ class VolcengineProvider(BaseProvider):
         """
         Execute image generation directly from a ChatRequest.
 
-        Extracts the prompt from the last user message and any optional
-        image generation parameters from the request metadata, then calls
-        the image generation API directly.
+        Extracts the prompt and reference images from the last user message,
+        plus any optional image generation parameters from the request metadata,
+        then calls the image generation API directly.
 
         Args:
             request: ChatRequest with the image generation prompt
@@ -491,17 +491,26 @@ class VolcengineProvider(BaseProvider):
         Returns:
             ChatResponse with generated image(s)
         """
-        # Extract prompt from the last user message
+        # Extract prompt and reference images from the last user message
         prompt = ""
+        reference_images: List[str] = []
+
         for msg in reversed(request.messages):
             if msg.role == MessageRole.USER:
                 if isinstance(msg.content, str):
                     prompt = msg.content
                 elif isinstance(msg.content, list):
                     for block in msg.content:
-                        if isinstance(block, ContentBlock) and block.type == ContentType.TEXT:
-                            prompt = block.text or ""
-                            break
+                        if isinstance(block, ContentBlock):
+                            if block.type == ContentType.TEXT and block.text and not prompt:
+                                prompt = block.text
+                            elif block.type == ContentType.IMAGE_URL and block.url:
+                                reference_images.append(block.url)
+                            elif block.type == ContentType.IMAGE_BASE64 and block.data:
+                                # Convert base64 to data URI for the API
+                                mime = block.media_type or "image/jpeg"
+                                data_uri = f"data:{mime};base64,{block.data}"
+                                reference_images.append(data_uri)
                 if prompt:
                     break
 
@@ -516,8 +525,6 @@ class VolcengineProvider(BaseProvider):
         image_format = request.metadata.get('image_format', 'png')
         seed = request.metadata.get('seed')
         watermark = request.metadata.get('watermark', False)
-        # reference_images: list of image URLs for image-to-image generation
-        reference_images = request.metadata.get('reference_images')
 
         return self.execute_image_generation(
             model=request.model,
@@ -528,7 +535,7 @@ class VolcengineProvider(BaseProvider):
             image_format=image_format,
             seed=seed,
             watermark=watermark,
-            reference_images=reference_images,
+            reference_images=reference_images if reference_images else None,
         )
 
     def _stream_image_generation(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
@@ -778,7 +785,7 @@ class VolcengineProvider(BaseProvider):
     ) -> Optional[StreamChunk]:
         """Parse a single Responses API SSE event into a StreamChunk.
 
-        Volcengine Responses API event sequence:
+        Volcengine Responses API event sequence:    
         1. response.created
         2. response.in_progress
         3. response.output_item.added (type=message, role=assistant)

@@ -3,10 +3,12 @@
 
 豆包图像生成模型可以通过 Responses API 作为 image_generation 类型的工具进行调用。
 支持的模型包括：
-- doubao-seedream-3.0-t2i: Text-to-Image
-- doubao-seededit-3.0-i2i: Image-to-Image 编辑
 - doubao-seedream-4.0/4.5/5.0: 支持顺序图像生成
 - seedream-4.0/4.5/5.0: 同上（无 doubao 前缀）
+
+已废弃（不再支持）：
+- doubao-seedream-3.0-t2i
+- doubao-seededit-3.0-i2i
 
 API 文档: https://www.volcengine.com/docs/82379/181798
 """
@@ -37,26 +39,8 @@ class DoubaoImageModel:
     support_sequential_image: bool = False  # 是否支持顺序图像生成（多轮对话）
 
 
-# 豆包图像生成模型列表
+# 豆包图像生成模型列表（已废弃：doubao-seedream-3.0-t2i、doubao-seededit-3.0-i2i）
 DOUBAO_IMAGE_MODELS: List[DoubaoImageModel] = [
-    DoubaoImageModel(
-        model_name="doubao-seedream-3.0-t2i",
-        display_name="Seedream 3.0 Text-to-Image",
-        tool_name="image_generation_doubao_seedream_3_0_t2i",
-        description="豆包 Seedream 3.0 文生图模型，支持高质量文字渲染和海报生成",
-        support_seed=True,
-        support_guidance_scale=True,
-        default_guidance_scale=2.5,
-    ),
-    DoubaoImageModel(
-        model_name="doubao-seededit-3.0-i2i",
-        display_name="Seededit 3.0 Image-to-Image",
-        tool_name="image_generation_doubao_seededit_3_0_i2i",
-        description="豆包 Seededit 3.0 图生图编辑模型，支持自然语言图像编辑",
-        support_seed=True,
-        support_guidance_scale=True,
-        default_guidance_scale=5.5,
-    ),
     DoubaoImageModel(
         model_name="doubao-seedream-4.0",
         display_name="Seedream 4.0",
