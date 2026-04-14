@@ -3,6 +3,7 @@ Database models for Flask-SQLAlchemy.
 """
 from datetime import datetime
 from app import db
+import hashlib
 
 
 class BackgroundResponse(db.Model):
@@ -440,4 +441,137 @@ class Model(db.Model):
             'support_online_image': self.support_online_image,
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding
+        }
+
+
+class UsageRecord(db.Model):
+    """
+    Records the token consumption details for each API request.
+
+    This table captures detailed billing information for every request
+    processed by the gateway, including user identity, API key, model,
+    provider, and all token/resource usage metrics.
+    """
+    __tablename__ = "ml_usage_records"
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+
+    # ── Identity ────────────────────────────────────────────────────────────
+    # Human-readable user name (from JWT); null for API-key-only requests
+    user_name = db.Column(db.String(100), nullable=True, index=True)
+
+    # Group info (from API key's group)
+    group_id = db.Column(db.Integer, nullable=True, index=True)
+    group_name = db.Column(db.String(100), nullable=True, index=True)
+
+    # API Key (SHA-256 hashed for privacy; first 8 chars stored for display)
+    api_key_hash = db.Column(db.String(64), nullable=True, index=True)   # SHA-256 hex
+    api_key_preview = db.Column(db.String(20), nullable=True)            # e.g. "sk-abc...xyz"
+    api_key_name = db.Column(db.String(100), nullable=True)
+
+    # ── Model / Provider ───────────────────────────────────────────────────
+    model_name = db.Column(db.String(200), nullable=True, index=True)
+    provider_id = db.Column(db.Integer, nullable=True, index=True)
+    provider_name = db.Column(db.String(100), nullable=True, index=True)
+
+    # ── Text token usage ───────────────────────────────────────────────────
+    input_tokens = db.Column(db.BigInteger, default=0)
+    input_price_unit = db.Column(db.Float, default=0.0)   # $ per 1M tokens
+
+    output_tokens = db.Column(db.BigInteger, default=0)
+    output_price_unit = db.Column(db.Float, default=0.0)  # $ per 1M tokens
+
+    # Cache creation (Anthropic prompt caching write)
+    cache_creation_tokens = db.Column(db.BigInteger, default=0)
+    cache_creation_price_unit = db.Column(db.Float, default=0.0)
+
+    # Cache hit (Anthropic prompt caching read / OpenAI cached_tokens)
+    cache_tokens = db.Column(db.BigInteger, default=0)
+    cache_token_price_unit = db.Column(db.Float, default=0.0)
+
+    # Reasoning / thinking tokens (inside output)
+    reasoning_tokens = db.Column(db.BigInteger, default=0)
+
+    # ── Image output ───────────────────────────────────────────────────────
+    output_image_number = db.Column(db.Integer, default=0)
+    output_image_tokens = db.Column(db.BigInteger, default=0)
+    output_image_resolution = db.Column(db.String(50), nullable=True)  # e.g. "1024x1024"
+    output_image_aspect = db.Column(db.String(20), nullable=True)      # e.g. "1:1"
+    output_image_price_unit = db.Column(db.Float, default=0.0)        # $ per image
+
+    # ── Video output ───────────────────────────────────────────────────────
+    output_video_number = db.Column(db.Integer, default=0)
+    output_video_tokens = db.Column(db.BigInteger, default=0)
+    output_video_resolution = db.Column(db.String(50), nullable=True)
+    output_video_aspect = db.Column(db.String(20), nullable=True)
+    output_video_seconds = db.Column(db.Float, default=0.0)
+    output_video_price_unit = db.Column(db.Float, default=0.0)
+
+    # ── Audio output ───────────────────────────────────────────────────────
+    output_audio_tokens = db.Column(db.BigInteger, default=0)
+    output_audio_seconds = db.Column(db.Float, default=0.0)
+    output_audio_price_unit = db.Column(db.Float, default=0.0)
+
+    # ── Web search ─────────────────────────────────────────────────────────
+    web_search_requests = db.Column(db.Integer, default=0)
+    web_search_price_unit = db.Column(db.Float, default=0.0)  # $ per search request
+
+    # ── Timestamp ──────────────────────────────────────────────────────────
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    @staticmethod
+    def _mask_key(raw_key: str) -> str:
+        """Return a masked preview: first 5 + last 4 chars, middle replaced by '...'"""
+        if not raw_key or len(raw_key) <= 9:
+            return raw_key or ''
+        return raw_key[:5] + '...' + raw_key[-4:]
+
+    @staticmethod
+    def _hash_key(raw_key: str) -> str:
+        return hashlib.sha256(raw_key.encode()).hexdigest()
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_name': self.user_name,
+            'group_id': self.group_id,
+            'group_name': self.group_name,
+            'api_key_hash': self.api_key_hash,
+            'api_key_preview': self.api_key_preview,
+            'api_key_name': self.api_key_name,
+            'model_name': self.model_name,
+            'provider_id': self.provider_id,
+            'provider_name': self.provider_name,
+            # Text tokens
+            'input_tokens': self.input_tokens,
+            'input_price_unit': self.input_price_unit,
+            'output_tokens': self.output_tokens,
+            'output_price_unit': self.output_price_unit,
+            'cache_creation_tokens': self.cache_creation_tokens,
+            'cache_creation_price_unit': self.cache_creation_price_unit,
+            'cache_tokens': self.cache_tokens,
+            'cache_token_price_unit': self.cache_token_price_unit,
+            'reasoning_tokens': self.reasoning_tokens,
+            # Image
+            'output_image_number': self.output_image_number,
+            'output_image_tokens': self.output_image_tokens,
+            'output_image_resolution': self.output_image_resolution,
+            'output_image_aspect': self.output_image_aspect,
+            'output_image_price_unit': self.output_image_price_unit,
+            # Video
+            'output_video_number': self.output_video_number,
+            'output_video_tokens': self.output_video_tokens,
+            'output_video_resolution': self.output_video_resolution,
+            'output_video_aspect': self.output_video_aspect,
+            'output_video_seconds': self.output_video_seconds,
+            'output_video_price_unit': self.output_video_price_unit,
+            # Audio
+            'output_audio_tokens': self.output_audio_tokens,
+            'output_audio_seconds': self.output_audio_seconds,
+            'output_audio_price_unit': self.output_audio_price_unit,
+            # Web search
+            'web_search_requests': self.web_search_requests,
+            'web_search_price_unit': self.web_search_price_unit,
+            # Timestamp
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }

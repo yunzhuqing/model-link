@@ -14,7 +14,7 @@ AI Gateway API 路由层
   - 具体使用哪个供应商（由中间层决定）
   - 供应商 API 的差异（由供应商层处理）
 """
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, Response, current_app
 from datetime import datetime
 from typing import Optional
 import json
@@ -170,12 +170,78 @@ def _handle_request(adapter):
     # 5. 调用中间层
     try:
         if chat_request.stream:
-            # 流式请求
-            chunks = _gateway_service.stream_chat(chat_request, group_id)
-            return adapter.create_stream_response(chunks, model_name)
+            # ── Streaming path ────────────────────────────────────────────────
+            # Eagerly extract all identity info from ORM objects BEFORE
+            # stream_chat_ex() removes the DB session.
+            _user_name = user.username if user else None
+            _api_key_raw = api_key.key if api_key else None
+            _api_key_name = api_key.name if api_key else None
+            _api_key_group_id = api_key.group_id if api_key else None
+            _api_key_group_name: Optional[str] = None
+            if api_key:
+                try:
+                    if api_key.group:
+                        _api_key_group_name = api_key.group.name
+                except Exception:
+                    pass
+
+            # stream_chat_ex returns (generator, model_meta) and releases the DB
+            # session before any streaming begins.
+            chunks, model_meta = _gateway_service.stream_chat_ex(chat_request, group_id)
+
+            # Wrap the chunks to accumulate the final UsageInfo and record it
+            # after the stream finishes (fire-and-forget background thread).
+            _app = current_app._get_current_object()
+
+            def _chunks_with_usage_recording():
+                last_usage = None
+                try:
+                    for chunk in chunks:
+                        if chunk.usage is not None:
+                            last_usage = chunk.usage
+                        yield chunk
+                finally:
+                    if last_usage is not None:
+                        try:
+                            from app.usage_service import record_stream_usage
+                            record_stream_usage(
+                                app=_app,
+                                usage_info=last_usage,
+                                user_name=_user_name,
+                                api_key_raw=_api_key_raw,
+                                api_key_name=_api_key_name,
+                                api_key_group_id=_api_key_group_id,
+                                api_key_group_name=_api_key_group_name,
+                                model_name=model_name,
+                                provider_id=model_meta.get('provider_id'),
+                                provider_name=model_meta.get('provider_name'),
+                                input_price_unit=model_meta.get('input_price_unit', 0.0),
+                                output_price_unit=model_meta.get('output_price_unit', 0.0),
+                                cache_creation_price_unit=model_meta.get('cache_creation_price_unit', 0.0),
+                                cache_token_price_unit=model_meta.get('cache_token_price_unit', 0.0),
+                            )
+                        except Exception as _ue:
+                            logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
+
+            return adapter.create_stream_response(_chunks_with_usage_recording(), model_name)
+
         else:
-            # 非流式请求
-            response = _gateway_service.chat(chat_request, group_id)
+            # 非流式请求 — use chat_ex() to get resolved model for usage recording
+            response, resolved = _gateway_service.chat_ex(chat_request, group_id)
+            # Record usage asynchronously (fire-and-forget)
+            try:
+                from app.usage_service import record_usage
+                record_usage(
+                    app=current_app._get_current_object(),
+                    response=response,
+                    db_model=resolved.db_model,
+                    db_provider=resolved.db_provider,
+                    api_key=api_key,
+                    user=user,
+                    request_model_name=model_name,
+                )
+            except Exception as _ue:
+                logger.warning(f"[usage] Failed to trigger usage recording: {_ue}")
             return jsonify(adapter.format_response(response))
 
     except ProviderError as e:
@@ -455,8 +521,53 @@ def openai_responses():
 
     try:
         if chat_request.stream:
-            chunks = _gateway_service.stream_chat(chat_request, group_id)
-            return adapter.create_stream_response(chunks, model_name)
+            # Eagerly extract identity primitives before session is released
+            _user_name = user.username if user else None
+            _api_key_raw = api_key.key if api_key else None
+            _api_key_name = api_key.name if api_key else None
+            _api_key_group_id = api_key.group_id if api_key else None
+            _api_key_group_name: Optional[str] = None
+            if api_key:
+                try:
+                    if api_key.group:
+                        _api_key_group_name = api_key.group.name
+                except Exception:
+                    pass
+
+            chunks, model_meta = _gateway_service.stream_chat_ex(chat_request, group_id)
+            _app = current_app._get_current_object()
+
+            def _resp_chunks_with_usage():
+                last_usage = None
+                try:
+                    for chunk in chunks:
+                        if chunk.usage is not None:
+                            last_usage = chunk.usage
+                        yield chunk
+                finally:
+                    if last_usage is not None:
+                        try:
+                            from app.usage_service import record_stream_usage
+                            record_stream_usage(
+                                app=_app,
+                                usage_info=last_usage,
+                                user_name=_user_name,
+                                api_key_raw=_api_key_raw,
+                                api_key_name=_api_key_name,
+                                api_key_group_id=_api_key_group_id,
+                                api_key_group_name=_api_key_group_name,
+                                model_name=model_name,
+                                provider_id=model_meta.get('provider_id'),
+                                provider_name=model_meta.get('provider_name'),
+                                input_price_unit=model_meta.get('input_price_unit', 0.0),
+                                output_price_unit=model_meta.get('output_price_unit', 0.0),
+                                cache_creation_price_unit=model_meta.get('cache_creation_price_unit', 0.0),
+                                cache_token_price_unit=model_meta.get('cache_token_price_unit', 0.0),
+                            )
+                        except Exception as _ue:
+                            logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
+
+            return adapter.create_stream_response(_resp_chunks_with_usage(), model_name)
         else:
             response = _gateway_service.chat(chat_request, group_id)
             return jsonify(adapter.format_response(response))

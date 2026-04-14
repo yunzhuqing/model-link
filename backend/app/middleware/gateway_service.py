@@ -11,7 +11,7 @@
   3. 请求执行 - 调用供应商 API 并返回统一格式的响应
   4. 错误处理 - 统一处理供应商层的错误
 """
-from typing import Optional, Generator, Tuple
+from typing import Optional, Generator, Tuple, Callable
 from dataclasses import dataclass
 import httpx
 
@@ -143,6 +143,58 @@ class GatewayService:
             real_model_name=db_model.name
         )
 
+    def chat_ex(
+        self, request: ChatRequest, group_id: Optional[int] = None
+    ) -> Tuple[ChatResponse, ResolvedModel]:
+        """
+        Same as chat() but also returns the ResolvedModel so callers can
+        record usage with the exact provider/model metadata.
+
+        Returns:
+            (ChatResponse, ResolvedModel)
+        """
+        # 1. 解析模型
+        resolved = self.resolve_model(request.model, group_id)
+
+        # 2. 替换为真实模型名称
+        request.model = resolved.real_model_name
+
+        # 2.5. 传递模型特性标志到请求元数据
+        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
+
+        # 2.6. Convert image URLs to base64 if provider doesn't support online images
+        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
+        if not support_online_image:
+            self._convert_image_urls_to_base64(request)
+
+        # 2.7. Convert video URLs to base64 if provider doesn't support online videos
+        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
+        if not support_online_video:
+            self._convert_video_urls_to_base64(request)
+
+        # 3. 调用供应商 API
+        try:
+            response = resolved.provider_instance.chat(request)
+
+            if not self._should_include_reasoning(request):
+                for choice in response.choices:
+                    choice.reasoning_content = None
+                    if choice.message:
+                        choice.message.reasoning_content = None
+
+            return response, resolved
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+            raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
+        except httpx.HTTPError as e:
+            raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
+        except Exception as e:
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+
     def chat(self, request: ChatRequest, group_id: Optional[int] = None) -> ChatResponse:
         """
         执行非流式对话请求。
@@ -253,6 +305,26 @@ class GatewayService:
         # 2.8. 判断是否应包含推理内容（在生成器外部计算，避免惰性求值问题）
         include_reasoning = self._should_include_reasoning(request)
 
+        # 2.9. Release the DB session now that all model-resolution queries are done.
+        #
+        # During a streaming response the Flask request context (and therefore the
+        # SQLAlchemy scoped session) remains alive for the full duration of the
+        # stream.  When Flask finally tears down the app context it calls
+        # db.session.remove() which triggers a rollback on the still-open
+        # PyMySQL connection.  If the connection's packet-sequence counter has
+        # drifted (which happens with long-lived connections under MySQL's binary
+        # protocol) this raises:
+        #   pymysql.err.InternalError: Packet sequence number wrong
+        #
+        # db.session.remove() closes the session AND removes it from the scoped
+        # registry, returning the underlying connection to the pool in a clean
+        # state.  Flask's subsequent session.remove() at teardown then finds no
+        # registered session and completes without error.
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+
         # 3. 返回惰性生成器（流式数据传输）
         def _stream():
             try:
@@ -275,6 +347,84 @@ class GatewayService:
                 raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
         return _stream()
+
+    def stream_chat_ex(
+        self, request: ChatRequest, group_id: Optional[int] = None
+    ) -> Tuple[Generator[StreamChunk, None, None], dict]:
+        """
+        Like stream_chat() but also returns a dict of pre-extracted primitive
+        values from the resolved model/provider for usage recording.
+
+        All ORM-object attribute reads happen *before* db.session.remove() is
+        called, so no cross-session lazy-loads can occur in the caller.
+
+        Returns:
+            (StreamChunk generator, model_meta dict)
+
+            model_meta keys:
+                provider_id, provider_name, model_alias, model_real_name,
+                input_price_unit, output_price_unit,
+                cache_creation_price_unit, cache_token_price_unit
+        """
+        # 1. Resolve model (DB access)
+        resolved = self.resolve_model(request.model, group_id)
+
+        # 2. Replace with real model name
+        request.model = resolved.real_model_name
+
+        # 3. Pass model capability flags
+        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
+
+        # 4. Convert image/video URLs if provider doesn't support them online
+        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
+        if not support_online_image:
+            self._convert_image_urls_to_base64(request)
+        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
+        if not support_online_video:
+            self._convert_video_urls_to_base64(request)
+
+        # 5. Determine reasoning flag
+        include_reasoning = self._should_include_reasoning(request)
+
+        # 6. Pre-extract all primitive values from ORM objects while session is open.
+        #    These will be passed to the usage recorder after db.session.remove().
+        model_meta: dict = {
+            'provider_id': resolved.db_provider.id,
+            'provider_name': resolved.db_provider.name,
+            'model_alias': resolved.db_model.alias,
+            'model_real_name': resolved.db_model.name,
+            'input_price_unit': getattr(resolved.db_model, 'input_price', 0.0) or 0.0,
+            'output_price_unit': getattr(resolved.db_model, 'output_price', 0.0) or 0.0,
+            'cache_creation_price_unit': getattr(resolved.db_model, 'cache_creation_price', 0.0) or 0.0,
+            'cache_token_price_unit': getattr(resolved.db_model, 'cache_hit_price', 0.0) or 0.0,
+        }
+
+        # 7. Release the DB session — same rationale as stream_chat()
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+
+        # 8. Return lazy generator + metadata
+        def _stream():
+            try:
+                for chunk in resolved.provider_instance.stream_chat(request):
+                    if not include_reasoning:
+                        chunk.delta_reasoning_content = None
+                    yield chunk
+            except ValueError as e:
+                raise GatewayServiceError(str(e), status_code=400)
+            except RuntimeError as e:
+                status_code, error_data = self._parse_provider_error(e)
+                raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+                raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
+            except httpx.HTTPError as e:
+                raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
+            except Exception as e:
+                raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+
+        return _stream(), model_meta
 
     @staticmethod
     def _should_include_reasoning(request: ChatRequest) -> bool:

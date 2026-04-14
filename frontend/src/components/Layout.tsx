@@ -11,6 +11,7 @@ import {
   LayoutTemplate,
   BookOpen,
   Layers,
+  BarChart3,
 } from 'lucide-react';
 
 interface SubNavItem {
@@ -30,6 +31,7 @@ const navItems: NavItem[] = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview & Statistics' },
   { path: '/groups', label: 'Groups', icon: Users, description: 'Manage Groups, API Keys & Providers' },
   { path: '/model-templates', label: 'Model Templates', icon: LayoutTemplate, description: 'Manage reusable model templates' },
+  { path: '/usage', label: 'Usage Analytics', icon: BarChart3, description: '查看 API 请求消耗统计' },
   {
     path: '/help',
     label: '帮助中心',
