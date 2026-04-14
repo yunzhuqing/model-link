@@ -516,6 +516,14 @@ class UsageRecord(db.Model):
     web_search_requests = db.Column(db.Integer, default=0)
     web_search_price_unit = db.Column(db.Float, default=0.0)  # $ per search request
 
+    # ── Currency / exchange rate ────────────────────────────────────────────
+    # Pricing currency of the model (e.g. "USD", "CNY"). Copied from Model.currency.
+    currency = db.Column(db.String(10), nullable=True, default='USD')
+    # USD→CNY exchange rate at the time of the request.
+    # When currency is already CNY this is 1.0.
+    # cost_cny ≈ native_cost * exchange_rate_to_cny
+    exchange_rate_to_cny = db.Column(db.Float, nullable=True, default=None)
+
     # ── Timestamp ──────────────────────────────────────────────────────────
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 

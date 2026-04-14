@@ -1,9 +1,23 @@
 """
 Usage Service - Records request consumption details to ml_usage_records.
 
-This module provides a single public function `record_usage()` that is called
-from the gateway routes after every successful API request. It runs in a
-background thread so it never blocks the response path.
+This module provides two public functions:
+  - record_usage()        – for completed non-streaming requests
+  - record_stream_usage() – for completed streaming requests
+
+Both are fire-and-forget: they spawn a daemon thread so the gateway response
+is never delayed by the DB write.
+
+Currency / exchange-rate handling
+----------------------------------
+Each usage record stores:
+  - currency            – pricing currency of the model ("USD", "CNY", …)
+  - exchange_rate_to_cny – USD→CNY rate at the time of the request
+                           (1.0 when currency is already CNY, so callers can
+                           always compute cost_cny = native_cost * exchange_rate)
+
+The exchange rate is read from the in-memory cache maintained by
+exchange_rate_service (refreshed daily from frankfurter.app).
 """
 from __future__ import annotations
 
@@ -16,6 +30,86 @@ if TYPE_CHECKING:
     from app.models import ApiKey, User, Provider, Model as DbModel
 
 logger = logging.getLogger("usage")
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def record_usage(
+    *,
+    app,
+    response: "ChatResponse",
+    db_model: "DbModel",
+    db_provider: "Provider",
+    api_key: Optional["ApiKey"] = None,
+    user: Optional["User"] = None,
+    request_model_name: str = "",
+) -> None:
+    """
+    Persist one UsageRecord row for a completed (non-streaming) request.
+
+    All data needed from SQLAlchemy ORM objects is extracted eagerly here
+    (in the request thread, while the session is still alive) and passed as
+    plain Python values to the background thread.  This avoids cross-thread
+    lazy-loading on a closed/detached session.
+    """
+    # ── Eagerly extract all primitive values from ORM objects ─────────────────
+    user_name: Optional[str] = user.username if user else None
+
+    api_key_raw: Optional[str] = None
+    api_key_name: Optional[str] = None
+    api_key_group_id: Optional[int] = None
+    api_key_group_name: Optional[str] = None
+
+    if api_key:
+        api_key_raw = api_key.key
+        api_key_name = api_key.name
+        api_key_group_id = api_key.group_id
+        try:
+            if api_key.group:
+                api_key_group_name = api_key.group.name
+        except Exception:
+            pass
+
+    provider_id: Optional[int] = db_provider.id if db_provider else None
+    provider_name: Optional[str] = db_provider.name if db_provider else None
+
+    model_name: Optional[str] = (
+        request_model_name
+        or (db_model.alias or db_model.name if db_model else None)
+    )
+
+    input_price_unit: float = getattr(db_model, 'input_price', 0.0) or 0.0
+    output_price_unit: float = getattr(db_model, 'output_price', 0.0) or 0.0
+    cache_creation_price_unit: float = getattr(db_model, 'cache_creation_price', 0.0) or 0.0
+    cache_token_price_unit: float = getattr(db_model, 'cache_hit_price', 0.0) or 0.0
+    currency: str = getattr(db_model, 'currency', 'USD') or 'USD'
+
+    # ── Determine exchange rate ────────────────────────────────────────────────
+    exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
+
+    thread = threading.Thread(
+        target=_persist_usage,
+        kwargs=dict(
+            app=app,
+            response=response,
+            user_name=user_name,
+            api_key_raw=api_key_raw,
+            api_key_name=api_key_name,
+            api_key_group_id=api_key_group_id,
+            api_key_group_name=api_key_group_name,
+            model_name=model_name,
+            provider_id=provider_id,
+            provider_name=provider_name,
+            input_price_unit=input_price_unit,
+            output_price_unit=output_price_unit,
+            cache_creation_price_unit=cache_creation_price_unit,
+            cache_token_price_unit=cache_token_price_unit,
+            currency=currency,
+            exchange_rate_to_cny=exchange_rate_to_cny,
+        ),
+        daemon=True,
+    )
+    thread.start()
 
 
 def record_stream_usage(
@@ -36,6 +130,8 @@ def record_stream_usage(
     output_price_unit: float = 0.0,
     cache_creation_price_unit: float = 0.0,
     cache_token_price_unit: float = 0.0,
+    # Currency (from model_meta dict)
+    currency: str = 'USD',
 ) -> None:
     """
     Persist one UsageRecord row for a completed streaming request.
@@ -43,22 +139,11 @@ def record_stream_usage(
     Called after the stream finishes with the accumulated UsageInfo from
     the final usage chunk.  Runs in a daemon background thread.
 
-    Args:
-        app:               The Flask application instance.
-        usage_info:        UsageInfo dataclass from the last stream chunk.
-        user_name:         Caller's username (from JWT), or None.
-        api_key_raw:       Raw API key string, or None.
-        api_key_name:      API key display name, or None.
-        api_key_group_id:  Group ID from the API key, or None.
-        api_key_group_name: Group name from the API key, or None.
-        model_name:        Model name as sent by the caller.
-        provider_id:       Provider DB ID.
-        provider_name:     Provider display name.
-        input_price_unit:  Price per 1M input tokens.
-        output_price_unit: Price per 1M output tokens.
-        cache_creation_price_unit: Price per 1M cache-write tokens.
-        cache_token_price_unit:    Price per 1M cache-read tokens.
+    All arguments must be plain Python primitives (no ORM objects), since
+    the SQLAlchemy session is already closed by the time the stream ends.
     """
+    exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
+
     thread = threading.Thread(
         target=_persist_usage,
         kwargs=dict(
@@ -76,109 +161,37 @@ def record_stream_usage(
             output_price_unit=output_price_unit,
             cache_creation_price_unit=cache_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
+            currency=currency,
+            exchange_rate_to_cny=exchange_rate_to_cny,
         ),
         daemon=True,
     )
     thread.start()
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _get_exchange_rate_for_currency(currency: str) -> float:
+    """
+    Return the effective USD→CNY exchange rate for the given pricing currency.
+
+    - If currency is 'CNY', cost is already in CNY → rate = 1.0
+    - If currency is 'USD' (or anything else), return the live USD→CNY rate
+      from the in-memory cache maintained by exchange_rate_service.
+    """
+    if (currency or 'USD').upper() == 'CNY':
+        return 1.0
+    try:
+        from app.exchange_rate_service import get_exchange_rate
+        return get_exchange_rate()
+    except Exception:
+        return 7.0  # safe fallback
 
 
 class _UsageOnlyResponse:
-    """Minimal response-like object wrapping a UsageInfo for _build_record compatibility."""
+    """Minimal response-like object wrapping a UsageInfo for _persist_usage compatibility."""
     def __init__(self, usage_info):
         self.usage = usage_info
-
-
-def record_usage(
-    *,
-    app,
-    response: "ChatResponse",
-    db_model: "DbModel",
-    db_provider: "Provider",
-    api_key: Optional["ApiKey"] = None,
-    user: Optional["User"] = None,
-    request_model_name: str = "",
-) -> None:
-    """
-    Persist one UsageRecord row for a completed (non-streaming) request.
-
-    This call is fire-and-forget: it spawns a daemon thread so the gateway
-    response is never delayed by the DB write.
-
-    All data needed from SQLAlchemy ORM objects is extracted eagerly here
-    (in the request thread, while the session is still alive) and passed as
-    plain Python values to the background thread.  This avoids cross-thread
-    lazy-loading on a closed/detached session.
-
-    Args:
-        app:               The Flask application instance (for app context).
-        response:          The ChatResponse returned by the provider.
-        db_model:          The resolved Model ORM object.
-        db_provider:       The resolved Provider ORM object.
-        api_key:           The authenticated ApiKey ORM object (or None for JWT auth).
-        user:              The authenticated User ORM object (or None for API-key auth).
-        request_model_name: The model name as sent by the caller (alias or real name).
-    """
-    # ── Eagerly extract all primitive values from ORM objects ─────────────────
-    # ORM objects must NOT be passed to the background thread: the SQLAlchemy
-    # session they are attached to belongs to the current request thread, and
-    # accessing any un-loaded relationship across that boundary triggers a lazy
-    # load on a closed/detached connection, raising "read of closed file".
-
-    user_name: Optional[str] = user.username if user else None
-
-    api_key_raw: Optional[str] = None
-    api_key_name: Optional[str] = None
-    api_key_group_id: Optional[int] = None
-    api_key_group_name: Optional[str] = None
-
-    if api_key:
-        api_key_raw = api_key.key
-        api_key_name = api_key.name
-        api_key_group_id = api_key.group_id
-        # Eagerly access the group relationship while the session is open.
-        try:
-            if api_key.group:
-                api_key_group_name = api_key.group.name
-        except Exception:
-            pass  # group not loaded — group_name stays None
-
-    provider_id: Optional[int] = db_provider.id if db_provider else None
-    provider_name: Optional[str] = db_provider.name if db_provider else None
-
-    model_name: Optional[str] = (
-        request_model_name
-        or (db_model.alias or db_model.name if db_model else None)
-    )
-
-    input_price_unit: float = getattr(db_model, 'input_price', 0.0) or 0.0
-    output_price_unit: float = getattr(db_model, 'output_price', 0.0) or 0.0
-    cache_creation_price_unit: float = getattr(db_model, 'cache_creation_price', 0.0) or 0.0
-    cache_token_price_unit: float = getattr(db_model, 'cache_hit_price', 0.0) or 0.0
-
-    thread = threading.Thread(
-        target=_persist_usage,
-        kwargs=dict(
-            app=app,
-            response=response,
-            # Identity
-            user_name=user_name,
-            api_key_raw=api_key_raw,
-            api_key_name=api_key_name,
-            api_key_group_id=api_key_group_id,
-            api_key_group_name=api_key_group_name,
-            # Model / provider
-            model_name=model_name,
-            provider_id=provider_id,
-            provider_name=provider_name,
-            # Pricing
-            input_price_unit=input_price_unit,
-            output_price_unit=output_price_unit,
-            cache_creation_price_unit=cache_creation_price_unit,
-            cache_token_price_unit=cache_token_price_unit,
-        ),
-        daemon=True,
-    )
-    thread.start()
 
 
 def _persist_usage(
@@ -197,6 +210,8 @@ def _persist_usage(
     output_price_unit,
     cache_creation_price_unit,
     cache_token_price_unit,
+    currency='USD',
+    exchange_rate_to_cny=None,
 ) -> None:
     """Worker that actually writes the UsageRecord to the database."""
     try:
@@ -218,6 +233,8 @@ def _persist_usage(
                 output_price_unit=output_price_unit,
                 cache_creation_price_unit=cache_creation_price_unit,
                 cache_token_price_unit=cache_token_price_unit,
+                currency=currency,
+                exchange_rate_to_cny=exchange_rate_to_cny,
             )
             db.session.add(record)
             db.session.commit()
@@ -240,6 +257,8 @@ def _build_record(
     output_price_unit,
     cache_creation_price_unit,
     cache_token_price_unit,
+    currency='USD',
+    exchange_rate_to_cny=None,
 ):
     """Build a UsageRecord ORM object from the pre-extracted primitive values."""
     from app.models import UsageRecord
@@ -323,4 +342,7 @@ def _build_record(
         # Web search
         web_search_requests=web_search_requests,
         web_search_price_unit=web_search_price_unit,
+        # Currency / exchange rate
+        currency=currency,
+        exchange_rate_to_cny=exchange_rate_to_cny,
     )

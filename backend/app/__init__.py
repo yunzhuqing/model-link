@@ -55,6 +55,12 @@ def create_app(config=None):
     from app.storage import get_storage_backend as _init_storage
     _init_storage()
 
+    # Start the daily exchange-rate refresh daemon (USD→CNY, from frankfurter.app).
+    # The first fetch happens immediately in a background thread so the rate is
+    # current before the first request is served.
+    from app.exchange_rate_service import start_daily_refresh as _start_exchange_rate_refresh
+    _start_exchange_rate_refresh()
+
     # Register blueprints
     from app.routes.users import users_bp
     from app.routes.providers import providers_bp

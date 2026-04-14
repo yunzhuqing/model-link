@@ -127,14 +127,24 @@ function fmtDate(iso: string): string {
   }
 }
 
-// Default date range: last 30 days
+// Format a Date as a local datetime string for <input type="datetime-local">
+// e.g. "2026-04-14T13:48"  (using the browser's local timezone, not UTC)
+function toLocalDateTimeString(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+// Default date range: last 30 days (in local time)
 function defaultStart(): string {
   const d = new Date();
   d.setDate(d.getDate() - 30);
-  return d.toISOString().slice(0, 16);
+  return toLocalDateTimeString(d);
 }
 function defaultEnd(): string {
-  return new Date().toISOString().slice(0, 16);
+  return toLocalDateTimeString(new Date());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

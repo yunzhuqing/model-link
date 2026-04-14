@@ -397,6 +397,7 @@ class GatewayService:
             'output_price_unit': getattr(resolved.db_model, 'output_price', 0.0) or 0.0,
             'cache_creation_price_unit': getattr(resolved.db_model, 'cache_creation_price', 0.0) or 0.0,
             'cache_token_price_unit': getattr(resolved.db_model, 'cache_hit_price', 0.0) or 0.0,
+            'currency': getattr(resolved.db_model, 'currency', 'USD') or 'USD',
         }
 
         # 7. Release the DB session — same rationale as stream_chat()
