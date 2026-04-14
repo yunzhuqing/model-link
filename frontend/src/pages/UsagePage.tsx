@@ -146,10 +146,10 @@ function toLocalDateTimeString(d: Date): string {
   );
 }
 
-// Default date range: last 30 days (in local time)
+// Default date range: last 14 days (in local time)
 function defaultStart(): string {
   const d = new Date();
-  d.setDate(d.getDate() - 30);
+  d.setDate(d.getDate() - 14);
   return toLocalDateTimeString(d);
 }
 function defaultEnd(): string {
@@ -185,22 +185,46 @@ const StatCard = ({
   };
   const c = colors[color] || colors.blue;
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow">
-      <div className={`inline-flex p-2.5 rounded-xl ${c.bg} border ${c.border} mb-3`}>
-        <span className={c.icon}>{icon}</span>
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 px-3 py-2.5 hover:shadow-md transition-shadow">
+      <div className="flex items-center gap-2">
+        <div className={`inline-flex p-1.5 rounded-lg ${c.bg} border ${c.border}`}>
+          <span className={c.icon}>{icon}</span>
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500 leading-tight">{label}</p>
+          <p className="text-lg font-bold text-slate-800 leading-tight">{value}{sub && <span className="text-xs text-slate-400 ml-0.5">{sub}</span>}</p>
+        </div>
       </div>
-      <p className="text-sm font-medium text-slate-500">{label}</p>
-      <p className="text-2xl font-bold text-slate-800 mt-0.5">{value}</p>
-      {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
     </div>
   );
 };
 
-/** Simple bar chart rendered with CSS/SVG (no external chart lib needed). */
-const SimpleBarChart = ({ data }: { data: TimeSeries[] }) => {
+/** Extracts a smart x-axis label from a period string based on its format. */
+function periodLabel(period: string, granularity: string): string {
+  // period examples: "2026-04-14", "2026-04-14T13:00:00", "2026-04"
+  if (granularity === 'hour') {
+    // Show "MM-DD HH:00"
+    const match = period.match(/(\d{2})-(\d{2})T?(\d{2})/);
+    if (match) return `${match[1]}-${match[2]} ${match[3]}:00`;
+    // fallback: try to find HH
+    const hMatch = period.match(/(\d{2}):\d{2}/);
+    if (hMatch) return `${hMatch[1]}:00`;
+    return period.slice(5, 16);
+  }
+  if (granularity === 'month') {
+    return period.slice(0, 7); // YYYY-MM
+  }
+  // day: MM-DD
+  return period.slice(5, 10);
+}
+
+/** Bar chart with token values, proper x-axis labels, and larger size. */
+const SimpleBarChart = ({ data, granularity }: { data: TimeSeries[]; granularity: string }) => {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+
   if (!data || data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-40 text-slate-400 text-sm">
+      <div className="flex items-center justify-center h-64 text-slate-400 text-sm">
         暂无时序数据
       </div>
     );
@@ -210,37 +234,102 @@ const SimpleBarChart = ({ data }: { data: TimeSeries[] }) => {
   const maxOut = Math.max(...data.map((d) => d.output_tokens), 1);
   const maxVal = Math.max(maxIn, maxOut);
 
-  const BAR_W = Math.max(6, Math.min(32, Math.floor(560 / data.length) - 4));
+  const TOP_PAD = 30;
+  const LEFT_PAD = 60;
+  const BAR_AREA_H = 220;
+  const BOTTOM = TOP_PAD + BAR_AREA_H;
+  const X_LABEL_H = 60; // room for rotated labels
+  const TOTAL_H = BOTTOM + X_LABEL_H;
+
+  const GROUP_W = Math.max(28, Math.min(56, Math.floor(800 / data.length)));
+  const BAR_W = Math.max(10, GROUP_W - 12);
+  const CHART_W = Math.max(700, data.length * GROUP_W + LEFT_PAD + 30);
+
+  // Y-axis scale ticks (5 ticks)
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({
+    val: Math.round(maxVal * f),
+    y: BOTTOM - Math.round(f * BAR_AREA_H),
+  }));
+
+  // Show fewer labels when there are many data points
+  const labelEvery = data.length > 72 ? Math.ceil(data.length / 18) : data.length > 36 ? Math.ceil(data.length / 18) : data.length > 24 ? 3 : data.length > 12 ? 2 : 1;
 
   return (
     <div className="overflow-x-auto">
-      <svg width={Math.max(600, data.length * (BAR_W + 4) + 60)} height={180} className="w-full">
+      <svg width={CHART_W} height={TOTAL_H} className="w-full" style={{ minHeight: TOTAL_H }}>
+        {/* Y-axis grid lines & labels */}
+        {yTicks.map((t, i) => (
+          <g key={`y-${i}`}>
+            <line x1={LEFT_PAD} y1={t.y} x2={CHART_W - 10} y2={t.y} stroke="#e2e8f0" strokeWidth={1} strokeDasharray={i === 0 ? undefined : '4 2'} />
+            <text x={LEFT_PAD - 8} y={t.y + 4} textAnchor="end" fontSize={11} fill="#94a3b8">
+              {fmtNum(t.val)}
+            </text>
+          </g>
+        ))}
+
+        {/* Bars */}
         {data.map((d, i) => {
-          const x = 30 + i * (BAR_W + 4);
-          const hIn = Math.round((d.input_tokens / maxVal) * 130);
-          const hOut = Math.round((d.output_tokens / maxVal) * 130);
-          const label = d.period.slice(5, 10); // MM-DD or HH:00
+          const gx = LEFT_PAD + i * GROUP_W;
+          const bx = gx + (GROUP_W - BAR_W) / 2;
+          const halfBar = BAR_W / 2 - 1;
+          const hIn = Math.max(1, Math.round((d.input_tokens / maxVal) * BAR_AREA_H));
+          const hOut = Math.max(1, Math.round((d.output_tokens / maxVal) * BAR_AREA_H));
+          const isHovered = hoveredIdx === i;
+          const label = periodLabel(d.period, granularity);
           return (
-            <g key={i}>
+            <g
+              key={i}
+              onMouseEnter={() => setHoveredIdx(i)}
+              onMouseLeave={() => setHoveredIdx(null)}
+              style={{ cursor: 'default' }}
+            >
+              {/* Hover highlight column */}
+              {isHovered && (
+                <rect x={gx} y={TOP_PAD} width={GROUP_W} height={BAR_AREA_H} fill="#f1f5f9" rx={4} />
+              )}
               {/* Input bar */}
-              <rect x={x} y={160 - hIn} width={BAR_W / 2} height={hIn} fill="#6366f1" opacity={0.8} rx={2} />
+              <rect x={bx} y={BOTTOM - hIn} width={halfBar} height={hIn} fill="#6366f1" opacity={isHovered ? 1 : 0.75} rx={3} />
               {/* Output bar */}
-              <rect x={x + BAR_W / 2} y={160 - hOut} width={BAR_W / 2} height={hOut} fill="#10b981" opacity={0.8} rx={2} />
-              {/* Label */}
-              {data.length <= 31 && (
-                <text x={x + BAR_W / 2} y={175} textAnchor="middle" fontSize={9} fill="#94a3b8">
+              <rect x={bx + halfBar + 2} y={BOTTOM - hOut} width={halfBar} height={hOut} fill="#10b981" opacity={isHovered ? 1 : 0.75} rx={3} />
+
+              {/* X-axis label — rotated 45° */}
+              {i % labelEvery === 0 && (
+                <text
+                  x={gx + GROUP_W / 2}
+                  y={BOTTOM + 10}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill={isHovered ? '#334155' : '#94a3b8'}
+                  fontWeight={isHovered ? '600' : '400'}
+                  transform={`rotate(-45, ${gx + GROUP_W / 2}, ${BOTTOM + 10})`}
+                >
                   {label}
                 </text>
               )}
             </g>
           );
         })}
-        {/* Y-axis label */}
-        <text x={0} y={10} fontSize={9} fill="#94a3b8">tokens</text>
+
+        {/* Hover tooltip — floating card */}
+        {hoveredIdx !== null && data[hoveredIdx] && (() => {
+          const d = data[hoveredIdx];
+          const cx = LEFT_PAD + hoveredIdx * GROUP_W + GROUP_W / 2;
+          const tipW = 140;
+          // Keep tooltip within chart bounds
+          const tipX = Math.min(Math.max(cx - tipW / 2, 4), CHART_W - tipW - 4);
+          return (
+            <g>
+              <rect x={tipX} y={2} width={tipW} height={24} rx={6} fill="#1e293b" opacity={0.9} />
+              <text x={tipX + tipW / 2} y={16} textAnchor="middle" fontSize={11} fill="white" fontWeight="500">
+                In {fmtNum(d.input_tokens)} · Out {fmtNum(d.output_tokens)}
+              </text>
+            </g>
+          );
+        })()}
       </svg>
-      <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-indigo-500 inline-block" /> Input</span>
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-500 inline-block" /> Output</span>
+      <div className="flex items-center gap-6 mt-2 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-indigo-500 inline-block" /> Input Tokens</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-emerald-500 inline-block" /> Output Tokens</span>
       </div>
     </div>
   );
@@ -252,9 +341,30 @@ const SimpleBarChart = ({ data }: { data: TimeSeries[] }) => {
 
 const UsagePage = () => {
   // ── Filters ───────────────────────────────────────────────────────────────
-  const [start, setStart] = useState(defaultStart());
-  const [end, setEnd] = useState(defaultEnd());
-  const [granularity, setGranularity] = useState<'hour' | 'day' | 'month'>('day');
+  const [start, setStartRaw] = useState(defaultStart());
+  const [end, setEndRaw] = useState(defaultEnd());
+  const [rangeError, setRangeError] = useState('');
+  const [granularity, setGranularity] = useState<'hour' | 'day' | 'month'>('hour');
+
+  const MAX_RANGE_DAYS = 31;
+
+  const validateRange = (s: string, e: string): boolean => {
+    if (!s || !e) { setRangeError(''); return true; }
+    const diff = new Date(e).getTime() - new Date(s).getTime();
+    if (diff > MAX_RANGE_DAYS * 24 * 60 * 60 * 1000) {
+      setRangeError(`时间范围不能超过 ${MAX_RANGE_DAYS} 天`);
+      return false;
+    }
+    if (diff < 0) {
+      setRangeError('结束时间不能早于开始时间');
+      return false;
+    }
+    setRangeError('');
+    return true;
+  };
+
+  const setStart = (v: string) => { setStartRaw(v); validateRange(v, end); setPage(1); };
+  const setEnd = (v: string) => { setEndRaw(v); validateRange(start, v); setPage(1); };
   const [groupId, setGroupId] = useState('');
   const [modelName, setModelName] = useState('');
   const [activeTab, setActiveTab] = useState<'summary' | 'records'>('summary');
@@ -287,7 +397,7 @@ const UsagePage = () => {
       const res = await client.get(`/api/usage/summary?${summaryParams}`);
       return res.data;
     },
-    enabled: activeTab === 'summary',
+    enabled: activeTab === 'summary' && !rangeError,
   });
 
   const { data: records, isLoading: recordsLoading, refetch: refetchRecords } = useQuery<RecordsData>({
@@ -296,7 +406,7 @@ const UsagePage = () => {
       const res = await client.get(`/api/usage/records?${recordsParams}`);
       return res.data;
     },
-    enabled: activeTab === 'records',
+    enabled: activeTab === 'records' && !rangeError,
   });
 
   const refetch = useCallback(() => {
@@ -335,7 +445,7 @@ const UsagePage = () => {
             <input
               type="datetime-local"
               value={start}
-              onChange={(e) => { setStart(e.target.value); setPage(1); }}
+              onChange={(e) => setStart(e.target.value)}
               className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-300"
             />
           </div>
@@ -344,7 +454,7 @@ const UsagePage = () => {
             <input
               type="datetime-local"
               value={end}
-              onChange={(e) => { setEnd(e.target.value); setPage(1); }}
+              onChange={(e) => setEnd(e.target.value)}
               className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-300"
             />
           </div>
@@ -381,6 +491,9 @@ const UsagePage = () => {
             />
           </div>
         </div>
+        {rangeError && (
+          <p className="mt-3 text-sm text-red-500 font-medium">⚠ {rangeError}</p>
+        )}
       </div>
 
       {/* Tabs */}
@@ -408,7 +521,7 @@ const UsagePage = () => {
           ) : (
             <>
               {/* KPI Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
                 <StatCard icon={<BarChart3 className="w-5 h-5" />} label="总请求数" value={fmtNum(totals?.requests ?? 0)} color="blue" />
                 <StatCard icon={<TrendingUp className="w-5 h-5" />} label="输入 Tokens" value={fmtNum(totals?.input_tokens ?? 0)} color="indigo" />
                 <StatCard icon={<Zap className="w-5 h-5" />} label="输出 Tokens" value={fmtNum(totals?.output_tokens ?? 0)} color="emerald" />
@@ -427,7 +540,7 @@ const UsagePage = () => {
                   <TrendingUp className="w-5 h-5 text-indigo-500" />
                   Token 消耗趋势
                 </h2>
-                <SimpleBarChart data={summary?.time_series ?? []} />
+                <SimpleBarChart data={summary?.time_series ?? []} granularity={granularity} />
               </div>
 
               {/* By Model / By Group / By API Key */}
@@ -528,6 +641,7 @@ const UsagePage = () => {
                       {[
                         { label: '时间', align: 'text-left' },
                         { label: '模型', align: 'text-left' },
+                        { label: 'Provider', align: 'text-left' },
                         { label: '分组', align: 'text-left' },
                         { label: 'API Key', align: 'text-left' },
                         { label: '输入 Tokens', align: 'text-center' },
@@ -549,6 +663,7 @@ const UsagePage = () => {
                       <tr key={r.id} className="hover:bg-slate-50 transition-colors">
                         <td className="px-4 py-3 text-slate-500 whitespace-nowrap text-xs">{fmtDate(r.created_at)}</td>
                         <td className="px-4 py-3 text-slate-800 font-medium max-w-[140px] truncate">{r.model_name || '—'}</td>
+                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap max-w-[120px] truncate">{r.provider_name || '—'}</td>
                         <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{r.group_name || '—'}</td>
                         <td className="px-4 py-3">
                           <div>
@@ -581,7 +696,7 @@ const UsagePage = () => {
                     ))}
                     {(records?.records ?? []).length === 0 && (
                       <tr>
-                        <td colSpan={11} className="text-center py-16 text-slate-400">
+                        <td colSpan={12} className="text-center py-16 text-slate-400">
                           <Search className="w-10 h-10 mx-auto mb-2 text-slate-200" />
                           暂无消耗记录
                         </td>

@@ -210,6 +210,7 @@ class Provider(db.Model):
     authorization = db.Column(db.String(50), nullable=True, default="Authorization")  # "Authorization" for Bearer token, "custom" for custom header (e.g., x-goog-api-key)
     extra_config = db.Column(db.JSON, nullable=True)  # Provider-specific extra config (e.g. api_version for Azure)
     tags = db.Column(db.JSON, nullable=True)  # Tags for billing usage binding (e.g. ["production", "team-a"])
+    is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this provider is enabled
 
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
     group = db.relationship("Group", back_populates="providers")
@@ -226,6 +227,7 @@ class Provider(db.Model):
             'authorization': self.authorization or 'Authorization',
             'extra_config': self.extra_config or {},
             'tags': self.tags or [],
+            'is_active': self.is_active,
             'models': [m.to_dict() for m in self.models]
         }
 
@@ -239,7 +241,8 @@ class Provider(db.Model):
             'group_id': self.group_id,
             'authorization': self.authorization or 'Authorization',
             'extra_config': self.extra_config or {},
-            'tags': self.tags or []
+            'tags': self.tags or [],
+            'is_active': self.is_active
         }
 
 
@@ -403,6 +406,7 @@ class Model(db.Model):
     support_online_image = db.Column(db.Boolean, default=True)  # Whether the provider supports image URLs directly; if False, URLs are converted to base64
     support_online_video = db.Column(db.Boolean, default=True)  # Whether the provider supports video URLs directly; if False, URLs are converted to base64
     support_embedding = db.Column(db.Boolean, default=False)  # Whether this is an embedding model
+    is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this model is enabled
 
     provider = db.relationship("Provider", back_populates="models")
 
@@ -445,7 +449,8 @@ class Model(db.Model):
             'support_thinking': self.support_thinking,
             'support_online_image': self.support_online_image,
             'support_online_video': self.support_online_video,
-            'support_embedding': self.support_embedding
+            'support_embedding': self.support_embedding,
+            'is_active': self.is_active
         }
 
 

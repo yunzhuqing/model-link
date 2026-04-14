@@ -694,15 +694,21 @@ def list_models():
     if error:
         return jsonify(error), status
 
-    # Filter providers by group if using API key
+    # Filter providers by group if using API key, and exclude disabled providers
     if api_key:
-        providers = db.session.query(Provider).filter(Provider.group_id == api_key.group_id).all()
+        providers = db.session.query(Provider).filter(
+            Provider.group_id == api_key.group_id,
+            Provider.is_active == True
+        ).all()
     else:
-        providers = db.session.query(Provider).all()
+        providers = db.session.query(Provider).filter(Provider.is_active == True).all()
 
     models_list = []
     for provider in providers:
         for model in provider.models:
+            # Skip disabled models
+            if not model.is_active:
+                continue
             # Use alias as id if available, otherwise use name
             model_id = model.alias if model.alias else model.name
             models_list.append({

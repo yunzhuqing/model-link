@@ -11,8 +11,9 @@
   3. 请求执行 - 调用供应商 API 并返回统一格式的响应
   4. 错误处理 - 统一处理供应商层的错误
 """
-from typing import Optional, Generator, Tuple, Callable
+from typing import Optional, Generator, Tuple, Callable, List
 from dataclasses import dataclass
+import random
 import httpx
 
 from app import db
@@ -86,6 +87,9 @@ class GatewayService:
         """
         解析模型名称/别名，返回供应商实例和模型信息。
 
+        当同一模型名称/别名存在于多个启用的供应商中时，
+        从启用的供应商中随机选择一个进行路由（负载分散）。
+
         Args:
             model_name: 模型名称或别名
             group_id: 可选的组 ID（用于访问控制）
@@ -97,8 +101,7 @@ class GatewayService:
             ModelNotFoundError: 如果模型未找到或不可访问
         """
         # 先尝试按别名查找，再按名称查找
-        # Join with Provider so we can filter by group_id at the DB level,
-        # avoiding false misses when the same model name exists in multiple groups.
+        # Join with Provider so we can filter by group_id and is_active at the DB level.
         query = (
             db.session.query(Model)
             .join(Provider, Model.provider_id == Provider.id)
@@ -108,18 +111,51 @@ class GatewayService:
         if group_id is not None:
             query = query.filter(Provider.group_id == group_id)
 
-        db_model = query.first()
+        # Fetch ALL matching models (across all providers)
+        all_models: List[Model] = query.all()
 
-        if not db_model:
+        if not all_models:
             raise ModelNotFoundError(model_name)
 
-        # Reject retired models
-        if db_model.is_retired:
+        # Filter out retired models
+        non_retired = [m for m in all_models if not m.is_retired]
+        if not non_retired:
+            # All matching models are retired — use the first to build the error message
+            m = all_models[0]
             raise GatewayServiceError(
-                f"Model '{model_name}' was retired on {db_model.retirement_time.strftime('%Y-%m-%d')} "
+                f"Model '{model_name}' was retired on {m.retirement_time.strftime('%Y-%m-%d')} "
                 f"and can no longer be used.",
                 status_code=410  # 410 Gone
             )
+
+        # Filter to only models that are themselves enabled AND whose provider is active
+        active_models = [
+            m for m in non_retired
+            if m.is_active and m.provider and m.provider.is_active
+        ]
+
+        if not active_models:
+            # Determine a more specific error message
+            disabled_models = [m for m in non_retired if not m.is_active]
+            disabled_providers = [m for m in non_retired if m.is_active and m.provider and not m.provider.is_active]
+            if disabled_models and not disabled_providers:
+                raise GatewayServiceError(
+                    f"Model '{model_name}' exists but is disabled.",
+                    status_code=403
+                )
+            elif disabled_providers and not disabled_models:
+                raise GatewayServiceError(
+                    f"Model '{model_name}' exists but all its providers are disabled.",
+                    status_code=403
+                )
+            else:
+                raise GatewayServiceError(
+                    f"Model '{model_name}' exists but all its instances are disabled (model or provider).",
+                    status_code=403
+                )
+
+        # Randomly select one model from the active candidates
+        db_model = random.choice(active_models)
 
         db_provider = db.session.query(Provider).filter(
             Provider.id == db_model.provider_id

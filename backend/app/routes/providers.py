@@ -92,7 +92,8 @@ def create_provider(current_user):
         group_id=group_id,
         authorization=data.get('authorization', 'Authorization'),
         tags=data.get('tags') or [],
-        extra_config=data.get('extra_config')
+        extra_config=data.get('extra_config'),
+        is_active=data.get('is_active', True)
     )
     db.session.add(provider)
     db.session.flush()  # Get provider.id without committing
@@ -137,6 +138,8 @@ def update_provider(current_user, provider_id):
         provider.base_url = data['base_url']
     if 'authorization' in data:
         provider.authorization = data['authorization'] or 'Authorization'
+    if 'is_active' in data:
+        provider.is_active = bool(data['is_active'])
     if 'tags' in data:
         provider.tags = data['tags'] or []
     if 'extra_config' in data:
@@ -228,7 +231,8 @@ def create_model(current_user):
         support_thinking=data.get('support_thinking', False),
         support_online_image=data.get('support_online_image', True),
         support_online_video=data.get('support_online_video', True),
-        support_embedding=data.get('support_embedding', False)
+        support_embedding=data.get('support_embedding', False),
+        is_active=data.get('is_active', True)
     )
     db.session.add(model)
     db.session.commit()
@@ -252,7 +256,8 @@ def update_model(current_user, model_id):
                   'reasoning_effort', 'supported_image_formats', 'pricing_tiers',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
-                  'support_online_image', 'support_online_video', 'support_embedding']:
+                  'support_online_image', 'support_online_video', 'support_embedding',
+                  'is_active']:
         if field in data:
             # Handle alias/nullable strings - convert empty string to None
             if field in ('alias', 'reasoning_effort', 'supported_image_formats') and data[field] == '':

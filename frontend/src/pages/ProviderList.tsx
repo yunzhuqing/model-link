@@ -49,6 +49,7 @@ interface Model {
   support_online_image: boolean;
   support_online_video: boolean;
   support_embedding: boolean;
+  is_active: boolean;
 }
 
 interface Provider {
@@ -62,6 +63,7 @@ interface Provider {
   authorization: string;
   tags: string[];
   extra_config: Record<string, any>;
+  is_active: boolean;
   models: Model[];
 }
 
@@ -152,12 +154,12 @@ const defaultModelState = {
 
 // ── ModelCard ─────────────────────────────────────────────────────────────────
 
-const ModelCard = ({ model, onEdit, onDelete }: { model: Model; onEdit: () => void; onDelete: () => void }) => {
+const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit: () => void; onDelete: () => void; onToggle: () => void }) => {
   const sym = currencySymbol(model.currency);
   const hasTiers = model.pricing_tiers && model.pricing_tiers.length > 0;
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-200 hover:shadow-md transition-shadow">
+    <div className={`bg-white p-5 rounded-xl border border-slate-200 hover:shadow-md transition-all duration-300 ${!model.is_active ? 'opacity-60' : ''}`}>
       <div className="flex justify-between items-start">
         <div className="flex-1">
           <div className="flex items-center space-x-3 flex-wrap gap-y-1">
@@ -165,6 +167,7 @@ const ModelCard = ({ model, onEdit, onDelete }: { model: Model; onEdit: () => vo
               <Cpu className="w-5 h-5 text-slate-600" />
             </div>
             <h5 className="font-semibold text-slate-800">{model.name}</h5>
+            {!model.is_active && <span className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-xs font-semibold">Disabled</span>}
             {model.alias && <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs font-medium">@{model.alias}</span>}
             {model.currency && model.currency !== 'USD' && <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">{model.currency}</span>}
             {hasTiers && <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">{model.pricing_tiers!.length} tiers</span>}
@@ -217,7 +220,16 @@ const ModelCard = ({ model, onEdit, onDelete }: { model: Model; onEdit: () => vo
             {model.support_embedding && <FeatureBadge label="Embedding" color="emerald" />}
           </div>
         </div>
-        <div className="flex space-x-1 ml-4">
+        <div className="flex items-center space-x-1 ml-4">
+          <button
+            onClick={onToggle}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${model.is_active ? 'bg-emerald-500' : 'bg-slate-300'}`}
+            title={model.is_active ? 'Disable Model' : 'Enable Model'}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${model.is_active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
+            />
+          </button>
           <button onClick={onEdit} className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors" title="Edit Model"><Edit2 className="w-4 h-4" /></button>
           <button onClick={onDelete} className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors" title="Delete Model"><Trash2 className="w-4 h-4" /></button>
         </div>
@@ -642,6 +654,43 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
   });
 
+  const toggleProviderMutation = useMutation({
+    mutationFn: ({ id, is_active }: { id: number; is_active: boolean }) =>
+      client.put(`/api/providers/${id}`, { is_active }),
+    onMutate: async ({ id, is_active }) => {
+      await queryClient.cancelQueries({ queryKey: providersQueryKey });
+      const previous = queryClient.getQueryData<Provider[]>(providersQueryKey);
+      queryClient.setQueryData<Provider[]>(providersQueryKey, (old) =>
+        old?.map((p) => (p.id === id ? { ...p, is_active } : p))
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(providersQueryKey, context.previous);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
+  });
+
+  const toggleModelMutation = useMutation({
+    mutationFn: ({ id, is_active }: { id: number; is_active: boolean }) =>
+      client.put(`/api/models/${id}`, { is_active }),
+    onMutate: async ({ id, is_active }) => {
+      await queryClient.cancelQueries({ queryKey: providersQueryKey });
+      const previous = queryClient.getQueryData<Provider[]>(providersQueryKey);
+      queryClient.setQueryData<Provider[]>(providersQueryKey, (old) =>
+        old?.map((p) => ({
+          ...p,
+          models: p.models.map((m) => (m.id === id ? { ...m, is_active } : m)),
+        }))
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(providersQueryKey, context.previous);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
+  });
+
   const handleEditModel = (model: Model) => {
     setEditingModel(model);
     setShowAddModel(null);
@@ -717,7 +766,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
   const providerListContent = (
     <div className="space-y-4">
       {providers?.map((provider) => (
-        <div key={provider.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div key={provider.id} className={`bg-white rounded-2xl shadow-sm border overflow-hidden transition-all duration-300 ${provider.is_active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
           <div
             className="p-5 flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors"
             onClick={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
@@ -741,9 +790,24 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
               </div>
             </div>
             <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
+              {!provider.is_active && (
+                <span className="bg-red-100 text-red-600 px-2.5 py-1 rounded-lg text-xs font-semibold mr-1">
+                  Disabled
+                </span>
+              )}
               <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-sm font-medium mr-2">
                 {provider.models.length} models
               </span>
+              {/* Toggle switch */}
+              <button
+                onClick={() => toggleProviderMutation.mutate({ id: provider.id, is_active: !provider.is_active })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${provider.is_active ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                title={provider.is_active ? 'Disable Provider' : 'Enable Provider'}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${provider.is_active ? 'translate-x-6' : 'translate-x-1'}`}
+                />
+              </button>
               <button
                 onClick={() => openEditModal(provider)}
                 className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
@@ -783,7 +847,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                   onSave={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
                   onCancel={() => { setShowAddModel(null); setNewModel(defaultModelState); }}
                   isLoading={createModelMutation.isPending}
-                  templates={modelTemplates}
+                  templates={['openai_chatcompletions_compt', 'openai_responses_compt'].includes(provider.type.toLowerCase()) ? modelTemplates : modelTemplates.filter((t) => t.provider.toLowerCase() === provider.type.toLowerCase())}
                 />
               )}
 
@@ -797,13 +861,14 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                         onSave={() => updateModelMutation.mutate({ id: model.id, data: editingModel })}
                         onCancel={() => setEditingModel(null)}
                         isLoading={updateModelMutation.isPending}
-                        templates={modelTemplates}
+                        templates={['openai_chatcompletions_compt', 'openai_responses_compt'].includes(provider.type.toLowerCase()) ? modelTemplates : modelTemplates.filter((t) => t.provider.toLowerCase() === provider.type.toLowerCase())}
                       />
                     ) : (
                       <ModelCard
                         model={model}
                         onEdit={() => handleEditModel(model)}
                         onDelete={() => { if (confirm('Are you sure you want to delete this model?')) deleteModelMutation.mutate(model.id); }}
+                        onToggle={() => toggleModelMutation.mutate({ id: model.id, is_active: !model.is_active })}
                       />
                     )}
                   </div>
