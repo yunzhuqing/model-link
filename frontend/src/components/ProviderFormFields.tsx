@@ -264,6 +264,8 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
             <option value="tencentvod">Tencent VOD</option>
             <option value="hunyuan">Hunyuan 3D (Tencent)</option>
             <option value="vllm">vLLM (self-hosted)</option>
+            <option value="openai_chatcompletions_compt">OpenAI ChatCompletions Compatible</option>
+            <option value="openai_responses_compt">OpenAI Responses API Compatible</option>
           </select>
         </div>
 
@@ -452,6 +454,47 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
             Set <strong>Base URL</strong> to your vLLM server (e.g. <code className="font-mono bg-violet-100 px-1 rounded">http://&lt;host&gt;:8000/v1</code>).
             <br />
             <strong>API Key</strong> is optional — leave it blank if your vLLM deployment does not require authentication.
+          </p>
+        </div>
+      )}
+
+      {/* OpenAI ChatCompletions Compatible info panel */}
+      {data.type === 'openai_chatcompletions_compt' && (
+        <div className="mt-4 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+          <h3 className="text-sm font-semibold text-emerald-800 mb-1">OpenAI ChatCompletions Compatible</h3>
+          <p className="text-xs text-emerald-700 mb-0">
+            Use this provider type for any service that exposes an OpenAI-compatible{' '}
+            <code className="font-mono bg-emerald-100 px-1 rounded">/v1/chat/completions</code> endpoint.
+            <br />
+            Typical examples: FastChat, LiteLLM, text-generation-webui, and most domestic cloud LLM services.
+            <br />
+            Set <strong>Base URL</strong> to the service address (e.g.{' '}
+            <code className="font-mono bg-emerald-100 px-1 rounded">http://192.168.1.100:8080/v1</code>).
+            <br />
+            <strong>API Key</strong> is optional — leave it blank if authentication is not required.
+          </p>
+        </div>
+      )}
+
+      {/* OpenAI Responses API Compatible info panel */}
+      {data.type === 'openai_responses_compt' && (
+        <div className="mt-4 p-4 bg-sky-50 border border-sky-200 rounded-xl">
+          <h3 className="text-sm font-semibold text-sky-800 mb-1">OpenAI Responses API Compatible</h3>
+          <p className="text-xs text-sky-700 mb-0">
+            Use this provider type for services that implement the OpenAI{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">/v1/responses</code> API format.
+            <br />
+            Key differences from Chat Completions: uses <code className="font-mono bg-sky-100 px-1 rounded">input</code> instead of{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">messages</code>,{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">instructions</code> for system prompts,{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">max_output_tokens</code> instead of{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">max_tokens</code>, and{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">output</code> in the response body.
+            <br />
+            Set <strong>Base URL</strong> to the service address (e.g.{' '}
+            <code className="font-mono bg-sky-100 px-1 rounded">https://api.openai.com/v1</code>).
+            <br />
+            <strong>API Key</strong> is optional — leave it blank if authentication is not required.
           </p>
         </div>
       )}

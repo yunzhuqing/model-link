@@ -37,17 +37,18 @@ from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolT
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.utils import gen_id
-from app.providers.gemini.image_generation import (
-    is_gemini_image_model,
-    has_image_generation_tool,
-    parse_inline_images,
-    build_image_chat_response,
-    stream_image_generation,
+from app.providers.vertexai.image_generation import (
+    is_vertexai_image_model,
+    has_vertexai_image_generation_tool,
+    inject_image_generation_config,
+    handle_image_generation_response,
+    stream_vertexai_image_generation,
 )
-from app.providers.gemini.video_generation import (
-    is_veo_video_model,
-    _build_veo_request,
-    stream_veo_video_generation,
+from app.providers.vertexai.video_generation import (
+    is_vertexai_video_model,
+    has_vertexai_video_generation_tool,
+    execute_vertexai_veo_generation,
+    stream_vertexai_veo_generation,
 )
 
 # Configure logger for VertexAI provider
@@ -1177,276 +1178,37 @@ class VertexAIProvider(BaseProvider):
 
     def is_image_generation_model(self, model: str) -> bool:
         """Check if the model is a Gemini image generation model."""
-        return is_gemini_image_model(model)
+        return is_vertexai_image_model(model)
 
     def _has_image_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request contains an image_generation tool."""
-        return has_image_generation_tool(request)
+        return has_vertexai_image_generation_tool(request)
 
     def is_video_generation_model(self, model: str) -> bool:
         """Check if the model is a Veo video generation model."""
-        return is_veo_video_model(model)
+        return is_vertexai_video_model(model)
 
     def _has_video_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request carries a video_generation tool flag."""
-        return bool(request.metadata.get("_video_generation"))
+        return has_vertexai_video_generation_tool(request)
 
     # ==================== Video Generation (Veo on Vertex AI) ====================
 
     def _execute_vertexai_veo_generation(self, request: ChatRequest) -> ChatResponse:
         """
         Execute Veo video generation via Vertex AI predictLongRunning endpoint.
-
-        Flow:
-          1. POST {base_url}/publishers/google/models/{model}:predictLongRunning
-             Returns: {"name": "projects/.../publishers/google/models/.../operations/OPERATION_ID"}
-
-          2. Poll via POST {base_url}/publishers/google/models/{model}:fetchPredictOperation
-             Body: {"operationName": "<full operation name>"}
-             Returns: {"done": true, "response": {"videos": [{"gcsUri": "gs://...", "mimeType": "video/mp4"}]}}
-             OR (when no outputStorageUri is set):
-             Returns: {"done": true, "response": {"videos": [{"bytesBase64Encoded": "...", "mimeType": "video/mp4"}]}}
-
-        Authentication: OAuth2 Bearer token (same as other Vertex AI calls).
-        Videos are downloaded from GCS (using Bearer token) or decoded from base64,
-        then saved to the configured storage backend.
+        Delegates to the vertexai.video_generation module.
         """
-        import base64 as _base64
-        import httpx as _httpx
-
-        model = request.model
-
-        # ── Build Veo request body ─────────────────────────────────────────
-        request_body = _build_veo_request(request.messages, request.metadata)
-
-        # ── Create long-running operation ──────────────────────────────────
         # IMPORTANT: call get_headers() BEFORE reading self.config.base_url.
         # get_headers() triggers _get_credentials() which sets self.config.base_url
         # from the service account project_id when no explicit base_url is configured.
-        headers = self.get_headers()
-        base_url = self.config.base_url.rstrip('/')
-
-        # Build Veo-specific URL with correct format:
-        # POST https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/{MODEL_ID}:predictLongRunning
-        #
-        # base_url can be one of two forms:
-        #   - Global endpoint: https://aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/global
-        #   - Regional endpoint: https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}
-        #
-        # Veo only supports regional endpoints.
-        # - If base_url is the global endpoint, extract project_id and fall back to us-central1.
-        # - If base_url is already a regional endpoint, extract REGION and project_id from the URL
-        #   and build the canonical veo_base_url (do NOT hard-code us-central1).
-        import re as _re
-
-        _global_host_re = _re.compile(r"^https://aiplatform\.googleapis\.com")
-        _regional_host_re = _re.compile(
-            r"^https://(?P<region>[^.]+)-aiplatform\.googleapis\.com"
-            r"(?:/v\d+)?/projects/(?P<project>[^/]+)/locations/[^/]+"
-        )
-
-        if _global_host_re.match(base_url):
-            # Global endpoint — no region info available, default to us-central1
-            project_id = self._project_id or ""
-            veo_region = "us-central1"
-            veo_base_url = (
-                f"https://{veo_region}-aiplatform.googleapis.com/v1"
-                f"/projects/{project_id}/locations/{veo_region}"
-            )
-        else:
-            # Regional endpoint — extract region and project_id from the URL
-            m = _regional_host_re.match(base_url)
-            if m:
-                veo_region = m.group("region")
-                project_id = m.group("project")
-            else:
-                # Fallback: use base_url as-is if pattern doesn't match
-                veo_region = "us-central1"
-                project_id = self._project_id or ""
-            veo_base_url = (
-                f"https://{veo_region}-aiplatform.googleapis.com/v1"
-                f"/projects/{project_id}/locations/{veo_region}"
-            )
-
-        create_url = f"{veo_base_url}/publishers/google/models/{model}:predictLongRunning"
-
-        payload_str = json.dumps(request_body, ensure_ascii=False)
-        print(f"\n[VertexAI Veo] POST {create_url}", file=sys.stderr)
-        print(payload_str, file=sys.stderr)
-
-        with _httpx.Client(timeout=60) as client:
-            resp = client.post(create_url, content=payload_str, headers=headers)
-
-        print(f"[VertexAI Veo] Create response: {resp.text}", file=sys.stderr)
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"Vertex AI Veo CreateOperation error ({resp.status_code}): {resp.text}"
-            )
-
-        op_data = resp.json()
-        operation_name = op_data.get("name", "")
-        if not operation_name:
-            raise RuntimeError(
-                f"Vertex AI Veo CreateOperation returned no operation name: {op_data}"
-            )
-
-        # ── Poll via fetchPredictOperation ─────────────────────────────────
-        # Vertex AI Veo uses a dedicated fetchPredictOperation endpoint (POST),
-        # NOT the generic GET /v1/{operation_name} pattern.
-        # URL: POST {veo_base_url}/publishers/google/models/{model}:fetchPredictOperation
-        # Body: {"operationName": "<full operation name from create response>"}
-        fetch_url = f"{veo_base_url}/publishers/google/models/{model}:fetchPredictOperation"
-        fetch_body = {"operationName": operation_name}
-
-        # Collected video info: list of {"gcsUri": str, "bytesBase64Encoded": str, "mimeType": str}
-        raw_videos: List[Dict[str, str]] = []
-        deadline = time.time() + 600  # 10 min
-
-        with _httpx.Client(timeout=60) as client:
-            while time.time() < deadline:
-                poll_headers = self.get_headers()
-                poll_resp = client.post(
-                    fetch_url,
-                    json=fetch_body,
-                    headers=poll_headers,
-                )
-                if poll_resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"Vertex AI Veo fetchPredictOperation error "
-                        f"({poll_resp.status_code}): {poll_resp.text}"
-                    )
-                poll_data = poll_resp.json()
-                is_done = poll_data.get("done", False)
-                print(
-                    f"[VertexAI Veo] fetchPredictOperation {operation_name} done={is_done}",
-                    file=sys.stderr,
-                )
-
-                if is_done:
-                    error = poll_data.get("error")
-                    if error:
-                        raise RuntimeError(
-                            f"Vertex AI Veo operation failed: "
-                            f"{json.dumps(error, ensure_ascii=False)}"
-                        )
-                    print(
-                        f"[VertexAI Veo] Operation FINISH: "
-                        f"{json.dumps(poll_data, ensure_ascii=False)[:500]}",
-                        file=sys.stderr,
-                    )
-                    response_data = poll_data.get("response", {})
-                    # Response format: {"videos": [{"gcsUri": "gs://...", "mimeType": "video/mp4"}]}
-                    # or: {"videos": [{"bytesBase64Encoded": "...", "mimeType": "video/mp4"}]}
-                    for video_entry in response_data.get("videos", []):
-                        raw_videos.append({
-                            "gcsUri": video_entry.get("gcsUri", ""),
-                            "bytesBase64Encoded": video_entry.get("bytesBase64Encoded", ""),
-                            "mimeType": video_entry.get("mimeType", "video/mp4"),
-                        })
-                    break
-
-                time.sleep(5.0)
-
-        if not raw_videos:
-            raise RuntimeError(
-                f"Vertex AI Veo operation completed but no videos found in response"
-            )
-
-        # ── Download / decode videos and save to storage ───────────────────
-        from app.storage.factory import get_storage_backend
-        storage = get_storage_backend()
-        stored_urls: List[str] = []
-
-        for idx, video_info in enumerate(raw_videos):
-            safe_op = operation_name.replace("/", "_").replace(":", "_")
-            video_id = f"{safe_op}_{idx}" if idx > 0 else safe_op
-            if len(video_id) > 80:
-                video_id = video_id[-80:]
-
-            mime_type = video_info.get("mimeType", "video/mp4")
-            ext = "webm" if "webm" in mime_type else "mp4"
-            filename = f"{video_id}.{ext}"
-
-            try:
-                gcs_uri = video_info.get("gcsUri", "")
-                b64_data = video_info.get("bytesBase64Encoded", "")
-
-                if b64_data:
-                    # Video bytes returned inline as base64
-                    video_bytes = _base64.b64decode(b64_data)
-                    print(
-                        f"[VertexAI Veo] Decoded inline video ({len(video_bytes)} bytes)",
-                        file=sys.stderr,
-                    )
-                elif gcs_uri:
-                    # Video stored in GCS — download using Bearer token
-                    if gcs_uri.startswith("gs://"):
-                        gcs_path = gcs_uri[5:]
-                        download_url = f"https://storage.googleapis.com/{gcs_path}"
-                    else:
-                        download_url = gcs_uri
-
-                    dl_headers = self.get_headers()
-                    print(
-                        f"[VertexAI Veo] Downloading video from {gcs_uri} ...",
-                        file=sys.stderr,
-                    )
-                    with _httpx.Client(timeout=300, follow_redirects=True) as dl_client:
-                        dl_resp = dl_client.get(download_url, headers=dl_headers)
-
-                    if dl_resp.status_code >= 400:
-                        raise RuntimeError(
-                            f"Video download error ({dl_resp.status_code}): "
-                            f"{dl_resp.text[:200]}"
-                        )
-                    video_bytes = dl_resp.content
-                    print(
-                        f"[VertexAI Veo] Downloaded {len(video_bytes)} bytes",
-                        file=sys.stderr,
-                    )
-                else:
-                    raise RuntimeError(
-                        f"Video entry has neither gcsUri nor bytesBase64Encoded: {video_info}"
-                    )
-
-                stored_url = storage.write_binary(filename, video_bytes, mime_type)
-                stored_urls.append(stored_url)
-                print(f"[VertexAI Veo] Video saved: {stored_url}", file=sys.stderr)
-
-            except Exception as exc:
-                print(
-                    f"[VertexAI Veo] Warning: failed to process video {idx}: {exc}. "
-                    f"Falling back to GCS URI.",
-                    file=sys.stderr,
-                )
-                # Fall back to GCS URI if download/decode fails
-                fallback = video_info.get("gcsUri", "")
-                stored_urls.append(fallback if fallback else f"error:{exc}")
-
-        video_items = [
-            {
-                "type": "video_generation_call",
-                "status": "completed",
-                "result": url,
-                "file_type": "mp4",
-            }
-            for url in stored_urls
-        ]
-        video_message = Message(
-            role=MessageRole.ASSISTANT,
-            content=json.dumps(video_items, ensure_ascii=False),
-        )
-        return ChatResponse(
-            id=gen_id("vid"),
-            model=model,
-            choices=[ChatChoice(
-                index=0,
-                message=video_message,
-                finish_reason=FinishReason.STOP,
-            )],
-            usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0),
-            created=int(time.time()),
-            provider=self.PROVIDER_TYPE,
+        self.get_headers()
+        return execute_vertexai_veo_generation(
+            request=request,
+            get_headers_fn=self.get_headers,
+            base_url=self.config.base_url,
+            project_id=self._project_id,
+            provider_type=self.PROVIDER_TYPE,
         )
 
     # ==================== 响应解析（分发） ====================
@@ -1489,8 +1251,7 @@ class VertexAIProvider(BaseProvider):
             self.is_image_generation_model(request.model)
             or self._has_image_generation_tool(request)
         ):
-            gen_config = request_data.setdefault("generationConfig", {})
-            gen_config["responseModalities"] = ["TEXT", "IMAGE"]
+            inject_image_generation_config(request_data)
 
         # Anthropic rawPredict 不需要 stream 参数
         if publisher == ModelPublisher.ANTHROPIC:
@@ -1522,33 +1283,11 @@ class VertexAIProvider(BaseProvider):
                 self.is_image_generation_model(request.model)
                 or self._has_image_generation_tool(request)
             ):
-                candidates = response_data.get("candidates", [])
-                inline_images = []
-                message_blocks_img = []
-                finish_reason_img = FinishReason.STOP
-                if candidates:
-                    candidate = candidates[0]
-                    parts = candidate.get("content", {}).get("parts", [])
-                    inline_images = parse_inline_images(parts)
-                    for part in parts:
-                        if "text" in part and not part.get("thought", False):
-                            message_blocks_img.append(ContentBlock.from_text(part["text"]))
-                    gemini_finish = candidate.get("finishReason", "STOP")
-                    finish_map = {"STOP": FinishReason.STOP, "MAX_TOKENS": FinishReason.LENGTH, "SAFETY": FinishReason.CONTENT_FILTER}
-                    finish_reason_img = finish_map.get(gemini_finish, FinishReason.STOP)
-
-                usage_metadata = response_data.get("usageMetadata", {})
-                usage_img = UsageInfo(
-                    prompt_tokens=usage_metadata.get("promptTokenCount", 0),
-                    completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
-                    total_tokens=usage_metadata.get("totalTokenCount", 0),
+                img_response = handle_image_generation_response(
+                    response_data, request.model, self.PROVIDER_TYPE
                 )
-
-                if inline_images:
-                    return build_image_chat_response(
-                        inline_images, message_blocks_img, request.model,
-                        usage_img, finish_reason_img, self.PROVIDER_TYPE
-                    )
+                if img_response:
+                    return img_response
 
             return self.parse_response(response_data, request.model)
 
@@ -1571,7 +1310,7 @@ class VertexAIProvider(BaseProvider):
             self.is_video_generation_model(request.model)
             or self._has_video_generation_tool(request)
         ):
-            yield from stream_veo_video_generation(self.chat, request)
+            yield from stream_vertexai_veo_generation(self.chat, request)
             return
 
         # ── Image generation via Vertex AI Gemini ─────────────────────────
@@ -1579,7 +1318,7 @@ class VertexAIProvider(BaseProvider):
             self.is_image_generation_model(request.model)
             or self._has_image_generation_tool(request)
         ):
-            yield from stream_image_generation(self.chat, request)
+            yield from stream_vertexai_image_generation(self.chat, request)
             return
 
         try:

@@ -220,6 +220,18 @@ def _run_background_response(app, response_id: str, input_key: str, output_key: 
     All DB operations are performed via background_response_dao (NullPool engine),
     so no long-lived DB connection is held during the LLM/video generation work.
 
+    Async-within-async handling
+    ---------------------------
+    The upstream provider itself may be an async Responses API service (e.g. an
+    OpenAI-compatible service that accepts ``background=true``).  In that case the
+    first ``POST /v1/responses`` call returns immediately with
+    ``status: "queued"`` or ``"in_progress"`` instead of a finished result.
+
+    When this happens, this function polls ``GET /v1/responses/{id}`` on the
+    upstream provider until the status changes to ``"completed"`` or ``"failed"``,
+    then saves the final result as normal.  The upstream status is propagated via
+    ``ChatResponse.usage.extra['_upstream_status']``.
+
     Args:
         app:         The Flask application instance (needed for app context).
         response_id: The BackgroundResponse.response_id to update when done.
@@ -247,6 +259,69 @@ def _run_background_response(app, response_id: str, input_key: str, output_key: 
             # ── Long-running LLM / video generation call ──────────────────
             # No DB connection is open at this point.
             response = _gateway_service.chat(chat_request, group_id)
+
+            # ── Check if upstream is itself async ─────────────────────────
+            # Some upstream Responses API providers (e.g. OpenAI-compatible
+            # services with background=true) may return status "queued" or
+            # "in_progress" immediately.  In that case we must poll
+            # GET /v1/responses/{id} until the upstream finishes.
+            upstream_status = response.usage.extra.get('_upstream_status', 'completed')
+            _PENDING_STATUSES = {'queued', 'in_progress'}
+
+            if upstream_status in _PENDING_STATUSES:
+                upstream_response_id = response.id
+                upstream_model = response.model
+
+                # Re-resolve the provider so we can call get_response() on it.
+                # At this point chat_request.model has already been mutated by
+                # GatewayService.chat() to the real (non-alias) model name, so
+                # resolve_model() will find it by name.
+                resolved = _gateway_service.resolve_model(chat_request.model, group_id)
+                provider_instance = resolved.provider_instance
+
+                if not hasattr(provider_instance, 'get_response'):
+                    raise RuntimeError(
+                        f"Upstream returned async status {upstream_status!r} but provider "
+                        f"'{type(provider_instance).__name__}' does not support polling "
+                        f"(missing get_response method)."
+                    )
+
+                # Poll with exponential back-off, capped at 30 s, up to 2 h total.
+                _POLL_INTERVALS = [2, 4, 8, 16, 30]  # seconds between polls
+                _MAX_POLL_SECONDS = 7200              # 2 hours hard limit
+                elapsed = 0
+                poll_idx = 0
+
+                while upstream_status in _PENDING_STATUSES and elapsed < _MAX_POLL_SECONDS:
+                    wait = _POLL_INTERVALS[min(poll_idx, len(_POLL_INTERVALS) - 1)]
+                    logger.info(
+                        f"[background] Upstream response {upstream_response_id!r} is "
+                        f"{upstream_status!r}; waiting {wait}s before next poll "
+                        f"(elapsed={elapsed}s, our_response_id={response_id!r})"
+                    )
+                    time.sleep(wait)
+                    elapsed += wait
+                    poll_idx += 1
+
+                    response = provider_instance.get_response(upstream_response_id, upstream_model)
+                    upstream_status = response.usage.extra.get('_upstream_status', 'completed')
+
+                if upstream_status in _PENDING_STATUSES:
+                    raise RuntimeError(
+                        f"Upstream response {upstream_response_id!r} did not complete "
+                        f"within {_MAX_POLL_SECONDS}s (last status: {upstream_status!r})"
+                    )
+
+                if upstream_status == 'failed':
+                    # Surface the real upstream error if available
+                    upstream_error = response.usage.extra.get('_upstream_error')
+                    if upstream_error:
+                        raise RuntimeError(json.dumps(upstream_error, ensure_ascii=False))
+                    raise RuntimeError(
+                        f"Upstream response {upstream_response_id!r} failed "
+                        f"(upstream status: {upstream_status!r})"
+                    )
+
             formatted = adapter.format_response(response)
             formatted_output = json.dumps(formatted, ensure_ascii=False)
 
@@ -433,19 +508,53 @@ def get_response(response_id: str):
             try:
                 result = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
-                result = {"error": "Failed to parse stored response"}
+                result = {"error": {"code": "server_error", "message": "Failed to parse stored response"}}
         else:
-            result = {"error": "Output not found in storage"}
+            result = {"error": {"code": "server_error", "message": "Output not found in storage"}}
         return jsonify(result), 200
 
     if record_status == "failed":
         created_at = bg_record.get("created_at")
+        error_raw = bg_record.get("error")
+
+        # Valid error code values for the Responses API.
+        _VALID_ERROR_CODES = frozenset({
+            "server_error", "rate_limit_exceeded", "invalid_prompt",
+            "vector_store_timeout", "invalid_image", "invalid_image_format",
+            "invalid_base64_image", "invalid_image_url", "image_too_large",
+            "image_too_small", "image_parse_error",
+            "image_content_policy_violation", "invalid_image_mode",
+            "image_file_too_large", "unsupported_image_media_type",
+            "empty_image_file", "failed_to_download_image", "image_file_not_found",
+        })
+
+        def _normalise_error(raw) -> dict:
+            """Parse the stored error and normalise its code to a valid enum value."""
+            if isinstance(raw, dict):
+                obj = raw
+            elif isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                    obj = parsed if isinstance(parsed, dict) else {"code": "server_error", "message": raw}
+                except (json.JSONDecodeError, TypeError):
+                    obj = {"code": "server_error", "message": raw}
+            else:
+                obj = {"code": "server_error", "message": str(raw) if raw else ""}
+
+            # Normalise code: if not a recognised enum value, fall back to server_error
+            if obj.get("code") not in _VALID_ERROR_CODES:
+                obj = dict(obj)  # make a mutable copy
+                obj["code"] = "server_error"
+
+            return obj
+
+        error_obj = _normalise_error(error_raw)
         return jsonify({
             "id": bg_record["response_id"],
             "object": "response",
             "status": "failed",
             "model": bg_record.get("model", ""),
-            "error": bg_record.get("error"),
+            "error": error_obj,
             "created_at": int(created_at.timestamp()) if created_at else None,
         }), 200
 

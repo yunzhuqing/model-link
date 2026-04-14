@@ -60,11 +60,18 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
             if isinstance(content, list):
                 blocks = []
+                thinking_parts = []  # 收集 thinking 内容，转换为 reasoning_content
 
                 for item in content:
                     item_type = item.get('type', 'text')
 
-                    if item_type == 'text':
+                    if item_type == 'thinking':
+                        # Anthropic thinking 块 → 赋值给 Message.reasoning_content
+                        # 下游 OpenAI/Moonshot prepare_request 会将其放入消息的 reasoning_content 字段
+                        thinking_text = item.get('thinking', '')
+                        if thinking_text:
+                            thinking_parts.append(thinking_text)
+                    elif item_type == 'text':
                         blocks.append(ContentBlock.from_text(item.get('text', '')))
                     elif item_type == 'image':
                         source = item.get('source', {})
@@ -111,11 +118,22 @@ class AnthropicMessagesAdapter(BaseAdapter):
                             is_error=item.get('is_error', False)
                         ))
 
+                # 合并所有 thinking 块为 reasoning_content 字符串
+                reasoning_content = '\n'.join(thinking_parts) if thinking_parts else None
+
                 # 添加消息（包含 text、tool_use、tool_result 等所有内容块）
                 if blocks:
                     messages.append(Message(
                         role=role,
-                        content=blocks
+                        content=blocks,
+                        reasoning_content=reasoning_content
+                    ))
+                elif reasoning_content:
+                    # 消息中只有 thinking 块（无其他内容），用空字符串占位内容
+                    messages.append(Message(
+                        role=role,
+                        content='',
+                        reasoning_content=reasoning_content
                     ))
                 else:
                     # 如果没有任何内容块，添加空消息
@@ -566,14 +584,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
                 if pending_finish_chunk:
                     if accumulated_usage:
                         pending_finish_chunk.usage = accumulated_usage
-                    # Use to_anthropic_events() but filter out content_block_stop,
-                    # since the content block lifecycle (start/stop) is already
-                    # managed explicitly above. Without this filter, a duplicate
-                    # content_block_stop would be emitted (one from the explicit
-                    # close above, and another from to_anthropic_events()).
+                    # Use to_anthropic_events() but filter out content_block_stop
+                    # only if we already emitted it above (when block_open is True).
+                    # If block_open is False, we need the content_block_stop from
+                    # to_anthropic_events() to maintain proper event sequence.
                     events = pending_finish_chunk.to_anthropic_events()
                     for event in events:
-                        if event.get("type") == "content_block_stop":
+                        if event.get("type") == "content_block_stop" and block_open:
+                            # Already emitted above at line 562-563, skip to avoid duplicate
                             continue
                         event_type = event.get("type", "")
                         yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"

@@ -59,8 +59,8 @@ class S3StorageBackend(StorageBackend):
         self.prefix = prefix or os.getenv("STORAGE_S3_PREFIX", "background_responses")
         self.region = region or os.getenv("STORAGE_S3_REGION", "us-east-1")
         self.endpoint_url = endpoint_url or os.getenv("STORAGE_S3_ENDPOINT") or None
-        self._access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID")
-        self._secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY")
+        self._access_key = access_key or os.getenv("ACCESS_KEY_ID")
+        self._secret_key = secret_key or os.getenv("SECRET_ACCESS_KEY")
 
         # Lazy-initialise the boto3 client on first use to avoid import errors
         # on systems where boto3 is not installed.

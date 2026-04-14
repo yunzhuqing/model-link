@@ -704,6 +704,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
         if accumulated_vid_metadata:
             metadata.update(accumulated_vid_metadata)
 
+        # Preserve the raw tools array so that Responses-API-compatible providers
+        # (openai_responses_compt) can pass it directly to the upstream without
+        # reconstructing it from ToolDefinition objects.
+        raw_tools = data.get('tools', [])
+        if raw_tools:
+            metadata['_raw_tools'] = raw_tools
+
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),

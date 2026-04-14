@@ -17,13 +17,15 @@ from .gemini import GeminiProvider
 from .tencentvod import TencentVODProvider
 from .vllm_provider import VLLMProvider
 from .hunyuan import HunyuanProvider
+from .openai_chatcompletions_compt_provider import OpenAIChatCompletionsCompatProvider
+from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
     'OpenAIProvider', 'AzureProvider', 'AnthropicProvider', 'BailianProvider',
     'VolcengineProvider', 'VertexAIProvider', 'MoonshotProvider', 'GLMProvider',
     'MiniMaxProvider', 'GeminiProvider', 'TencentVODProvider', 'VLLMProvider',
-    'HunyuanProvider',
+    'HunyuanProvider', 'OpenAIChatCompletionsCompatProvider', 'OpenAIResponsesCompatProvider',
 ]
 
 # 供应商注册表
@@ -41,6 +43,8 @@ PROVIDER_REGISTRY = {
     'tencentvod': TencentVODProvider,
     'vllm': VLLMProvider,
     'hunyuan': HunyuanProvider,
+    'openai_chatcompletions_compt': OpenAIChatCompletionsCompatProvider,
+    'openai_responses_compt': OpenAIResponsesCompatProvider,
 }
 
 

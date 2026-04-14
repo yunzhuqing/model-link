@@ -45,13 +45,13 @@ def get_storage_backend() -> StorageBackend:
     if backend_type == "local":
         from .local import LocalStorageBackend
         _backend = LocalStorageBackend()
-    elif backend_type == "s3":
+    elif backend_type == "s3" or backend_type == "cos":
         from .s3 import S3StorageBackend
         _backend = S3StorageBackend()
     else:
         raise ValueError(
             f"Unknown STORAGE_BACKEND {backend_type!r}. "
-            "Supported values: 'local', 's3'."
+            "Supported values: 'local', 's3', 'cos'."
         )
 
     return _backend
