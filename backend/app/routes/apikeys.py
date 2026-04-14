@@ -333,6 +333,7 @@ def create_api_key(current_user):
         key=generate_api_key(),
         name=data.get('name'),
         group_id=data.get('group_id'),
+        user_id=current_user.id,
         expires_at=expires_at
     )
     db.session.add(api_key)

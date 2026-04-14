@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
-import { Plus, Edit2, Trash2, Save, LayoutTemplate } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, LayoutTemplate, Search, X } from 'lucide-react';
 
 interface PricingTier {
   label: string;
@@ -96,6 +96,25 @@ const FEATURES = [
   { key: 'support_online_video', label: 'Online Video URL' },
   { key: 'support_embedding', label: 'Embedding' },
 ];
+
+const ALL_TAB = '__ALL__';
+
+/* ─── Derive model family from template label ─── */
+function getModelFamily(label: string): string {
+  const lower = label.toLowerCase();
+  if (lower.startsWith('gpt-') || lower.startsWith('gpt ')) return 'GPT';
+  if (lower.startsWith('claude')) return 'Claude';
+  if (lower.startsWith('gemini')) return 'Gemini';
+  if (lower.startsWith('deepseek') || lower.includes('deepseek')) return 'DeepSeek';
+  if (lower.startsWith('kimi')) return 'Kimi';
+  if (lower.startsWith('glm')) return 'GLM';
+  if (lower.startsWith('qwen')) return 'Qwen';
+  if (lower.startsWith('minimax')) return 'MiniMax';
+  if (lower.startsWith('doubao')) return 'Doubao';
+  if (lower.includes('embedding')) return 'Embedding';
+  // Fallback: first word of label
+  return label.split(/[\s\-]/)[0];
+}
 
 /* ─── Template form (shared by add & edit) ─── */
 const TemplateForm = ({
@@ -420,12 +439,138 @@ const TemplateForm = ({
   );
 };
 
+/* ─── Template card (read-only row) ─── */
+const TemplateCard = ({
+  tpl,
+  onEdit,
+  onDelete,
+}: {
+  tpl: ModelTemplate;
+  onEdit: () => void;
+  onDelete: () => void;
+}) => (
+  <div
+    className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-shadow ${tpl.is_retired ? 'border-red-200 opacity-70' : 'border-slate-200'}`}
+  >
+    <div className="flex justify-between items-start">
+      <div className="flex-1 min-w-0">
+        {/* Title row */}
+        <div className="flex items-center space-x-3 flex-wrap gap-y-1">
+          <h3 className="font-semibold text-slate-800">{tpl.label}</h3>
+          <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-mono">
+            {tpl.name}
+          </span>
+          {tpl.alias && (
+            <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs">
+              @{tpl.alias}
+            </span>
+          )}
+          {tpl.currency && tpl.currency !== 'USD' && (
+            <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">
+              {tpl.currency}
+            </span>
+          )}
+          {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 && (
+            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">
+              {tpl.pricing_tiers.length} tiers
+            </span>
+          )}
+          {tpl.is_retired && (
+            <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">
+              Retired
+            </span>
+          )}
+          {!tpl.is_retired && tpl.retirement_time && (
+            <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">
+              Retires {new Date(tpl.retirement_time).toLocaleDateString()}
+            </span>
+          )}
+        </div>
+
+        {/* Pricing row */}
+        {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {tpl.pricing_tiers.map((tier, i) => (
+              <div key={i} className="flex flex-wrap gap-3 text-sm text-slate-600">
+                <span className="text-slate-500 text-xs font-medium w-20">{tier.label}</span>
+                <span><span className="text-slate-400 text-xs mr-1">ctx</span>{tier.context_size.toLocaleString()}</span>
+                <span><span className="text-slate-400 text-xs mr-1">in</span>${tier.input_price}/M</span>
+                <span><span className="text-slate-400 text-xs mr-1">out</span>${tier.output_price}/M</span>
+                {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↓</span>${tier.cache_hit_price}/M</span>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-4 mt-3 text-sm text-slate-600">
+            <span>
+              <span className="text-slate-400 text-xs mr-1">ctx</span>
+              {tpl.context_size.toLocaleString()}
+            </span>
+            <span>
+              <span className="text-slate-400 text-xs mr-1">in</span>
+              ${tpl.input_price}/M
+            </span>
+            <span>
+              <span className="text-slate-400 text-xs mr-1">out</span>
+              ${tpl.output_price}/M
+            </span>
+            {tpl.cache_creation_price > 0 && (
+              <span>
+                <span className="text-slate-400 text-xs mr-1">cache↑</span>
+                ${tpl.cache_creation_price}/M
+              </span>
+            )}
+            {tpl.cache_hit_price > 0 && (
+              <span>
+                <span className="text-slate-400 text-xs mr-1">cache↓</span>
+                ${tpl.cache_hit_price}/M
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Feature badges */}
+        <div className="flex flex-wrap gap-1.5 mt-3">
+          {FEATURES.filter(({ key }) => !!(tpl as any)[key]).map(({ key, label }) => (
+            <span
+              key={key}
+              className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-medium"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex space-x-1 ml-4 shrink-0">
+        <button
+          onClick={onEdit}
+          className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
+          title="Edit"
+        >
+          <Edit2 className="w-4 h-4" />
+        </button>
+        <button
+          onClick={onDelete}
+          className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
+          title="Delete"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
 /* ─── Main page ─── */
 export default function ModelTemplates() {
   const qc = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
   const [newTpl, setNewTpl] = useState<Omit<ModelTemplate, 'id'>>(emptyTemplate());
   const [editingTpl, setEditingTpl] = useState<ModelTemplate | null>(null);
+  const [activeTab, setActiveTab] = useState<string>(ALL_TAB);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const { data: templates = [], isLoading } = useQuery({
     queryKey: ['model-templates'],
@@ -458,8 +603,46 @@ export default function ModelTemplates() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['model-templates'] }),
   });
 
-  // Group by provider
-  const providers = Array.from(new Set(templates.map((t) => t.provider)));
+  // Derive unique model families & counts
+  const familyTabs = useMemo(() => {
+    const countMap = new Map<string, number>();
+    for (const t of templates) {
+      const family = getModelFamily(t.label);
+      countMap.set(family, (countMap.get(family) || 0) + 1);
+    }
+    // Sort families alphabetically
+    const sorted = Array.from(countMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    return sorted;
+  }, [templates]);
+
+  // Filter templates by active tab (model family) + search query
+  const filteredTemplates = useMemo(() => {
+    let list = templates;
+    if (activeTab !== ALL_TAB) {
+      list = list.filter((t) => getModelFamily(t.label) === activeTab);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (t) =>
+          t.label.toLowerCase().includes(q) ||
+          t.name.toLowerCase().includes(q) ||
+          (t.alias && t.alias.toLowerCase().includes(q)) ||
+          t.provider.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [templates, activeTab, searchQuery]);
+
+  // Group filtered templates by provider for display within a family tab
+  const groupedByProvider = useMemo(() => {
+    const groups = new Map<string, ModelTemplate[]>();
+    for (const t of filteredTemplates) {
+      if (!groups.has(t.provider)) groups.set(t.provider, []);
+      groups.get(t.provider)!.push(t);
+    }
+    return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [filteredTemplates]);
 
   if (isLoading) {
     return (
@@ -487,6 +670,68 @@ export default function ModelTemplates() {
         </button>
       </div>
 
+      {/* Provider tabs + search bar */}
+      {templates.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 space-y-3">
+          {/* Tabs */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setActiveTab(ALL_TAB)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                activeTab === ALL_TAB
+                  ? 'bg-blue-500 text-white shadow-md shadow-blue-500/25'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              All
+              <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
+                activeTab === ALL_TAB ? 'bg-blue-400/30 text-white' : 'bg-slate-200 text-slate-500'
+              }`}>
+                {templates.length}
+              </span>
+            </button>
+            {familyTabs.map(([family, count]) => (
+              <button
+                key={family}
+                onClick={() => setActiveTab(family)}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  activeTab === family
+                    ? 'bg-blue-500 text-white shadow-md shadow-blue-500/25'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {family}
+                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
+                  activeTab === family ? 'bg-blue-400/30 text-white' : 'bg-slate-200 text-slate-500'
+                }`}>
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by model name, label, alias, or provider…"
+              className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Add form */}
       {showAdd && (
         <TemplateForm
@@ -498,154 +743,66 @@ export default function ModelTemplates() {
         />
       )}
 
-      {/* Template list grouped by provider */}
+      {/* Template list */}
       {templates.length === 0 && !showAdd ? (
         <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 text-slate-500">
           <LayoutTemplate className="w-16 h-16 mx-auto mb-4 text-slate-300" />
           <p className="text-lg font-medium text-slate-700">No templates yet.</p>
           <p className="text-sm mt-2">Click "Add Template" to create your first one.</p>
         </div>
+      ) : filteredTemplates.length === 0 ? (
+        <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 text-slate-500">
+          <Search className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+          <p className="text-lg font-medium text-slate-700">No matching templates</p>
+          <p className="text-sm mt-1">
+            {searchQuery
+              ? `No templates match "${searchQuery}"${activeTab !== ALL_TAB ? ` in ${activeTab}` : ''}.`
+              : `No templates found for ${activeTab}.`}
+          </p>
+          <button
+            onClick={() => { setSearchQuery(''); setActiveTab(ALL_TAB); }}
+            className="mt-3 text-sm text-blue-600 hover:text-blue-700 font-medium"
+          >
+            Clear filters
+          </button>
+        </div>
       ) : (
-        providers.map((providerName) => (
+        groupedByProvider.map(([providerName, providerTemplates]) => (
           <div key={providerName} className="space-y-3">
-            <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider px-1">
-              {providerName}
-            </h2>
-            {templates
-              .filter((t) => t.provider === providerName)
-              .map((tpl) =>
-                editingTpl?.id === tpl.id ? (
-                  <TemplateForm
-                    key={tpl.id}
-                    value={editingTpl}
-                    onChange={(v) => setEditingTpl({ ...editingTpl, ...v })}
-                    onSave={() => {
-                      const { id, ...data } = editingTpl;
-                      updateMutation.mutate({ id, data });
-                    }}
-                    onCancel={() => setEditingTpl(null)}
-                    isSaving={updateMutation.isPending}
-                  />
-                ) : (
-                  <div
-                    key={tpl.id}
-                    className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-shadow ${tpl.is_retired ? 'border-red-200 opacity-70' : 'border-slate-200'}`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div className="flex-1">
-                        {/* Title row */}
-                        <div className="flex items-center space-x-3 flex-wrap gap-y-1">
-                          <h3 className="font-semibold text-slate-800">{tpl.label}</h3>
-                          <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-mono">
-                            {tpl.name}
-                          </span>
-                          {tpl.alias && (
-                            <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs">
-                              @{tpl.alias}
-                            </span>
-                          )}
-                          {tpl.currency && tpl.currency !== 'USD' && (
-                            <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">
-                              {tpl.currency}
-                            </span>
-                          )}
-                          {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 && (
-                            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">
-                              {tpl.pricing_tiers.length} tiers
-                            </span>
-                          )}
-                          {tpl.is_retired && (
-                            <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">
-                              Retired
-                            </span>
-                          )}
-                          {!tpl.is_retired && tpl.retirement_time && (
-                            <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">
-                              Retires {new Date(tpl.retirement_time).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Pricing row */}
-                        {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 ? (
-                          <div className="mt-3 space-y-1">
-                            {tpl.pricing_tiers.map((tier, i) => (
-                              <div key={i} className="flex flex-wrap gap-3 text-sm text-slate-600">
-                                <span className="text-slate-500 text-xs font-medium w-20">{tier.label}</span>
-                                <span><span className="text-slate-400 text-xs mr-1">ctx</span>{tier.context_size.toLocaleString()}</span>
-                                <span><span className="text-slate-400 text-xs mr-1">in</span>${tier.input_price}/M</span>
-                                <span><span className="text-slate-400 text-xs mr-1">out</span>${tier.output_price}/M</span>
-                                {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↓</span>${tier.cache_hit_price}/M</span>}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                        <div className="flex flex-wrap gap-4 mt-3 text-sm text-slate-600">
-                          <span>
-                            <span className="text-slate-400 text-xs mr-1">ctx</span>
-                            {tpl.context_size.toLocaleString()}
-                          </span>
-                          <span>
-                            <span className="text-slate-400 text-xs mr-1">in</span>
-                            ${tpl.input_price}/M
-                          </span>
-                          <span>
-                            <span className="text-slate-400 text-xs mr-1">out</span>
-                            ${tpl.output_price}/M
-                          </span>
-                          {tpl.cache_creation_price > 0 && (
-                            <span>
-                              <span className="text-slate-400 text-xs mr-1">cache↑</span>
-                              ${tpl.cache_creation_price}/M
-                            </span>
-                          )}
-                          {tpl.cache_hit_price > 0 && (
-                            <span>
-                              <span className="text-slate-400 text-xs mr-1">cache↓</span>
-                              ${tpl.cache_hit_price}/M
-                            </span>
-                          )}
-                        </div>
-                        )}
-
-                        {/* Feature badges */}
-                        <div className="flex flex-wrap gap-1.5 mt-3">
-                          {FEATURES.filter(({ key }) => !!(tpl as any)[key]).map(({ key, label }) => (
-                            <span
-                              key={key}
-                              className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-medium"
-                            >
-                              {label}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="flex space-x-1 ml-4 shrink-0">
-                        <button
-                          onClick={() => { setEditingTpl(tpl); setShowAdd(false); }}
-                          className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm(`Delete template "${tpl.label}"?`)) {
-                              deleteMutation.mutate(tpl.id);
-                            }
-                          }}
-                          className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )
-              )}
+            <div className="flex items-center justify-between px-1">
+              <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                {providerName}
+              </h2>
+              <span className="text-xs text-slate-400">
+                {providerTemplates.length} model{providerTemplates.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            {providerTemplates.map((tpl: ModelTemplate) =>
+              editingTpl?.id === tpl.id ? (
+                <TemplateForm
+                  key={tpl.id}
+                  value={editingTpl!}
+                  onChange={(v) => setEditingTpl({ ...editingTpl!, ...v })}
+                  onSave={() => {
+                    const { id, ...data } = editingTpl!;
+                    updateMutation.mutate({ id, data });
+                  }}
+                  onCancel={() => setEditingTpl(null)}
+                  isSaving={updateMutation.isPending}
+                />
+              ) : (
+                <TemplateCard
+                  key={tpl.id}
+                  tpl={tpl}
+                  onEdit={() => { setEditingTpl(tpl); setShowAdd(false); }}
+                  onDelete={() => {
+                    if (confirm(`Delete template "${tpl.label}"?`)) {
+                      deleteMutation.mutate(tpl.id);
+                    }
+                  }}
+                />
+              )
+            )}
           </div>
         ))
       )}

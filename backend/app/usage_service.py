@@ -8,6 +8,20 @@ This module provides two public functions:
 Both are fire-and-forget: they spawn a daemon thread so the gateway response
 is never delayed by the DB write.
 
+Tiered pricing
+--------------
+Models may define a ``pricing_tiers`` JSON list (same schema as
+``Model.pricing_tiers``).  Each tier has a ``context_size`` (token threshold)
+and per-tier price overrides.  When recording usage we pick the first tier
+whose ``context_size >= input_tokens``; if none qualifies we fall back to the
+flat model prices.
+
+Example tiers ($ per 1M tokens):
+  [
+    {"label": "<=128k", "context_size": 128000, "input_price": 2.5,  "output_price": 10},
+    {"label": ">128k",  "context_size": 1000000,"input_price": 5.0,  "output_price": 20}
+  ]
+
 Currency / exchange-rate handling
 ----------------------------------
 Each usage record stores:
@@ -23,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.abstraction.chat import ChatResponse, UsageInfo
@@ -78,13 +92,15 @@ def record_usage(
         or (db_model.alias or db_model.name if db_model else None)
     )
 
+    # Flat (base) prices — used when no tier matches
     input_price_unit: float = getattr(db_model, 'input_price', 0.0) or 0.0
     output_price_unit: float = getattr(db_model, 'output_price', 0.0) or 0.0
     cache_creation_price_unit: float = getattr(db_model, 'cache_creation_price', 0.0) or 0.0
     cache_token_price_unit: float = getattr(db_model, 'cache_hit_price', 0.0) or 0.0
     currency: str = getattr(db_model, 'currency', 'USD') or 'USD'
+    # Tiered pricing — serialised as a plain list so it's safe to pass to a thread
+    pricing_tiers: Optional[list] = getattr(db_model, 'pricing_tiers', None)
 
-    # ── Determine exchange rate ────────────────────────────────────────────────
     exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
 
     thread = threading.Thread(
@@ -104,6 +120,7 @@ def record_usage(
             output_price_unit=output_price_unit,
             cache_creation_price_unit=cache_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
+            pricing_tiers=pricing_tiers,
             currency=currency,
             exchange_rate_to_cny=exchange_rate_to_cny,
         ),
@@ -130,6 +147,7 @@ def record_stream_usage(
     output_price_unit: float = 0.0,
     cache_creation_price_unit: float = 0.0,
     cache_token_price_unit: float = 0.0,
+    pricing_tiers: Optional[list] = None,
     # Currency (from model_meta dict)
     currency: str = 'USD',
 ) -> None:
@@ -161,6 +179,7 @@ def record_stream_usage(
             output_price_unit=output_price_unit,
             cache_creation_price_unit=cache_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
+            pricing_tiers=pricing_tiers,
             currency=currency,
             exchange_rate_to_cny=exchange_rate_to_cny,
         ),
@@ -188,6 +207,63 @@ def _get_exchange_rate_for_currency(currency: str) -> float:
         return 7.0  # safe fallback
 
 
+def _resolve_price_tier(
+    pricing_tiers: Optional[list],
+    input_tokens: int,
+    default_input_price: float,
+    default_output_price: float,
+    default_cache_creation_price: float,
+    default_cache_hit_price: float,
+) -> tuple:
+    """
+    Return ``(input_price, output_price, cache_creation_price, cache_hit_price)``
+    for the tier that matches ``input_tokens``.
+
+    Tier selection rule:
+      - Sort tiers ascending by ``context_size``.
+      - Pick the **first** tier whose ``context_size >= input_tokens`` (i.e., the
+        smallest tier that can accommodate the request).
+      - If no tier's ``context_size`` is large enough, fall back to the last
+        (largest) tier.
+      - If ``pricing_tiers`` is empty or None, use the flat default prices.
+
+    Each tier dict may contain any subset of the price keys; missing keys fall
+    back to the corresponding flat model price.
+    """
+    if not pricing_tiers:
+        return (
+            default_input_price,
+            default_output_price,
+            default_cache_creation_price,
+            default_cache_hit_price,
+        )
+
+    # Sort ascending by context_size
+    try:
+        sorted_tiers = sorted(pricing_tiers, key=lambda t: t.get('context_size', 0))
+    except Exception:
+        return (
+            default_input_price,
+            default_output_price,
+            default_cache_creation_price,
+            default_cache_hit_price,
+        )
+
+    # Default to the last (largest) tier
+    selected = sorted_tiers[-1]
+    for tier in sorted_tiers:
+        if input_tokens <= tier.get('context_size', 0):
+            selected = tier
+            break
+
+    return (
+        float(selected.get('input_price', default_input_price) or default_input_price),
+        float(selected.get('output_price', default_output_price) or default_output_price),
+        float(selected.get('cache_creation_price', default_cache_creation_price) or default_cache_creation_price),
+        float(selected.get('cache_hit_price', default_cache_hit_price) or default_cache_hit_price),
+    )
+
+
 class _UsageOnlyResponse:
     """Minimal response-like object wrapping a UsageInfo for _persist_usage compatibility."""
     def __init__(self, usage_info):
@@ -210,6 +286,7 @@ def _persist_usage(
     output_price_unit,
     cache_creation_price_unit,
     cache_token_price_unit,
+    pricing_tiers=None,
     currency='USD',
     exchange_rate_to_cny=None,
 ) -> None:
@@ -233,6 +310,7 @@ def _persist_usage(
                 output_price_unit=output_price_unit,
                 cache_creation_price_unit=cache_creation_price_unit,
                 cache_token_price_unit=cache_token_price_unit,
+                pricing_tiers=pricing_tiers,
                 currency=currency,
                 exchange_rate_to_cny=exchange_rate_to_cny,
             )
@@ -257,6 +335,7 @@ def _build_record(
     output_price_unit,
     cache_creation_price_unit,
     cache_token_price_unit,
+    pricing_tiers=None,
     currency='USD',
     exchange_rate_to_cny=None,
 ):
@@ -278,6 +357,23 @@ def _build_record(
     cache_creation_tokens: int = usage.cache_write_tokens or 0
     cache_tokens: int = usage.cache_read_tokens or usage.cached_tokens or 0
     reasoning_tokens: int = usage.reasoning_tokens or 0
+
+    # ── Tier-aware pricing ─────────────────────────────────────────────────
+    # Select the appropriate price tier based on actual input_tokens.
+    # Falls back to flat model prices when no tiers are configured.
+    (
+        input_price_unit,
+        output_price_unit,
+        cache_creation_price_unit,
+        cache_token_price_unit,
+    ) = _resolve_price_tier(
+        pricing_tiers=pricing_tiers,
+        input_tokens=input_tokens,
+        default_input_price=input_price_unit,
+        default_output_price=output_price_unit,
+        default_cache_creation_price=cache_creation_price_unit,
+        default_cache_hit_price=cache_token_price_unit,
+    )
 
     # ── Image / Video / Audio / Web search from usage.extra ────────────────
     extra = usage.extra if usage else {}

@@ -118,9 +118,18 @@ function fmtNum(n: number): string {
 
 function fmtDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('zh-CN', {
-      month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit',
+    // Backend returns UTC timestamps without 'Z' suffix — ensure correct parsing
+    let utcStr = iso;
+    if (!utcStr.endsWith('Z') && !utcStr.includes('+') && !/[-]\d{2}:\d{2}$/.test(utcStr)) {
+      utcStr += 'Z';
+    }
+    return new Date(utcStr).toLocaleString(undefined, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
     });
   } catch {
     return iso;
@@ -517,11 +526,20 @@ const UsagePage = () => {
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200">
                       {[
-                        '时间', '模型', '分组', 'API Key', '输入 Tokens', '输出 Tokens',
-                        '推理 Tokens', '缓存命中', '图片', '视频', '搜索',
+                        { label: '时间', align: 'text-left' },
+                        { label: '模型', align: 'text-left' },
+                        { label: '分组', align: 'text-left' },
+                        { label: 'API Key', align: 'text-left' },
+                        { label: '输入 Tokens', align: 'text-center' },
+                        { label: '输出 Tokens', align: 'text-center' },
+                        { label: '推理 Tokens', align: 'text-center' },
+                        { label: '缓存命中', align: 'text-center' },
+                        { label: '图片', align: 'text-center' },
+                        { label: '视频', align: 'text-center' },
+                        { label: '搜索', align: 'text-center' },
                       ].map((h) => (
-                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 whitespace-nowrap">
-                          {h}
+                        <th key={h.label} className={`px-4 py-3 ${h.align} text-xs font-semibold text-slate-500 whitespace-nowrap`}>
+                          {h.label}
                         </th>
                       ))}
                     </tr>
@@ -538,25 +556,25 @@ const UsagePage = () => {
                             <p className="text-slate-400 font-mono text-xs">{r.api_key_preview || ''}</p>
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-indigo-700 font-mono text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-indigo-700 font-mono text-center whitespace-nowrap">
                           {fmtNum(r.input_tokens)}
                         </td>
-                        <td className="px-4 py-3 text-emerald-700 font-mono text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-emerald-700 font-mono text-center whitespace-nowrap">
                           {fmtNum(r.output_tokens)}
                         </td>
-                        <td className="px-4 py-3 text-violet-700 font-mono text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-violet-700 font-mono text-center whitespace-nowrap">
                           {r.reasoning_tokens > 0 ? fmtNum(r.reasoning_tokens) : '—'}
                         </td>
-                        <td className="px-4 py-3 text-cyan-700 font-mono text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-cyan-700 font-mono text-center whitespace-nowrap">
                           {r.cache_tokens > 0 ? fmtNum(r.cache_tokens) : '—'}
                         </td>
-                        <td className="px-4 py-3 text-amber-700 text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-amber-700 text-center whitespace-nowrap">
                           {r.output_image_number > 0 ? r.output_image_number : '—'}
                         </td>
-                        <td className="px-4 py-3 text-rose-700 text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-rose-700 text-center whitespace-nowrap">
                           {r.output_video_number > 0 ? r.output_video_number : '—'}
                         </td>
-                        <td className="px-4 py-3 text-blue-700 text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-blue-700 text-center whitespace-nowrap">
                           {r.web_search_requests > 0 ? r.web_search_requests : '—'}
                         </td>
                       </tr>

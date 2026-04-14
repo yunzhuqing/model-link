@@ -149,6 +149,7 @@ class ApiKey(db.Model):
     key = db.Column(db.String(64), unique=True, nullable=False, index=True)
     name = db.Column(db.String(100), nullable=False)
     group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("ml_users.id"), nullable=True, index=True)
     
     # Status
     is_active = db.Column(db.Boolean, default=True)
@@ -164,6 +165,7 @@ class ApiKey(db.Model):
     
     # Relationships
     group = db.relationship("Group", back_populates="api_keys")
+    user = db.relationship("User", backref="api_keys")
 
     def to_dict(self):
         return {
@@ -171,6 +173,8 @@ class ApiKey(db.Model):
             'key': self.key,
             'name': self.name,
             'group_id': self.group_id,
+            'user_id': self.user_id,
+            'user_name': self.user.username if self.user else None,
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
@@ -183,7 +187,8 @@ class ApiKey(db.Model):
         return {
             'id': self.id,
             'name': self.name,
-            'is_active': self.is_active
+            'is_active': self.is_active,
+            'user_name': self.user.username if self.user else None,
         }
 
     def to_dict_with_group(self):

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, groupsApi } from '../api/client';
 import type { ApiKey } from '../api/client';
-import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Users } from 'lucide-react';
+import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Users, User } from 'lucide-react';
 
 export default function ApiKeyList() {
   const queryClient = useQueryClient();
@@ -212,7 +212,7 @@ export default function ApiKeyList() {
             </div>
 
             {/* Stats */}
-            <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="grid grid-cols-3 gap-3 text-sm">
               <div className="bg-slate-50 rounded-lg p-3">
                 <div className="flex items-center text-slate-400 mb-1">
                   <Hash className="w-3 h-3 mr-1" />
@@ -225,7 +225,14 @@ export default function ApiKeyList() {
                   <Users className="w-3 h-3 mr-1" />
                   <span className="text-xs">分组</span>
                 </div>
-                <span className="font-medium text-slate-700">{apiKey.group_name || groups?.find(g => g.id === apiKey.group_id)?.name || '-'}</span>
+                <span className="font-medium text-slate-700">{apiKey.group?.name || apiKey.group_name || groups?.find(g => g.id === apiKey.group_id)?.name || '-'}</span>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-3">
+                <div className="flex items-center text-slate-400 mb-1">
+                  <User className="w-3 h-3 mr-1" />
+                  <span className="text-xs">所属用户</span>
+                </div>
+                <span className="font-medium text-slate-700">{apiKey.user_name || '-'}</span>
               </div>
             </div>
 

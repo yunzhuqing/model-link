@@ -219,6 +219,7 @@ def _handle_request(adapter):
                                 output_price_unit=model_meta.get('output_price_unit', 0.0),
                                 cache_creation_price_unit=model_meta.get('cache_creation_price_unit', 0.0),
                                 cache_token_price_unit=model_meta.get('cache_token_price_unit', 0.0),
+                                pricing_tiers=model_meta.get('pricing_tiers'),
                                 currency=model_meta.get('currency', 'USD'),
                             )
                         except Exception as _ue:
@@ -564,6 +565,7 @@ def openai_responses():
                                 output_price_unit=model_meta.get('output_price_unit', 0.0),
                                 cache_creation_price_unit=model_meta.get('cache_creation_price_unit', 0.0),
                                 cache_token_price_unit=model_meta.get('cache_token_price_unit', 0.0),
+                                pricing_tiers=model_meta.get('pricing_tiers'),
                                 currency=model_meta.get('currency', 'USD'),
                             )
                         except Exception as _ue:

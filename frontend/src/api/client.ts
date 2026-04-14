@@ -23,12 +23,15 @@ export interface ApiKey {
   name: string;
   group_id: number | null;
   group_name?: string;
+  user_id?: number | null;
+  user_name?: string | null;
   is_active: boolean;
   created_at: string;
   expires_at: string | null;
   last_used_at: string | null;
   request_count: number;
   token_count: number;
+  group?: { id: number; name: string; description: string | null; created_at: string | null };
 }
 
 export interface ApiKeyCreate {
@@ -125,12 +128,12 @@ export interface ModelCreate {
 
 // API Key endpoints
 export const apiKeysApi = {
-  list: () => client.get<ApiKey[]>('/api/api-keys/'),
-  get: (id: number) => client.get<ApiKey>(`/api/api-keys/${id}`),
-  create: (data: ApiKeyCreate) => client.post<ApiKey>('/api/api-keys/', data),
-  update: (id: number, data: ApiKeyUpdate) => client.put<ApiKey>(`/api/api-keys/${id}`, data),
-  delete: (id: number) => client.delete(`/api/api-keys/${id}`),
-  regenerate: (id: number) => client.post<ApiKey>(`/api/api-keys/${id}/regenerate`),
+  list: () => client.get<ApiKey[]>('/api/apikeys/'),
+  get: (id: number) => client.get<ApiKey>(`/api/apikeys/${id}`),
+  create: (data: ApiKeyCreate) => client.post<ApiKey>('/api/apikeys/', data),
+  update: (id: number, data: ApiKeyUpdate) => client.put<ApiKey>(`/api/apikeys/${id}`, data),
+  delete: (id: number) => client.delete(`/api/apikeys/${id}`),
+  regenerate: (id: number) => client.post<ApiKey>(`/api/apikeys/${id}/regenerate`),
 };
 
 // Group endpoints
