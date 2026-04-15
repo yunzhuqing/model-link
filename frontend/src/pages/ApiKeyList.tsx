@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiKeysApi, groupsApi, providersApi } from '../api/client';
+import { apiKeysApi, groupsApi } from '../api/client';
 import client from '../api/client';
-import type { ApiKey, ApiKeyModelsResponse } from '../api/client';
+import type { ApiKey } from '../api/client';
 import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Users, User, Eye, EyeOff, Tag, Search } from 'lucide-react';
 
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
