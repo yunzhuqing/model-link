@@ -17,6 +17,7 @@ import HelpMessages from './pages/HelpMessages';
 import HelpImageGeneration from './pages/HelpImageGeneration';
 import HelpVideoGeneration from './pages/HelpVideoGeneration';
 import HelpThreed from './pages/HelpThreed';
+import ApiKeyDetail from './pages/ApiKeyDetail';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -43,6 +44,7 @@ function App() {
               }
             >
               <Route index element={<Dashboard />} />
+              <Route path="apikeys/:id" element={<ApiKeyDetail />} />
               <Route path="groups" element={<GroupList />} />
               <Route path="groups/:id" element={<GroupDetail />} />
               <Route path="model-templates" element={<ModelTemplates />} />

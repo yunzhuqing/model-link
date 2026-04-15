@@ -227,6 +227,19 @@ def get_summary():
             q = q.filter(UsageRecord.provider_id == int(provider_id))
         return q
 
+    # ── Cost expression (reusable across queries) ─────────────────────────
+    # Estimated cost per record in native currency ($ per 1M tokens for text)
+    _cost_expr = (
+        UsageRecord.input_tokens * UsageRecord.input_price_unit / 1000000.0
+        + UsageRecord.output_tokens * UsageRecord.output_price_unit / 1000000.0
+        + UsageRecord.cache_creation_tokens * UsageRecord.cache_creation_price_unit / 1000000.0
+        + UsageRecord.cache_tokens * UsageRecord.cache_token_price_unit / 1000000.0
+        + UsageRecord.output_image_number * UsageRecord.output_image_price_unit
+        + UsageRecord.output_video_number * UsageRecord.output_video_price_unit
+        + UsageRecord.output_audio_seconds * UsageRecord.output_audio_price_unit
+        + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
+    )
+
     # ── Totals ────────────────────────────────────────────────────────────
     totals_q = _apply_filters(
         db.session.query(
@@ -240,6 +253,7 @@ def get_summary():
             func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
             func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
             func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
+            func.coalesce(func.sum(_cost_expr), 0).label("estimated_cost"),
         )
     )
     row = totals_q.one()
@@ -254,6 +268,7 @@ def get_summary():
         "output_video_number": int(row.output_video_number or 0),
         "output_audio_seconds": float(row.output_audio_seconds or 0),
         "web_search_requests": int(row.web_search_requests or 0),
+        "estimated_cost": round(float(row.estimated_cost or 0), 6),
     }
 
     # ── By model ──────────────────────────────────────────────────────────
@@ -264,6 +279,7 @@ def get_summary():
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+            func.coalesce(func.sum(_cost_expr), 0).label("estimated_cost"),
         )
     ).group_by(UsageRecord.model_name).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
 
@@ -274,6 +290,7 @@ def get_summary():
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
             "reasoning_tokens": int(r.reasoning_tokens),
+            "estimated_cost": round(float(r.estimated_cost or 0), 6),
         }
         for r in by_model_rows
     ]
@@ -311,6 +328,7 @@ def get_summary():
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(_cost_expr), 0).label("estimated_cost"),
         )
     ).group_by(
         UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
@@ -324,6 +342,7 @@ def get_summary():
             "requests": r.requests,
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
+            "estimated_cost": round(float(r.estimated_cost or 0), 6),
         }
         for r in by_api_key_rows
     ]

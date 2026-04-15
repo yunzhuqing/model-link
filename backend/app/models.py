@@ -167,6 +167,10 @@ class ApiKey(db.Model):
     # NULL or empty list means all models are allowed.
     allowed_models = db.Column(db.JSON, nullable=True, default=None)
     
+    # Budget — total spending limit for this API key (in USD).
+    # NULL means unlimited budget.
+    budget = db.Column(db.Float, nullable=True, default=None)
+    
     # Relationships
     group = db.relationship("Group", back_populates="api_keys")
     user = db.relationship("User", backref="api_keys")
@@ -185,7 +189,8 @@ class ApiKey(db.Model):
             'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
             'request_count': self.request_count,
             'token_count': self.token_count,
-            'allowed_models': self.allowed_models or []
+            'allowed_models': self.allowed_models or [],
+            'budget': self.budget,
         }
 
     def to_dict_simple(self):

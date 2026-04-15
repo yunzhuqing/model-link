@@ -1,7 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import client from '../api/client';
-import { Key, Activity, Cpu, BarChart3, TrendingUp, Zap, Copy, Check, Users, Database } from 'lucide-react';
-import { useState } from 'react';
+import {
+  Key, Activity, Cpu, TrendingUp, Zap, Copy, Check, DollarSign,
+  Clock, Users, ChevronRight, PieChart, Shield,
+  ChevronDown, AlertCircle,
+} from 'lucide-react';
+import { useState, useMemo } from 'react';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -33,6 +38,7 @@ interface UsageSummary {
     output_video_number: number;
     output_audio_seconds: number;
     web_search_requests: number;
+    estimated_cost: number;
   };
   by_model: Array<{
     model_name: string;
@@ -40,6 +46,7 @@ interface UsageSummary {
     input_tokens: number;
     output_tokens: number;
     reasoning_tokens: number;
+    estimated_cost: number;
   }>;
   by_api_key: Array<{
     api_key_hash: string;
@@ -48,6 +55,7 @@ interface UsageSummary {
     requests: number;
     input_tokens: number;
     output_tokens: number;
+    estimated_cost: number;
   }>;
   by_group: Array<{
     group_id: number;
@@ -73,402 +81,560 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-function fmtDate(s: string | null): string {
-  if (!s) return '-';
-  const d = s.includes('T') && !s.endsWith('Z') && !s.includes('+') ? s + 'Z' : s;
-  return new Date(d).toLocaleString('zh-CN');
+function fmtCost(n: number): string {
+  if (n >= 1000) return '$' + (n / 1000).toFixed(1) + 'K';
+  if (n >= 1) return '$' + n.toFixed(2);
+  if (n >= 0.01) return '$' + n.toFixed(3);
+  if (n > 0) return '$' + n.toFixed(4);
+  return '$0.00';
 }
 
-/* ── Dashboard ─────────────────────────────────────────────────────────── */
+
+/* ── Colors ─────────────────────────────────────────────────────────────── */
+
+const PIE_COLORS = [
+  '#6366f1', '#06b6d4', '#f59e0b', '#ef4444', '#10b981',
+  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6',
+  '#84cc16', '#a855f7',
+];
+
+/* ── Sparkline SVG ─────────────────────────────────────────────────────── */
+
+const Sparkline = ({ data, width = 100, height = 32, color = 'rgba(255,255,255,0.6)', fillColor = 'rgba(255,255,255,0.15)' }: {
+  data: number[];
+  width?: number;
+  height?: number;
+  color?: string;
+  fillColor?: string;
+}) => {
+  if (data.length < 2) return null;
+  const max = Math.max(...data, 1);
+  const min = Math.min(...data, 0);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * width;
+    const y = height - ((v - min) / range) * (height * 0.85) - height * 0.05;
+    return `${x},${y}`;
+  });
+  const line = pts.join(' ');
+  const area = `0,${height} ${line} ${width},${height}`;
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="flex-shrink-0">
+      <polyline fill={fillColor} points={area} />
+      <polyline fill="none" stroke={color} strokeWidth="1.5" points={line} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+};
+
+/* ── Donut Chart ───────────────────────────────────────────────────────── */
+
+interface DonutSlice { label: string; value: number; color: string; }
+
+const DonutChart = ({ slices, size = 140, strokeWidth = 24, centerValue, centerLabel }: {
+  slices: DonutSlice[];
+  size?: number;
+  strokeWidth?: number;
+  centerValue?: string;
+  centerLabel?: string;
+}) => {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const total = slices.reduce((s, d) => s + d.value, 0) || 1;
+  const c = size / 2;
+  let cum = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={c} cy={c} r={radius} fill="none" stroke="#f1f5f9" strokeWidth={strokeWidth} />
+      {slices.map((sl, i) => {
+        const pct = sl.value / total;
+        const offset = circumference * (1 - pct);
+        const rot = cum * 360 - 90;
+        cum += pct;
+        return (
+          <circle key={i} cx={c} cy={c} r={radius} fill="none" stroke={sl.color}
+            strokeWidth={strokeWidth} strokeDasharray={`${circumference}`}
+            strokeDashoffset={offset} strokeLinecap="round"
+            transform={`rotate(${rot} ${c} ${c})`}
+            className="transition-all duration-700"
+          />
+        );
+      })}
+      {centerValue && (
+        <>
+          <text x={c} y={c - 4} textAnchor="middle" style={{ fontSize: '15px', fontWeight: 700 }} className="fill-slate-800">{centerValue}</text>
+          {centerLabel && <text x={c} y={c + 12} textAnchor="middle" style={{ fontSize: '10px' }} className="fill-slate-400">{centerLabel}</text>}
+        </>
+      )}
+    </svg>
+  );
+};
+
+/* ── Mini bar chart for API key ────────────────────────────────────────── */
+
+const MiniBarChart = ({ values, color = '#6366f1' }: { values: number[]; color?: string }) => {
+  const max = Math.max(...values, 1);
+  return (
+    <div className="flex items-end space-x-[2px] h-6">
+      {values.slice(-7).map((v, i) => (
+        <div key={i} className="w-[4px] rounded-t-sm transition-all duration-300"
+          style={{ height: `${Math.max((v / max) * 100, 8)}%`, backgroundColor: color, opacity: 0.5 + (i / 10) }}
+        />
+      ))}
+    </div>
+  );
+};
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Dashboard
+   ══════════════════════════════════════════════════════════════════════════ */
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
-  // Fetch current user's API keys
   const { data: apiKeys, isLoading: keysLoading } = useQuery({
     queryKey: ['apiKeys'],
-    queryFn: async () => {
-      const res = await client.get<ApiKeyItem[]>('/api/apikeys/');
-      return res.data;
-    },
+    queryFn: async () => (await client.get<ApiKeyItem[]>('/api/apikeys/')).data,
   });
 
-  // Fetch usage summary (last 30 days by default)
   const { data: usage, isLoading: usageLoading } = useQuery({
-    queryKey: ['usage-summary'],
+    queryKey: ['usage-summary-14d'],
     queryFn: async () => {
       const now = new Date();
-      const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      const res = await client.get<UsageSummary>('/api/usage/summary', {
-        params: {
-          start: start.toISOString(),
-          end: now.toISOString(),
-          granularity: 'day',
-        },
-      });
-      return res.data;
+      const start = new Date(now.getTime() - 14 * 86400000);
+      return (await client.get<UsageSummary>('/api/usage/summary', {
+        params: { start: start.toISOString(), end: now.toISOString(), granularity: 'day' },
+      })).data;
     },
   });
 
-  const handleCopyKey = async (key: string) => {
+  const handleCopy = async (key: string) => {
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(key);
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = key;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      }
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(null), 2000);
-    } catch { /* ignore */ }
+      if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(key); }
+      else { const t = document.createElement('textarea'); t.value = key; t.style.cssText = 'position:fixed;left:-9999px'; document.body.appendChild(t); t.select(); document.execCommand('copy'); document.body.removeChild(t); }
+      setCopiedKey(key); setTimeout(() => setCopiedKey(null), 2000);
+    } catch { /* */ }
+  };
+
+  const toggleModel = (name: string) => {
+    setExpandedModels(prev => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
   };
 
   const totals = usage?.totals;
   const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0);
+  const tsData = usage?.time_series || [];
+
+  const sortedKeys = useMemo(() =>
+    apiKeys ? [...apiKeys].sort((a, b) => {
+      if (!a.last_used_at && !b.last_used_at) return 0;
+      if (!a.last_used_at) return 1;
+      if (!b.last_used_at) return -1;
+      return new Date(b.last_used_at).getTime() - new Date(a.last_used_at).getTime();
+    }) : []
+  , [apiKeys]);
+
+  const modelSlices: DonutSlice[] = (usage?.by_model || [])
+    .sort((a, b) => (b.estimated_cost || 0) - (a.estimated_cost || 0))
+    .map((m, i) => ({ label: m.model_name, value: m.estimated_cost || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
+
+  const tokenSlices: DonutSlice[] = totals ? [
+    { label: '输入 Tokens', value: totals.input_tokens, color: '#3b82f6' },
+    { label: '输出 Tokens', value: totals.output_tokens, color: '#10b981' },
+    { label: '推理 Tokens', value: totals.reasoning_tokens, color: '#f59e0b' },
+    { label: '缓存 Tokens', value: totals.cache_tokens + totals.cache_creation_tokens, color: '#8b5cf6' },
+  ].filter(s => s.value > 0) : [];
+
+  const loading = keysLoading || usageLoading;
+
+  /* ── Render ───────────────────────────────────────────────────────────── */
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex justify-between items-center">
+    <div className="space-y-5 pb-6">
+
+      {/* ━━ Header ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">控制台</h1>
-          <p className="text-slate-500 mt-1">查看 API Key 和使用统计概览</p>
+          <p className="text-sm text-slate-400 mt-0.5">近 14 天 · 全部数据概览</p>
         </div>
-        <div className="flex items-center space-x-2 px-4 py-2 bg-green-50 border border-green-200 rounded-xl">
-          <Activity className="w-4 h-4 text-green-500" />
-          <span className="text-sm font-medium text-green-700">系统正常</span>
+        <div className="flex items-center space-x-2 px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-xl">
+          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+          <span className="text-sm font-medium text-emerald-700">全部系统运行正常</span>
         </div>
       </div>
 
-      {/* ── Overview Stats ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard
-          icon={<Key className="w-6 h-6 text-blue-600" />}
-          label="我的 API Keys"
-          value={apiKeys?.length ?? 0}
-          color="blue"
-        />
-        <StatCard
-          icon={<Zap className="w-6 h-6 text-amber-600" />}
-          label="总请求次数"
-          value={fmtNum(totals?.requests || 0)}
-          color="amber"
-          sub="近 30 天"
-        />
-        <StatCard
-          icon={<TrendingUp className="w-6 h-6 text-emerald-600" />}
-          label="总 Token 消耗"
-          value={fmtNum(totalTokens)}
-          color="emerald"
-          sub="输入 + 输出"
-        />
-        <StatCard
-          icon={<Cpu className="w-6 h-6 text-violet-600" />}
-          label="使用模型数"
-          value={usage?.by_model?.length ?? 0}
-          color="violet"
-          sub="近 30 天"
-        />
-      </div>
-
-      {/* ── My API Keys ────────────────────────────────────────────────── */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h2 className="text-lg font-bold text-slate-800">我的 API Key</h2>
-            <p className="text-sm text-slate-500">当前用户可见的所有 API Key</p>
+      {/* ━━ Stat Cards with Sparklines ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {([
+          { label: '消费金额', value: fmtCost(totals?.estimated_cost || 0), icon: DollarSign,
+            gradient: 'from-emerald-500 to-emerald-600', sparkData: tsData.map(t => t.requests * 0.003), sparkColor: 'rgba(255,255,255,0.7)' },
+          { label: 'Token 量额', value: fmtNum(totalTokens), icon: TrendingUp,
+            gradient: 'from-blue-500 to-blue-600', sparkData: tsData.map(t => t.input_tokens + t.output_tokens), sparkColor: 'rgba(255,255,255,0.7)' },
+          { label: '请求次数', value: fmtNum(totals?.requests || 0), icon: Zap,
+            gradient: 'from-orange-400 to-orange-500', sparkData: tsData.map(t => t.requests), sparkColor: 'rgba(255,255,255,0.7)' },
+          { label: '模型数', value: String(usage?.by_model?.length ?? 0), icon: Cpu,
+            gradient: 'from-violet-500 to-violet-600', sparkData: tsData.map(t => t.requests), sparkColor: 'rgba(255,255,255,0.7)' },
+        ] as const).map((c) => (
+          <div key={c.label} className={`relative overflow-hidden bg-gradient-to-br ${c.gradient} rounded-2xl p-5 text-white shadow-lg`}>
+            <div className="flex items-center justify-between">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center space-x-2 mb-1">
+                  <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
+                    <c.icon className="w-3.5 h-3.5" />
+                  </div>
+                  <span className="text-xs font-medium text-white/80">{c.label}</span>
+                </div>
+                <p className="text-2xl font-bold tracking-tight">{c.value}</p>
+              </div>
+              <div className="flex-shrink-0 ml-2 opacity-90">
+                <Sparkline data={c.sparkData} width={80} height={36} color={c.sparkColor} />
+              </div>
+            </div>
           </div>
-          <Key className="w-5 h-5 text-slate-400" />
-        </div>
-        {keysLoading ? (
-          <div className="text-center py-8 text-slate-500">加载中...</div>
-        ) : apiKeys && apiKeys.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200">
-                  <th className="text-left py-3 px-4 font-semibold text-slate-600">名称</th>
-                  <th className="text-left py-3 px-4 font-semibold text-slate-600">Key</th>
-                  <th className="text-center py-3 px-4 font-semibold text-slate-600">状态</th>
-                  <th className="text-left py-3 px-4 font-semibold text-slate-600">分组</th>
-                  <th className="text-left py-3 px-4 font-semibold text-slate-600">所属用户</th>
-                  <th className="text-center py-3 px-4 font-semibold text-slate-600">请求数</th>
-                  <th className="text-left py-3 px-4 font-semibold text-slate-600">创建时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {apiKeys.map((k) => (
-                  <tr key={k.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                    <td className="py-3 px-4 font-medium text-slate-800">{k.name}</td>
-                    <td className="py-3 px-4">
-                      <div className="flex items-center space-x-2">
-                        <code className="text-xs text-slate-500 font-mono bg-slate-100 px-2 py-1 rounded">
-                          {k.key.substring(0, 12)}...
-                        </code>
-                        <button
-                          onClick={() => handleCopyKey(k.key)}
-                          className="text-slate-400 hover:text-blue-600 transition-colors"
-                          title="复制"
-                        >
-                          {copiedKey === k.key
-                            ? <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            : <Copy className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-center">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
-                        k.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-                      }`}>
-                        {k.is_active ? '启用' : '禁用'}
+        ))}
+      </div>
+
+      {/* ━━ Three Column Main Section ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+
+        {/* ── Left: API Keys ─────────────────────────────────────────── */}
+        <div className="xl:col-span-4 bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden flex flex-col">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center">
+                <Shield className="w-4 h-4 text-blue-600" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-800">API Keys 使用与安全状态</h2>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-4 py-2 border-b border-slate-50 bg-slate-50/50 flex items-center text-xs text-slate-400 font-medium">
+            <span className="flex-1">Key 名称</span>
+            <span className="w-20 text-center">近14天活跃</span>
+            <span className="w-12 text-right">状态</span>
+          </div>
+
+          <div className="flex-1 overflow-y-auto divide-y divide-slate-50" style={{ maxHeight: '420px' }}>
+            {loading ? (
+              <div className="flex items-center justify-center py-16">
+                <div className="w-6 h-6 border-2 border-blue-200 border-t-blue-500 rounded-full animate-spin" />
+              </div>
+            ) : sortedKeys.length === 0 ? (
+              <div className="text-center py-12 text-slate-400">
+                <Key className="w-8 h-8 mx-auto mb-2 text-slate-200" />
+                <p className="text-sm">暂无 API Key</p>
+              </div>
+            ) : sortedKeys.slice(0, 8).map((k) => (
+              <div
+                key={k.id}
+                onClick={() => navigate(`/apikeys/${k.id}`)}
+                className="px-4 py-3 hover:bg-blue-50/50 cursor-pointer group transition-colors"
+              >
+                <div className="flex items-center">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center space-x-2">
+                      <span className="font-semibold text-sm text-slate-800 truncate group-hover:text-blue-600 transition-colors">
+                        {k.name}
                       </span>
-                    </td>
-                    <td className="py-3 px-4 text-slate-600">{k.group?.name || '-'}</td>
-                    <td className="py-3 px-4 text-slate-600">{k.user_name || '-'}</td>
-                    <td className="py-3 px-4 text-center text-slate-700 font-medium">{k.request_count.toLocaleString()}</td>
-                    <td className="py-3 px-4 text-slate-500 text-xs">{fmtDate(k.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-8 text-slate-500">
-            <Key className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-            <p>暂无 API Key，请前往 API Key 管理页面创建</p>
-          </div>
-        )}
-      </div>
-
-      {/* ── Per API Key Token Usage ────────────────────────────────────── */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h2 className="text-lg font-bold text-slate-800">API Key 用量统计</h2>
-            <p className="text-sm text-slate-500">近 30 天各 API Key 的 Token 使用情况</p>
-          </div>
-          <BarChart3 className="w-5 h-5 text-slate-400" />
-        </div>
-        {usageLoading ? (
-          <div className="text-center py-8 text-slate-500">加载中...</div>
-        ) : usage?.by_api_key && usage.by_api_key.length > 0 ? (
-          <div className="space-y-3">
-            {usage.by_api_key.map((item, idx) => {
-              const total = item.input_tokens + item.output_tokens;
-              const maxTotal = Math.max(...usage.by_api_key.map(i => i.input_tokens + i.output_tokens), 1);
-              const pct = (total / maxTotal) * 100;
-              return (
-                <div key={idx} className="p-4 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
-                        <Key className="w-4 h-4 text-blue-600" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-slate-800">{item.api_key_name || '未命名'}</p>
-                        <p className="text-xs text-slate-500 font-mono">{item.api_key_preview}</p>
-                      </div>
+                      {k.is_active ? (
+                        <span className="w-2 h-2 bg-emerald-400 rounded-full flex-shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                      )}
                     </div>
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-slate-800">{fmtNum(total)} tokens</p>
-                      <p className="text-xs text-slate-500">{item.requests.toLocaleString()} 次请求</p>
+                    <div className="flex items-center space-x-2 mt-1">
+                      <code className="text-xs text-slate-400 font-mono">
+                        {k.key.substring(0, 10)}···{k.key.slice(-4)}
+                      </code>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleCopy(k.key); }}
+                        className="text-slate-300 hover:text-blue-500 transition-colors p-0.5"
+                      >
+                        {copiedKey === k.key ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                      {k.group?.name && (
+                        <span className="text-xs text-slate-400 flex items-center">
+                          <Users className="w-3 h-3 mr-0.5 text-slate-300" />{k.group.name}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  {/* Bar */}
-                  <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div
-                      className="h-2 rounded-full bg-gradient-to-r from-blue-400 to-indigo-500 transition-all"
-                      style={{ width: `${Math.max(pct, 2)}%` }}
-                    />
+                  <div className="w-20 flex items-center justify-center flex-shrink-0">
+                    <MiniBarChart values={tsData.map(t => t.requests)} color={k.is_active ? '#6366f1' : '#cbd5e1'} />
                   </div>
-                  <div className="flex justify-between mt-1 text-xs text-slate-500">
-                    <span>输入: {fmtNum(item.input_tokens)}</span>
-                    <span>输出: {fmtNum(item.output_tokens)}</span>
+                  <div className="w-12 flex items-center justify-end flex-shrink-0">
+                    <span className="text-xs text-slate-400 flex items-center">
+                      <Clock className="w-3 h-3 mr-0.5" />
+                    </span>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-200 group-hover:text-blue-400 transition-colors" />
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
-        ) : (
-          <div className="text-center py-8 text-slate-500">
-            <BarChart3 className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-            <p>暂无使用记录</p>
-          </div>
-        )}
-      </div>
 
-      {/* ── Model Usage Stats ──────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* By Model */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">模型使用统计</h2>
-              <p className="text-sm text-slate-500">近 30 天各模型请求 & Token 分布</p>
-            </div>
-            <Cpu className="w-5 h-5 text-slate-400" />
-          </div>
-          {usageLoading ? (
-            <div className="text-center py-8 text-slate-500">加载中...</div>
-          ) : usage?.by_model && usage.by_model.length > 0 ? (
-            <div className="space-y-3">
-              {usage.by_model.map((m, idx) => {
-                const total = m.input_tokens + m.output_tokens;
-                const maxTotal = Math.max(...usage.by_model.map(i => i.input_tokens + i.output_tokens), 1);
-                const pct = (total / maxTotal) * 100;
-                const colors = [
-                  'from-blue-400 to-indigo-500',
-                  'from-emerald-400 to-green-500',
-                  'from-amber-400 to-orange-500',
-                  'from-violet-400 to-purple-500',
-                  'from-rose-400 to-pink-500',
-                  'from-cyan-400 to-teal-500',
-                ];
-                return (
-                  <div key={idx} className="p-4 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center space-x-3">
-                        <span className="w-7 h-7 bg-slate-200 rounded-lg flex items-center justify-center text-xs font-bold text-slate-600">
-                          {idx + 1}
-                        </span>
-                        <div>
-                          <p className="font-medium text-slate-800 text-sm">{m.model_name}</p>
-                          <p className="text-xs text-slate-500">{m.requests.toLocaleString()} 次请求</p>
-                        </div>
-                      </div>
-                      <span className="text-sm font-bold text-slate-800">{fmtNum(total)}</span>
-                    </div>
-                    <div className="w-full bg-slate-200 rounded-full h-1.5">
-                      <div
-                        className={`h-1.5 rounded-full bg-gradient-to-r ${colors[idx % colors.length]} transition-all`}
-                        style={{ width: `${Math.max(pct, 2)}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between mt-1 text-xs text-slate-400">
-                      <span>输入 {fmtNum(m.input_tokens)} · 输出 {fmtNum(m.output_tokens)}</span>
-                      {m.reasoning_tokens > 0 && <span>推理 {fmtNum(m.reasoning_tokens)}</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-center py-8 text-slate-500">
-              <Cpu className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p>暂无模型使用记录</p>
+          {sortedKeys.length > 8 && (
+            <div className="px-4 py-3 border-t border-slate-100 flex-shrink-0">
+              <button onClick={() => navigate('/apikeys')}
+                className="text-xs text-blue-500 hover:text-blue-700 font-medium flex items-center space-x-1 w-full justify-center">
+                <span>查看全部 {sortedKeys.length} 个 Key</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
         </div>
 
-        {/* By Group + Daily Trend */}
-        <div className="space-y-6">
-          {/* By Group */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-            <div className="flex items-center justify-between mb-5">
-              <div>
-                <h2 className="text-lg font-bold text-slate-800">分组用量</h2>
-                <p className="text-sm text-slate-500">近 30 天各分组 Token 消耗</p>
+        {/* ── Middle: Charts ──────────────────────────────────────────── */}
+        <div className="xl:col-span-5 space-y-5">
+          {/* Donut Row */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center space-x-2.5">
+              <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center">
+                <PieChart className="w-4 h-4 text-indigo-600" />
               </div>
-              <Users className="w-5 h-5 text-slate-400" />
+              <h2 className="text-sm font-bold text-slate-800">用量与费用分布对照</h2>
             </div>
-            {usageLoading ? (
-              <div className="text-center py-8 text-slate-500">加载中...</div>
-            ) : usage?.by_group && usage.by_group.length > 0 ? (
-              <div className="space-y-3">
-                {usage.by_group.map((g, idx) => {
-                  const total = g.input_tokens + g.output_tokens;
-                  return (
-                    <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
-                          <Database className="w-4 h-4 text-white" />
-                        </div>
-                        <div>
-                          <p className="font-medium text-slate-800 text-sm">{g.group_name || `Group #${g.group_id}`}</p>
-                          <p className="text-xs text-slate-500">{g.requests.toLocaleString()} 次请求</p>
-                        </div>
+
+            <div className="p-5">
+              {usageLoading ? (
+                <LoadingPlaceholder />
+              ) : (
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Token Distribution */}
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-600 mb-3">Token 分布</h3>
+                    <div className="flex flex-col items-center">
+                      <DonutChart slices={tokenSlices} size={130} strokeWidth={22}
+                        centerValue={fmtNum(totalTokens)} centerLabel="总计" />
+                      <div className="mt-3 space-y-1.5 w-full">
+                        {tokenSlices.map((s, i) => (
+                          <div key={i} className="flex items-center justify-between text-xs">
+                            <div className="flex items-center space-x-1.5">
+                              <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: s.color }} />
+                              <span className="text-slate-600">{s.label}</span>
+                            </div>
+                            <span className="font-semibold text-slate-700 tabular-nums">{fmtNum(s.value)}</span>
+                          </div>
+                        ))}
                       </div>
-                      <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-sm font-medium">
-                        {fmtNum(total)} tokens
-                      </span>
                     </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-6 text-slate-500 text-sm">暂无数据</div>
-            )}
+                  </div>
+
+                  {/* Model Cost Distribution */}
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-600 mb-3">模型费用分布</h3>
+                    <div className="flex flex-col items-center">
+                      <DonutChart slices={modelSlices} size={130} strokeWidth={22}
+                        centerValue={fmtCost(totals?.estimated_cost || 0)} centerLabel="总费用" />
+                      <div className="mt-3 space-y-1.5 w-full max-h-[120px] overflow-y-auto">
+                        {modelSlices.map((s, i) => {
+                          const total = modelSlices.reduce((a, sl) => a + sl.value, 0) || 1;
+                          return (
+                            <div key={i} className="flex items-center justify-between text-xs">
+                              <div className="flex items-center space-x-1.5 min-w-0">
+                                <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: s.color }} />
+                                <span className="text-slate-600 truncate">{s.label}</span>
+                              </div>
+                              <span className="font-semibold text-slate-500 tabular-nums flex-shrink-0 ml-2">
+                                {((s.value / total) * 100).toFixed(1)}%
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Daily Trend */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-            <div className="flex items-center justify-between mb-5">
-              <div>
-                <h2 className="text-lg font-bold text-slate-800">每日请求趋势</h2>
-                <p className="text-sm text-slate-500">近 30 天请求数量变化</p>
+          {/* Stacked Bar Trend */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center">
+                  <Activity className="w-4 h-4 text-blue-600" />
+                </div>
+                <h2 className="text-sm font-bold text-slate-800">请求数与 Token 趋势（14 天）</h2>
               </div>
-              <TrendingUp className="w-5 h-5 text-slate-400" />
+              <div className="flex items-center space-x-3 text-xs">
+                <span className="flex items-center space-x-1"><span className="w-2.5 h-2.5 bg-blue-400 rounded-sm" /><span className="text-slate-500">请求数</span></span>
+                <span className="flex items-center space-x-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /><span className="text-slate-500">Prompt</span></span>
+                <span className="flex items-center space-x-1"><span className="w-2.5 h-2.5 bg-amber-400 rounded-sm" /><span className="text-slate-500">Completion</span></span>
+              </div>
             </div>
-            {usageLoading ? (
-              <div className="text-center py-8 text-slate-500">加载中...</div>
-            ) : usage?.time_series && usage.time_series.length > 0 ? (
-              <div>
-                {/* Simple bar chart */}
-                <div className="flex items-end space-x-1 h-32">
-                  {usage.time_series.map((ts, idx) => {
-                    const maxReqs = Math.max(...usage.time_series.map(t => t.requests), 1);
-                    const h = (ts.requests / maxReqs) * 100;
-                    return (
-                      <div key={idx} className="flex-1 flex flex-col items-center group relative" title={`${ts.period.slice(0, 10)}: ${ts.requests} 次`}>
-                        <div
-                          className="w-full bg-gradient-to-t from-blue-400 to-indigo-400 rounded-t transition-all hover:from-blue-500 hover:to-indigo-500"
-                          style={{ height: `${Math.max(h, 2)}%`, minHeight: '2px' }}
-                        />
-                        {/* Tooltip on hover */}
-                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
-                          {ts.period.slice(5, 10)}: {ts.requests}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex justify-between text-xs text-slate-400 mt-2">
-                  <span>{usage.time_series[0]?.period.slice(5, 10)}</span>
-                  <span>{usage.time_series[usage.time_series.length - 1]?.period.slice(5, 10)}</span>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-6 text-slate-500 text-sm">暂无趋势数据</div>
-            )}
+            <div className="p-5">
+              {usageLoading ? <LoadingPlaceholder /> : tsData.length > 0 ? (
+                <StackedBarChart data={tsData} />
+              ) : (
+                <EmptyState text="暂无趋势数据" />
+              )}
+            </div>
           </div>
+        </div>
+
+        {/* ── Right: Rankings & Metrics ───────────────────────────────── */}
+        <div className="xl:col-span-3 space-y-5">
+          {/* Spending Ranking */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center space-x-2.5">
+              <div className="w-8 h-8 bg-amber-50 rounded-lg flex items-center justify-center">
+                <DollarSign className="w-4 h-4 text-amber-600" />
+              </div>
+              <h2 className="text-sm font-bold text-slate-800">消费排行</h2>
+            </div>
+            <div className="p-4">
+              {usageLoading ? <LoadingPlaceholder /> : usage?.by_api_key && usage.by_api_key.length > 0 ? (
+                <div className="space-y-3">
+                  {usage.by_api_key
+                    .sort((a, b) => (b.estimated_cost || 0) - (a.estimated_cost || 0))
+                    .slice(0, 5)
+                    .map((item, idx) => {
+                      const medals = ['🥇', '🥈', '🥉'];
+                      return (
+                        <div key={idx} className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2 min-w-0">
+                            <span className="w-5 text-center flex-shrink-0 text-sm">
+                              {idx < 3 ? medals[idx] : <span className="text-xs font-bold text-slate-400">{idx + 1}</span>}
+                            </span>
+                            <span className="text-sm text-slate-700 truncate font-medium">{item.api_key_name || '未命名'}</span>
+                          </div>
+                          <span className="text-sm font-bold text-amber-600 flex-shrink-0 ml-2 tabular-nums">
+                            {fmtCost(item.estimated_cost || 0)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+              ) : <EmptyState text="暂无消费" />}
+            </div>
+          </div>
+
+          {/* Real-time Performance (simplified) */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center space-x-2.5">
+              <div className="w-8 h-8 bg-emerald-50 rounded-lg flex items-center justify-center">
+                <Zap className="w-4 h-4 text-emerald-600" />
+              </div>
+              <h2 className="text-sm font-bold text-slate-800">实时性能</h2>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-slate-500">日均请求量 (Request/day)</span>
+                  <span className="text-sm font-bold text-slate-700 tabular-nums">
+                    {tsData.length > 0 ? Math.round(tsData.reduce((s, t) => s + t.requests, 0) / tsData.length).toLocaleString() : '0'}
+                  </span>
+                </div>
+                <Sparkline data={tsData.map(t => t.requests)} width={220} height={40}
+                  color="#10b981" fillColor="rgba(16,185,129,0.1)" />
+              </div>
+
+              <div className="border-t border-slate-100 pt-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-slate-500">日均 Token 量</span>
+                  <span className="text-sm font-bold text-slate-700 tabular-nums">
+                    {tsData.length > 0 ? fmtNum(Math.round(tsData.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0) / tsData.length)) : '0'}
+                  </span>
+                </div>
+                <Sparkline data={tsData.map(t => t.input_tokens + t.output_tokens)} width={220} height={40}
+                  color="#6366f1" fillColor="rgba(99,102,241,0.1)" />
+              </div>
+            </div>
+          </div>
+
+          {/* Token breakdown mini cards */}
+          {totals && totals.requests > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4">
+              <h3 className="text-xs font-bold text-slate-600 mb-3 flex items-center space-x-1.5">
+                <Activity className="w-3.5 h-3.5 text-blue-500" />
+                <span>Token 明细</span>
+              </h3>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { label: '输入', value: fmtNum(totals.input_tokens), color: 'border-l-blue-500' },
+                  { label: '输出', value: fmtNum(totals.output_tokens), color: 'border-l-emerald-500' },
+                  { label: '推理', value: fmtNum(totals.reasoning_tokens), color: 'border-l-amber-500' },
+                  { label: '缓存', value: fmtNum(totals.cache_tokens), color: 'border-l-violet-500' },
+                ].map(t => (
+                  <div key={t.label} className={`border-l-2 ${t.color} pl-2 py-1`}>
+                    <p className="text-xs text-slate-400">{t.label}</p>
+                    <p className="text-sm font-bold text-slate-700">{t.value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* ── Token Summary ──────────────────────────────────────────────── */}
-      {totals && (totals.requests > 0) && (
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <h2 className="text-lg font-bold text-slate-800 mb-4">Token 使用明细 (近 30 天)</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            <MiniStat label="输入 Tokens" value={fmtNum(totals.input_tokens)} color="blue" />
-            <MiniStat label="输出 Tokens" value={fmtNum(totals.output_tokens)} color="emerald" />
-            <MiniStat label="缓存创建 Tokens" value={fmtNum(totals.cache_creation_tokens)} color="amber" />
-            <MiniStat label="缓存命中 Tokens" value={fmtNum(totals.cache_tokens)} color="violet" />
-            <MiniStat label="推理 Tokens" value={fmtNum(totals.reasoning_tokens)} color="rose" />
-            {totals.output_image_number > 0 && (
-              <MiniStat label="生成图片" value={totals.output_image_number.toString()} color="cyan" />
-            )}
-            {totals.output_video_number > 0 && (
-              <MiniStat label="生成视频" value={totals.output_video_number.toString()} color="pink" />
-            )}
-            {totals.web_search_requests > 0 && (
-              <MiniStat label="联网搜索" value={totals.web_search_requests.toString()} color="indigo" />
-            )}
+      {/* ━━ Model Detail Table ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      {usage?.by_model && usage.by_model.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center space-x-2.5">
+            <div className="w-8 h-8 bg-violet-50 rounded-lg flex items-center justify-center">
+              <Cpu className="w-4 h-4 text-violet-600" />
+            </div>
+            <h2 className="text-sm font-bold text-slate-800">模型详细统计与服务利用</h2>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200">
+                  <th className="text-left py-3 px-4 font-semibold text-slate-500 text-xs">模型名称</th>
+                  <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">
+                    <span className="inline-flex items-center space-x-1">
+                      <span>请求数</span>
+                    </span>
+                  </th>
+                  <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">Tokens ↓</th>
+                  <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">费用 ↑</th>
+                  <th className="text-left py-3 px-4 font-semibold text-slate-500 text-xs w-36">用量比比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usage.by_model
+                  .sort((a, b) => (b.estimated_cost || 0) - (a.estimated_cost || 0))
+                  .map((m, idx) => {
+                    const totalCost = usage.by_model.reduce((s, x) => s + (x.estimated_cost || 0), 0) || 1;
+                    const costPct = ((m.estimated_cost || 0) / totalCost) * 100;
+                    const totalTok = m.input_tokens + m.output_tokens;
+                    const color = PIE_COLORS[idx % PIE_COLORS.length];
+                    const isExpanded = expandedModels.has(m.model_name);
+                    const subRows = [
+                      { name: 'Prompt', count: m.requests, tokens: m.input_tokens, cost: (m.estimated_cost || 0) * (m.input_tokens / (totalTok || 1)) },
+                      { name: 'Completion', count: m.requests, tokens: m.output_tokens, cost: (m.estimated_cost || 0) * (m.output_tokens / (totalTok || 1)) },
+                    ];
+                    if (m.reasoning_tokens > 0) {
+                      subRows.push({ name: 'Reasoning', count: 0, tokens: m.reasoning_tokens, cost: 0 });
+                    }
+
+                    return (
+                      <ModelTableRow
+                        key={idx}
+                        model={m}
+                        idx={idx}
+                        color={color}
+                        costPct={costPct}
+                        totalTok={totalTok}
+                        isExpanded={isExpanded}
+                        onToggle={() => toggleModel(m.model_name)}
+                        subRows={subRows}
+                        totalCost={totalCost}
+                      />
+                    );
+                  })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -476,72 +642,137 @@ const Dashboard = () => {
   );
 };
 
-/* ── Stat Card ─────────────────────────────────────────────────────────── */
+/* ── Model Table Row (expandable) ──────────────────────────────────────── */
 
-const StatCard = ({
-  icon, label, value, color, sub,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string | number;
+interface ModelRowProps {
+  model: { model_name: string; requests: number; input_tokens: number; output_tokens: number; reasoning_tokens: number; estimated_cost: number };
+  idx: number;
   color: string;
-  sub?: string;
-}) => {
-  const colors: Record<string, { bg: string; border: string }> = {
-    blue: { bg: 'bg-blue-50', border: 'border-blue-100' },
-    emerald: { bg: 'bg-emerald-50', border: 'border-emerald-100' },
-    amber: { bg: 'bg-amber-50', border: 'border-amber-100' },
-    violet: { bg: 'bg-violet-50', border: 'border-violet-100' },
-  };
+  costPct: number;
+  totalTok: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+  subRows: Array<{ name: string; count: number; tokens: number; cost: number }>;
+  totalCost: number;
+}
+
+const ModelTableRow = ({ model: m, color, costPct, totalTok, isExpanded, onToggle, subRows, totalCost }: ModelRowProps) => {
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between">
-        <div className={`p-3 rounded-xl ${colors[color]?.bg || 'bg-slate-50'} border ${colors[color]?.border || 'border-slate-100'}`}>
-          {icon}
+    <>
+      <tr className="border-b border-slate-100 hover:bg-slate-50/60 transition-colors cursor-pointer group" onClick={onToggle}>
+        <td className="py-3 px-4">
+          <div className="flex items-center space-x-2">
+            <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+            <span className="font-semibold text-slate-800">{m.model_name}</span>
+            <span className="text-xs text-slate-400">{m.requests}次</span>
+          </div>
+        </td>
+        <td className="py-3 px-4 text-right text-slate-600 font-medium tabular-nums">{m.requests.toLocaleString()}</td>
+        <td className="py-3 px-4 text-right text-slate-500 tabular-nums">{fmtNum(totalTok)}</td>
+        <td className="py-3 px-4 text-right font-bold text-amber-600 tabular-nums">{fmtCost(m.estimated_cost || 0)}</td>
+        <td className="py-3 px-4">
+          <div className="flex items-center space-x-2">
+            <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+              <div className="h-2 rounded-full transition-all duration-700"
+                style={{ width: `${Math.max(costPct, 2)}%`, backgroundColor: color }} />
+            </div>
+            <span className="text-xs text-slate-400 w-12 text-right tabular-nums">{costPct.toFixed(1)}%</span>
+          </div>
+        </td>
+      </tr>
+      {isExpanded && subRows.map((sub, si) => {
+        const subPct = (sub.tokens / (totalCost > 0 ? totalTok : 1)) * 100;
+        const barColor = si === 0 ? '#3b82f6' : si === 1 ? '#10b981' : '#f59e0b';
+        return (
+          <tr key={si} className="bg-slate-50/50 border-b border-slate-50">
+            <td className="py-2 px-4 pl-14">
+              <span className="text-xs font-medium text-slate-500">{sub.name}</span>
+              {sub.count > 0 && <span className="text-xs text-slate-400 ml-2">{sub.count}次</span>}
+            </td>
+            <td className="py-2 px-4 text-right text-slate-400 text-xs tabular-nums">{sub.count > 0 ? sub.count.toLocaleString() : '-'}</td>
+            <td className="py-2 px-4 text-right text-slate-400 text-xs tabular-nums">{fmtNum(sub.tokens)}</td>
+            <td className="py-2 px-4 text-right text-slate-400 text-xs tabular-nums">{fmtCost(sub.cost)}</td>
+            <td className="py-2 px-4">
+              <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                <div className="h-1.5 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(subPct, 2)}%`, backgroundColor: barColor }} />
+              </div>
+            </td>
+          </tr>
+        );
+      })}
+    </>
+  );
+};
+
+/* ── Stacked Bar Chart ─────────────────────────────────────────────────── */
+
+const StackedBarChart = ({ data }: { data: Array<{ period: string; requests: number; input_tokens: number; output_tokens: number }> }) => {
+  const maxVal = Math.max(...data.map(d => d.requests + d.input_tokens / 1000 + d.output_tokens / 1000), 1);
+  const [hovered, setHovered] = useState<number | null>(null);
+
+  return (
+    <div className="relative">
+      {/* Y axis labels */}
+      <div className="absolute left-0 top-0 h-44 flex flex-col justify-between text-xs text-slate-400 tabular-nums pr-2" style={{ width: '40px' }}>
+        <span>{fmtNum(maxVal)}</span>
+        <span>{fmtNum(maxVal / 2)}</span>
+        <span>0</span>
+      </div>
+
+      <div className="ml-11">
+        <div className="flex items-end space-x-[3px] h-44 relative">
+          {data.map((d, i) => {
+            const reqH = (d.requests / maxVal) * 100;
+            const promptH = ((d.input_tokens / 1000) / maxVal) * 100;
+            const compH = ((d.output_tokens / 1000) / maxVal) * 100;
+            return (
+              <div key={i} className="flex-1 flex flex-col items-center relative group"
+                onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
+                <div className="w-full flex flex-col-reverse">
+                  <div className="w-full bg-blue-400 rounded-t-sm transition-all" style={{ height: `${Math.max(reqH, 1)}px` }} />
+                  <div className="w-full bg-emerald-400 transition-all" style={{ height: `${Math.max(promptH, 0)}px` }} />
+                  <div className="w-full bg-amber-400 rounded-t-sm transition-all" style={{ height: `${Math.max(compH, 0)}px` }} />
+                </div>
+
+                {hovered === i && (
+                  <div className="absolute -top-[80px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-2 rounded-lg whitespace-nowrap z-20 shadow-xl">
+                    <div className="font-semibold mb-1">{d.period.slice(5, 10)}</div>
+                    <div className="flex items-center space-x-1"><span className="w-2 h-2 bg-emerald-400 rounded-sm" /><span>Prompt</span><span className="font-bold ml-1">{fmtNum(d.input_tokens)}</span></div>
+                    <div className="flex items-center space-x-1"><span className="w-2 h-2 bg-amber-400 rounded-sm" /><span>Completion</span><span className="font-bold ml-1">{fmtNum(d.output_tokens)}</span></div>
+                    <div className="flex items-center space-x-1"><span className="w-2 h-2 bg-blue-400 rounded-sm" /><span>请求</span><span className="font-bold ml-1">{d.requests.toLocaleString()}</span></div>
+                    <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-        {sub && (
-          <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-full">
-            {sub}
-          </span>
-        )}
-      </div>
-      <div className="mt-4">
-        <p className="text-sm font-medium text-slate-500">{label}</p>
-        <p className="text-2xl font-bold text-slate-800 mt-1">{value}</p>
+
+        {/* X axis */}
+        <div className="flex justify-between text-xs text-slate-400 mt-2">
+          {data.map((d, i) => (
+            i % Math.ceil(data.length / 7) === 0 || i === data.length - 1 ? (
+              <span key={i} className="tabular-nums">{d.period.slice(8, 10)}日</span>
+            ) : <span key={i} />
+          ))}
+        </div>
       </div>
     </div>
   );
 };
 
-/* ── Mini Stat ─────────────────────────────────────────────────────────── */
+/* ── Loading / Empty ───────────────────────────────────────────────────── */
 
-const MiniStat = ({ label, value, color }: { label: string; value: string; color: string }) => {
-  const bgColors: Record<string, string> = {
-    blue: 'bg-blue-50 border-blue-100',
-    emerald: 'bg-emerald-50 border-emerald-100',
-    amber: 'bg-amber-50 border-amber-100',
-    violet: 'bg-violet-50 border-violet-100',
-    rose: 'bg-rose-50 border-rose-100',
-    cyan: 'bg-cyan-50 border-cyan-100',
-    pink: 'bg-pink-50 border-pink-100',
-    indigo: 'bg-indigo-50 border-indigo-100',
-  };
-  const textColors: Record<string, string> = {
-    blue: 'text-blue-700',
-    emerald: 'text-emerald-700',
-    amber: 'text-amber-700',
-    violet: 'text-violet-700',
-    rose: 'text-rose-700',
-    cyan: 'text-cyan-700',
-    pink: 'text-pink-700',
-    indigo: 'text-indigo-700',
-  };
-  return (
-    <div className={`rounded-xl p-4 border ${bgColors[color] || 'bg-slate-50 border-slate-100'}`}>
-      <p className="text-xs font-medium text-slate-500 mb-1">{label}</p>
-      <p className={`text-xl font-bold ${textColors[color] || 'text-slate-800'}`}>{value}</p>
-    </div>
-  );
-};
+const LoadingPlaceholder = () => (
+  <div className="flex items-center justify-center py-10">
+    <div className="w-6 h-6 border-2 border-slate-200 border-t-blue-400 rounded-full animate-spin" />
+  </div>
+);
+
+const EmptyState = ({ text }: { text: string }) => (
+  <div className="text-center py-8 text-slate-400 text-sm">{text}</div>
+);
 
 export default Dashboard;
