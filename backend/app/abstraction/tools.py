@@ -52,6 +52,7 @@ class ToolDefinition:
     description: str
     parameters: List[ToolParameter] = field(default_factory=list)
     tool_type: ToolType = ToolType.FUNCTION
+    cache_control: Optional[Dict[str, Any]] = None  # Anthropic prompt caching: e.g. {"type": "ephemeral"}
     
     def get_parameters_schema(self) -> Dict[str, Any]:
         """获取 JSON Schema 格式的参数定义"""

@@ -163,6 +163,10 @@ class ApiKey(db.Model):
     request_count = db.Column(db.Integer, default=0)
     token_count = db.Column(db.Integer, default=0)
     
+    # Allowed models — JSON list of model names (e.g. ["gpt-4o", "claude-3.5-sonnet"])
+    # NULL or empty list means all models are allowed.
+    allowed_models = db.Column(db.JSON, nullable=True, default=None)
+    
     # Relationships
     group = db.relationship("Group", back_populates="api_keys")
     user = db.relationship("User", backref="api_keys")
@@ -180,7 +184,8 @@ class ApiKey(db.Model):
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
             'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
             'request_count': self.request_count,
-            'token_count': self.token_count
+            'token_count': self.token_count,
+            'allowed_models': self.allowed_models or []
         }
 
     def to_dict_simple(self):

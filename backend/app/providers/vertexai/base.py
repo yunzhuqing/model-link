@@ -434,6 +434,14 @@ class VertexAIProvider(BaseProvider):
 
     # ==================== Anthropic (Claude) 格式 ====================
 
+    @staticmethod
+    def _get_system_message_object(request: ChatRequest) -> Optional[Message]:
+        """Get the first system Message object from the request."""
+        for msg in request.messages:
+            if msg.role == MessageRole.SYSTEM:
+                return msg
+        return None
+
     def _prepare_anthropic_request(self, request: ChatRequest) -> Dict[str, Any]:
         """准备 Anthropic Messages API 格式的请求体"""
         result = {
@@ -441,9 +449,27 @@ class VertexAIProvider(BaseProvider):
             "max_tokens": request.max_tokens or 4096,
         }
 
-        system_content = request.get_system_message()
-        if system_content:
-            result["system"] = system_content
+        # Support cache_control on system content blocks
+        system_msg = self._get_system_message_object(request)
+        if system_msg:
+            if isinstance(system_msg.content, list):
+                has_cache_control = any(
+                    isinstance(b, ContentBlock) and b.cache_control
+                    for b in system_msg.content
+                )
+                if has_cache_control:
+                    system_blocks = []
+                    for b in system_msg.content:
+                        if isinstance(b, ContentBlock) and b.type == ContentType.TEXT:
+                            block_dict = {"type": "text", "text": b.text or ""}
+                            if b.cache_control:
+                                block_dict["cache_control"] = b.cache_control
+                            system_blocks.append(block_dict)
+                    result["system"] = system_blocks
+                else:
+                    result["system"] = system_msg.get_text_content() or ""
+            else:
+                result["system"] = system_msg.get_text_content() or ""
 
         messages = []
         for msg in request.messages:
@@ -490,21 +516,36 @@ class VertexAIProvider(BaseProvider):
         return result
 
     def _content_block_to_anthropic(self, block: ContentBlock) -> Dict[str, Any]:
+        """将 ContentBlock 转换为 Anthropic 格式，保留 cache_control"""
+        result: Dict[str, Any]
         if block.type == ContentType.TEXT:
-            return {"type": "text", "text": block.text or ""}
+            result = {"type": "text", "text": block.text or ""}
         elif block.type == ContentType.IMAGE_URL:
-            return {"type": "image", "source": {"type": "url", "url": block.url}}
+            result = {"type": "image", "source": {"type": "url", "url": block.url}}
         elif block.type == ContentType.IMAGE_BASE64:
-            return {"type": "image", "source": {"type": "base64", "media_type": block.media_type or "image/jpeg", "data": block.data}}
+            result = {"type": "image", "source": {"type": "base64", "media_type": block.media_type or "image/jpeg", "data": block.data}}
         elif block.type == ContentType.TOOL_CALL:
-            return {"type": "tool_use", "id": block.tool_call_id, "name": block.tool_name, "input": block.tool_arguments or {}}
+            result = {"type": "tool_use", "id": block.tool_call_id, "name": block.tool_name, "input": block.tool_arguments or {}}
         elif block.type == ContentType.TOOL_RESULT:
-            return {"type": "tool_result", "tool_use_id": block.tool_call_id, "content": block.tool_result or "", "is_error": block.is_error}
+            result = {"type": "tool_result", "tool_use_id": block.tool_call_id, "content": block.tool_result or "", "is_error": block.is_error}
+        elif block.type in (ContentType.FILE_URL, ContentType.FILE_BASE64):
+            if block.type == ContentType.FILE_URL:
+                result = {"type": "document", "source": {"type": "url", "url": block.url}}
+            else:
+                result = {"type": "document", "source": {"type": "base64", "media_type": block.media_type or "application/pdf", "data": block.data}}
         else:
-            return {"type": "text", "text": block.text or ""}
+            result = {"type": "text", "text": block.text or ""}
+        # Attach cache_control if present
+        if block.cache_control:
+            result["cache_control"] = block.cache_control
+        return result
 
     def _tool_to_anthropic(self, tool: ToolDefinition) -> Dict[str, Any]:
-        return {"name": tool.name, "description": tool.description, "input_schema": tool.get_parameters_schema()}
+        """将 ToolDefinition 转换为 Anthropic 格式，保留 cache_control"""
+        result = {"name": tool.name, "description": tool.description, "input_schema": tool.get_parameters_schema()}
+        if tool.cache_control:
+            result["cache_control"] = tool.cache_control
+        return result
 
     def _parse_anthropic_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """解析 Anthropic Messages API 格式的响应"""

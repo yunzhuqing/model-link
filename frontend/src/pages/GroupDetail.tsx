@@ -3,10 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 import {
-  ArrowLeft, Plus, Edit2, Trash2, Key, Database,
-  Eye, EyeOff, Copy, Check, Users, UserPlus, Mail
+  ArrowLeft, Edit2, Trash2, Key, Database,
+  Users, UserPlus, Mail
 } from 'lucide-react';
 import ProviderList from './ProviderList';
+import ApiKeyList from './ApiKeyList';
 
 interface Group {
   id: number;
@@ -23,18 +24,6 @@ interface Member {
   role: 'root' | 'admin' | 'member';
 }
 
-interface ApiKey {
-  id: number;
-  key: string;
-  name: string;
-  group_id: number;
-  is_active: boolean;
-  created_at: string;
-  expires_at: string | null;
-  last_used_at: string | null;
-  request_count: number;
-}
-
 export default function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -45,10 +34,6 @@ export default function GroupDetail() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
   const [editingMemberRole, setEditingMemberRole] = useState<number | null>(null);
-  const [showAddApiKey, setShowAddApiKey] = useState(false);
-  const [newApiKey, setNewApiKey] = useState({ name: '', expires_at: '' });
-  const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // ── Queries ─────────────────────────────────────────────────────────────────
 
@@ -60,15 +45,15 @@ export default function GroupDetail() {
     },
   });
 
-  const { data: apiKeys, isLoading: apiKeysLoading } = useQuery({
+  const { data: apiKeys } = useQuery({
     queryKey: ['api-keys', 'group', id],
     queryFn: async () => {
       const response = await client.get(`/api/apikeys/group/${id}`);
-      return response.data as ApiKey[];
+      return response.data as { id: number }[];
     },
   });
 
-  // providers count for tab badge — ProviderList handles the full fetch itself
+  // providers count for tab badge
   const { data: providers } = useQuery({
     queryKey: ['providers', 'group', id],
     queryFn: async () => {
@@ -78,20 +63,6 @@ export default function GroupDetail() {
   });
 
   // ── Mutations ────────────────────────────────────────────────────────────────
-
-  const createApiKeyMutation = useMutation({
-    mutationFn: (data: any) => client.post('/api/apikeys/', { ...data, group_id: parseInt(id!) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['api-keys', 'group', id] });
-      setShowAddApiKey(false);
-      setNewApiKey({ name: '', expires_at: '' });
-    },
-  });
-
-  const deleteApiKeyMutation = useMutation({
-    mutationFn: (keyId: number) => client.delete(`/api/apikeys/${keyId}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['api-keys', 'group', id] }),
-  });
 
   const inviteMemberMutation = useMutation({
     mutationFn: ({ email, role }: { email: string; role: string }) =>
@@ -128,39 +99,9 @@ export default function GroupDetail() {
     }
   };
 
-  const toggleKeyVisibility = (keyId: number) => {
-    const s = new Set(visibleKeys);
-    s.has(keyId) ? s.delete(keyId) : s.add(keyId);
-    setVisibleKeys(s);
-  };
-
-  const copyToClipboard = async (text: string) => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const el = document.createElement('textarea');
-        el.value = text;
-        el.style.position = 'fixed';
-        el.style.left = '-9999px';
-        document.body.appendChild(el);
-        el.select();
-        document.execCommand('copy');
-        document.body.removeChild(el);
-      }
-      setCopiedKey(text);
-      setTimeout(() => setCopiedKey(null), 2000);
-    } catch (err) {
-      console.error('Failed to copy to clipboard:', err);
-    }
-  };
-
-  const formatDate = (dateStr: string | null) =>
-    dateStr ? new Date(dateStr).toLocaleString() : 'Never';
-
   // ── Loading / Not Found ──────────────────────────────────────────────────────
 
-  if (groupLoading || apiKeysLoading) {
+  if (groupLoading) {
     return (
       <div className="flex justify-center items-center h-64">
         <div className="text-slate-500">Loading...</div>
@@ -359,103 +300,8 @@ export default function GroupDetail() {
       {/* ── API Keys Tab ─────────────────────────────────────────────────────── */}
       {activeTab === 'apikeys' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="flex justify-between items-center mb-6">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
-                <Key className="w-5 h-5 text-emerald-600" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-slate-800">API Keys</h2>
-                <p className="text-sm text-slate-500">{apiKeys?.length || 0} keys</p>
-              </div>
-            </div>
-            <button
-              onClick={() => setShowAddApiKey(true)}
-              className="bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-emerald-600 transition-colors shadow-sm"
-            >
-              <Plus className="w-4 h-4 mr-2" /> New Key
-            </button>
-          </div>
-
-          {showAddApiKey && (
-            <div className="bg-slate-50 p-4 rounded-xl mb-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Name *</label>
-                  <input
-                    placeholder="Key name"
-                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                    value={newApiKey.name}
-                    onChange={(e) => setNewApiKey({ ...newApiKey, name: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Expires At (optional)</label>
-                  <input
-                    type="datetime-local"
-                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                    value={newApiKey.expires_at}
-                    onChange={(e) => setNewApiKey({ ...newApiKey, expires_at: e.target.value })}
-                  />
-                </div>
-              </div>
-              <div className="flex space-x-3 mt-4">
-                <button
-                  onClick={() => createApiKeyMutation.mutate(newApiKey)}
-                  disabled={!newApiKey.name}
-                  className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-emerald-600 disabled:bg-slate-300"
-                >
-                  Create
-                </button>
-                <button
-                  onClick={() => { setShowAddApiKey(false); setNewApiKey({ name: '', expires_at: '' }); }}
-                  className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-3">
-            {apiKeys?.map((apiKey) => (
-              <div key={apiKey.id} className="bg-slate-50 p-4 rounded-xl flex items-center justify-between">
-                <div className="flex items-center space-x-4">
-                  <div className={`w-3 h-3 rounded-full ${apiKey.is_active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                  <div>
-                    <h4 className="font-medium text-slate-800">{apiKey.name}</h4>
-                    <div className="flex items-center space-x-2 mt-1">
-                      <code className="text-sm text-slate-600 bg-white px-2 py-0.5 rounded">
-                        {visibleKeys.has(apiKey.id) ? apiKey.key : `${apiKey.key.slice(0, 8)}...${apiKey.key.slice(-4)}`}
-                      </code>
-                      <button onClick={() => toggleKeyVisibility(apiKey.id)} className="text-slate-400 hover:text-slate-600">
-                        {visibleKeys.has(apiKey.id) ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                      <button onClick={() => copyToClipboard(apiKey.key)} className="text-slate-400 hover:text-slate-600">
-                        {copiedKey === apiKey.key ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-4 text-sm text-slate-500">
-                  <span>{apiKey.request_count} requests</span>
-                  <span>Last used: {formatDate(apiKey.last_used_at)}</span>
-                  <button
-                    onClick={() => { if (confirm('Delete this API key?')) deleteApiKeyMutation.mutate(apiKey.id); }}
-                    className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
-            {(!apiKeys || apiKeys.length === 0) && !showAddApiKey && (
-              <div className="text-center py-8 text-slate-500">
-                <Key className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                <p>No API keys yet.</p>
-              </div>
-            )}
-          </div>
+          {/* ApiKeyList handles all API key CRUD internally */}
+          <ApiKeyList groupId={parseInt(id!)} />
         </div>
       )}
 

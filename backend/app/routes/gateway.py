@@ -65,6 +65,26 @@ ALGORITHM = "HS256"
 _gateway_service = GatewayService()
 
 
+def _check_allowed_models(api_key, model_name: str) -> Optional[dict]:
+    """Check if the API key's allowed_models list permits access to this model.
+
+    Returns None if access is allowed, or a (error_dict, status_code) tuple
+    if the model is not in the allowed list.
+    """
+    if api_key is None:
+        return None
+    allowed = getattr(api_key, 'allowed_models', None)
+    if not allowed:
+        # No restriction — all models allowed
+        return None
+    if model_name in allowed:
+        return None
+    return {
+        'detail': f"Model '{model_name}' is not allowed for this API key. "
+                  f"Allowed models: {', '.join(allowed)}"
+    }
+
+
 # ============== 认证 ==============
 
 def get_current_user_or_api_key():
@@ -154,6 +174,11 @@ def _handle_request(adapter):
     model_name = data.get('model')
     if not model_name:
         return jsonify(adapter.format_error_response('Model is required', 400)), 400
+
+    # 2.5. 检查 API Key 的 allowed_models 限制
+    acl_error = _check_allowed_models(api_key, model_name)
+    if acl_error:
+        return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
 
     # 3. 使用适配器解析请求
     try:
@@ -466,6 +491,11 @@ def openai_responses():
     if error:
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
+    # 2.5. 检查 API Key 的 allowed_models 限制
+    acl_error = _check_allowed_models(api_key, model_name)
+    if acl_error:
+        return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
+
     # 3. Background 异步路径
     if is_background:
         group_id = api_key.group_id if api_key else None
@@ -703,12 +733,21 @@ def list_models():
     else:
         providers = db.session.query(Provider).filter(Provider.is_active == True).all()
 
+    # Get allowed_models restriction from API key (if any)
+    allowed_models = None
+    if api_key:
+        allowed_models = getattr(api_key, 'allowed_models', None) or None
+
     models_list = []
     for provider in providers:
         for model in provider.models:
             # Skip disabled models
             if not model.is_active:
                 continue
+            # Skip models not in allowed_models (if restriction is set)
+            if allowed_models:
+                if model.name not in allowed_models and (not model.alias or model.alias not in allowed_models):
+                    continue
             # Use alias as id if available, otherwise use name
             model_id = model.alias if model.alias else model.name
             models_list.append({
@@ -841,6 +880,11 @@ def create_embeddings():
     if not model_name:
         return jsonify({'detail': 'Model is required'}), 400
 
+    # 检查 API Key 的 allowed_models 限制
+    acl_error = _check_allowed_models(api_key, model_name)
+    if acl_error:
+        return jsonify({'detail': acl_error['detail']}), 403
+
     input_data = data.get('input')
     messages = data.get('messages')
 
@@ -962,6 +1006,11 @@ def create_images():
     if not prompt:
         return jsonify({'detail': 'Prompt is required'}), 400
 
+    # 检查 API Key 的 allowed_models 限制
+    acl_error = _check_allowed_models(api_key, model_name)
+    if acl_error:
+        return jsonify({'detail': acl_error['detail']}), 403
+
     # 3. 提取参数
     images = data.get('images')  # optional list of {"image_url": "..."}
     n = data.get('n', 1)
@@ -1052,6 +1101,11 @@ def edit_images():
     prompt = data.get('prompt')
     if not prompt:
         return jsonify({'detail': 'Prompt is required'}), 400
+
+    # 检查 API Key 的 allowed_models 限制
+    acl_error = _check_allowed_models(api_key, model_name)
+    if acl_error:
+        return jsonify({'detail': acl_error['detail']}), 403
 
     # 3. 提取参数
     images = data.get('images')  # list of {"image_url": "...", "file_id": "..."}
@@ -1200,6 +1254,11 @@ def create_rerank():
     documents = data.get('documents')
     if not documents or not isinstance(documents, list):
         return jsonify({'detail': '"documents" must be a non-empty list'}), 400
+
+    # 检查 API Key 的 allowed_models 限制
+    acl_error = _check_allowed_models(api_key, model_name)
+    if acl_error:
+        return jsonify({'detail': acl_error['detail']}), 403
 
     # 3. 构建 Rerank 请求
     rerank_request = RerankRequest(

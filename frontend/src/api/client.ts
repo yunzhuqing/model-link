@@ -31,6 +31,7 @@ export interface ApiKey {
   last_used_at: string | null;
   request_count: number;
   token_count: number;
+  allowed_models: string[];
   group?: { id: number; name: string; description: string | null; created_at: string | null };
 }
 
@@ -38,12 +39,27 @@ export interface ApiKeyCreate {
   name: string;
   group_id?: number;
   expires_at?: string;
+  allowed_models?: string[];
 }
 
 export interface ApiKeyUpdate {
   name?: string;
   is_active?: boolean;
   expires_at?: string;
+  allowed_models?: string[];
+}
+
+export interface ApiKeyModelsResponse {
+  allowed_models: string[];
+  models: Array<{
+    name: string;
+    alias: string | null;
+    provider_name: string | null;
+    requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    reasoning_tokens: number;
+  }>;
 }
 
 export interface Group {
@@ -134,6 +150,7 @@ export const apiKeysApi = {
   update: (id: number, data: ApiKeyUpdate) => client.put<ApiKey>(`/api/apikeys/${id}`, data),
   delete: (id: number) => client.delete(`/api/apikeys/${id}`),
   regenerate: (id: number) => client.post<ApiKey>(`/api/apikeys/${id}/regenerate`),
+  getModels: (id: number) => client.get<ApiKeyModelsResponse>(`/api/apikeys/${id}/models`),
 };
 
 // Group endpoints

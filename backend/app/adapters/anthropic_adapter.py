@@ -47,11 +47,26 @@ class AnthropicMessagesAdapter(BaseAdapter):
         print(f"Parsing Anthropic Messages request: {json.dumps(data, ensure_ascii=False)}")  # Debug log
 
         # 处理 system 消息
+        # Anthropic system can be a string or an array of content blocks (with optional cache_control)
         if 'system' in data:
-            messages.append(Message(
-                role=MessageRole.SYSTEM,
-                content=data['system']
-            ))
+            system_val = data['system']
+            if isinstance(system_val, list):
+                # Array of content blocks: [{"type": "text", "text": "...", "cache_control": {"type": "ephemeral"}}]
+                system_blocks = []
+                for item in system_val:
+                    block = ContentBlock.from_text(item.get('text', ''))
+                    if 'cache_control' in item:
+                        block.cache_control = item['cache_control']
+                    system_blocks.append(block)
+                messages.append(Message(
+                    role=MessageRole.SYSTEM,
+                    content=system_blocks
+                ))
+            else:
+                messages.append(Message(
+                    role=MessageRole.SYSTEM,
+                    content=system_val
+                ))
 
         # 处理对话消息
         for msg_data in data.get('messages', []):
@@ -65,6 +80,9 @@ class AnthropicMessagesAdapter(BaseAdapter):
                 for item in content:
                     item_type = item.get('type', 'text')
 
+                    # Extract cache_control if present on this content block
+                    item_cache_control = item.get('cache_control')
+
                     if item_type == 'thinking':
                         # Anthropic thinking 块 → 赋值给 Message.reasoning_content
                         # 下游 OpenAI/Moonshot prepare_request 会将其放入消息的 reasoning_content 字段
@@ -72,13 +90,16 @@ class AnthropicMessagesAdapter(BaseAdapter):
                         if thinking_text:
                             thinking_parts.append(thinking_text)
                     elif item_type == 'text':
-                        blocks.append(ContentBlock.from_text(item.get('text', '')))
+                        block = ContentBlock.from_text(item.get('text', ''))
+                        if item_cache_control:
+                            block.cache_control = item_cache_control
+                        blocks.append(block)
                     elif item_type == 'image':
                         source = item.get('source', {})
                         source_type = source.get('type', 'url')
 
                         if source_type == 'url':
-                            blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                            block = ContentBlock.from_image_url(source.get('url', ''))
                         elif source_type == 'base64':
                             raw_data = source.get('data', '')
                             media_type = source.get('media_type', 'image/jpeg')
@@ -93,16 +114,39 @@ class AnthropicMessagesAdapter(BaseAdapter):
                                     if extracted_type:
                                         media_type = extracted_type
                                     raw_data = parts[1]
-                            blocks.append(ContentBlock.from_image_base64(
-                                raw_data,
-                                media_type
-                            ))
+                            block = ContentBlock.from_image_base64(raw_data, media_type)
+                        else:
+                            block = None
+                        if block:
+                            if item_cache_control:
+                                block.cache_control = item_cache_control
+                            blocks.append(block)
+                    elif item_type == 'document':
+                        # Anthropic document content block (PDF, etc.)
+                        source = item.get('source', {})
+                        source_type = source.get('type', 'url')
+                        if source_type == 'url':
+                            block = ContentBlock.from_file_url(source.get('url', ''))
+                        elif source_type == 'base64':
+                            block = ContentBlock.from_file_base64(
+                                source.get('data', ''),
+                                source.get('media_type', 'application/pdf')
+                            )
+                        else:
+                            block = None
+                        if block:
+                            if item_cache_control:
+                                block.cache_control = item_cache_control
+                            blocks.append(block)
                     elif item_type == 'tool_use':
-                        blocks.append(ContentBlock.from_tool_call(
+                        block = ContentBlock.from_tool_call(
                             item.get('id', ''),
                             item.get('name', ''),
                             item.get('input', {})
-                        ))
+                        )
+                        if item_cache_control:
+                            block.cache_control = item_cache_control
+                        blocks.append(block)
                     elif item_type == 'tool_result':
                         result_content = item.get('content', '')
                         if isinstance(result_content, list):
@@ -111,12 +155,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
                             result_content = ' '.join(texts)
                         # 将 tool_result 作为 ContentBlock 添加到 blocks 列表中
                         # 这样可以保持与原始 Anthropic 格式一致，tool_result 和 text 在同一消息中
-                        blocks.append(ContentBlock(
+                        block = ContentBlock(
                             type=ContentType.TOOL_RESULT,
                             tool_call_id=item.get('tool_use_id', ''),
                             tool_result=result_content,
-                            is_error=item.get('is_error', False)
-                        ))
+                            is_error=item.get('is_error', False),
+                            cache_control=item_cache_control,
+                        )
+                        blocks.append(block)
 
                 # 合并所有 thinking 块为 reasoning_content 字符串
                 reasoning_content = '\n'.join(thinking_parts) if thinking_parts else None
@@ -172,12 +218,16 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     items=param_schema.get('items')
                 ))
 
-            tools.append(ToolDefinition(
+            tool_def = ToolDefinition(
                 name=name,
                 description=description,
                 parameters=parameters,
                 tool_type=ToolType.FUNCTION
-            ))
+            )
+            # Preserve cache_control on tool definitions for Anthropic prompt caching
+            if 'cache_control' in tool_data:
+                tool_def.cache_control = tool_data['cache_control']
+            tools.append(tool_def)
 
         # 处理 thinking 参数 → 映射为 reasoning_effort
         # Anthropic 格式: {"thinking": {"type": "enabled", "budget_tokens": 10000}}

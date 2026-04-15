@@ -334,7 +334,8 @@ def create_api_key(current_user):
         name=data.get('name'),
         group_id=data.get('group_id'),
         user_id=current_user.id,
-        expires_at=expires_at
+        expires_at=expires_at,
+        allowed_models=data.get('allowed_models') or None
     )
     db.session.add(api_key)
     db.session.commit()
@@ -359,6 +360,9 @@ def update_api_key(current_user, api_key_id):
         api_key.name = data['name']
     if 'is_active' in data:
         api_key.is_active = data['is_active']
+    if 'allowed_models' in data:
+        val = data['allowed_models']
+        api_key.allowed_models = val if val else None
     if 'expires_at' in data:
         # Convert empty string to None for expires_at (empty string is not valid for timestamp)
         expires_at = data['expires_at']
@@ -368,6 +372,81 @@ def update_api_key(current_user, api_key_id):
     db.session.refresh(api_key)
     
     return jsonify(api_key.to_dict())
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/models', methods=['GET'])
+@token_required
+def get_api_key_models(current_user, api_key_id):
+    """Get the list of models available to this API key, with per-model usage stats."""
+    from app.models import UsageRecord, Provider, Model as MLModel
+    import hashlib
+
+    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+
+    if current_user not in api_key.group.users:
+        return jsonify({'detail': 'You do not have access to this API key'}), 403
+
+    # Get all active models in the same group
+    all_models = (
+        db.session.query(MLModel)
+        .join(Provider, MLModel.provider_id == Provider.id)
+        .filter(Provider.group_id == api_key.group_id)
+        .filter(Provider.is_active == True)
+        .filter(MLModel.is_active == True)
+        .all()
+    )
+
+    allowed = api_key.allowed_models or []
+    # Filter by allowed_models if set
+    if allowed:
+        models = [m for m in all_models if m.name in allowed or (m.alias and m.alias in allowed)]
+    else:
+        models = all_models
+
+    # Collect unique model names
+    model_names = list(set(m.name for m in models))
+
+    # Get per-model usage stats for this API key
+    key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
+    usage_rows = (
+        db.session.query(
+            UsageRecord.model_name,
+            db.func.count(UsageRecord.id).label('requests'),
+            db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+            db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+            db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+        )
+        .filter(UsageRecord.api_key_hash == key_hash)
+        .group_by(UsageRecord.model_name)
+        .all()
+    )
+    usage_map = {r.model_name: {
+        'requests': r.requests,
+        'input_tokens': int(r.input_tokens),
+        'output_tokens': int(r.output_tokens),
+        'reasoning_tokens': int(r.reasoning_tokens),
+    } for r in usage_rows}
+
+    result = []
+    seen_names = set()
+    for m in models:
+        if m.name in seen_names:
+            continue
+        seen_names.add(m.name)
+        usage = usage_map.get(m.name, {'requests': 0, 'input_tokens': 0, 'output_tokens': 0, 'reasoning_tokens': 0})
+        result.append({
+            'name': m.name,
+            'alias': m.alias,
+            'provider_name': m.provider.name if m.provider else None,
+            **usage,
+        })
+
+    return jsonify({
+        'allowed_models': allowed,
+        'models': result,
+    })
 
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['DELETE'])

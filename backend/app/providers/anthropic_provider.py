@@ -163,9 +163,30 @@ class AnthropicProvider(BaseProvider):
         }
 
         # system 消息是顶级字段
-        system_content = request.get_system_message()
-        if system_content:
-            result["system"] = system_content
+        # Support cache_control on system content blocks
+        system_msg = self._get_system_message_object(request)
+        if system_msg:
+            if isinstance(system_msg.content, list):
+                # Check if any system block has cache_control
+                has_cache_control = any(
+                    isinstance(b, ContentBlock) and b.cache_control
+                    for b in system_msg.content
+                )
+                if has_cache_control:
+                    # Output as array of content blocks with cache_control
+                    system_blocks = []
+                    for b in system_msg.content:
+                        if isinstance(b, ContentBlock) and b.type == ContentType.TEXT:
+                            block_dict = {"type": "text", "text": b.text or ""}
+                            if b.cache_control:
+                                block_dict["cache_control"] = b.cache_control
+                            system_blocks.append(block_dict)
+                    result["system"] = system_blocks
+                else:
+                    # No cache_control, use simple string
+                    result["system"] = system_msg.get_text_content() or ""
+            else:
+                result["system"] = system_msg.get_text_content() or ""
 
         # 转换对话消息（排除 system）
         messages = []
@@ -235,6 +256,14 @@ class AnthropicProvider(BaseProvider):
 
         return result
 
+    @staticmethod
+    def _get_system_message_object(request: ChatRequest) -> Optional[Message]:
+        """Get the first system Message object from the request."""
+        for msg in request.messages:
+            if msg.role == MessageRole.SYSTEM:
+                return msg
+        return None
+
     def _message_to_anthropic(self, message: Message) -> Optional[Dict[str, Any]]:
         """将 Message 转换为 Anthropic 格式"""
         # Tool result messages → Anthropic user message with tool_result content
@@ -272,16 +301,18 @@ class AnthropicProvider(BaseProvider):
         return result
 
     def _content_block_to_anthropic(self, block: ContentBlock) -> Optional[Dict[str, Any]]:
-        """将 ContentBlock 转换为 Anthropic 格式"""
+        """将 ContentBlock 转换为 Anthropic 格式，保留 cache_control"""
+        result: Optional[Dict[str, Any]] = None
+
         if block.type == ContentType.TEXT:
-            return {"type": "text", "text": block.text or ""}
+            result = {"type": "text", "text": block.text or ""}
         elif block.type == ContentType.IMAGE_URL:
-            return {
+            result = {
                 "type": "image",
                 "source": {"type": "url", "url": block.url}
             }
         elif block.type == ContentType.IMAGE_BASE64:
-            return {
+            result = {
                 "type": "image",
                 "source": {
                     "type": "base64",
@@ -290,14 +321,14 @@ class AnthropicProvider(BaseProvider):
                 }
             }
         elif block.type == ContentType.TOOL_CALL:
-            return {
+            result = {
                 "type": "tool_use",
                 "id": block.tool_call_id or "",
                 "name": block.tool_name or "",
                 "input": block.tool_arguments if isinstance(block.tool_arguments, dict) else {},
             }
         elif block.type == ContentType.TOOL_RESULT:
-            return {
+            result = {
                 "type": "tool_result",
                 "tool_use_id": block.tool_call_id or "",
                 "content": block.tool_result or "",
@@ -306,12 +337,12 @@ class AnthropicProvider(BaseProvider):
         elif block.type in (ContentType.FILE_URL, ContentType.FILE_BASE64):
             # Anthropic supports document content blocks
             if block.type == ContentType.FILE_URL:
-                return {
+                result = {
                     "type": "document",
                     "source": {"type": "url", "url": block.url}
                 }
             else:
-                return {
+                result = {
                     "type": "document",
                     "source": {
                         "type": "base64",
@@ -322,16 +353,24 @@ class AnthropicProvider(BaseProvider):
         else:
             # Fallback: try to extract text
             if block.text:
-                return {"type": "text", "text": block.text}
-            return None
+                result = {"type": "text", "text": block.text}
+
+        # Attach cache_control if present on the block
+        if result and block.cache_control:
+            result["cache_control"] = block.cache_control
+
+        return result
 
     def _tool_to_anthropic(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """将 ToolDefinition 转换为 Anthropic 格式"""
-        return {
+        """将 ToolDefinition 转换为 Anthropic 格式，保留 cache_control"""
+        result = {
             "name": tool.name,
             "description": tool.description,
             "input_schema": tool.get_parameters_schema(),
         }
+        if tool.cache_control:
+            result["cache_control"] = tool.cache_control
+        return result
 
     # ==================== 响应解析 ====================
 

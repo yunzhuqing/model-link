@@ -54,6 +54,7 @@ class ContentBlock:
     tool_arguments: Optional[Dict[str, Any]] = None
     tool_result: Optional[str] = None
     is_error: bool = False
+    cache_control: Optional[Dict[str, Any]] = None  # Anthropic prompt caching: e.g. {"type": "ephemeral"}
     
     @classmethod
     def from_text(cls, text: str) -> 'ContentBlock':
@@ -202,7 +203,8 @@ class Message:
                 tool_name=item.get('tool_name') or item.get('name') or item.get('function', {}).get('name'),
                 tool_arguments=item.get('tool_arguments') or item.get('function', {}).get('arguments'),
                 tool_result=tool_result_val,
-                is_error=item.get('is_error', False)
+                is_error=item.get('is_error', False),
+                cache_control=item.get('cache_control'),
             )
         else:
             # Unknown type, return empty text block
