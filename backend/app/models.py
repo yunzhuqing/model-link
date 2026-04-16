@@ -284,6 +284,10 @@ class ModelTemplate(db.Model):
     # When present, users pick a tier in the UI; the tier overrides the base price/size fields.
     pricing_tiers = db.Column(db.JSON, nullable=True, default=None)
 
+    # Output pricing strategies for image / video / audio generation models.
+    # Same schema as Model.output_pricing.
+    output_pricing = db.Column(db.JSON, nullable=True, default=None)
+
     # Pricing ($ per 1M tokens)  — these are the default / first-tier values
     input_price = db.Column(db.Float, default=0.0)
     output_price = db.Column(db.Float, default=0.0)
@@ -336,6 +340,7 @@ class ModelTemplate(db.Model):
             'reasoning_effort': self.reasoning_effort,
             'supported_image_formats': self.supported_image_formats,
             'pricing_tiers': self.pricing_tiers,
+            'output_pricing': self.output_pricing,
             'input_price': self.input_price,
             'output_price': self.output_price,
             'cache_creation_price': self.cache_creation_price,
@@ -386,6 +391,15 @@ class Model(db.Model):
     # [{"label": "<=272k", "context_size": 272000, "input_size": 272000, "output_size": 8192,
     #   "input_price": 2.5, "output_price": 15, "cache_creation_price": 0, "cache_hit_price": 0.25}]
     pricing_tiers = db.Column(db.JSON, nullable=True, default=None)
+
+    # Output pricing strategies for image / video / audio generation models.
+    # JSON structure:
+    # {
+    #   "image": {"type": "per_image"|"per_token", "price": <float>, "tiers": [{"resolution": "1K", "price": <float>}, ...]},
+    #   "video": {"type": "per_second"|"per_token", "price": <float>, "tiers": [{"resolution": "720p", "audio": false, "price": <float>}, ...]},
+    #   "audio": {"type": "per_second"|"per_token", "price": <float>}
+    # }
+    output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Cache pricing
     cache_creation_price = db.Column(db.Float, default=0.0)
@@ -439,6 +453,7 @@ class Model(db.Model):
             'reasoning_effort': self.reasoning_effort,
             'supported_image_formats': self.supported_image_formats,
             'pricing_tiers': self.pricing_tiers,
+            'output_pricing': self.output_pricing,
             'input_price': self.input_price,
             'output_price': self.output_price,
             'cache_creation_price': self.cache_creation_price,
@@ -544,6 +559,10 @@ class UsageRecord(db.Model):
     # cost_cny ≈ native_cost * exchange_rate_to_cny
     exchange_rate_to_cny = db.Column(db.Float, nullable=True, default=None)
 
+    # ── Duration ───────────────────────────────────────────────────────────
+    # Total wall-clock time of the request in milliseconds
+    duration_ms = db.Column(db.BigInteger, nullable=True, default=None)
+
     # ── Timestamp ──────────────────────────────────────────────────────────
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
@@ -600,6 +619,8 @@ class UsageRecord(db.Model):
             # Web search
             'web_search_requests': self.web_search_requests,
             'web_search_price_unit': self.web_search_price_unit,
+            # Duration
+            'duration_ms': self.duration_ms,
             # Timestamp
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

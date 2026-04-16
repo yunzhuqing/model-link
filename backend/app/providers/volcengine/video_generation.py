@@ -706,6 +706,9 @@ def execute_seedance_video_generation(
             prompt_tokens=usage_dict["prompt_tokens"],
             completion_tokens=usage_dict["completion_tokens"],
             total_tokens=usage_dict["total_tokens"],
+            extra={
+                'output_video_number': 1,
+            },
         ),
         created=int(time.time()),
         provider="volcengine",

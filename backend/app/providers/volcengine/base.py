@@ -24,6 +24,7 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from .image_generation import (
     DoubaoImageProvider,
 )
+from .image_size_utils import resolve_seedream_size
 from .video_generation import (
     is_seedance_video_model,
     execute_seedance_video_generation,
@@ -1106,6 +1107,17 @@ class VolcengineProvider(BaseProvider):
                 tool_calls=[],
             )
             
+            image_count = len(image_call_items) if image_call_items else 1
+
+            # Derive aspect ratio and resolution tier from size string
+            img_aspect, img_tier = resolve_seedream_size(size)
+            img_extra: Dict[str, Any] = {
+                'output_image_number': image_count,
+                'output_image_resolution': img_tier or size,
+            }
+            if img_aspect:
+                img_extra['output_image_aspect'] = img_aspect
+
             return ChatResponse(
                 id=f"img-{uuid.uuid4().hex[:8]}",
                 model=model,
@@ -1114,6 +1126,7 @@ class VolcengineProvider(BaseProvider):
                     prompt_tokens=len(prompt) // 4,  # Rough estimate
                     completion_tokens=len(json.dumps(images)) // 4,
                     total_tokens=len(prompt) // 4 + len(json.dumps(images)) // 4,
+                    extra=img_extra,
                 ),
                 created=int(time.time()),
                 provider=self.PROVIDER_TYPE

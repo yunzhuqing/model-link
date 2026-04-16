@@ -436,6 +436,8 @@ class GatewayService:
             'currency': getattr(resolved.db_model, 'currency', 'USD') or 'USD',
             # Tiered pricing — plain list, safe to pass across thread boundaries
             'pricing_tiers': getattr(resolved.db_model, 'pricing_tiers', None),
+            # Output pricing strategies for image/video/audio — plain dict
+            'output_pricing': getattr(resolved.db_model, 'output_pricing', None),
         }
 
         # 7. Release the DB session — same rationale as stream_chat()
@@ -859,11 +861,12 @@ class GatewayService:
             user=user,
         )
 
-        # Route through the standard chat pipeline.
+        # Route through the standard chat pipeline (with resolved model info
+        # for usage recording).
         # Providers that support image generation (Volcengine, Bailian, Gemini,
         # …) will detect the metadata and call their image-gen API.
         try:
-            chat_response = self.chat(chat_request, group_id)
+            chat_response, resolved = self.chat_ex(chat_request, group_id)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -900,11 +903,12 @@ class GatewayService:
                 except (_json.JSONDecodeError, TypeError):
                     pass
 
-        return {
+        result_dict = {
             "created": chat_response.created,
             "data": data,
             "output_format": output_format,
         }
+        return result_dict, chat_response, resolved
 
     def edit_images(
         self,
@@ -995,9 +999,10 @@ class GatewayService:
             user=user,
         )
 
-        # Route through the standard chat pipeline
+        # Route through the standard chat pipeline (with resolved model info
+        # for usage recording)
         try:
-            chat_response = self.chat(chat_request, group_id)
+            chat_response, resolved = self.chat_ex(chat_request, group_id)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -1042,7 +1047,7 @@ class GatewayService:
         if background and background != "auto":
             result_dict["background"] = background
 
-        return result_dict
+        return result_dict, chat_response, resolved
 
     @staticmethod
     def _parse_provider_error(error: RuntimeError) -> Tuple[int, Optional[dict]]:

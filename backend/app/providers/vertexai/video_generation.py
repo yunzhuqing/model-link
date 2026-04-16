@@ -288,7 +288,12 @@ def execute_vertexai_veo_generation(
             message=video_message,
             finish_reason=FinishReason.STOP,
         )],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        usage=UsageInfo(
+            prompt_tokens=0, completion_tokens=0, total_tokens=0,
+            extra={
+                'output_video_number': len(stored_urls) if stored_urls else 1,
+            },
+        ),
         created=int(time.time()),
         provider=provider_type,
     )

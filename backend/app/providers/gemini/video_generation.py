@@ -606,6 +606,9 @@ def execute_veo_video_generation(
             prompt_tokens=usage_dict["prompt_tokens"],
             completion_tokens=usage_dict["completion_tokens"],
             total_tokens=usage_dict["total_tokens"],
+            extra={
+                'output_video_number': len(video_uris) if video_uris else 1,
+            },
         ),
         created=int(time.time()),
         provider="gemini",

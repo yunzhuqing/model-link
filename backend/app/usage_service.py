@@ -57,6 +57,7 @@ def record_usage(
     api_key: Optional["ApiKey"] = None,
     user: Optional["User"] = None,
     request_model_name: str = "",
+    duration_ms: Optional[int] = None,
 ) -> None:
     """
     Persist one UsageRecord row for a completed (non-streaming) request.
@@ -100,6 +101,8 @@ def record_usage(
     currency: str = getattr(db_model, 'currency', 'USD') or 'USD'
     # Tiered pricing — serialised as a plain list so it's safe to pass to a thread
     pricing_tiers: Optional[list] = getattr(db_model, 'pricing_tiers', None)
+    # Output pricing strategies for image/video/audio — plain dict
+    output_pricing: Optional[dict] = getattr(db_model, 'output_pricing', None)
 
     exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
 
@@ -121,7 +124,9 @@ def record_usage(
             cache_creation_price_unit=cache_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
             pricing_tiers=pricing_tiers,
+            output_pricing=output_pricing,
             currency=currency,
+            duration_ms=duration_ms,
             exchange_rate_to_cny=exchange_rate_to_cny,
         ),
         daemon=True,
@@ -148,8 +153,11 @@ def record_stream_usage(
     cache_creation_price_unit: float = 0.0,
     cache_token_price_unit: float = 0.0,
     pricing_tiers: Optional[list] = None,
+    output_pricing: Optional[dict] = None,
     # Currency (from model_meta dict)
     currency: str = 'USD',
+    # Duration
+    duration_ms: Optional[int] = None,
 ) -> None:
     """
     Persist one UsageRecord row for a completed streaming request.
@@ -180,7 +188,9 @@ def record_stream_usage(
             cache_creation_price_unit=cache_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
             pricing_tiers=pricing_tiers,
+            output_pricing=output_pricing,
             currency=currency,
+            duration_ms=duration_ms,
             exchange_rate_to_cny=exchange_rate_to_cny,
         ),
         daemon=True,
@@ -264,6 +274,44 @@ def _resolve_price_tier(
     )
 
 
+def _resolve_output_price(
+    pricing_config: Optional[dict],
+    resolution: Optional[str],
+) -> float:
+    """
+    Resolve the per-unit price from an output_pricing sub-config.
+
+    Args:
+        pricing_config: One of output_pricing["image"], output_pricing["video"],
+                        or output_pricing["audio"].  Structure:
+                        {"type": "per_image"|"per_second"|"per_token",
+                         "price": <float>,
+                         "tiers": [{"resolution": "1K", "price": <float>}, ...]}
+        resolution:     The actual resolution string from the request (e.g. "1K", "720p").
+                        Used for tier matching when tiers are present.
+
+    Returns:
+        The resolved price (float). Returns 0.0 if pricing_config is None.
+    """
+    if not pricing_config or not isinstance(pricing_config, dict):
+        return 0.0
+
+    base_price: float = float(pricing_config.get('price', 0.0) or 0.0)
+
+    # If tiers exist and we have a resolution, try to match
+    tiers = pricing_config.get('tiers')
+    if tiers and isinstance(tiers, list) and resolution:
+        norm_res = resolution.strip().lower()
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            tier_res = (tier.get('resolution') or '').strip().lower()
+            if tier_res and tier_res == norm_res:
+                return float(tier.get('price', base_price) or base_price)
+
+    return base_price
+
+
 class _UsageOnlyResponse:
     """Minimal response-like object wrapping a UsageInfo for _persist_usage compatibility."""
     def __init__(self, usage_info):
@@ -287,7 +335,9 @@ def _persist_usage(
     cache_creation_price_unit,
     cache_token_price_unit,
     pricing_tiers=None,
+    output_pricing=None,
     currency='USD',
+    duration_ms=None,
     exchange_rate_to_cny=None,
 ) -> None:
     """Worker that actually writes the UsageRecord to the database."""
@@ -311,7 +361,9 @@ def _persist_usage(
                 cache_creation_price_unit=cache_creation_price_unit,
                 cache_token_price_unit=cache_token_price_unit,
                 pricing_tiers=pricing_tiers,
+                output_pricing=output_pricing,
                 currency=currency,
+                duration_ms=duration_ms,
                 exchange_rate_to_cny=exchange_rate_to_cny,
             )
             db.session.add(record)
@@ -336,7 +388,9 @@ def _build_record(
     cache_creation_price_unit,
     cache_token_price_unit,
     pricing_tiers=None,
+    output_pricing=None,
     currency='USD',
+    duration_ms=None,
     exchange_rate_to_cny=None,
 ):
     """Build a UsageRecord ORM object from the pre-extracted primitive values."""
@@ -398,6 +452,20 @@ def _build_record(
     web_search_requests: int = extra.get('web_search_requests', 0) or 0
     web_search_price_unit: float = extra.get('web_search_price_unit', 0.0) or 0.0
 
+    # ── Resolve output pricing from model config ──────────────────────────
+    # If the model defines output_pricing, use it to set the price_unit
+    # fields unless the provider already supplied a non-zero value via extra.
+    if output_pricing and isinstance(output_pricing, dict):
+        if output_image_price_unit == 0.0:
+            output_image_price_unit = _resolve_output_price(
+                output_pricing.get('image'), output_image_resolution)
+        if output_video_price_unit == 0.0:
+            output_video_price_unit = _resolve_output_price(
+                output_pricing.get('video'), output_video_resolution)
+        if output_audio_price_unit == 0.0:
+            output_audio_price_unit = _resolve_output_price(
+                output_pricing.get('audio'), None)
+
     return UsageRecord(
         user_name=user_name,
         group_id=api_key_group_id,
@@ -438,6 +506,8 @@ def _build_record(
         # Web search
         web_search_requests=web_search_requests,
         web_search_price_unit=web_search_price_unit,
+        # Duration
+        duration_ms=duration_ms,
         # Currency / exchange rate
         currency=currency,
         exchange_rate_to_cny=exchange_rate_to_cny,

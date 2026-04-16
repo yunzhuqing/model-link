@@ -726,6 +726,9 @@ def execute_tencentvod_image_generation(
             prompt_tokens=0,
             completion_tokens=image_count,
             total_tokens=image_count,
+            extra={
+                'output_image_number': image_count,
+            },
         ),
         created=int(time.time()),
         provider="tencentvod",

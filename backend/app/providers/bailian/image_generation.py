@@ -336,6 +336,10 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse
 
     usage_data = data.get("usage", {})
     image_count = usage_data.get("image_count", max(len(image_call_items), 1))
+    # Extract resolution from usage data if available
+    img_width = usage_data.get("width", 0)
+    img_height = usage_data.get("height", 0)
+    img_resolution = f"{img_width}x{img_height}" if img_width and img_height else None
 
     message = Message(
         role=MessageRole.ASSISTANT,
@@ -354,6 +358,10 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse
             prompt_tokens=0,
             completion_tokens=image_count,
             total_tokens=image_count,
+            extra={
+                'output_image_number': image_count,
+                'output_image_resolution': img_resolution,
+            },
         ),
         created=int(time.time()),
         provider="bailian",

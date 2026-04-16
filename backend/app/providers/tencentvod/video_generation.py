@@ -724,6 +724,9 @@ def execute_tencentvod_video_generation(
             prompt_tokens=0,
             completion_tokens=video_count,
             total_tokens=video_count,
+            extra={
+                'output_video_number': video_count,
+            },
         ),
         created=int(time.time()),
         provider="tencentvod",

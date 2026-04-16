@@ -531,6 +531,12 @@ class GeminiProvider(BaseProvider):
                 content=json.dumps(inline_images, ensure_ascii=False)
             )
 
+            # Enrich usage with image generation metadata for usage recording
+            image_count = len(inline_images)
+            usage.extra = {
+                'output_image_number': image_count,
+            }
+
             return ChatResponse(
                 id=gen_id("img"),
                 model=model,

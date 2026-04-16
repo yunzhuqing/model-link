@@ -95,6 +95,7 @@ interface UsageRecord {
   output_video_number: number;
   output_audio_seconds: number;
   web_search_requests: number;
+  duration_ms: number | null;
   created_at: string;
 }
 
@@ -109,6 +110,16 @@ interface RecordsData {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+function fmtDuration(ms: number | null): string {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}m${rem.toFixed(0)}s`;
+}
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
@@ -651,6 +662,7 @@ const UsagePage = () => {
                         { label: '图片', align: 'text-center' },
                         { label: '视频', align: 'text-center' },
                         { label: '搜索', align: 'text-center' },
+                        { label: '耗时', align: 'text-center' },
                       ].map((h) => (
                         <th key={h.label} className={`px-4 py-3 ${h.align} text-xs font-semibold text-slate-500 whitespace-nowrap`}>
                           {h.label}
@@ -692,11 +704,14 @@ const UsagePage = () => {
                         <td className="px-4 py-3 text-blue-700 text-center whitespace-nowrap">
                           {r.web_search_requests > 0 ? r.web_search_requests : '—'}
                         </td>
+                        <td className="px-4 py-3 text-slate-600 font-mono text-center whitespace-nowrap text-xs">
+                          {fmtDuration(r.duration_ms)}
+                        </td>
                       </tr>
                     ))}
                     {(records?.records ?? []).length === 0 && (
                       <tr>
-                        <td colSpan={12} className="text-center py-16 text-slate-400">
+                        <td colSpan={13} className="text-center py-16 text-slate-400">
                           <Search className="w-10 h-10 mx-auto mb-2 text-slate-200" />
                           暂无消耗记录
                         </td>

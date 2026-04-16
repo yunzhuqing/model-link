@@ -17,6 +17,24 @@ interface PricingTier {
   cache_hit_price: number;
 }
 
+interface OutputPricingTier {
+  resolution: string;
+  audio?: boolean;
+  price: number;
+}
+
+interface OutputPricingCategory {
+  type: string;  // "per_image" | "per_token" | "per_second"
+  price: number;
+  tiers?: OutputPricingTier[];
+}
+
+interface OutputPricing {
+  image?: OutputPricingCategory;
+  video?: OutputPricingCategory;
+  audio?: OutputPricingCategory;
+}
+
 interface Model {
   id: number;
   provider_id: number;
@@ -28,6 +46,7 @@ interface Model {
   reasoning_effort: string | null;
   supported_image_formats: string | null;
   pricing_tiers: PricingTier[] | null;
+  output_pricing: OutputPricing | null;
   input_price: number;
   output_price: number;
   cache_creation_price: number;
@@ -83,6 +102,7 @@ interface ModelTemplate {
   input_size: number;
   output_size?: number;
   pricing_tiers: PricingTier[] | null;
+  output_pricing?: OutputPricing | null;
   input_price: number;
   output_price: number;
   cache_creation_price: number;
@@ -130,6 +150,7 @@ const defaultModelState = {
   reasoning_effort: '',
   supported_image_formats: '',
   pricing_tiers: null as PricingTier[] | null,
+  output_pricing: null as OutputPricing | null,
   input_price: 0,
   output_price: 0,
   cache_creation_price: 0,
@@ -271,6 +292,7 @@ const ModelForm = ({
       cache_creation_price: tpl.cache_creation_price,
       cache_hit_price: tpl.cache_hit_price,
       pricing_tiers: tpl.pricing_tiers,
+      output_pricing: tpl.output_pricing ?? null,
       currency: tpl.currency || 'USD',
       support_kvcache: tpl.support_kvcache,
       support_image: tpl.support_image,
@@ -478,6 +500,193 @@ const ModelForm = ({
         ) : (
           <p className="text-xs text-slate-400 italic">No tiers — single flat pricing used.</p>
         )}
+      </div>
+
+      {/* Output Pricing editor */}
+      <div className="mb-4">
+        <label className="block text-sm font-semibold text-slate-700 mb-2">
+          Output Pricing <span className="text-slate-400 font-normal text-xs">(optional — for image / video / audio generation models)</span>
+        </label>
+        {(['image', 'video', 'audio'] as const).map((category) => {
+          const typeOptions: Record<string, { value: string; label: string }[]> = {
+            image: [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_image', label: 'Per Image ($)' },
+            ],
+            video: [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_second', label: 'Per Second ($)' },
+            ],
+            audio: [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_second', label: 'Per Second ($)' },
+            ],
+          };
+          const tierResolutionHints: Record<string, string[]> = {
+            image: ['1K', '2K', '3K', '4K'],
+            video: ['720p', '1080p', '2K', '4K'],
+            audio: ['low', 'standard', 'high'],
+          };
+          const op: OutputPricing = model.output_pricing ?? {};
+          const cat: OutputPricingCategory | undefined = op[category];
+          const enabled = !!cat;
+
+          const updateCategory = (patch: Partial<OutputPricingCategory> | null) => {
+            const newOp = { ...op };
+            if (patch === null) {
+              delete newOp[category];
+            } else {
+              newOp[category] = { ...(cat ?? { type: typeOptions[category][0].value, price: 0 }), ...patch };
+            }
+            // If all categories removed, set output_pricing to null
+            const hasAny = newOp.image || newOp.video || newOp.audio;
+            setModel({ ...model, output_pricing: hasAny ? newOp : null });
+          };
+
+          return (
+            <div key={category} className="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-2">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        updateCategory({ type: typeOptions[category][0].value, price: 0 });
+                      } else {
+                        updateCategory(null);
+                      }
+                    }}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm font-medium text-slate-700 capitalize">{category} Output Pricing</span>
+                </label>
+              </div>
+              {enabled && cat && (
+                <div className="mt-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">Pricing Type</label>
+                      <select
+                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                        value={cat.type}
+                        onChange={(e) => updateCategory({ type: e.target.value })}
+                      >
+                        {typeOptions[category].map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">
+                        Base Price {cat.type === 'per_token' ? '($/M tokens)' : cat.type === 'per_image' ? '($ per image)' : '($ per second)'}
+                      </label>
+                      <input
+                        type="number"
+                        step="0.0001"
+                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                        value={cat.price}
+                        onChange={(e) => updateCategory({ price: parseFloat(e.target.value) || 0 })}
+                      />
+                    </div>
+                  </div>
+                  {/* Resolution tiers */}
+                  {cat.type !== 'per_token' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-medium text-slate-600">
+                          Resolution Tiers <span className="text-slate-400 font-normal">(override base price by resolution)</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newTier: OutputPricingTier = {
+                              resolution: tierResolutionHints[category][0] || '',
+                              price: cat.price,
+                              ...(category === 'video' ? { audio: false } : {}),
+                            };
+                            updateCategory({ tiers: [...(cat.tiers ?? []), newTier] });
+                          }}
+                          className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg hover:bg-blue-100 transition-colors"
+                        >
+                          + Add Tier
+                        </button>
+                      </div>
+                      {cat.tiers && cat.tiers.length > 0 ? (
+                        <div className="space-y-2">
+                          {cat.tiers.map((tier, idx) => (
+                            <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200">
+                              <div className="flex-1">
+                                <label className="block text-xs text-slate-400 mb-0.5">Resolution</label>
+                                <input
+                                  type="text"
+                                  placeholder={tierResolutionHints[category].join(', ')}
+                                  className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                  value={tier.resolution}
+                                  onChange={(e) => {
+                                    const tiers = [...(cat.tiers ?? [])];
+                                    tiers[idx] = { ...tiers[idx], resolution: e.target.value };
+                                    updateCategory({ tiers });
+                                  }}
+                                />
+                              </div>
+                              {category === 'video' && (
+                                <div className="flex-shrink-0">
+                                  <label className="block text-xs text-slate-400 mb-0.5">Audio</label>
+                                  <label className="flex items-center space-x-1 cursor-pointer p-1.5">
+                                    <input
+                                      type="checkbox"
+                                      checked={!!tier.audio}
+                                      onChange={(e) => {
+                                        const tiers = [...(cat.tiers ?? [])];
+                                        tiers[idx] = { ...tiers[idx], audio: e.target.checked };
+                                        updateCategory({ tiers });
+                                      }}
+                                      className="w-3 h-3 rounded border-slate-300 text-blue-600"
+                                    />
+                                    <span className="text-xs text-slate-600">Yes</span>
+                                  </label>
+                                </div>
+                              )}
+                              <div className="flex-1">
+                                <label className="block text-xs text-slate-400 mb-0.5">
+                                  Price {cat.type === 'per_image' ? '($)' : '($/s)'}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.0001"
+                                  className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                  value={tier.price}
+                                  onChange={(e) => {
+                                    const tiers = [...(cat.tiers ?? [])];
+                                    tiers[idx] = { ...tiers[idx], price: parseFloat(e.target.value) || 0 };
+                                    updateCategory({ tiers });
+                                  }}
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const tiers = (cat.tiers ?? []).filter((_, i) => i !== idx);
+                                  updateCategory({ tiers: tiers.length > 0 ? tiers : undefined });
+                                }}
+                                className="text-slate-400 hover:text-red-500 text-xs mt-4 px-1 py-0.5 hover:bg-red-50 rounded"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">No tiers — base price applies to all resolutions.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Rate limits & discount */}
