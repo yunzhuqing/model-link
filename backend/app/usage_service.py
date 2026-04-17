@@ -68,7 +68,16 @@ def record_usage(
     lazy-loading on a closed/detached session.
     """
     # ── Eagerly extract all primitive values from ORM objects ─────────────────
-    user_name: Optional[str] = user.username if user else None
+    # Prefer the explicit user; fall back to the user associated with the API key.
+    user_name: Optional[str] = None
+    if user:
+        user_name = user.username
+    elif api_key:
+        try:
+            if api_key.user:
+                user_name = api_key.user.username
+        except Exception:
+            pass
 
     api_key_raw: Optional[str] = None
     api_key_name: Optional[str] = None
@@ -277,6 +286,8 @@ def _resolve_price_tier(
 def _resolve_output_price(
     pricing_config: Optional[dict],
     resolution: Optional[str],
+    audio: Optional[bool] = None,
+    reference_video: Optional[bool] = None,
 ) -> float:
     """
     Resolve the per-unit price from an output_pricing sub-config.
@@ -286,12 +297,24 @@ def _resolve_output_price(
                         or output_pricing["audio"].  Structure:
                         {"type": "per_image"|"per_second"|"per_token",
                          "price": <float>,
-                         "tiers": [{"resolution": "1K", "price": <float>}, ...]}
+                         "tiers": [{"resolution": "1K", "audio": bool,
+                                    "reference_video": bool, "price": <float>}, ...]}
         resolution:     The actual resolution string from the request (e.g. "1K", "720p").
                         Used for tier matching when tiers are present.
+        audio:          Whether the output includes audio (for video tiers).
+        reference_video: Whether a reference video was used (for video tiers).
 
     Returns:
         The resolved price (float). Returns 0.0 if pricing_config is None.
+
+    Tier matching logic:
+      1. Filter tiers by resolution (case-insensitive).
+      2. Among matching tiers, find the best match by ``audio`` and
+         ``reference_video`` flags. A tier matches a flag when:
+           - the tier does not define the flag (treated as wildcard), OR
+           - the tier's flag value equals the request's flag value.
+         Tiers with more explicit flag matches are preferred.
+      3. If no tier matches, fall back to base_price.
     """
     if not pricing_config or not isinstance(pricing_config, dict):
         return 0.0
@@ -302,12 +325,54 @@ def _resolve_output_price(
     tiers = pricing_config.get('tiers')
     if tiers and isinstance(tiers, list) and resolution:
         norm_res = resolution.strip().lower()
+
+        # Collect candidate tiers that match resolution
+        candidates: list = []
         for tier in tiers:
             if not isinstance(tier, dict):
                 continue
             tier_res = (tier.get('resolution') or '').strip().lower()
-            if tier_res and tier_res == norm_res:
-                return float(tier.get('price', base_price) or base_price)
+            if not tier_res or tier_res != norm_res:
+                continue
+
+            # Check audio and reference_video flags
+            tier_audio = tier.get('audio')            # None means wildcard
+            tier_ref = tier.get('reference_video')    # None means wildcard
+
+            # Compute match score (higher = more specific match)
+            score = 0
+            match = True
+
+            # Audio flag matching
+            if tier_audio is not None and audio is not None:
+                if bool(tier_audio) != bool(audio):
+                    match = False
+                else:
+                    score += 1
+            elif tier_audio is not None:
+                # Tier specifies audio but request doesn't — prefer non-audio
+                if bool(tier_audio):
+                    score -= 1
+
+            # Reference video flag matching
+            if tier_ref is not None and reference_video is not None:
+                if bool(tier_ref) != bool(reference_video):
+                    match = False
+                else:
+                    score += 1
+            elif tier_ref is not None:
+                # Tier specifies ref_video but request doesn't — prefer non-ref
+                if bool(tier_ref):
+                    score -= 1
+
+            if match:
+                candidates.append((score, tier))
+
+        if candidates:
+            # Pick the best matching tier (highest score)
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best_tier = candidates[0][1]
+            return float(best_tier.get('price', base_price) or base_price)
 
     return base_price
 

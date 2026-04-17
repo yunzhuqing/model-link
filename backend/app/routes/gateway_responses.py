@@ -302,7 +302,7 @@ def openai_responses():
 
         # Eagerly extract identity primitives while the DB session is alive.
         # These will be passed to the background thread for usage recording.
-        _bg_user_name = user.username if user else None
+        _bg_user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
         _bg_api_key_raw = api_key.key if api_key else None
         _bg_api_key_name = api_key.name if api_key else None
         _bg_api_key_group_id = api_key.group_id if api_key else None
@@ -375,7 +375,7 @@ def openai_responses():
     try:
         if chat_request.stream:
             # Eagerly extract identity primitives before session is released
-            _user_name = user.username if user else None
+            _user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
             _api_key_raw = api_key.key if api_key else None
             _api_key_name = api_key.name if api_key else None
             _api_key_group_id = api_key.group_id if api_key else None

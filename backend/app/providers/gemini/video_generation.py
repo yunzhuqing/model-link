@@ -594,6 +594,13 @@ def execute_veo_video_generation(
         content=json.dumps(video_items, ensure_ascii=False),
     )
 
+    # Extract video metadata from request parameters for usage tracking
+    parameters = request_body.get("parameters", {})
+    video_aspect_ratio = parameters.get("aspectRatio", "")
+    video_seconds = parameters.get("durationSeconds", 0)
+    # Derive resolution tier from metadata if available
+    video_resolution = metadata.get("resolution", "")
+
     return ChatResponse(
         id=gen_id("vid"),
         model=model,
@@ -608,6 +615,9 @@ def execute_veo_video_generation(
             total_tokens=usage_dict["total_tokens"],
             extra={
                 'output_video_number': len(video_uris) if video_uris else 1,
+                'output_video_resolution': video_resolution or None,
+                'output_video_aspect': video_aspect_ratio or None,
+                'output_video_seconds': float(video_seconds) if video_seconds else 0.0,
             },
         ),
         created=int(time.time()),

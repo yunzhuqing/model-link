@@ -20,6 +20,7 @@ interface PricingTier {
 interface OutputPricingTier {
   resolution: string;
   audio?: boolean;
+  reference_video?: boolean;
   price: number;
 }
 
@@ -177,7 +178,7 @@ const defaultModelState = {
 
 const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit: () => void; onDelete: () => void; onToggle: () => void }) => {
   const sym = currencySymbol(model.currency);
-  const hasTiers = model.pricing_tiers && model.pricing_tiers.length > 0;
+  const hasTiers = model.pricing_tiers && model.pricing_tiers.length > 0 && !model.output_pricing;
 
   return (
     <div className={`bg-white p-5 rounded-xl border border-slate-200 hover:shadow-md transition-all duration-300 ${!model.is_active ? 'opacity-60' : ''}`}>
@@ -224,6 +225,39 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
               <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Input Size</span><span className="text-slate-700 font-medium">{model.input_size?.toLocaleString()}</span></div>
               <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Input Price</span><span className="text-slate-700 font-medium">{sym}{model.input_price}/M {model.currency || 'USD'}</span></div>
               <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Output Price</span><span className="text-slate-700 font-medium">{sym}{model.output_price}/M {model.currency || 'USD'}</span></div>
+            </div>
+          )}
+
+          {/* Output Pricing display */}
+          {model.output_pricing && (
+            <div className="mt-4">
+              {(['image', 'video', 'audio'] as const).map((cat) => {
+                const catConfig = model.output_pricing?.[cat];
+                if (!catConfig) return null;
+                const catLabel = cat.charAt(0).toUpperCase() + cat.slice(1);
+                const typeLabel = catConfig.type === 'per_image' ? '/image' : catConfig.type === 'per_second' ? '/s' : '/M tokens';
+                return (
+                  <div key={cat} className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2">
+                    <span className="text-blue-600 text-xs font-semibold block mb-1">
+                      {catLabel} Output — {catConfig.type === 'per_token' ? 'Per Token' : catConfig.type === 'per_image' ? 'Per Image' : 'Per Second'} ({model.currency || 'USD'})
+                    </span>
+                    {catConfig.tiers && catConfig.tiers.length > 0 ? (
+                      <div className="space-y-1">
+                        {catConfig.tiers.map((tier, i) => (
+                          <div key={i} className="flex items-center gap-3 text-sm text-slate-600">
+                            <span className="text-slate-500 text-xs font-medium min-w-[50px]">{tier.resolution}</span>
+                            <span>{sym}{tier.price}{typeLabel}</span>
+                            {cat === 'video' && tier.audio && <span className="text-xs text-slate-400">+audio</span>}
+                            {cat === 'video' && tier.reference_video && <span className="text-xs text-slate-400">+ref_video</span>}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-sm text-slate-600">{sym}{catConfig.price}{typeLabel}</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -523,7 +557,7 @@ const ModelForm = ({
             ],
           };
           const tierResolutionHints: Record<string, string[]> = {
-            image: ['1K', '2K', '3K', '4K'],
+            image: ['512', '1K', '2K', '3K', '4K'],
             video: ['720p', '1080p', '2K', '4K'],
             audio: ['low', 'standard', 'high'],
           };
@@ -640,6 +674,24 @@ const ModelForm = ({
                                       onChange={(e) => {
                                         const tiers = [...(cat.tiers ?? [])];
                                         tiers[idx] = { ...tiers[idx], audio: e.target.checked };
+                                        updateCategory({ tiers });
+                                      }}
+                                      className="w-3 h-3 rounded border-slate-300 text-blue-600"
+                                    />
+                                    <span className="text-xs text-slate-600">Yes</span>
+                                  </label>
+                                </div>
+                              )}
+                              {category === 'video' && (
+                                <div className="flex-shrink-0">
+                                  <label className="block text-xs text-slate-400 mb-0.5">Ref Video</label>
+                                  <label className="flex items-center space-x-1 cursor-pointer p-1.5">
+                                    <input
+                                      type="checkbox"
+                                      checked={!!tier.reference_video}
+                                      onChange={(e) => {
+                                        const tiers = [...(cat.tiers ?? [])];
+                                        tiers[idx] = { ...tiers[idx], reference_video: e.target.checked };
                                         updateCategory({ tiers });
                                       }}
                                       className="w-3 h-3 rounded border-slate-300 text-blue-600"

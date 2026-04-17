@@ -83,8 +83,17 @@ def create_provider(current_user):
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
     
+    # Check for duplicate name within the same group
+    name = data.get('name')
+    existing = db.session.query(Provider).filter(
+        Provider.name == name,
+        Provider.group_id == group_id
+    ).first()
+    if existing:
+        return jsonify({'detail': f'A provider with name "{name}" already exists in this group'}), 409
+    
     provider = Provider(
-        name=data.get('name'),
+        name=name,
         type=data.get('type', 'openai'),
         description=data.get('description'),
         api_key=data.get('api_key'),
@@ -126,7 +135,15 @@ def update_provider(current_user, provider_id):
         return jsonify({'detail': 'Provider not found'}), 404
     
     data = request.get_json()
-    if 'name' in data:
+    if 'name' in data and data['name'] != provider.name:
+        # Check for duplicate name within the same group
+        existing = db.session.query(Provider).filter(
+            Provider.name == data['name'],
+            Provider.group_id == provider.group_id,
+            Provider.id != provider_id
+        ).first()
+        if existing:
+            return jsonify({'detail': f'A provider with name "{data["name"]}" already exists in this group'}), 409
         provider.name = data['name']
     if 'type' in data:
         provider.type = data['type']
@@ -212,6 +229,7 @@ def create_model(current_user):
         reasoning_effort=data.get('reasoning_effort') or None,
         supported_image_formats=data.get('supported_image_formats') or None,
         pricing_tiers=data.get('pricing_tiers') or None,
+        output_pricing=data.get('output_pricing') or None,
         input_price=data.get('input_price', 0.0),
         output_price=data.get('output_price', 0.0),
         cache_creation_price=data.get('cache_creation_price', 0.0),
@@ -253,7 +271,7 @@ def update_model(current_user, model_id):
     for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
                   'input_price', 'output_price', 'cache_creation_price', 'cache_hit_price',
                   'currency', 'rpm', 'tpm', 'discount',
-                  'reasoning_effort', 'supported_image_formats', 'pricing_tiers',
+                   'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                   'support_online_image', 'support_online_video', 'support_embedding',

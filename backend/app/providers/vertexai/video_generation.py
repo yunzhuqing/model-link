@@ -280,6 +280,14 @@ def execute_vertexai_veo_generation(
         role=MessageRole.ASSISTANT,
         content=json.dumps(video_items, ensure_ascii=False),
     )
+
+    # Extract video metadata from request parameters for usage tracking
+    parameters = request_body.get("parameters", {})
+    video_aspect_ratio = parameters.get("aspectRatio", "")
+    video_seconds = parameters.get("durationSeconds", 0)
+    # Derive resolution tier from metadata if available
+    video_resolution = request.metadata.get("resolution", "")
+
     return ChatResponse(
         id=gen_id("vid"),
         model=model,
@@ -292,6 +300,9 @@ def execute_vertexai_veo_generation(
             prompt_tokens=0, completion_tokens=0, total_tokens=0,
             extra={
                 'output_video_number': len(stored_urls) if stored_urls else 1,
+                'output_video_resolution': video_resolution or None,
+                'output_video_aspect': video_aspect_ratio or None,
+                'output_video_seconds': float(video_seconds) if video_seconds else 0.0,
             },
         ),
         created=int(time.time()),

@@ -61,7 +61,7 @@ SizeEntry = Tuple[str, str]
 # WxH string → SizeEntry
 SizeTable = Dict[str, SizeEntry]
 
-_TIER_LABELS = {"512", "1K", "2K", "4K", "0.5K"}
+_TIER_LABELS = {"512", "1K", "2K", "3K", "4K", "0.5K"}
 
 
 # ---------------------------------------------------------------------------

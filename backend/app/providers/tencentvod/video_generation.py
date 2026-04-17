@@ -726,6 +726,9 @@ def execute_tencentvod_video_generation(
             total_tokens=video_count,
             extra={
                 'output_video_number': video_count,
+                'output_video_resolution': resolution or None,
+                'output_video_aspect': aspect_ratio or None,
+                'output_video_seconds': float(seconds) if seconds else 0.0,
             },
         ),
         created=int(time.time()),

@@ -1328,6 +1328,21 @@ class VertexAIProvider(BaseProvider):
                     response_data, request.model, self.PROVIDER_TYPE
                 )
                 if img_response:
+                    # Enrich image generation usage with resolution/aspect from request metadata
+                    if img_response.usage and img_response.usage.extra:
+                        meta = request.metadata
+                        size = str(meta.get('size', ''))
+                        ar = str(meta.get('aspect_ratio', ''))
+                        res = str(meta.get('resolution', ''))
+                        from app.providers.image_size_utils import resolve_image_size
+                        resolved_aspect, resolved_tier = resolve_image_size(
+                            model=request.model, size=size, aspect_ratio=ar,
+                            resolution=res,
+                        )
+                        if resolved_tier:
+                            img_response.usage.extra['output_image_resolution'] = resolved_tier
+                        if resolved_aspect:
+                            img_response.usage.extra['output_image_aspect'] = resolved_aspect
                     return img_response
 
             return self.parse_response(response_data, request.model)

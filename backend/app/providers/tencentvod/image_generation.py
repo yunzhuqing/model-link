@@ -728,6 +728,8 @@ def execute_tencentvod_image_generation(
             total_tokens=image_count,
             extra={
                 'output_image_number': image_count,
+                'output_image_resolution': resolution or None,
+                'output_image_aspect': aspect_ratio or None,
             },
         ),
         created=int(time.time()),

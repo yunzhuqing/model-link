@@ -209,9 +209,12 @@ class ApiKey(db.Model):
 
 class Provider(db.Model):
     __tablename__ = "ml_providers"
+    __table_args__ = (
+        db.UniqueConstraint('name', 'group_id', name='uq_provider_name_group'),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(100), nullable=False, index=True)
     type = db.Column(db.String(50), nullable=False, default="openai")  # openai, anthropic, deepseek, kimi, glm, minimax, bailian, volcengine, tencent
     description = db.Column(db.String(255))
     api_key = db.Column(db.Text)

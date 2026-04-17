@@ -125,10 +125,14 @@ def handle_image_generation_response(
         finish_reason = finish_map.get(gemini_finish, FinishReason.STOP)
 
     usage_metadata = response_data.get("usageMetadata", {})
+    image_count = len(inline_images) if inline_images else 0
     usage = UsageInfo(
         prompt_tokens=usage_metadata.get("promptTokenCount", 0),
         completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
         total_tokens=usage_metadata.get("totalTokenCount", 0),
+        extra={
+            'output_image_number': image_count,
+        } if image_count > 0 else {},
     )
 
     if inline_images:

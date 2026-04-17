@@ -606,7 +606,26 @@ class GeminiProvider(BaseProvider):
                     )
 
             response_data = response.json()
-            return self.parse_response(response_data, request.model)
+            chat_response = self.parse_response(response_data, request.model)
+
+            # Enrich image generation usage with resolution/aspect from request metadata
+            if (chat_response.usage and chat_response.usage.extra
+                    and chat_response.usage.extra.get('output_image_number')):
+                meta = request.metadata
+                size = str(meta.get('size', ''))
+                ar = str(meta.get('aspect_ratio', ''))
+                res = str(meta.get('resolution', ''))
+                from app.providers.image_size_utils import resolve_image_size
+                resolved_aspect, resolved_tier = resolve_image_size(
+                    model=request.model, size=size, aspect_ratio=ar,
+                    resolution=res,
+                )
+                if resolved_tier:
+                    chat_response.usage.extra['output_image_resolution'] = resolved_tier
+                if resolved_aspect:
+                    chat_response.usage.extra['output_image_aspect'] = resolved_aspect
+
+            return chat_response
 
         except RuntimeError:
             raise

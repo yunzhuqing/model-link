@@ -195,7 +195,7 @@ def _handle_request(adapter):
             # ── Streaming path ────────────────────────────────────────────────
             # Eagerly extract all identity info from ORM objects BEFORE
             # stream_chat_ex() removes the DB session.
-            _user_name = user.username if user else None
+            _user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
             _api_key_raw = api_key.key if api_key else None
             _api_key_name = api_key.name if api_key else None
             _api_key_group_id = api_key.group_id if api_key else None

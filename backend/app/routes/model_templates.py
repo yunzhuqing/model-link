@@ -282,6 +282,215 @@ BUILTIN_TEMPLATES = [
          support_kvcache=True, support_image=True, support_audio=True, support_video=True,
          support_file=True, support_web_search=True, support_tool_search=False,
          support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False),
+    # ── Google Gemini Image ─────────────────────────────────────────────────
+    # Gemini native image generation models — per-image pricing (USD).
+    # Input/output token prices are also listed for multimodal prompt cost.
+    dict(
+        label='Gemini 3.1 Flash Image Preview',
+        provider='Google',
+        name='gemini-3.1-flash-image-preview',
+        alias='gemini-3.1-flash-image-preview',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '512x512,1024x1024,2048x2048,4096x4096,'
+            '256x1024,512x2048,1024x4096,2048x8192,'
+            '192x1536,384x3072,768x6144,1536x12288,'
+            '424x632,848x1264,1696x2528,3392x5056,'
+            '632x424,1264x848,2528x1696,5056x3392,'
+            '448x600,896x1200,1792x2400,3584x4800,'
+            '1024x256,2048x512,4096x1024,8192x2048,'
+            '600x448,1200x896,2400x1792,4800x3584,'
+            '464x576,928x1152,1856x2304,3712x4608,'
+            '576x464,1152x928,2304x1856,4608x3712,'
+            '1536x192,3072x384,6144x768,12288x1536,'
+            '384x688,768x1376,1536x2752,3072x5504,'
+            '688x384,1376x768,2752x1536,5504x3072,'
+            '792x168,1584x672,3168x1344,6336x2688'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.067,
+                'tiers': [
+                    {'resolution': '512', 'price': 0.045},
+                    {'resolution': '1K', 'price': 0.067},
+                    {'resolution': '2K', 'price': 0.101},
+                    {'resolution': '4K', 'price': 0.15},
+                ],
+            },
+        },
+        input_price=0.5, output_price=0.3, cache_creation_price=0, cache_hit_price=0,
+        currency='USD',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Gemini 3 Pro Image Preview',
+        provider='Google',
+        name='gemini-3-pro-image-preview',
+        alias='gemini-3-pro-image-preview',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '1024x1024,2048x2048,4096x4096,'
+            '848x1264,1696x2528,3392x5056,'
+            '1264x848,2528x1696,5056x3392,'
+            '896x1200,1792x2400,3584x4800,'
+            '1200x896,2400x1792,4800x3584,'
+            '928x1152,1856x2304,3712x4608,'
+            '1152x928,2304x1856,4608x3712,'
+            '768x1376,1536x2752,3072x5504,'
+            '1376x768,2752x1536,5504x3072,'
+            '1584x672,3168x1344,6336x2688'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.134,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.134},
+                    {'resolution': '2K', 'price': 0.134},
+                    {'resolution': '4K', 'price': 0.24},
+                ],
+            },
+        },
+        input_price=2, output_price=12, cache_creation_price=0, cache_hit_price=0,
+        currency='USD',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Gemini 2.5 Flash Image',
+        provider='Google',
+        name='gemini-2.5-flash-image',
+        alias='gemini-2.5-flash-image',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats='1024x1024,832x1248,1248x832,864x1184,1184x864,896x1152,1152x896,768x1344,1344x768,1536x672',
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.0336,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.0336},
+                    {'resolution': '2K', 'price': 0.0336},
+                    {'resolution': '4K', 'price': 0.06},
+                ],
+            },
+        },
+        input_price=0.3, output_price=2.5, cache_creation_price=0, cache_hit_price=0,
+        currency='USD',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    # ── VertexAI Gemini Image ───────────────────────────────────────────────
+    # Same Gemini image models via Vertex AI — same USD pricing.
+    dict(
+        label='Gemini 3.1 Flash Image Preview (VertexAI)',
+        provider='VertexAI',
+        name='gemini-3.1-flash-image-preview',
+        alias='gemini-3.1-flash-image-preview',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '512x512,1024x1024,2048x2048,4096x4096,'
+            '256x1024,512x2048,1024x4096,2048x8192,'
+            '192x1536,384x3072,768x6144,1536x12288,'
+            '424x632,848x1264,1696x2528,3392x5056,'
+            '632x424,1264x848,2528x1696,5056x3392,'
+            '448x600,896x1200,1792x2400,3584x4800,'
+            '1024x256,2048x512,4096x1024,8192x2048,'
+            '600x448,1200x896,2400x1792,4800x3584,'
+            '464x576,928x1152,1856x2304,3712x4608,'
+            '576x464,1152x928,2304x1856,4608x3712,'
+            '1536x192,3072x384,6144x768,12288x1536,'
+            '384x688,768x1376,1536x2752,3072x5504,'
+            '688x384,1376x768,2752x1536,5504x3072,'
+            '792x168,1584x672,3168x1344,6336x2688'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.067,
+                'tiers': [
+                    {'resolution': '512', 'price': 0.045},
+                    {'resolution': '1K', 'price': 0.067},
+                    {'resolution': '2K', 'price': 0.101},
+                    {'resolution': '4K', 'price': 0.15},
+                ],
+            },
+        },
+        input_price=0.5, output_price=0.3, cache_creation_price=0, cache_hit_price=0,
+        currency='USD',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Gemini 3 Pro Image Preview (VertexAI)',
+        provider='VertexAI',
+        name='gemini-3-pro-image-preview',
+        alias='gemini-3-pro-image-preview',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '1024x1024,2048x2048,4096x4096,'
+            '848x1264,1696x2528,3392x5056,'
+            '1264x848,2528x1696,5056x3392,'
+            '896x1200,1792x2400,3584x4800,'
+            '1200x896,2400x1792,4800x3584,'
+            '928x1152,1856x2304,3712x4608,'
+            '1152x928,2304x1856,4608x3712,'
+            '768x1376,1536x2752,3072x5504,'
+            '1376x768,2752x1536,5504x3072,'
+            '1584x672,3168x1344,6336x2688'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.134,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.134},
+                    {'resolution': '2K', 'price': 0.134},
+                    {'resolution': '4K', 'price': 0.24},
+                ],
+            },
+        },
+        input_price=2, output_price=12, cache_creation_price=0, cache_hit_price=0,
+        currency='USD',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Gemini 2.5 Flash Image (VertexAI)',
+        provider='VertexAI',
+        name='gemini-2.5-flash-image',
+        alias='gemini-2.5-flash-image',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats='1024x1024,832x1248,1248x832,864x1184,1184x864,896x1152,1152x896,768x1344,1344x768,1536x672',
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.0336,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.0336},
+                    {'resolution': '2K', 'price': 0.0336},
+                    {'resolution': '4K', 'price': 0.06},
+                ],
+            },
+        },
+        input_price=0.3, output_price=2.5, cache_creation_price=0, cache_hit_price=0,
+        currency='USD',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
     # ── DeepSeek ─────────────────────────────────────────────────────────────
     dict(label='DeepSeek V3 (Official)', provider='DeepSeek', name='deepseek-chat', alias='deepseek-v3',
          context_size=128000, input_size=128000, output_size=8000, pricing_tiers=None,
@@ -572,6 +781,52 @@ BUILTIN_TEMPLATES = [
          support_kvcache=False, support_image=False, support_audio=False, support_video=False,
          support_file=False, support_web_search=False, support_tool_search=False,
          support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=True),
+    # ── Bailian / Qwen Image ─────────────────────────────────────────────────
+    # Qwen image generation models — flat per-image pricing (CNY).
+    dict(
+        label='Qwen Image 2.0 Pro',
+        provider='Bailian',
+        name='qwen-image-2.0-pro',
+        alias='qwen-image-2.0-pro',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.5,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.5},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Qwen Image 2.0',
+        provider='Bailian',
+        name='qwen-image-2.0',
+        alias='qwen-image-2.0',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.2,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.2},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
     # ── MiniMax ──────────────────────────────────────────────────────────────
     dict(label='MiniMax M2.5', provider='Bailian', name='MiniMax-M2.5', alias='MiniMax-M2.5',
          context_size=196608, input_size=196601, output_size=32768, pricing_tiers=None,
@@ -734,7 +989,8 @@ BUILTIN_TEMPLATES = [
          support_file=False, support_web_search=False, support_tool_search=False,
          support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False),
     # ── TencentVOD Gemini Image Models ──────────────────────────────────────
-    # Resolution tiers are encoded in pricing_tiers (label = "AspectRatio (tier) → WxH").
+    # Image pricing uses output_pricing with per_image type and resolution tiers.
+    # Prices are per image, calculated based on resolution tier (512, 1K, 2K, 3K, 4K).
     # supported_image_formats lists every valid WxH for easy reference.
     # GG 2.5 — single resolution per aspect ratio, no quality tier
     dict(
@@ -744,18 +1000,19 @@ BUILTIN_TEMPLATES = [
         alias='gemini-2.5-flash-image',
         context_size=4096, input_size=4096, output_size=1,
         supported_image_formats='1024x1024,832x1248,1248x832,864x1184,1184x864,896x1152,1152x896,768x1344,1344x768,1536x672',
-        pricing_tiers=[
-            dict(label='1:1  → 1024x1024',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  → 832x1248',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  → 1248x832',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  → 864x1184',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  → 1184x864',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  → 896x1152',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  → 1152x896',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 → 768x1344',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 → 1344x768',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 → 1536x672',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-        ],
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.3,
+                'tiers': [
+                    {'resolution': '512', 'price': 0.3},
+                    {'resolution': '1K', 'price': 0.3},
+                    {'resolution': '2K', 'price': 0.3},
+                    {'resolution': '4K', 'price': 0.3},
+                ],
+            },
+        },
         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
         currency='CNY',
         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
@@ -781,38 +1038,19 @@ BUILTIN_TEMPLATES = [
             '1376x768,2752x1536,5504x3072,'
             '1584x672,3168x1344,6336x2688'
         ),
-        pricing_tiers=[
-            dict(label='1:1  (1K) → 1024x1024',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:1  (2K) → 2048x2048',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:1  (4K) → 4096x4096',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (1K) → 848x1264',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (2K) → 1696x2528',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (4K) → 3392x5056',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (1K) → 1264x848',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (2K) → 2528x1696',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (4K) → 5056x3392',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (1K) → 896x1200',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (2K) → 1792x2400',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (4K) → 3584x4800',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (1K) → 1200x896',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (2K) → 2400x1792',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (4K) → 4800x3584',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (1K) → 928x1152',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (2K) → 1856x2304',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (4K) → 3712x4608',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (1K) → 1152x928',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (2K) → 2304x1856',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (4K) → 4608x3712',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (1K) → 768x1376',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (2K) → 1536x2752',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (4K) → 3072x5504',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (1K) → 1376x768',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (2K) → 2752x1536',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (4K) → 5504x3072',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (1K) → 1584x672',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (2K) → 3168x1344',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (4K) → 6336x2688',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-        ],
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 1,
+                'tiers': [
+                    {'resolution': '512', 'price': 1},
+                    {'resolution': '1K', 'price': 1},
+                    {'resolution': '2K', 'price': 1},
+                    {'resolution': '4K', 'price': 1.8},
+                ],
+            },
+        },
         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
         currency='CNY',
         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
@@ -842,64 +1080,149 @@ BUILTIN_TEMPLATES = [
             '688x384,1376x768,2752x1536,5504x3072,'
             '792x168,1584x672,3168x1344,6336x2688'
         ),
-        pricing_tiers=[
-            dict(label='1:1  (512) → 512x512',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:1  (1K)  → 1024x1024',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:1  (2K)  → 2048x2048',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:1  (4K)  → 4096x4096',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:4  (512) → 256x1024',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:4  (1K)  → 512x2048',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:4  (2K)  → 1024x4096',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:4  (4K)  → 2048x8192',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:8  (512) → 192x1536',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:8  (1K)  → 384x3072',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:8  (2K)  → 768x6144',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='1:8  (4K)  → 1536x12288',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (512) → 424x632',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (1K)  → 848x1264',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (2K)  → 1696x2528',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='2:3  (4K)  → 3392x5056',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (512) → 632x424',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (1K)  → 1264x848',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (2K)  → 2528x1696',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:2  (4K)  → 5056x3392',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (512) → 448x600',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (1K)  → 896x1200',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (2K)  → 1792x2400',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='3:4  (4K)  → 3584x4800',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:1  (512) → 1024x256',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:1  (1K)  → 2048x512',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:1  (2K)  → 4096x1024',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:1  (4K)  → 8192x2048',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (512) → 600x448',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (1K)  → 1200x896',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (2K)  → 2400x1792',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:3  (4K)  → 4800x3584',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (512) → 464x576',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (1K)  → 928x1152',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (2K)  → 1856x2304',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='4:5  (4K)  → 3712x4608',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (512) → 576x464',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (1K)  → 1152x928',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (2K)  → 2304x1856',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='5:4  (4K)  → 4608x3712',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='8:1  (512) → 1536x192',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='8:1  (1K)  → 3072x384',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='8:1  (2K)  → 6144x768',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='8:1  (4K)  → 12288x1536',  context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (512) → 384x688',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (1K)  → 768x1376',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (2K)  → 1536x2752',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='9:16 (4K)  → 3072x5504',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (512) → 688x384',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (1K)  → 1376x768',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (2K)  → 2752x1536',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='16:9 (4K)  → 5504x3072',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (512) → 792x168',     context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (1K)  → 1584x672',    context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (2K)  → 3168x1344',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-            dict(label='21:9 (4K)  → 6336x2688',   context_size=0, input_size=0, output_size=0, input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0),
-        ],
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.5,
+                'tiers': [
+                    {'resolution': '512', 'price': 0.5},
+                    {'resolution': '1K', 'price': 0.5},
+                    {'resolution': '2K', 'price': 0.75},
+                    {'resolution': '4K', 'price': 1.12},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    # ── TencentVOD Kling Video Models ───────────────────────────────────────
+    # Kling v3 Omni — video generation with per-second pricing.
+    # Pricing varies by resolution × audio × reference_video (16 tiers).
+    # Prices are in CNY per second.
+    dict(
+        label='Kling V3 Omni (TencentVOD)',
+        provider='TencentVOD',
+        name='kling-v3-omni',
+        alias='kling-v3-omni',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'video': {
+                'type': 'per_second',
+                'price': 0.6,
+                'tiers': [
+                    # ── No audio, No reference video ──
+                    {'resolution': '720p',  'audio': False, 'reference_video': False, 'price': 0.6},
+                    {'resolution': '1080p', 'audio': False, 'reference_video': False, 'price': 0.8},
+                    {'resolution': '2K',    'audio': False, 'reference_video': False, 'price': 1.0},
+                    {'resolution': '4K',    'audio': False, 'reference_video': False, 'price': 1.2},
+                    # ── Audio, No reference video ──
+                    {'resolution': '720p',  'audio': True,  'reference_video': False, 'price': 0.8},
+                    {'resolution': '1080p', 'audio': True,  'reference_video': False, 'price': 1.0},
+                    {'resolution': '2K',    'audio': True,  'reference_video': False, 'price': 1.2},
+                    {'resolution': '4K',    'audio': True,  'reference_video': False, 'price': 1.5},
+                    # ── No audio, Reference video ──
+                    {'resolution': '720p',  'audio': False, 'reference_video': True,  'price': 0.9},
+                    {'resolution': '1080p', 'audio': False, 'reference_video': True,  'price': 1.2},
+                    {'resolution': '2K',    'audio': False, 'reference_video': True,  'price': 1.5},
+                    {'resolution': '4K',    'audio': False, 'reference_video': True,  'price': 2.0},
+                    # ── Audio + Reference video ──
+                    {'resolution': '720p',  'audio': True,  'reference_video': True,  'price': 1.1},
+                    {'resolution': '1080p', 'audio': True,  'reference_video': True,  'price': 1.4},
+                    {'resolution': '2K',    'audio': True,  'reference_video': True,  'price': 1.8},
+                    {'resolution': '4K',    'audio': True,  'reference_video': True,  'price': 2.4},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    # ── Volcengine Seedream Image Models ──────────────────────────────────────
+    # Seedream models support resolution tiers: 1K / 2K / 3K / 4K
+    dict(
+        label='Seedream 4.0 (Volcengine)',
+        provider='Volcengine',
+        name='seedream-4.0',
+        alias='seedream-4.0',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '1024x1024,864x1152,1152x864,1312x736,736x1312,832x1248,1248x832,1568x672,'
+            '2048x2048,1728x2304,2304x1728,2848x1600,1600x2848,2496x1664,1664x2496,3136x1344,'
+            '4096x4096,3520x4704,4704x3520,5504x3040,3040x5504,3328x4992,4992x3328,6240x2656'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0},
+                    {'resolution': '2K', 'price': 0},
+                    {'resolution': '4K', 'price': 0},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Seedream 4.5 (Volcengine)',
+        provider='Volcengine',
+        name='seedream-4.5',
+        alias='seedream-4.5',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '2048x2048,1728x2304,2304x1728,2848x1600,1600x2848,2496x1664,1664x2496,3136x1344,'
+            '4096x4096,3520x4704,4704x3520,5504x3040,3040x5504,3328x4992,4992x3328,6240x2656'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0,
+                'tiers': [
+                    {'resolution': '2K', 'price': 0},
+                    {'resolution': '4K', 'price': 0},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Seedream 5.0 Lite (Volcengine)',
+        provider='Volcengine',
+        name='seedream-5.0-lite',
+        alias='seedream-5.0-lite',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '2048x2048,1728x2304,2304x1728,2848x1600,1600x2848,2496x1664,1664x2496,3136x1344,'
+            '3072x3072,2592x3456,3456x2592,4096x2304,2304x4096,2496x3744,3744x2496,4704x2016'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0,
+                'tiers': [
+                    {'resolution': '2K', 'price': 0},
+                    {'resolution': '3K', 'price': 0},
+                ],
+            },
+        },
         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
         currency='CNY',
         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
@@ -911,22 +1234,27 @@ BUILTIN_TEMPLATES = [
 
 def seed_builtin_templates():
     """
-    Insert built-in templates that are not yet in the database.
+    Insert or update built-in templates in the database.
 
-    This function is idempotent: each template is inserted only if the
-    (provider, label) pair does not already exist.  The same model name
-    may appear multiple times across different providers or with different
-    labels, so name alone is not a reliable uniqueness key.
+    This function is idempotent: each template is inserted if the
+    (provider, label) pair does not already exist, or updated if it does.
+    The same model name may appear multiple times across different providers
+    or with different labels, so name alone is not a reliable uniqueness key.
     """
     existing = {
-        (row.provider, row.label)
-        for row in db.session.query(ModelTemplate.provider, ModelTemplate.label).all()
+        (row.provider, row.label): row
+        for row in db.session.query(ModelTemplate).all()
     }
     for tpl in BUILTIN_TEMPLATES:
         key = (tpl['provider'], tpl['label'])
         if key not in existing:
             db.session.add(ModelTemplate(**tpl))
-            existing.add(key)
+        else:
+            # Update existing template with latest built-in data
+            db_tpl = existing[key]
+            for field, value in tpl.items():
+                if field not in ('provider', 'label'):
+                    setattr(db_tpl, field, value)
     db.session.commit()
 
 
@@ -1061,18 +1389,24 @@ def delete_model_template(current_user, template_id):
 def reseed_model_templates(current_user):
     """
     Re-seed built-in templates.
-    Existing records are left intact; missing built-ins are added.
+    Inserts missing built-ins and updates existing ones with latest data.
     """
     existing = {
-        (row.provider, row.label)
-        for row in db.session.query(ModelTemplate.provider, ModelTemplate.label).all()
+        (row.provider, row.label): row
+        for row in db.session.query(ModelTemplate).all()
     }
     added = 0
+    updated = 0
     for tpl in BUILTIN_TEMPLATES:
         key = (tpl['provider'], tpl['label'])
         if key not in existing:
             db.session.add(ModelTemplate(**tpl))
-            existing.add(key)
             added += 1
+        else:
+            db_tpl = existing[key]
+            for field, value in tpl.items():
+                if field not in ('provider', 'label'):
+                    setattr(db_tpl, field, value)
+            updated += 1
     db.session.commit()
-    return jsonify({'added': added})
+    return jsonify({'added': added, 'updated': updated})

@@ -85,6 +85,11 @@ QWEN_IMAGE_MODELS: List[QwenImageConfig] = [
         display_name="Qwen Image 2.0 Pro",
         description="通义千问图像生成与编辑模型，支持文生图和图生图编辑",
     ),
+    QwenImageConfig(
+        model_name="qwen-image-2.0",
+        display_name="Qwen Image 2.0",
+        description="通义千问图像生成模型，支持文生图和图生图编辑",
+    ),
 ]
 
 # Dashscope 多模态生成 API 端点
@@ -305,6 +310,36 @@ def execute_qwen_image_generation(
         raise RuntimeError(f"Qwen Image API error: {str(e)}")
 
 
+def _resolution_tier(width: int, height: int) -> str:
+    """
+    Derive a resolution tier label from pixel dimensions.
+
+    Tier labels follow the convention used across image generation providers
+    (TencentVOD, Gemini, etc.):
+
+        max dimension ≤  640  →  "512"
+        max dimension ≤ 1536  →  "1K"
+        max dimension ≤ 3072  →  "2K"
+        otherwise             →  "4K"
+
+    Args:
+        width:  Image width in pixels
+        height: Image height in pixels
+
+    Returns:
+        Resolution tier label, e.g. "1K", "2K", "4K"
+    """
+    max_dim = max(width, height)
+    if max_dim <= 640:
+        return "512"
+    elif max_dim <= 1536:
+        return "1K"
+    elif max_dim <= 3072:
+        return "2K"
+    else:
+        return "4K"
+
+
 def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse:
     """
     Parse Dashscope multimodal generation response into ChatResponse.
@@ -336,10 +371,17 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse
 
     usage_data = data.get("usage", {})
     image_count = usage_data.get("image_count", max(len(image_call_items), 1))
-    # Extract resolution from usage data if available
+    # Extract resolution tier from usage data (e.g. "1K", "2K", "4K")
     img_width = usage_data.get("width", 0)
     img_height = usage_data.get("height", 0)
-    img_resolution = f"{img_width}x{img_height}" if img_width and img_height else None
+    img_resolution = _resolution_tier(img_width, img_height) if img_width and img_height else None
+
+    # Derive aspect ratio from width/height (e.g. "1:1", "16:9")
+    img_aspect = None
+    if img_width and img_height:
+        from math import gcd
+        g = gcd(img_width, img_height)
+        img_aspect = f"{img_width // g}:{img_height // g}"
 
     message = Message(
         role=MessageRole.ASSISTANT,
@@ -361,6 +403,7 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse
             extra={
                 'output_image_number': image_count,
                 'output_image_resolution': img_resolution,
+                'output_image_aspect': img_aspect,
             },
         ),
         created=int(time.time()),
