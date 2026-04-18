@@ -462,10 +462,15 @@ class OpenAIProvider(BaseProvider):
             choices.append(choice)
         
         usage_data = response_data.get("usage", {})
+        # Extract nested token details (OpenAI / Azure format)
+        prompt_details = usage_data.get("prompt_tokens_details") or {}
+        completion_details = usage_data.get("completion_tokens_details") or {}
         usage = UsageInfo(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
             completion_tokens=usage_data.get("completion_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0)
+            total_tokens=usage_data.get("total_tokens", 0),
+            cached_tokens=prompt_details.get("cached_tokens", 0) or 0,
+            reasoning_tokens=completion_details.get("reasoning_tokens", 0) or 0,
         )
         
         return ChatResponse(

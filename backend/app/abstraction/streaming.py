@@ -37,6 +37,10 @@ def _dict_to_usage_info(d: Dict[str, Any]) -> UsageInfo:
     Known fields are mapped to UsageInfo attributes; unknown / provider-specific
     keys (e.g. "_azure_completed_response", "cache_creation") are stored in
     UsageInfo.extra so they can be retrieved via usage.get() or usage["key"].
+
+    Nested ``prompt_tokens_details`` and ``completion_tokens_details`` dicts
+    (OpenAI / Azure format) are inspected to extract ``cached_tokens`` and
+    ``reasoning_tokens`` when the top-level dict does not already contain them.
     """
     if not d:
         return UsageInfo()
@@ -47,6 +51,23 @@ def _dict_to_usage_info(d: Dict[str, Any]) -> UsageInfo:
             kwargs[key] = value
         else:
             extra[key] = value
+
+    # Extract cached_tokens from prompt_tokens_details if not already set
+    prompt_details = d.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        if "cached_tokens" not in kwargs or not kwargs["cached_tokens"]:
+            cached = prompt_details.get("cached_tokens", 0)
+            if cached:
+                kwargs["cached_tokens"] = cached
+
+    # Extract reasoning_tokens from completion_tokens_details if not already set
+    completion_details = d.get("completion_tokens_details")
+    if isinstance(completion_details, dict):
+        if "reasoning_tokens" not in kwargs or not kwargs["reasoning_tokens"]:
+            reasoning = completion_details.get("reasoning_tokens", 0)
+            if reasoning:
+                kwargs["reasoning_tokens"] = reasoning
+
     if extra:
         kwargs["extra"] = extra
     return UsageInfo(**kwargs)
@@ -146,6 +167,7 @@ class StreamChunk:
 
         Internal keys prefixed with '_' (e.g. _azure_completed_response) are excluded
         as they are only meaningful to adapter-internal logic.
+
         """
         formatted: Dict[str, Any] = {
             "prompt_tokens": usage.prompt_tokens,

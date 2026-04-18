@@ -489,11 +489,17 @@ def _build_record(
         api_key_preview = UsageRecord._mask_key(api_key_raw)
 
     # ── Token counts from UsageInfo ─────────────────────────────────────────
-    input_tokens: int = usage.prompt_tokens or 0
+    raw_prompt_tokens: int = usage.prompt_tokens or 0
     output_tokens: int = usage.completion_tokens or 0
     cache_creation_tokens: int = usage.cache_write_tokens or 0
     cache_tokens: int = usage.cache_read_tokens or usage.cached_tokens or 0
     reasoning_tokens: int = usage.reasoning_tokens or 0
+
+    # Many providers (Bailian, OpenAI, etc.) return prompt_tokens that INCLUDES
+    # cached tokens.  For accurate billing, subtract cache_tokens so that
+    # input_tokens represents only the non-cached tokens (billed at input price).
+    # Cached tokens are already billed separately at cache_token_price_unit.
+    input_tokens: int = max(raw_prompt_tokens - cache_tokens, 0)
 
     # ── Tier-aware pricing ─────────────────────────────────────────────────
     # Select the appropriate price tier based on actual input_tokens.

@@ -299,6 +299,21 @@ class BailianProvider(OpenAIProvider):
         if "cache_write_tokens" in usage_data:
             response.usage.cache_write_tokens = usage_data["cache_write_tokens"]
 
+        # Extract cached_tokens from prompt_tokens_details (OpenAI-compatible format)
+        # Some models (e.g. GLM) return cached tokens here instead of cache_read_tokens
+        prompt_details = usage_data.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached = prompt_details.get("cached_tokens", 0) or 0
+            if cached and not response.usage.cached_tokens and not response.usage.cache_read_tokens:
+                response.usage.cached_tokens = cached
+
+        # Extract reasoning_tokens from completion_tokens_details
+        completion_details = usage_data.get("completion_tokens_details")
+        if isinstance(completion_details, dict):
+            reasoning = completion_details.get("reasoning_tokens", 0) or 0
+            if reasoning and not response.usage.reasoning_tokens:
+                response.usage.reasoning_tokens = reasoning
+
         return response
 
     # ==================== 流式接口 ====================

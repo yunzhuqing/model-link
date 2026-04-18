@@ -10,6 +10,10 @@ from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.providers.openai_provider import parse_openai_request
 
+# Re-use the same formatting helper that builds the nested OpenAI usage structure
+# (prompt_tokens_details / completion_tokens_details) for streaming chunks.
+_format_openai_usage = StreamChunk._format_openai_usage
+
 
 class OpenAIChatAdapter(BaseAdapter):
     """
@@ -103,11 +107,7 @@ class OpenAIChatAdapter(BaseAdapter):
             'created': response.created,
             'model': response.model,
             'choices': choices,
-            'usage': {
-                'prompt_tokens': response.usage.prompt_tokens,
-                'completion_tokens': response.usage.completion_tokens,
-                'total_tokens': response.usage.total_tokens
-            }
+            'usage': _format_openai_usage(response.usage),
         }
 
     def format_stream_chunk(self, chunk: StreamChunk) -> str:
