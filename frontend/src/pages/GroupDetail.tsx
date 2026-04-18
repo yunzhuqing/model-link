@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail, BarChart3, Cpu, Check, X
+  Users, UserPlus, Mail, BarChart3, Cpu
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';

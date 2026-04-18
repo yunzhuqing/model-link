@@ -7,7 +7,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
-import { BarChart3, TrendingUp, DollarSign, Cpu, Key } from 'lucide-react';
+import { BarChart3, TrendingUp, DollarSign, Cpu } from 'lucide-react';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 

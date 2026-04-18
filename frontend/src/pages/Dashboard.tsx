@@ -4,20 +4,8 @@ import client from '../api/client';
 import {
   Key, Cpu, TrendingUp, Zap, Copy, Check, DollarSign,
   Users, ChevronRight, PieChart,
-  ChevronDown,
 } from 'lucide-react';
 import { useState, useMemo } from 'react';
-import { useAuth } from '../contexts/AuthContext';
-
-/* ── Helpers: decode JWT ─────────────────────────────────────────────── */
-
-function getUsernameFromToken(token: string | null): string | null {
-  if (!token) return null;
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return payload.sub || null;
-  } catch { return null; }
-}
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -131,10 +119,7 @@ const DonutChart = ({ slices, size = 140, strokeWidth = 24, centerValue, centerL
 
 const Dashboard = () => {
   const navigate = useNavigate();
-  const { token } = useAuth();
-  const username = useMemo(() => getUsernameFromToken(token), [token]);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
   // ── Data queries ──────────────────────────────────────────────────────────
   const { data: groups, isLoading: groupsLoading } = useQuery<GroupItem[]>({
@@ -188,13 +173,6 @@ const Dashboard = () => {
     } catch { /* */ }
   };
 
-  const toggleModel = (name: string) => {
-    setExpandedModels(prev => {
-      const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
-      return next;
-    });
-  };
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0);
