@@ -69,13 +69,6 @@ interface TimeSeries {
   output_tokens: number;
 }
 
-interface SummaryData {
-  totals: Totals;
-  by_model: ByModel[];
-  by_group: ByGroup[];
-  by_api_key: ByApiKey[];
-  time_series: TimeSeries[];
-}
 
 interface UsageRecord {
   id: number;
@@ -96,6 +89,10 @@ interface UsageRecord {
   output_audio_seconds: number;
   web_search_requests: number;
   duration_ms: number | null;
+  payable_amount: number;
+  discount: number;
+  actual_amount: number;
+  currency?: string;
   created_at: string;
 }
 
@@ -125,6 +122,15 @@ function fmtNum(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
   return String(n);
+}
+
+function fmtAmount(amount: number | null | undefined, currency?: string): string {
+  if (amount == null || amount === 0) return '—';
+  const sym = (currency || 'USD').toUpperCase() === 'CNY' ? '¥' : '$';
+  if (amount < 0.0001) return `${sym}${amount.toExponential(2)}`;
+  if (amount < 0.01) return `${sym}${amount.toFixed(6)}`;
+  if (amount < 1) return `${sym}${amount.toFixed(4)}`;
+  return `${sym}${amount.toFixed(4)}`;
 }
 
 function fmtDate(iso: string): string {
@@ -384,14 +390,6 @@ const UsagePage = () => {
   const [page, setPage] = useState(1);
 
   // ── Build query params ────────────────────────────────────────────────────
-  const summaryParams = new URLSearchParams({
-    start: start ? new Date(start).toISOString() : '',
-    end: end ? new Date(end).toISOString() : '',
-    granularity,
-    ...(groupId ? { group_id: groupId } : {}),
-    ...(modelName ? { model_name: modelName } : {}),
-  });
-
   const recordsParams = new URLSearchParams({
     start: start ? new Date(start).toISOString() : '',
     end: end ? new Date(end).toISOString() : '',
@@ -401,14 +399,54 @@ const UsagePage = () => {
     ...(modelName ? { model_name: modelName } : {}),
   });
 
-  // ── Queries ───────────────────────────────────────────────────────────────
-  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary } = useQuery<SummaryData>({
-    queryKey: ['usage-summary', summaryParams.toString()],
-    queryFn: async () => {
-      const res = await client.get(`/api/usage/summary?${summaryParams}`);
-      return res.data;
-    },
-    enabled: activeTab === 'summary' && !rangeError,
+  // ── Build filter params (shared by all summary sub-queries) ─────────────
+  const filterParams = new URLSearchParams({
+    start: start ? new Date(start).toISOString() : '',
+    end: end ? new Date(end).toISOString() : '',
+    ...(groupId ? { group_id: groupId } : {}),
+    ...(modelName ? { model_name: modelName } : {}),
+  });
+  const filterKey = filterParams.toString();
+
+  const timeSeriesParams = new URLSearchParams({
+    start: start ? new Date(start).toISOString() : '',
+    end: end ? new Date(end).toISOString() : '',
+    granularity,
+    ...(groupId ? { group_id: groupId } : {}),
+    ...(modelName ? { model_name: modelName } : {}),
+  });
+
+  // ── Queries (split into 5 parallel requests for summary) ────────────────
+  const isSummary = activeTab === 'summary' && !rangeError;
+
+  const { data: totals, isLoading: totalsLoading, refetch: refetchTotals } = useQuery<Totals>({
+    queryKey: ['usage-totals', filterKey],
+    queryFn: async () => { const res = await client.get(`/api/usage/summary/totals?${filterParams}`); return res.data; },
+    enabled: isSummary,
+  });
+
+  const { data: byModel, isLoading: byModelLoading, refetch: refetchByModel } = useQuery<ByModel[]>({
+    queryKey: ['usage-by-model', filterKey],
+    queryFn: async () => { const res = await client.get(`/api/usage/summary/by_model?${filterParams}`); return res.data; },
+    enabled: isSummary,
+  });
+
+  const { data: byGroup, isLoading: byGroupLoading, refetch: refetchByGroup } = useQuery<ByGroup[]>({
+    queryKey: ['usage-by-group', filterKey],
+    queryFn: async () => { const res = await client.get(`/api/usage/summary/by_group?${filterParams}`); return res.data; },
+    enabled: isSummary,
+  });
+
+  const { data: byApiKey, isLoading: byApiKeyLoading, refetch: refetchByApiKey } = useQuery<ByApiKey[]>({
+    queryKey: ['usage-by-api-key', filterKey],
+    queryFn: async () => { const res = await client.get(`/api/usage/summary/by_api_key?${filterParams}`); return res.data; },
+    enabled: isSummary,
+  });
+
+  const { data: timeSeries, isLoading: timeSeriesLoading, refetch: refetchTimeSeries } = useQuery<TimeSeries[]>({
+    queryKey: ['usage-time-series', timeSeriesParams.toString()],
+    queryFn: async () => { const res = await client.get(`/api/usage/summary/time_series?${timeSeriesParams}`); return res.data; },
+    enabled: isSummary,
   });
 
   const { data: records, isLoading: recordsLoading, refetch: refetchRecords } = useQuery<RecordsData>({
@@ -420,12 +458,15 @@ const UsagePage = () => {
     enabled: activeTab === 'records' && !rangeError,
   });
 
-  const refetch = useCallback(() => {
-    if (activeTab === 'summary') refetchSummary();
-    else refetchRecords();
-  }, [activeTab, refetchSummary, refetchRecords]);
+  const summaryLoading = totalsLoading || byModelLoading || byGroupLoading || byApiKeyLoading || timeSeriesLoading;
 
-  const totals = summary?.totals;
+  const refetch = useCallback(() => {
+    if (activeTab === 'summary') {
+      refetchTotals(); refetchByModel(); refetchByGroup(); refetchByApiKey(); refetchTimeSeries();
+    } else {
+      refetchRecords();
+    }
+  }, [activeTab, refetchTotals, refetchByModel, refetchByGroup, refetchByApiKey, refetchTimeSeries, refetchRecords]);
 
   return (
     <div className="space-y-6">
@@ -551,7 +592,7 @@ const UsagePage = () => {
                   <TrendingUp className="w-5 h-5 text-indigo-500" />
                   Token 消耗趋势
                 </h2>
-                <SimpleBarChart data={summary?.time_series ?? []} granularity={granularity} />
+                <SimpleBarChart data={timeSeries ?? []} granularity={granularity} />
               </div>
 
               {/* By Model / By Group / By API Key */}
@@ -563,7 +604,7 @@ const UsagePage = () => {
                     按模型统计
                   </h2>
                   <div className="space-y-3">
-                    {(summary?.by_model ?? []).slice(0, 8).map((m, i) => (
+                    {(byModel ?? []).slice(0, 8).map((m, i) => (
                       <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-medium text-slate-800 truncate">{m.model_name || '—'}</p>
@@ -576,7 +617,7 @@ const UsagePage = () => {
                         </span>
                       </div>
                     ))}
-                    {(summary?.by_model ?? []).length === 0 && (
+                    {(byModel ?? []).length === 0 && (
                       <p className="text-center text-slate-400 text-sm py-6">暂无数据</p>
                     )}
                   </div>
@@ -589,7 +630,7 @@ const UsagePage = () => {
                     按分组统计
                   </h2>
                   <div className="space-y-3">
-                    {(summary?.by_group ?? []).slice(0, 8).map((g, i) => (
+                    {(byGroup ?? []).slice(0, 8).map((g, i) => (
                       <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-medium text-slate-800 truncate">{g.group_name || `Group #${g.group_id}`}</p>
@@ -602,7 +643,7 @@ const UsagePage = () => {
                         </span>
                       </div>
                     ))}
-                    {(summary?.by_group ?? []).length === 0 && (
+                    {(byGroup ?? []).length === 0 && (
                       <p className="text-center text-slate-400 text-sm py-6">暂无数据</p>
                     )}
                   </div>
@@ -615,7 +656,7 @@ const UsagePage = () => {
                     按 API Key 统计
                   </h2>
                   <div className="space-y-3">
-                    {(summary?.by_api_key ?? []).slice(0, 8).map((k, i) => (
+                    {(byApiKey ?? []).slice(0, 8).map((k, i) => (
                       <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-medium text-slate-800 truncate">{k.api_key_name || '—'}</p>
@@ -626,7 +667,7 @@ const UsagePage = () => {
                         </span>
                       </div>
                     ))}
-                    {(summary?.by_api_key ?? []).length === 0 && (
+                    {(byApiKey ?? []).length === 0 && (
                       <p className="text-center text-slate-400 text-sm py-6">暂无数据</p>
                     )}
                   </div>
@@ -662,6 +703,7 @@ const UsagePage = () => {
                         { label: '图片', align: 'text-center' },
                         { label: '视频', align: 'text-center' },
                         { label: '搜索', align: 'text-center' },
+                        { label: '消耗金额', align: 'text-right' },
                         { label: '耗时', align: 'text-center' },
                       ].map((h) => (
                         <th key={h.label} className={`px-4 py-3 ${h.align} text-xs font-semibold text-slate-500 whitespace-nowrap`}>
@@ -704,6 +746,16 @@ const UsagePage = () => {
                         <td className="px-4 py-3 text-blue-700 text-center whitespace-nowrap">
                           {r.web_search_requests > 0 ? r.web_search_requests : '—'}
                         </td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <span className="text-orange-700 font-mono text-xs font-medium">
+                            {fmtAmount(r.actual_amount, r.currency)}
+                          </span>
+                          {r.discount != null && r.discount < 1 && (
+                            <span className="ml-1 text-xs text-green-600 bg-green-50 px-1 py-0.5 rounded">
+                              {Math.round((1 - r.discount) * 100)}%off
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-slate-600 font-mono text-center whitespace-nowrap text-xs">
                           {fmtDuration(r.duration_ms)}
                         </td>
@@ -711,7 +763,7 @@ const UsagePage = () => {
                     ))}
                     {(records?.records ?? []).length === 0 && (
                       <tr>
-                        <td colSpan={13} className="text-center py-16 text-slate-400">
+                        <td colSpan={14} className="text-center py-16 text-slate-400">
                           <Search className="w-10 h-10 mx-auto mb-2 text-slate-200" />
                           暂无消耗记录
                         </td>

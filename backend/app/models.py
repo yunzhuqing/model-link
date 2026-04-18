@@ -497,6 +497,8 @@ class UsageRecord(db.Model):
     # ── Identity ────────────────────────────────────────────────────────────
     # Human-readable user name (from JWT); null for API-key-only requests
     user_name = db.Column(db.String(100), nullable=True, index=True)
+    # User ID (from API key's user_id); null for JWT-only or unassigned keys
+    user_id = db.Column(db.Integer, nullable=True, index=True)
 
     # Group info (from API key's group)
     group_id = db.Column(db.Integer, nullable=True, index=True)

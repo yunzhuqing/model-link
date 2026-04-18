@@ -83,11 +83,13 @@ def record_usage(
     api_key_name: Optional[str] = None
     api_key_group_id: Optional[int] = None
     api_key_group_name: Optional[str] = None
+    api_key_user_id: Optional[int] = None
 
     if api_key:
         api_key_raw = api_key.key
         api_key_name = api_key.name
         api_key_group_id = api_key.group_id
+        api_key_user_id = api_key.user_id
         try:
             if api_key.group:
                 api_key_group_name = api_key.group.name
@@ -141,6 +143,7 @@ def record_usage(
             duration_ms=duration_ms,
             exchange_rate_to_cny=exchange_rate_to_cny,
             discount=discount,
+            user_id=api_key_user_id,
         ),
         daemon=True,
     )
@@ -412,6 +415,7 @@ def _persist_usage(
     duration_ms=None,
     exchange_rate_to_cny=None,
     discount=1.0,
+    user_id=None,
 ) -> None:
     """Worker that actually writes the UsageRecord to the database."""
     try:
@@ -439,6 +443,7 @@ def _persist_usage(
                 duration_ms=duration_ms,
                 exchange_rate_to_cny=exchange_rate_to_cny,
                 discount=discount,
+                user_id=user_id,
             )
             db.session.add(record)
             db.session.commit()
@@ -467,6 +472,7 @@ def _build_record(
     duration_ms=None,
     exchange_rate_to_cny=None,
     discount=1.0,
+    user_id=None,
 ):
     """Build a UsageRecord ORM object from the pre-extracted primitive values."""
     from app.models import UsageRecord
@@ -562,6 +568,7 @@ def _build_record(
 
     return UsageRecord(
         user_name=user_name,
+        user_id=user_id,
         group_id=api_key_group_id,
         group_name=api_key_group_name,
         api_key_hash=api_key_hash,

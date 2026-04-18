@@ -4,10 +4,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail
+  Users, UserPlus, Mail, BarChart3, Cpu, Check, X
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';
+import GroupStatistics from './GroupStatistics';
+import GroupModels from './GroupModels';
 
 interface Group {
   id: number;
@@ -29,7 +31,7 @@ export default function GroupDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<'members' | 'apikeys' | 'providers'>('members');
+  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers'>('statistics');
   const [showInviteMember, setShowInviteMember] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
@@ -140,8 +142,10 @@ export default function GroupDetail() {
       <div className="border-b border-slate-200">
         <nav className="flex space-x-8">
           {[
-            { key: 'members', label: 'Members', icon: Users, color: 'violet', count: group?.users?.length || 0 },
+            { key: 'statistics', label: '消耗统计', icon: BarChart3, color: 'amber' },
+            { key: 'models', label: '可用模型', icon: Cpu, color: 'indigo' },
             { key: 'apikeys', label: 'API Keys', icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
+            { key: 'members', label: 'Members', icon: Users, color: 'violet', count: group?.users?.length || 0 },
             { key: 'providers', label: 'Providers', icon: Database, color: 'blue', count: providers?.length || 0 },
           ].map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
@@ -157,9 +161,11 @@ export default function GroupDetail() {
               >
                 <Icon className="w-4 h-4" />
                 <span>{label}</span>
-                <span className={`px-2 py-0.5 rounded-full text-xs ${active ? `bg-${color}-100 text-${color}-700` : 'bg-slate-100 text-slate-600'}`}>
-                  {count}
-                </span>
+                {count != null && (
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${active ? `bg-${color}-100 text-${color}-700` : 'bg-slate-100 text-slate-600'}`}>
+                    {count}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -320,6 +326,16 @@ export default function GroupDetail() {
           {/* ProviderList handles all provider + model CRUD internally */}
           <ProviderList groupId={parseInt(id!)} />
         </div>
+      )}
+
+      {/* ── Statistics Tab ───────────────────────────────────────────────────── */}
+      {activeTab === 'statistics' && (
+        <GroupStatistics groupId={parseInt(id!)} />
+      )}
+
+      {/* ── Models Tab ───────────────────────────────────────────────────────── */}
+      {activeTab === 'models' && (
+        <GroupModels groupId={parseInt(id!)} />
       )}
     </div>
   );

@@ -159,43 +159,54 @@ def list_records():
     })
 
 
-# ── Summary endpoint ─────────────────────────────────────────────────────────
+# ── Summary helpers ──────────────────────────────────────────────────────────
 
-@usage_bp.route('/api/usage/summary', methods=['GET'])
-def get_summary():
+def _get_summary_filters():
+    """Parse common filter parameters from request args."""
+    return {
+        'start': _parse_datetime(request.args.get("start")),
+        'end': _parse_datetime(request.args.get("end")),
+        'group_id': request.args.get("group_id"),
+        'api_key_hash': request.args.get("api_key_hash"),
+        'model_name': request.args.get("model_name"),
+        'provider_id': request.args.get("provider_id"),
+        'user_name': request.args.get("user_name"),
+        'user_id': request.args.get("user_id"),
+    }
+
+
+def _apply_filters(q, filters: dict):
+    """Apply common filters to a query."""
+    if filters['start']:
+        q = q.filter(UsageRecord.created_at >= filters['start'])
+    if filters['end']:
+        q = q.filter(UsageRecord.created_at <= filters['end'])
+    if filters['group_id']:
+        q = q.filter(UsageRecord.group_id == int(filters['group_id']))
+    if filters['api_key_hash']:
+        q = q.filter(UsageRecord.api_key_hash == filters['api_key_hash'])
+    if filters['model_name']:
+        q = q.filter(UsageRecord.model_name.ilike(f"%{filters['model_name']}%"))
+    if filters['provider_id']:
+        q = q.filter(UsageRecord.provider_id == int(filters['provider_id']))
+    if filters.get('user_name'):
+        q = q.filter(UsageRecord.user_name == filters['user_name'])
+    if filters.get('user_id'):
+        q = q.filter(UsageRecord.user_id == int(filters['user_id']))
+    if filters.get('api_key_hashes'):
+        q = q.filter(UsageRecord.api_key_hash.in_(filters['api_key_hashes']))
+    return q
+
+
+# ── Summary endpoints (split for parallel frontend fetching) ─────────────────
+
+@usage_bp.route('/api/usage/summary/totals', methods=['GET'])
+def get_summary_totals():
     """
-    Return aggregated usage statistics.
+    Return aggregated totals for the filtered usage records.
 
     Query parameters (all optional):
-        start         ISO datetime
-        end           ISO datetime
-        group_id      int
-        api_key_hash  str
-        model_name    str (partial)
-        provider_id   int
-        granularity   hour | day | month  (default: day)
-                      When set, also returns time-series data in 'time_series'.
-
-    Response structure:
-    {
-        "totals": {
-            "requests": N,
-            "input_tokens": N,
-            "output_tokens": N,
-            "cache_creation_tokens": N,
-            "cache_tokens": N,
-            "reasoning_tokens": N,
-            "output_image_number": N,
-            "output_video_number": N,
-            "output_audio_seconds": N,
-            "web_search_requests": N,
-            "estimated_cost": N   // rough estimate based on price units
-        },
-        "by_model": [{"model_name": ..., "requests": ..., "input_tokens": ..., ...}],
-        "by_group": [{"group_name": ..., ...}],
-        "by_api_key": [{"api_key_name": ..., "api_key_preview": ..., ...}],
-        "time_series": [{"period": "2024-01-01T00:00:00", "requests": ..., ...}]
-    }
+        start, end, group_id, api_key_hash, model_name, provider_id
     """
     try:
         _require_jwt()
@@ -204,44 +215,9 @@ def get_summary():
 
     from sqlalchemy import func
 
-    start = _parse_datetime(request.args.get("start"))
-    end = _parse_datetime(request.args.get("end"))
-    group_id = request.args.get("group_id")
-    api_key_hash = request.args.get("api_key_hash")
-    model_name_filter = request.args.get("model_name")
-    provider_id = request.args.get("provider_id")
-    granularity = request.args.get("granularity", "day")
+    filters = _get_summary_filters()
 
-    def _apply_filters(q):
-        if start:
-            q = q.filter(UsageRecord.created_at >= start)
-        if end:
-            q = q.filter(UsageRecord.created_at <= end)
-        if group_id:
-            q = q.filter(UsageRecord.group_id == int(group_id))
-        if api_key_hash:
-            q = q.filter(UsageRecord.api_key_hash == api_key_hash)
-        if model_name_filter:
-            q = q.filter(UsageRecord.model_name.ilike(f"%{model_name_filter}%"))
-        if provider_id:
-            q = q.filter(UsageRecord.provider_id == int(provider_id))
-        return q
-
-    # ── Cost expression (reusable across queries) ─────────────────────────
-    # Estimated cost per record in native currency ($ per 1M tokens for text)
-    _cost_expr = (
-        UsageRecord.input_tokens * UsageRecord.input_price_unit / 1000000.0
-        + UsageRecord.output_tokens * UsageRecord.output_price_unit / 1000000.0
-        + UsageRecord.cache_creation_tokens * UsageRecord.cache_creation_price_unit / 1000000.0
-        + UsageRecord.cache_tokens * UsageRecord.cache_token_price_unit / 1000000.0
-        + UsageRecord.output_image_number * UsageRecord.output_image_price_unit
-        + UsageRecord.output_video_number * UsageRecord.output_video_price_unit
-        + UsageRecord.output_audio_seconds * UsageRecord.output_audio_price_unit
-        + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
-    )
-
-    # ── Totals ────────────────────────────────────────────────────────────
-    totals_q = _apply_filters(
+    row = _apply_filters(
         db.session.query(
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
@@ -253,10 +229,225 @@ def get_summary():
             func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
             func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
             func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
-            func.coalesce(func.sum(_cost_expr), 0).label("estimated_cost"),
-        )
-    )
-    row = totals_q.one()
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
+    ).one()
+
+    return jsonify({
+        "requests": row.requests or 0,
+        "input_tokens": int(row.input_tokens or 0),
+        "output_tokens": int(row.output_tokens or 0),
+        "cache_creation_tokens": int(row.cache_creation_tokens or 0),
+        "cache_tokens": int(row.cache_tokens or 0),
+        "reasoning_tokens": int(row.reasoning_tokens or 0),
+        "output_image_number": int(row.output_image_number or 0),
+        "output_video_number": int(row.output_video_number or 0),
+        "output_audio_seconds": float(row.output_audio_seconds or 0),
+        "web_search_requests": int(row.web_search_requests or 0),
+        "total_cost": round(float(row.total_cost or 0), 6),
+    })
+
+
+@usage_bp.route('/api/usage/summary/by_model', methods=['GET'])
+def get_summary_by_model():
+    """Return usage aggregated by model name (top 20)."""
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+
+    filters = _get_summary_filters()
+
+    rows = _apply_filters(
+        db.session.query(
+            UsageRecord.model_name,
+            func.count(UsageRecord.id).label("requests"),
+            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
+    ).group_by(UsageRecord.model_name).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
+
+    return jsonify([
+        {
+            "model_name": r.model_name,
+            "requests": r.requests,
+            "input_tokens": int(r.input_tokens),
+            "output_tokens": int(r.output_tokens),
+            "reasoning_tokens": int(r.reasoning_tokens),
+            "total_cost": round(float(r.total_cost or 0), 6),
+        }
+        for r in rows
+    ])
+
+
+@usage_bp.route('/api/usage/summary/by_group', methods=['GET'])
+def get_summary_by_group():
+    """Return usage aggregated by group (top 20)."""
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+
+    filters = _get_summary_filters()
+
+    rows = _apply_filters(
+        db.session.query(
+            UsageRecord.group_id,
+            UsageRecord.group_name,
+            func.count(UsageRecord.id).label("requests"),
+            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+        ),
+        filters,
+    ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
+        func.count(UsageRecord.id).desc()
+    ).limit(20).all()
+
+    return jsonify([
+        {
+            "group_id": r.group_id,
+            "group_name": r.group_name,
+            "requests": r.requests,
+            "input_tokens": int(r.input_tokens),
+            "output_tokens": int(r.output_tokens),
+        }
+        for r in rows
+    ])
+
+
+@usage_bp.route('/api/usage/summary/by_api_key', methods=['GET'])
+def get_summary_by_api_key():
+    """Return usage aggregated by API key (top 20)."""
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+
+    filters = _get_summary_filters()
+
+    rows = _apply_filters(
+        db.session.query(
+            UsageRecord.api_key_hash,
+            UsageRecord.api_key_preview,
+            UsageRecord.api_key_name,
+            func.count(UsageRecord.id).label("requests"),
+            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
+    ).group_by(
+        UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
+    ).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
+
+    return jsonify([
+        {
+            "api_key_hash": r.api_key_hash,
+            "api_key_preview": r.api_key_preview,
+            "api_key_name": r.api_key_name,
+            "requests": r.requests,
+            "input_tokens": int(r.input_tokens),
+            "output_tokens": int(r.output_tokens),
+            "total_cost": round(float(r.total_cost or 0), 6),
+        }
+        for r in rows
+    ])
+
+
+@usage_bp.route('/api/usage/summary/time_series', methods=['GET'])
+def get_summary_time_series():
+    """
+    Return time-series usage data.
+
+    Additional query parameter:
+        granularity   hour | day | month  (default: day)
+    """
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+
+    filters = _get_summary_filters()
+    granularity = request.args.get("granularity", "day")
+
+    period_col = _granularity_trunc(granularity, UsageRecord.created_at)
+    rows = _apply_filters(
+        db.session.query(
+            period_col.label("period"),
+            func.count(UsageRecord.id).label("requests"),
+            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
+    ).group_by("period").order_by("period").all()
+
+    return jsonify([
+        {
+            "period": str(r.period),
+            "requests": r.requests,
+            "input_tokens": int(r.input_tokens),
+            "output_tokens": int(r.output_tokens),
+            "total_cost": round(float(r.total_cost or 0), 6),
+        }
+        for r in rows
+    ])
+
+
+# ── Legacy combined summary endpoint (kept for backward compatibility) ────────
+
+@usage_bp.route('/api/usage/summary', methods=['GET'])
+def get_summary():
+    """
+    Return aggregated usage statistics (combined endpoint).
+
+    This is the legacy endpoint that runs all 4 queries in a single request.
+    For better performance, use the individual endpoints:
+      - /api/usage/summary/totals
+      - /api/usage/summary/by_model
+      - /api/usage/summary/by_group
+      - /api/usage/summary/by_api_key
+      - /api/usage/summary/time_series
+    """
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+
+    filters = _get_summary_filters()
+    granularity = request.args.get("granularity", "day")
+
+    # ── Totals ────────────────────────────────────────────────────────────
+    row = _apply_filters(
+        db.session.query(
+            func.count(UsageRecord.id).label("requests"),
+            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+            func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
+            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
+            func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
+            func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
+            func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
+    ).one()
     totals = {
         "requests": row.requests or 0,
         "input_tokens": int(row.input_tokens or 0),
@@ -268,7 +459,7 @@ def get_summary():
         "output_video_number": int(row.output_video_number or 0),
         "output_audio_seconds": float(row.output_audio_seconds or 0),
         "web_search_requests": int(row.web_search_requests or 0),
-        "estimated_cost": round(float(row.estimated_cost or 0), 6),
+        "total_cost": round(float(row.total_cost or 0), 6),
     }
 
     # ── By model ──────────────────────────────────────────────────────────
@@ -279,8 +470,9 @@ def get_summary():
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(_cost_expr), 0).label("estimated_cost"),
-        )
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
     ).group_by(UsageRecord.model_name).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
 
     by_model = [
@@ -290,7 +482,7 @@ def get_summary():
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
             "reasoning_tokens": int(r.reasoning_tokens),
-            "estimated_cost": round(float(r.estimated_cost or 0), 6),
+            "total_cost": round(float(r.total_cost or 0), 6),
         }
         for r in by_model_rows
     ]
@@ -303,7 +495,8 @@ def get_summary():
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-        )
+        ),
+        filters,
     ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
         func.count(UsageRecord.id).desc()
     ).limit(20).all()
@@ -328,8 +521,9 @@ def get_summary():
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(_cost_expr), 0).label("estimated_cost"),
-        )
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+        ),
+        filters,
     ).group_by(
         UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
     ).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
@@ -342,7 +536,7 @@ def get_summary():
             "requests": r.requests,
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
-            "estimated_cost": round(float(r.estimated_cost or 0), 6),
+            "total_cost": round(float(r.total_cost or 0), 6),
         }
         for r in by_api_key_rows
     ]
@@ -355,7 +549,8 @@ def get_summary():
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-        )
+        ),
+        filters,
     ).group_by("period").order_by("period").all()
 
     time_series = [
