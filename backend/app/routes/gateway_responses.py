@@ -56,6 +56,7 @@ def _run_background_response(
     group_id: Optional[int],
     *,
     user_name: Optional[str] = None,
+    user_id: Optional[int] = None,
     api_key_raw: Optional[str] = None,
     api_key_name: Optional[str] = None,
     api_key_group_id: Optional[int] = None,
@@ -199,6 +200,7 @@ def _run_background_response(
                     app=app,
                     usage_info=response.usage,
                     user_name=user_name,
+                    user_id=user_id,
                     api_key_raw=api_key_raw,
                     api_key_name=api_key_name,
                     api_key_group_id=api_key_group_id,
@@ -307,6 +309,7 @@ def openai_responses():
         _bg_api_key_raw = api_key.key if api_key else None
         _bg_api_key_name = api_key.name if api_key else None
         _bg_api_key_group_id = api_key.group_id if api_key else None
+        _bg_api_key_user_id = api_key.user_id if api_key else None
         _bg_api_key_group_name: Optional[str] = None
         if api_key:
             try:
@@ -344,6 +347,7 @@ def openai_responses():
             args=(app, response_id, input_key, output_key, group_id),
             kwargs=dict(
                 user_name=_bg_user_name,
+                user_id=_bg_api_key_user_id,
                 api_key_raw=_bg_api_key_raw,
                 api_key_name=_bg_api_key_name,
                 api_key_group_id=_bg_api_key_group_id,
@@ -380,6 +384,7 @@ def openai_responses():
             _api_key_raw = api_key.key if api_key else None
             _api_key_name = api_key.name if api_key else None
             _api_key_group_id = api_key.group_id if api_key else None
+            _api_key_user_id = api_key.user_id if api_key else None
             _api_key_group_name: Optional[str] = None
             if api_key:
                 try:
@@ -407,6 +412,7 @@ def openai_responses():
                                 app=_app,
                                 usage_info=last_usage,
                                 user_name=_user_name,
+                                user_id=_api_key_user_id,
                                 api_key_raw=_api_key_raw,
                                 api_key_name=_api_key_name,
                                 api_key_group_id=_api_key_group_id,

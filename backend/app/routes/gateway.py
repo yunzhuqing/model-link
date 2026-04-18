@@ -199,6 +199,7 @@ def _handle_request(adapter):
             _api_key_raw = api_key.key if api_key else None
             _api_key_name = api_key.name if api_key else None
             _api_key_group_id = api_key.group_id if api_key else None
+            _api_key_user_id = api_key.user_id if api_key else None
             _api_key_group_name: Optional[str] = None
             if api_key:
                 try:
@@ -231,6 +232,7 @@ def _handle_request(adapter):
                                 app=_app,
                                 usage_info=last_usage,
                                 user_name=_user_name,
+                                user_id=_api_key_user_id,
                                 api_key_raw=_api_key_raw,
                                 api_key_name=_api_key_name,
                                 api_key_group_id=_api_key_group_id,

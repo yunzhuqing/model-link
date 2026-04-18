@@ -43,6 +43,20 @@ interface UsageByModel {
   output_tokens: number;
   reasoning_tokens: number;
   total_cost: number;
+  total_cost_usd: number;
+}
+
+interface CurrencyCost {
+  currency: string;
+  total_cost_native: number;
+  total_cost_cny: number;
+  total_cost_usd: number;
+}
+
+interface UsageByCurrency {
+  exchange_rate_usd_to_cny: number;
+  currencies: CurrencyCost[];
+  total_cost_usd: number;
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
@@ -60,6 +74,15 @@ function fmtCost(n: number): string {
   if (n >= 0.01) return '$' + n.toFixed(3);
   if (n > 0) return '$' + n.toFixed(4);
   return '$0.00';
+}
+
+function fmtCostWithSymbol(n: number, currency: string): string {
+  const sym = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : currency + ' ';
+  if (n >= 1000) return sym + (n / 1000).toFixed(1) + 'K';
+  if (n >= 1) return sym + n.toFixed(2);
+  if (n >= 0.01) return sym + n.toFixed(3);
+  if (n > 0) return sym + n.toFixed(4);
+  return sym + '0.00';
 }
 
 /* ── Colors ─────────────────────────────────────────────────────────────── */
@@ -164,6 +187,12 @@ const Dashboard = () => {
     enabled: !!userInfo,
   });
 
+  const { data: byCurrency, isLoading: byCurrencyLoading } = useQuery<UsageByCurrency>({
+    queryKey: ['dash-by-currency', _userParams],
+    queryFn: async () => (await client.get('/api/usage/summary/by_currency', { params: _userParams })).data,
+    enabled: !!userInfo,
+  });
+
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleCopy = async (key: string) => {
     try {
@@ -178,8 +207,8 @@ const Dashboard = () => {
   const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0);
 
   const modelCostSlices: DonutSlice[] = (byModel || [])
-    .sort((a, b) => (b.total_cost || 0) - (a.total_cost || 0))
-    .map((m, i) => ({ label: m.model_name, value: m.total_cost || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
+    .sort((a, b) => (b.total_cost_usd || 0) - (a.total_cost_usd || 0))
+    .map((m, i) => ({ label: m.model_name, value: m.total_cost_usd || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
 
   const tokenSlices: DonutSlice[] = totals ? [
     { label: '输入 Tokens', value: totals.input_tokens, color: '#3b82f6' },
@@ -188,7 +217,7 @@ const Dashboard = () => {
     { label: '缓存 Tokens', value: (totals.cache_tokens || 0) + (totals.cache_creation_tokens || 0), color: '#8b5cf6' },
   ].filter(s => s.value > 0) : [];
 
-  const loading = groupsLoading || keysLoading || totalsLoading || byModelLoading;
+  const loading = groupsLoading || keysLoading || totalsLoading || byModelLoading || byCurrencyLoading;
 
   /* ── Render ───────────────────────────────────────────────────────────── */
 
@@ -224,15 +253,25 @@ const Dashboard = () => {
           <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40" />
         </div>
 
-        {/* 2. 消耗总金额 */}
+        {/* 2. 消耗总金额 (USD) */}
         <div className="relative overflow-hidden bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl p-5 text-white shadow-lg">
           <div className="flex items-center space-x-2 mb-1">
             <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
               <DollarSign className="w-3.5 h-3.5" />
             </div>
-            <span className="text-xs font-medium text-white/80">消耗总金额</span>
+            <span className="text-xs font-medium text-white/80">消耗总金额 (USD)</span>
           </div>
-          <p className="text-2xl font-bold">{fmtCost(totals?.total_cost || 0)}</p>
+          <p className="text-2xl font-bold">{fmtCost(byCurrency?.total_cost_usd || 0)}</p>
+          {(byCurrency?.currencies?.length ?? 0) >= 1 && (
+            <div className="mt-2 space-y-0.5">
+              {byCurrency!.currencies.map((c) => (
+                <div key={c.currency} className="flex items-center justify-between text-xs text-white/70">
+                  <span>{c.currency}</span>
+                  <span className="tabular-nums">{fmtCostWithSymbol(c.total_cost_native, c.currency)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* 3. Token 消耗 */}
@@ -390,7 +429,7 @@ const Dashboard = () => {
                   <h3 className="text-xs font-bold text-slate-600 mb-3">模型费用分布</h3>
                   <div className="flex flex-col items-center">
                     <DonutChart slices={modelCostSlices} size={130} strokeWidth={22}
-                      centerValue={fmtCost(totals?.total_cost || 0)} centerLabel="总费用" />
+                      centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel="总费用(USD)" />
                     <div className="mt-3 space-y-1.5 w-full max-h-[120px] overflow-y-auto">
                       {modelCostSlices.map((s, i) => {
                         const total = modelCostSlices.reduce((a, sl) => a + sl.value, 0) || 1;
@@ -444,10 +483,10 @@ const Dashboard = () => {
                   </thead>
                   <tbody>
                     {[...byModel]
-                      .sort((a, b) => (b.total_cost || 0) - (a.total_cost || 0))
+                      .sort((a, b) => (b.total_cost_usd || 0) - (a.total_cost_usd || 0))
                       .map((m, idx) => {
-                        const totalCost = byModel.reduce((s, x) => s + (x.total_cost || 0), 0) || 1;
-                        const costPct = ((m.total_cost || 0) / totalCost) * 100;
+                        const totalCost = byModel.reduce((s, x) => s + (x.total_cost_usd || 0), 0) || 1;
+                        const costPct = ((m.total_cost_usd || 0) / totalCost) * 100;
                         const color = PIE_COLORS[idx % PIE_COLORS.length];
                         return (
                           <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/60">
@@ -461,7 +500,7 @@ const Dashboard = () => {
                             <td className="py-3 px-4 text-right text-indigo-600 tabular-nums font-mono text-xs">{fmtNum(m.input_tokens)}</td>
                             <td className="py-3 px-4 text-right text-emerald-600 tabular-nums font-mono text-xs">{fmtNum(m.output_tokens)}</td>
                             <td className="py-3 px-4 text-right text-violet-600 tabular-nums font-mono text-xs">{m.reasoning_tokens > 0 ? fmtNum(m.reasoning_tokens) : '—'}</td>
-                            <td className="py-3 px-4 text-right font-bold text-amber-600 tabular-nums">{fmtCost(m.total_cost || 0)}</td>
+                            <td className="py-3 px-4 text-right font-bold text-amber-600 tabular-nums">{fmtCost(m.total_cost_usd || 0)}</td>
                             <td className="py-3 px-4">
                               <div className="flex items-center space-x-2">
                                 <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">

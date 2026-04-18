@@ -28,6 +28,7 @@ interface StatByModel {
   output_tokens: number;
   reasoning_tokens: number;
   total_cost: number;
+  total_cost_usd: number;
 }
 
 interface StatByApiKey {
@@ -38,6 +39,7 @@ interface StatByApiKey {
   input_tokens: number;
   output_tokens: number;
   total_cost: number;
+  total_cost_usd: number;
 }
 
 interface StatTimeSeries {
@@ -46,6 +48,19 @@ interface StatTimeSeries {
   input_tokens: number;
   output_tokens: number;
   total_cost: number;
+}
+
+interface CurrencyCost {
+  currency: string;
+  total_cost_native: number;
+  total_cost_cny: number;
+  total_cost_usd: number;
+}
+
+interface StatByCurrency {
+  exchange_rate_usd_to_cny: number;
+  currencies: CurrencyCost[];
+  total_cost_usd: number;
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
@@ -62,6 +77,15 @@ function fmtCost(n: number): string {
   if (n >= 0.01) return '$' + n.toFixed(3);
   if (n > 0) return '$' + n.toFixed(4);
   return '$0.00';
+}
+
+function fmtCostWithSymbol(n: number, currency: string): string {
+  const sym = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : currency + ' ';
+  if (n >= 1000) return sym + (n / 1000).toFixed(1) + 'K';
+  if (n >= 1) return sym + n.toFixed(2);
+  if (n >= 0.01) return sym + n.toFixed(3);
+  if (n > 0) return sym + n.toFixed(4);
+  return sym + '0.00';
 }
 
 /* ── Colors ─────────────────────────────────────────────────────────────── */
@@ -223,18 +247,22 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
     queryKey: ['grp-stat-ts', groupId, days],
     queryFn: async () => (await client.get('/api/usage/summary/time_series', { params: { ...params, granularity: 'day' } })).data,
   });
+  const { data: byCurrency, isLoading: byCurrencyLoading } = useQuery<StatByCurrency>({
+    queryKey: ['grp-stat-by-currency', groupId, days],
+    queryFn: async () => (await client.get('/api/usage/summary/by_currency', { params })).data,
+  });
 
-  const loading = totalsLoading || byModelLoading || byApiKeyLoading || tsLoading;
+  const loading = totalsLoading || byModelLoading || byApiKeyLoading || tsLoading || byCurrencyLoading;
   const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0);
 
-  // Donut slices
+  // Donut slices — use total_cost_usd for proper cross-currency comparison
   const modelCostSlices = (byModel || [])
-    .sort((a, b) => (b.total_cost || 0) - (a.total_cost || 0))
-    .map((m, i) => ({ label: m.model_name, value: m.total_cost || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
+    .sort((a, b) => (b.total_cost_usd || 0) - (a.total_cost_usd || 0))
+    .map((m, i) => ({ label: m.model_name, value: m.total_cost_usd || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
 
   const apiKeyCostSlices = (byApiKey || [])
-    .sort((a, b) => (b.total_cost || 0) - (a.total_cost || 0))
-    .map((k, i) => ({ label: k.api_key_name || k.api_key_preview || '—', value: k.total_cost || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
+    .sort((a, b) => (b.total_cost_usd || 0) - (a.total_cost_usd || 0))
+    .map((k, i) => ({ label: k.api_key_name || k.api_key_preview || '—', value: k.total_cost_usd || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
 
   const tokenSlices = totals ? [
     { label: '输入', value: totals.input_tokens, color: '#3b82f6' },
@@ -276,8 +304,18 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
           {/* ── KPI Cards ──────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl p-4 text-white shadow">
-              <div className="flex items-center space-x-2 mb-1"><DollarSign className="w-4 h-4" /><span className="text-xs text-white/80">消耗总金额</span></div>
-              <p className="text-2xl font-bold">{fmtCost(totals.total_cost || 0)}</p>
+              <div className="flex items-center space-x-2 mb-1"><DollarSign className="w-4 h-4" /><span className="text-xs text-white/80">消耗总金额 (USD)</span></div>
+              <p className="text-2xl font-bold">{fmtCost(byCurrency?.total_cost_usd || 0)}</p>
+              {(byCurrency?.currencies?.length ?? 0) >= 1 && (
+                <div className="mt-1.5 space-y-0.5">
+                  {byCurrency!.currencies.map((c) => (
+                    <div key={c.currency} className="flex items-center justify-between text-xs text-white/70">
+                      <span>{c.currency}</span>
+                      <span className="tabular-nums">{fmtCostWithSymbol(c.total_cost_native, c.currency)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-4 text-white shadow">
               <div className="flex items-center space-x-2 mb-1"><TrendingUp className="w-4 h-4" /><span className="text-xs text-white/80">消耗总 Token</span></div>
@@ -336,7 +374,7 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h3 className="text-xs font-bold text-slate-600 mb-4">模型费用分布</h3>
               <div className="flex flex-col items-center">
-                <StatDonut slices={modelCostSlices} centerValue={fmtCost(totals.total_cost || 0)} centerLabel="总费用" />
+                <StatDonut slices={modelCostSlices} centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel="总费用(USD)" />
                 <div className="mt-4 space-y-2 w-full max-h-[140px] overflow-y-auto">
                   {modelCostSlices.map((s, i) => {
                     const total = modelCostSlices.reduce((a, sl) => a + sl.value, 0) || 1;
@@ -361,7 +399,7 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h3 className="text-xs font-bold text-slate-600 mb-4">API Key 费用分布</h3>
               <div className="flex flex-col items-center">
-                <StatDonut slices={apiKeyCostSlices} centerValue={fmtCost(totals.total_cost || 0)} centerLabel="总费用" />
+                <StatDonut slices={apiKeyCostSlices} centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel="总费用(USD)" />
                 <div className="mt-4 space-y-2 w-full max-h-[140px] overflow-y-auto">
                   {apiKeyCostSlices.map((s, i) => {
                     const total = apiKeyCostSlices.reduce((a, sl) => a + sl.value, 0) || 1;

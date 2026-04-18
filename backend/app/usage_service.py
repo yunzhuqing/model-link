@@ -156,6 +156,7 @@ def record_stream_usage(
     usage_info,
     # Identity (plain Python primitives — no ORM objects)
     user_name: Optional[str] = None,
+    user_id: Optional[int] = None,
     api_key_raw: Optional[str] = None,
     api_key_name: Optional[str] = None,
     api_key_group_id: Optional[int] = None,
@@ -211,6 +212,7 @@ def record_stream_usage(
             duration_ms=duration_ms,
             exchange_rate_to_cny=exchange_rate_to_cny,
             discount=discount,
+            user_id=user_id,
         ),
         daemon=True,
     )

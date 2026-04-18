@@ -95,6 +95,23 @@ def _granularity_trunc(granularity: str, dt_col):
             return func.date_format(dt_col, fmt)
 
 
+def _convert_cost_to_usd(rows_with_currency_and_cost, exchange_rate):
+    """
+    Convert a list of (currency, native_cost, cny_cost) tuples to USD.
+    Returns total USD amount.
+    """
+    total_usd = 0.0
+    for currency, native, cny in rows_with_currency_and_cost:
+        currency = (currency or 'USD').upper()
+        if currency == 'USD':
+            total_usd += native
+        elif currency == 'CNY':
+            total_usd += cny / exchange_rate if exchange_rate > 0 else native / 7.0
+        else:
+            total_usd += cny / exchange_rate if exchange_rate > 0 else 0.0
+    return total_usd
+
+
 # ── Records endpoint ─────────────────────────────────────────────────────────
 
 @usage_bp.route('/api/usage/records', methods=['GET'])
@@ -251,39 +268,76 @@ def get_summary_totals():
 
 @usage_bp.route('/api/usage/summary/by_model', methods=['GET'])
 def get_summary_by_model():
-    """Return usage aggregated by model name (top 20)."""
+    """
+    Return usage aggregated by model name (top 20).
+
+    Now includes total_cost_usd which properly converts all currencies to USD.
+    total_cost remains as the raw sum of actual_amount (native currency, may mix currencies).
+    """
     try:
         _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
+    from app.exchange_rate_service import get_exchange_rate
 
     filters = _get_summary_filters()
 
     rows = _apply_filters(
         db.session.query(
             UsageRecord.model_name,
+            UsageRecord.currency,
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
             func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+            func.coalesce(func.sum(UsageRecord.exchange_rate_to_cny * UsageRecord.actual_amount), 0).label("total_cost_cny"),
         ),
         filters,
-    ).group_by(UsageRecord.model_name).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
+    ).group_by(UsageRecord.model_name, UsageRecord.currency).order_by(func.sum(UsageRecord.actual_amount).desc()).limit(50).all()
 
-    return jsonify([
-        {
-            "model_name": r.model_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "reasoning_tokens": int(r.reasoning_tokens),
-            "total_cost": round(float(r.total_cost or 0), 6),
-        }
-        for r in rows
-    ])
+    exchange_rate = get_exchange_rate()
+
+    # Merge rows by model_name (a model may have records in different currencies)
+    model_map = {}
+    for r in rows:
+        name = r.model_name
+        if name not in model_map:
+            model_map[name] = {
+                "model_name": name,
+                "requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_cost": 0.0,
+                "total_cost_usd": 0.0,
+            }
+        m = model_map[name]
+        m["requests"] += r.requests
+        m["input_tokens"] += int(r.input_tokens)
+        m["output_tokens"] += int(r.output_tokens)
+        m["reasoning_tokens"] += int(r.reasoning_tokens)
+        m["total_cost"] += float(r.total_cost or 0)
+
+        # Convert to USD
+        currency = (r.currency or 'USD').upper()
+        native = float(r.total_cost or 0)
+        cny = float(r.total_cost_cny or 0)
+        if currency == 'USD':
+            m["total_cost_usd"] += native
+        elif currency == 'CNY':
+            m["total_cost_usd"] += cny / exchange_rate if exchange_rate > 0 else native / 7.0
+        else:
+            m["total_cost_usd"] += cny / exchange_rate if exchange_rate > 0 else 0.0
+
+    result = sorted(model_map.values(), key=lambda x: x["total_cost_usd"], reverse=True)[:20]
+    for item in result:
+        item["total_cost"] = round(item["total_cost"], 6)
+        item["total_cost_usd"] = round(item["total_cost_usd"], 6)
+
+    return jsonify(result)
 
 
 @usage_bp.route('/api/usage/summary/by_group', methods=['GET'])
@@ -323,15 +377,84 @@ def get_summary_by_group():
     ])
 
 
-@usage_bp.route('/api/usage/summary/by_api_key', methods=['GET'])
-def get_summary_by_api_key():
-    """Return usage aggregated by API key (top 20)."""
+@usage_bp.route('/api/usage/summary/by_currency', methods=['GET'])
+def get_summary_by_currency():
+    """
+    Return usage cost aggregated by pricing currency.
+
+    For each currency, returns:
+      - total_cost_native: sum of actual_amount in that currency
+      - total_cost_usd: converted to USD (CNY amounts ÷ exchange_rate, USD amounts unchanged)
+      - total_cost_cny: converted to CNY (USD amounts × exchange_rate, CNY amounts unchanged)
+
+    Also returns the current USD→CNY exchange rate and the total across all currencies in USD.
+    """
     try:
         _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
+    from app.exchange_rate_service import get_exchange_rate
+
+    filters = _get_summary_filters()
+
+    rows = _apply_filters(
+        db.session.query(
+            UsageRecord.currency,
+            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost_native"),
+            func.coalesce(func.sum(UsageRecord.exchange_rate_to_cny * UsageRecord.actual_amount), 0).label("total_cost_cny"),
+        ),
+        filters,
+    ).group_by(UsageRecord.currency).all()
+
+    exchange_rate = get_exchange_rate()
+
+    currency_items = []
+    total_usd = 0.0
+
+    for r in rows:
+        currency = (r.currency or 'USD').upper()
+        native = float(r.total_cost_native or 0)
+        cny = float(r.total_cost_cny or 0)
+
+        if currency == 'USD':
+            usd = native
+        elif currency == 'CNY':
+            usd = cny / exchange_rate if exchange_rate > 0 else native / 7.0
+        else:
+            # For other currencies, assume they're already in CNY via exchange_rate_to_cny
+            usd = cny / exchange_rate if exchange_rate > 0 else 0.0
+
+        total_usd += usd
+        currency_items.append({
+            "currency": currency,
+            "total_cost_native": round(native, 6),
+            "total_cost_cny": round(cny, 6),
+            "total_cost_usd": round(usd, 6),
+        })
+
+    return jsonify({
+        "exchange_rate_usd_to_cny": exchange_rate,
+        "currencies": currency_items,
+        "total_cost_usd": round(total_usd, 6),
+    })
+
+
+@usage_bp.route('/api/usage/summary/by_api_key', methods=['GET'])
+def get_summary_by_api_key():
+    """
+    Return usage aggregated by API key (top 20).
+
+    Now includes total_cost_usd which properly converts all currencies to USD.
+    """
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+    from app.exchange_rate_service import get_exchange_rate
 
     filters = _get_summary_filters()
 
@@ -340,28 +463,58 @@ def get_summary_by_api_key():
             UsageRecord.api_key_hash,
             UsageRecord.api_key_preview,
             UsageRecord.api_key_name,
+            UsageRecord.currency,
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+            func.coalesce(func.sum(UsageRecord.exchange_rate_to_cny * UsageRecord.actual_amount), 0).label("total_cost_cny"),
         ),
         filters,
     ).group_by(
-        UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
-    ).order_by(func.count(UsageRecord.id).desc()).limit(20).all()
+        UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name, UsageRecord.currency
+    ).order_by(func.sum(UsageRecord.actual_amount).desc()).limit(50).all()
 
-    return jsonify([
-        {
-            "api_key_hash": r.api_key_hash,
-            "api_key_preview": r.api_key_preview,
-            "api_key_name": r.api_key_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "total_cost": round(float(r.total_cost or 0), 6),
-        }
-        for r in rows
-    ])
+    exchange_rate = get_exchange_rate()
+
+    # Merge rows by api_key_hash (an api key may have records in different currencies)
+    key_map = {}
+    for r in rows:
+        key = r.api_key_hash
+        if key not in key_map:
+            key_map[key] = {
+                "api_key_hash": r.api_key_hash,
+                "api_key_preview": r.api_key_preview,
+                "api_key_name": r.api_key_name,
+                "requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_cost": 0.0,
+                "total_cost_usd": 0.0,
+            }
+        m = key_map[key]
+        m["requests"] += r.requests
+        m["input_tokens"] += int(r.input_tokens)
+        m["output_tokens"] += int(r.output_tokens)
+        m["total_cost"] += float(r.total_cost or 0)
+
+        # Convert to USD
+        currency = (r.currency or 'USD').upper()
+        native = float(r.total_cost or 0)
+        cny = float(r.total_cost_cny or 0)
+        if currency == 'USD':
+            m["total_cost_usd"] += native
+        elif currency == 'CNY':
+            m["total_cost_usd"] += cny / exchange_rate if exchange_rate > 0 else native / 7.0
+        else:
+            m["total_cost_usd"] += cny / exchange_rate if exchange_rate > 0 else 0.0
+
+    result = sorted(key_map.values(), key=lambda x: x["total_cost_usd"], reverse=True)[:20]
+    for item in result:
+        item["total_cost"] = round(item["total_cost"], 6)
+        item["total_cost_usd"] = round(item["total_cost_usd"], 6)
+
+    return jsonify(result)
 
 
 @usage_bp.route('/api/usage/summary/time_series', methods=['GET'])
