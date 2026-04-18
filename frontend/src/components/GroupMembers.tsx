@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../contexts/AuthContext';
-import { apiClient } from '../api/client';
+import apiClient from '../api/client';
 
 interface Group {
   id: number;
@@ -28,7 +27,6 @@ interface GroupMembersProps {
 }
 
 export default function GroupMembers({ group, isAdmin }: GroupMembersProps) {
-  const { addToast } = useAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInviteDialog, setShowInviteDialog] = useState(false);
@@ -42,11 +40,11 @@ export default function GroupMembers({ group, isAdmin }: GroupMembersProps) {
       const res = await apiClient.get(`/api/groups/${group.id}/members`);
       setMembers(res.data);
     } catch {
-      addToast('Failed to load members', 'error');
+      console.error('Failed to load members');
     } finally {
       setLoading(false);
     }
-  }, [group.id, addToast]);
+  }, [group.id]);
 
   useEffect(() => {
     fetchMembers();
@@ -64,7 +62,7 @@ export default function GroupMembers({ group, isAdmin }: GroupMembersProps) {
         res.data.filter((u: User) => !memberIds.includes(u.id))
       );
     } catch {
-      addToast('Failed to search users', 'error');
+      console.error('Failed to search users');
     } finally {
       setSearching(false);
     }
@@ -85,13 +83,12 @@ export default function GroupMembers({ group, isAdmin }: GroupMembersProps) {
         user_id: userId,
         role: 'member',
       });
-      addToast('User invited successfully', 'success');
       setShowInviteDialog(false);
       setSearchQuery('');
       setSearchResults([]);
       fetchMembers();
     } catch {
-      addToast('Failed to invite user', 'error');
+      console.error('Failed to invite user');
     }
   };
 
@@ -99,10 +96,9 @@ export default function GroupMembers({ group, isAdmin }: GroupMembersProps) {
     if (!confirm('Are you sure you want to remove this member?')) return;
     try {
       await apiClient.delete(`/api/groups/${group.id}/members/${userId}`);
-      addToast('Member removed successfully', 'success');
       fetchMembers();
     } catch {
-      addToast('Failed to remove member', 'error');
+      console.error('Failed to remove member');
     }
   };
 
@@ -111,10 +107,9 @@ export default function GroupMembers({ group, isAdmin }: GroupMembersProps) {
       await apiClient.put(`/api/groups/${group.id}/members/${userId}`, {
         role: newRole,
       });
-      addToast('Role updated successfully', 'success');
       fetchMembers();
     } catch {
-      addToast('Failed to update role', 'error');
+      console.error('Failed to update role');
     }
   };
 
