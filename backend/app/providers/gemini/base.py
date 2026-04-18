@@ -472,8 +472,9 @@ class GeminiProvider(BaseProvider):
                         thinking_parts.append(part["text"])
                     else:
                         message_blocks.append(ContentBlock.from_text(part["text"]))
-                elif "inlineData" in part:
+                elif "inlineData" in part and not part.get("thought", False):
                     # Gemini native image generation returns images as inlineData
+                    # Skip thinking/reasoning images — only include final result images
                     inline_data = part["inlineData"]
                     mime_type = inline_data.get("mimeType", "image/png")
                     b64_data = inline_data.get("data", "")

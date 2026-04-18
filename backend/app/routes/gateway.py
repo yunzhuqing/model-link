@@ -245,6 +245,7 @@ def _handle_request(adapter):
                                 pricing_tiers=model_meta.get('pricing_tiers'),
                                 output_pricing=model_meta.get('output_pricing'),
                                 currency=model_meta.get('currency', 'USD'),
+                                discount=model_meta.get('discount', 1.0),
                                 duration_ms=_duration_ms,
                             )
                         except Exception as _ue:

@@ -124,6 +124,32 @@ interface ModelTemplate {
 
 // ── Helpers & small components ────────────────────────────────────────────────
 
+/** Map provider type (from DB / form) to the template `provider` value(s).
+ *  Some provider types don't match their template provider name 1:1, e.g.
+ *  the "gemini" provider type uses templates labelled "Google". */
+const PROVIDER_TYPE_TO_TEMPLATE: Record<string, string[]> = {
+  gemini: ['Google'],
+  deepseek: ['DeepSeek'],
+};
+
+/** Return the subset of model templates that match a given provider type.
+ *  For "openai_chatcompletions_compt" and "openai_responses_compt" all
+ *  templates are returned so users can pick any model. */
+const filterTemplatesByProviderType = (
+  templates: ModelTemplate[],
+  providerType: string,
+): ModelTemplate[] => {
+  const pt = providerType.toLowerCase();
+  if (['openai_chatcompletions_compt', 'openai_responses_compt'].includes(pt)) {
+    return templates;
+  }
+  const mapped = PROVIDER_TYPE_TO_TEMPLATE[pt];
+  if (mapped) {
+    return templates.filter((t) => mapped.some((m) => m.toLowerCase() === t.provider.toLowerCase()));
+  }
+  return templates.filter((t) => t.provider.toLowerCase() === pt);
+};
+
 const currencySymbol = (c?: string) =>
   ({ USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥' }[c || 'USD'] || '$');
 
@@ -1108,7 +1134,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                   onSave={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
                   onCancel={() => { setShowAddModel(null); setNewModel(defaultModelState); }}
                   isLoading={createModelMutation.isPending}
-                  templates={['openai_chatcompletions_compt', 'openai_responses_compt'].includes(provider.type.toLowerCase()) ? modelTemplates : modelTemplates.filter((t) => t.provider.toLowerCase() === provider.type.toLowerCase())}
+                  templates={filterTemplatesByProviderType(modelTemplates, provider.type)}
                 />
               )}
 
@@ -1122,7 +1148,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                         onSave={() => updateModelMutation.mutate({ id: model.id, data: editingModel })}
                         onCancel={() => setEditingModel(null)}
                         isLoading={updateModelMutation.isPending}
-                        templates={['openai_chatcompletions_compt', 'openai_responses_compt'].includes(provider.type.toLowerCase()) ? modelTemplates : modelTemplates.filter((t) => t.provider.toLowerCase() === provider.type.toLowerCase())}
+                        templates={filterTemplatesByProviderType(modelTemplates, provider.type)}
                       />
                     ) : (
                       <ModelCard

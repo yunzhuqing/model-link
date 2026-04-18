@@ -113,6 +113,9 @@ def record_usage(
     # Output pricing strategies for image/video/audio — plain dict
     output_pricing: Optional[dict] = getattr(db_model, 'output_pricing', None)
 
+    # Discount multiplier from model (e.g. 0.9 = 10% off; 1.0 = no discount)
+    discount: float = getattr(db_model, 'discount', 1.0) or 1.0
+
     exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
 
     thread = threading.Thread(
@@ -137,6 +140,7 @@ def record_usage(
             currency=currency,
             duration_ms=duration_ms,
             exchange_rate_to_cny=exchange_rate_to_cny,
+            discount=discount,
         ),
         daemon=True,
     )
@@ -165,6 +169,8 @@ def record_stream_usage(
     output_pricing: Optional[dict] = None,
     # Currency (from model_meta dict)
     currency: str = 'USD',
+    # Discount
+    discount: float = 1.0,
     # Duration
     duration_ms: Optional[int] = None,
 ) -> None:
@@ -201,6 +207,7 @@ def record_stream_usage(
             currency=currency,
             duration_ms=duration_ms,
             exchange_rate_to_cny=exchange_rate_to_cny,
+            discount=discount,
         ),
         daemon=True,
     )
@@ -404,6 +411,7 @@ def _persist_usage(
     currency='USD',
     duration_ms=None,
     exchange_rate_to_cny=None,
+    discount=1.0,
 ) -> None:
     """Worker that actually writes the UsageRecord to the database."""
     try:
@@ -430,6 +438,7 @@ def _persist_usage(
                 currency=currency,
                 duration_ms=duration_ms,
                 exchange_rate_to_cny=exchange_rate_to_cny,
+                discount=discount,
             )
             db.session.add(record)
             db.session.commit()
@@ -457,6 +466,7 @@ def _build_record(
     currency='USD',
     duration_ms=None,
     exchange_rate_to_cny=None,
+    discount=1.0,
 ):
     """Build a UsageRecord ORM object from the pre-extracted primitive values."""
     from app.models import UsageRecord
@@ -509,6 +519,7 @@ def _build_record(
     output_video_aspect: Optional[str] = extra.get('output_video_aspect')
     output_video_seconds: float = extra.get('output_video_seconds', 0.0) or 0.0
     output_video_price_unit: float = extra.get('output_video_price_unit', 0.0) or 0.0
+    output_video_audio: Optional[bool] = extra.get('output_video_audio')
 
     output_audio_tokens: int = extra.get('output_audio_tokens', 0) or 0
     output_audio_seconds: float = extra.get('output_audio_seconds', 0.0) or 0.0
@@ -526,10 +537,28 @@ def _build_record(
                 output_pricing.get('image'), output_image_resolution)
         if output_video_price_unit == 0.0:
             output_video_price_unit = _resolve_output_price(
-                output_pricing.get('video'), output_video_resolution)
+                output_pricing.get('video'), output_video_resolution,
+                audio=output_video_audio)
         if output_audio_price_unit == 0.0:
             output_audio_price_unit = _resolve_output_price(
                 output_pricing.get('audio'), None)
+
+    # ── Billing amounts ───────────────────────────────────────────────────
+    # payable_amount = total cost before discount (in native currency)
+    # Prices are per 1M tokens for text; per unit for image/video/audio/search.
+    payable_amount: float = (
+        input_tokens * input_price_unit / 1_000_000
+        + output_tokens * output_price_unit / 1_000_000
+        + cache_creation_tokens * cache_creation_price_unit / 1_000_000
+        + cache_tokens * cache_token_price_unit / 1_000_000
+        + output_image_number * output_image_price_unit
+        + output_video_number * output_video_price_unit
+        + output_audio_seconds * output_audio_price_unit
+        + web_search_requests * web_search_price_unit
+    )
+    # Ensure discount is valid
+    effective_discount: float = discount if discount and discount > 0 else 1.0
+    actual_amount: float = payable_amount * effective_discount
 
     return UsageRecord(
         user_name=user_name,
@@ -576,4 +605,8 @@ def _build_record(
         # Currency / exchange rate
         currency=currency,
         exchange_rate_to_cny=exchange_rate_to_cny,
+        # Billing
+        payable_amount=payable_amount,
+        discount=effective_discount,
+        actual_amount=actual_amount,
     )

@@ -12,6 +12,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'gemini-veo', label: 'Gemini Veo 视频生成' },
   { id: 'vertexai-veo', label: 'VertexAI Veo 视频生成' },
   { id: 'veo-limits', label: '模型限制说明' },
+  { id: 'veo-pricing', label: 'Veo 收费标准' },
   { id: 'params', label: '请求参数' },
   { id: 'veo-params', label: 'Veo 专属参数' },
   { id: 'response-format', label: '响应格式' },
@@ -619,6 +620,118 @@ export default function HelpVideoGeneration() {
 
             <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-sm text-amber-800">
               <strong>注意：</strong><code>veo-3.1-lite-generate-001</code> 不支持 4K 分辨率，最高仅支持 1080p 输入/输出。<code>veo-3.1-generate-001</code> 的图生视频模式仅支持 8 秒时长。
+            </div>
+          </div>
+        </div>
+
+        {/* Veo Pricing */}
+        <div id="veo-pricing" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">Veo 收费标准</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">USD / 秒</span>
+            </div>
+            <p className="text-sm text-slate-500">Veo 3.1 系列按视频时长（秒）计费，价格因模型、分辨率和是否包含音频而异。</p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* veo-3.1-generate-001 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-green-600 normal-case text-sm font-bold">veo-3.1-generate-001</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">输出类型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">4K</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">视频 + 音频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.40/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.40/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.60/s</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">仅视频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.20/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.20/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.40/s</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* veo-3.1-fast-generate-001 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-green-600 normal-case text-sm font-bold">veo-3.1-fast-generate-001</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">输出类型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">4K</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">视频 + 音频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.10/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.12/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.30/s</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">仅视频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.08/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.10/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.25/s</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* veo-3.1-lite-generate-001 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-green-600 normal-case text-sm font-bold">veo-3.1-lite-generate-001</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">输出类型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">视频 + 音频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.05/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.08/s</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">仅视频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.03/s</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">$0.05/s</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
+              <strong>说明：</strong>以上价格适用于 VertexAI (<code>*-generate-001</code>) 和 Gemini (<code>*-generate-preview</code>) 两种接入方式，定价相同。<code>veo-3.1-lite-generate-001</code> 不支持 4K 分辨率。
             </div>
           </div>
         </div>

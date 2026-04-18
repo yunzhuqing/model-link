@@ -177,6 +177,18 @@ def execute_vertexai_veo_generation(
     # ── Build Veo request body ─────────────────────────────────────────
     request_body = _build_veo_request(request.messages, request.metadata)
 
+    # ── Vertex AI specific: generateAudio parameter ────────────────────
+    # Vertex AI Veo supports generateAudio (Gemini API does not).
+    # Veo defaults to generating audio (with sound).
+    # Only set if explicitly provided by the user.
+    generate_audio_raw = request.metadata.get("generate_audio")
+    if generate_audio_raw is None:
+        generate_audio_raw = request.metadata.get("generateAudio")
+    if generate_audio_raw is not None:
+        if "parameters" not in request_body:
+            request_body["parameters"] = {}
+        request_body["parameters"]["generateAudio"] = bool(generate_audio_raw)
+
     # ── Create long-running operation ──────────────────────────────────
     # IMPORTANT: call get_headers_fn() BEFORE reading base_url.
     # get_headers_fn() triggers _get_credentials() which sets base_url
@@ -282,11 +294,16 @@ def execute_vertexai_veo_generation(
     )
 
     # Extract video metadata from request parameters for usage tracking
+    # Apply defaults when the user didn't specify values:
+    #   aspect_ratio → 16:9, resolution → 720p, seconds → 8
     parameters = request_body.get("parameters", {})
-    video_aspect_ratio = parameters.get("aspectRatio", "")
-    video_seconds = parameters.get("durationSeconds", 0)
+    video_aspect_ratio = parameters.get("aspectRatio", "") or "16:9"
+    video_seconds = parameters.get("durationSeconds", 0) or 8
     # Derive resolution tier from metadata if available
-    video_resolution = request.metadata.get("resolution", "")
+    video_resolution = request.metadata.get("resolution", "") or "720p"
+    # Determine audio flag: Veo generates audio by default (True),
+    # only False when user explicitly sets generate_audio=false / generateAudio=false
+    video_has_audio = parameters.get("generateAudio", True)
 
     return ChatResponse(
         id=gen_id("vid"),
@@ -300,9 +317,10 @@ def execute_vertexai_veo_generation(
             prompt_tokens=0, completion_tokens=0, total_tokens=0,
             extra={
                 'output_video_number': len(stored_urls) if stored_urls else 1,
-                'output_video_resolution': video_resolution or None,
-                'output_video_aspect': video_aspect_ratio or None,
-                'output_video_seconds': float(video_seconds) if video_seconds else 0.0,
+                'output_video_resolution': video_resolution,
+                'output_video_aspect': video_aspect_ratio,
+                'output_video_seconds': float(video_seconds),
+                'output_video_audio': bool(video_has_audio),
             },
         ),
         created=int(time.time()),

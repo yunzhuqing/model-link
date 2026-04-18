@@ -595,11 +595,16 @@ def execute_veo_video_generation(
     )
 
     # Extract video metadata from request parameters for usage tracking
+    # Apply defaults when the user didn't specify values:
+    #   aspect_ratio → 16:9, resolution → 720p, seconds → 8
     parameters = request_body.get("parameters", {})
-    video_aspect_ratio = parameters.get("aspectRatio", "")
-    video_seconds = parameters.get("durationSeconds", 0)
+    video_aspect_ratio = parameters.get("aspectRatio", "") or "16:9"
+    video_seconds = parameters.get("durationSeconds", 0) or 8
     # Derive resolution tier from metadata if available
-    video_resolution = metadata.get("resolution", "")
+    video_resolution = metadata.get("resolution", "") or "720p"
+    # Determine audio flag: Veo generates audio by default (True),
+    # only False when user explicitly sets generate_audio=false / generateAudio=false
+    video_has_audio = parameters.get("generateAudio", True)
 
     return ChatResponse(
         id=gen_id("vid"),
@@ -615,9 +620,10 @@ def execute_veo_video_generation(
             total_tokens=usage_dict["total_tokens"],
             extra={
                 'output_video_number': len(video_uris) if video_uris else 1,
-                'output_video_resolution': video_resolution or None,
-                'output_video_aspect': video_aspect_ratio or None,
-                'output_video_seconds': float(video_seconds) if video_seconds else 0.0,
+                'output_video_resolution': video_resolution,
+                'output_video_aspect': video_aspect_ratio,
+                'output_video_seconds': float(video_seconds),
+                'output_video_audio': bool(video_has_audio),
             },
         ),
         created=int(time.time()),

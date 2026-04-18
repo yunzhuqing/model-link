@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
-import { Plus, Edit2, Trash2, Save, LayoutTemplate, Search, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, LayoutTemplate, Search, X, RefreshCw } from 'lucide-react';
 
 interface PricingTier {
   label: string;
@@ -603,6 +603,18 @@ export default function ModelTemplates() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['model-templates'] }),
   });
 
+  const seedMutation = useMutation({
+    mutationFn: () => client.post('/api/model-templates/seed'),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['model-templates'] });
+      const { added, updated } = res.data as { added: number; updated: number };
+      alert(`Sync complete: ${added} added, ${updated} updated.`);
+    },
+    onError: () => {
+      alert('Failed to sync templates. Please try again.');
+    },
+  });
+
   // Derive unique model families & counts
   const familyTabs = useMemo(() => {
     const countMap = new Map<string, number>();
@@ -662,12 +674,22 @@ export default function ModelTemplates() {
             Pre-defined templates that auto-fill the Add Model form.
           </p>
         </div>
-        <button
-          onClick={() => { setShowAdd(true); setEditingTpl(null); }}
-          className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
-        >
-          <Plus className="w-4 h-4 mr-2" /> Add Template
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => seedMutation.mutate()}
+            disabled={seedMutation.isPending}
+            className="bg-amber-500 text-white px-5 py-2.5 rounded-xl flex items-center hover:bg-amber-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-all shadow-lg shadow-amber-500/25"
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${seedMutation.isPending ? 'animate-spin' : ''}`} />
+            {seedMutation.isPending ? 'Syncing…' : 'Sync Templates'}
+          </button>
+          <button
+            onClick={() => { setShowAdd(true); setEditingTpl(null); }}
+            className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
+          >
+            <Plus className="w-4 h-4 mr-2" /> Add Template
+          </button>
+        </div>
       </div>
 
       {/* Provider tabs + search bar */}

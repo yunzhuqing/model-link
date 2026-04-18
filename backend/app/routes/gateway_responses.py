@@ -213,6 +213,7 @@ def _run_background_response(
                     pricing_tiers=getattr(_db_model, 'pricing_tiers', None),
                     output_pricing=getattr(_db_model, 'output_pricing', None),
                     currency=getattr(_db_model, 'currency', 'USD') or 'USD',
+                    discount=getattr(_db_model, 'discount', 1.0) or 1.0,
                     duration_ms=_bg_duration_ms,
                 )
             except Exception as _ue:
@@ -420,6 +421,7 @@ def openai_responses():
                                 pricing_tiers=model_meta.get('pricing_tiers'),
                                 output_pricing=model_meta.get('output_pricing'),
                                 currency=model_meta.get('currency', 'USD'),
+                                discount=model_meta.get('discount', 1.0),
                                 duration_ms=_resp_duration_ms,
                             )
                         except Exception as _ue:

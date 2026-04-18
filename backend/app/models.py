@@ -566,6 +566,14 @@ class UsageRecord(db.Model):
     # Total wall-clock time of the request in milliseconds
     duration_ms = db.Column(db.BigInteger, nullable=True, default=None)
 
+    # ── Billing ────────────────────────────────────────────────────────────
+    # payable_amount: total cost before discount (in native currency)
+    payable_amount = db.Column(db.Float, nullable=True, default=0.0)
+    # discount: discount multiplier applied (e.g. 0.9 = 10% off; 1.0 = no discount)
+    discount = db.Column(db.Float, nullable=True, default=1.0)
+    # actual_amount: actual cost after discount = payable_amount * discount
+    actual_amount = db.Column(db.Float, nullable=True, default=0.0)
+
     # ── Timestamp ──────────────────────────────────────────────────────────
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
@@ -622,6 +630,10 @@ class UsageRecord(db.Model):
             # Web search
             'web_search_requests': self.web_search_requests,
             'web_search_price_unit': self.web_search_price_unit,
+            # Billing
+            'payable_amount': self.payable_amount,
+            'discount': self.discount if self.discount is not None else 1.0,
+            'actual_amount': self.actual_amount,
             # Duration
             'duration_ms': self.duration_ms,
             # Timestamp

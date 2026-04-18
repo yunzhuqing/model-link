@@ -438,6 +438,8 @@ class GatewayService:
             'pricing_tiers': getattr(resolved.db_model, 'pricing_tiers', None),
             # Output pricing strategies for image/video/audio — plain dict
             'output_pricing': getattr(resolved.db_model, 'output_pricing', None),
+            # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
+            'discount': getattr(resolved.db_model, 'discount', 1.0) or 1.0,
         }
 
         # 7. Release the DB session — same rationale as stream_chat()

@@ -131,6 +131,9 @@ def parse_inline_images(parts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     inline_images: List[Dict[str, Any]] = []
     for part in parts:
+        # Skip thinking/reasoning images — only include final result images
+        if part.get("thought", False):
+            continue
         if "inlineData" in part:
             inline_data = part["inlineData"]
             mime_type = inline_data.get("mimeType", "image/png")
