@@ -88,15 +88,19 @@ def is_seedance_video_model(model: str) -> bool:
 # 若未命中此表，则直接将用户输入的名称透传给 API（适用于用户已配置完整 ID 的情况）。
 _SEEDANCE_MODEL_ID_MAP: Dict[str, str] = {
     # 豆包 Seedance 系列
-    "doubao-seedance-pro":       "doubao-seedance-pro",
-    "doubao-seedance-1.5-pro":   "doubao-seedance-1-5-pro-250528",
-    "doubao-seedance-2.0-fast":  "doubao-seedance-2-0-fast-260518",
-    "doubao-seedance-2.0":       "doubao-seedance-2-0-260128",
+    "doubao-seedance-pro":            "doubao-seedance-pro",
+    "doubao-seedance-1.0-pro":        "doubao-seedance-1-0-pro-250528",
+    "doubao-seedance-1.0-pro-fast":   "doubao-seedance-1-0-pro-fast-251015",
+    "doubao-seedance-1.5-pro":        "doubao-seedance-1-5-pro-251215",
+    "doubao-seedance-2.0-fast":       "doubao-seedance-2-0-fast-260518",
+    "doubao-seedance-2.0":            "doubao-seedance-2-0-260128",
     # Seedance 系列（无 doubao 前缀）
-    "seedance-pro":              "doubao-seedance-pro",
-    "seedance-1.5-pro":          "doubao-seedance-1-5-pro-250528",
-    "seedance-2.0-fast":         "doubao-seedance-2-0-fast-260518",
-    "seedance-2.0":              "doubao-seedance-2-0-260128",
+    "seedance-pro":                   "doubao-seedance-pro",
+    "seedance-1.0-pro":               "doubao-seedance-1-0-pro-250528",
+    "seedance-1.0-pro-fast":          "doubao-seedance-1-0-pro-fast-251015",
+    "seedance-1.5-pro":               "doubao-seedance-1-5-pro-251215",
+    "seedance-2.0-fast":              "doubao-seedance-2-0-fast-260518",
+    "seedance-2.0":                   "doubao-seedance-2-0-260128",
 }
 
 
@@ -111,6 +115,32 @@ def _resolve_seedance_model_id(model: str) -> str:
         API 模型 ID（若未命中映射表则原样返回）
     """
     return _SEEDANCE_MODEL_ID_MAP.get(model.lower(), model)
+
+
+def _model_supports_audio(model_id: str) -> bool:
+    """
+    检查模型是否支持 generate_audio 参数。
+
+    Seedance 1.5 及之后的版本支持 generate_audio，1.5 之前的版本（1.0、pro）不支持。
+    通过从模型 ID 中提取主版本号来判断。
+
+    Args:
+        model_id: 实际 API 模型 ID（如 "doubao-seedance-1-5-pro-251215"）
+
+    Returns:
+        True 表示支持 generate_audio 参数
+    """
+    import re
+    lower = model_id.lower()
+    # Match seedance-X-Y or seedance-X.Y pattern to extract major version
+    match = re.search(r'seedance[- ]?(\d+)[.\-](\d+)', lower)
+    if match:
+        major = int(match.group(1))
+        minor = int(match.group(2))
+        # 1.5+ supports audio (i.e., version >= 1.5)
+        return (major, minor) >= (1, 5)
+    # For "seedance-pro" (no version number) — older model, no audio support
+    return False
 
 
 # =============================================================================
@@ -271,6 +301,7 @@ def _build_content(
     content: List[Dict[str, Any]] = []
     seen_urls: set = set()
     prompt_text = ""
+    has_var_refs = False  # Track whether raw text contained {{...}} before substitution
 
     # 从用户消息中提取内容
     for msg in messages:
@@ -280,6 +311,8 @@ def _build_content(
 
         if isinstance(msg.content, str):
             if msg.content.strip():
+                if "{{" in msg.content:
+                    has_var_refs = True
                 text = _apply_file_id_substitution(msg.content, file_id_sub_map)
                 content.append({"type": "text", "text": text})
                 prompt_text = text
@@ -289,6 +322,8 @@ def _build_content(
                     continue
 
                 if block.type == ContentType.TEXT and block.text:
+                    if "{{" in block.text:
+                        has_var_refs = True
                     text = _apply_file_id_substitution(block.text, file_id_sub_map)
                     content.append({"type": "text", "text": text})
                     prompt_text = text
@@ -370,7 +405,7 @@ def _build_content(
     #   最后一张 → last_frame
     #   中间张 → reference_image（保持不变）
     has_explicit_special_frames = bool(special_frames)
-    has_var_refs = "{{" in prompt_text
+    # has_var_refs was already set above by checking raw text before substitution
     if not has_var_refs and not has_explicit_special_frames:
         # 找出所有 reference_image 类型的图片项（保留 index）
         img_indices = [
@@ -399,7 +434,7 @@ def _create_video_task(
     ratio: str = "",
     duration: Optional[int] = None,
     resolution: str = "",
-    generate_audio: bool = True,
+    generate_audio: Optional[bool] = True,
     watermark: bool = False,
     seed: Optional[int] = None,
 ) -> str:
@@ -414,7 +449,7 @@ def _create_video_task(
         ratio:          宽高比，如 "16:9"、"9:16"
         duration:       视频时长（秒，整数）
         resolution:     分辨率档位，如 "720p"、"1080p"
-        generate_audio: 是否生成音频（默认 True）
+        generate_audio: 是否生成音频（默认 True；None 表示不发送该参数）
         watermark:      是否添加水印（默认 False）
         seed:           随机种子
 
@@ -427,9 +462,12 @@ def _create_video_task(
     body: Dict[str, Any] = {
         "model": model_id,
         "content": content,
-        "generate_audio": generate_audio,
         "watermark": watermark,
     }
+
+    # Only include generate_audio for models that support it (1.5+)
+    if generate_audio is not None:
+        body["generate_audio"] = generate_audio
 
     if ratio:
         body["ratio"] = ratio
@@ -603,13 +641,25 @@ def execute_seedance_video_generation(
         if not resolution:
             resolution = derived_res
 
+    # Apply defaults when no aspect_ratio / resolution / size is specified
+    if not ratio:
+        ratio = "16:9"
+    if not resolution:
+        resolution = "720p"
+
     # Duration (seconds, int)
     seconds_raw = metadata.get("seconds") or metadata.get("video_seconds") or metadata.get("duration")
     duration: Optional[int] = int(float(seconds_raw)) if seconds_raw is not None else None
 
     # Audio / watermark / seed
+    # generate_audio is only supported by Seedance 1.5+ models.
+    # For earlier versions (1.0, pro), it should not be sent to the API.
+    supports_audio = _model_supports_audio(model_id)
     generate_audio_raw = metadata.get("generate_audio")
-    generate_audio: bool = bool(generate_audio_raw) if generate_audio_raw is not None else True
+    if supports_audio:
+        generate_audio: Optional[bool] = bool(generate_audio_raw) if generate_audio_raw is not None else True
+    else:
+        generate_audio: Optional[bool] = None  # Don't send to API
 
     watermark_raw = metadata.get("watermark")
     watermark: bool = bool(watermark_raw) if watermark_raw is not None else False
@@ -682,6 +732,12 @@ def execute_seedance_video_generation(
     # ── 轮询结果 ─────────────────────────────────────────────────────────
     video_url, usage_dict = _poll_video_task(api_key, base_url, task_id)
 
+    # Determine whether a reference video was used in the request
+    has_reference_video = any(
+        item.get("type") == "video_url" and item.get("role") == "reference_video"
+        for item in content
+    )
+
     video_items = [{
         "type": "video_generation_call",
         "status": "completed",
@@ -708,6 +764,11 @@ def execute_seedance_video_generation(
             total_tokens=usage_dict["total_tokens"],
             extra={
                 'output_video_number': 1,
+                'output_video_resolution': resolution or '',
+                'output_video_aspect': ratio or '',
+                'output_video_seconds': float(duration) if duration is not None else 0.0,
+                'output_video_audio': generate_audio,
+                'output_video_reference_video': has_reference_video,
             },
         ),
         created=int(time.time()),

@@ -18,7 +18,7 @@ SubAppId 存放于 extra_config["sub_app_id"]。
     "type": "video_generation",
     "n": 1,
     "size": "720x1080",      # 视频尺寸，派生 AspectRatio
-    "seconds": "4",           # 视频时长（秒）
+    "seconds": "5",           # 视频时长（秒），支持 5 或 15，默认 5
     "resolution": "720p"      # 分辨率
 }
 
@@ -728,7 +728,8 @@ def execute_tencentvod_video_generation(
                 'output_video_number': video_count,
                 'output_video_resolution': resolution or '720p',
                 'output_video_aspect': aspect_ratio or '16:9',
-                'output_video_seconds': float(seconds) if seconds else 8.0,
+                'output_video_seconds': float(seconds) if seconds else 5.0,
+                'output_video_audio': audio_generation.lower() == 'enabled' if audio_generation else None,
             },
         ),
         created=int(time.time()),

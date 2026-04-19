@@ -12,191 +12,10 @@
 
 API 文档: https://www.volcengine.com/docs/82379/181798
 """
-from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Generator
-from enum import Enum
+from typing import Optional, List, Dict, Any
 
-from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
-from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
-from app.abstraction.messages import Message, MessageRole, ContentBlock
-from app.abstraction.streaming import StreamChunk, StreamEventType
-
-
-# =============================================================================
-# 图像生成模型配置
-# =============================================================================
-
-@dataclass
-class DoubaoImageModel:
-    """豆包图像生成模型配置"""
-    model_name: str  # API 实际使用的模型名称
-    display_name: str  # 显示名称
-    tool_name: str  # 工具名称（用于 tool_choice）
-    description: str  # 模型描述
-    support_seed: bool = False  # 是否支持种子参数
-    support_guidance_scale: bool = False  # 是否支持引导强度
-    default_guidance_scale: float = 3.5  # 默认引导强度
-    support_sequential_image: bool = False  # 是否支持顺序图像生成（多轮对话）
-
-
-# 豆包图像生成模型列表（已废弃：doubao-seedream-3.0-t2i、doubao-seededit-3.0-i2i）
-DOUBAO_IMAGE_MODELS: List[DoubaoImageModel] = [
-    DoubaoImageModel(
-        model_name="doubao-seedream-4.0",
-        display_name="Seedream 4.0",
-        tool_name="image_generation_doubao_seedream_4_0",
-        description="豆包 Seedream 4.0，支持多轮顺序图像生成",
-        support_sequential_image=True,
-    ),
-    DoubaoImageModel(
-        model_name="doubao-seedream-4.5",
-        display_name="Seedream 4.5",
-        tool_name="image_generation_doubao_seedream_4_5",
-        description="豆包 Seedream 4.5，支持多轮顺序图像生成",
-        support_sequential_image=True,
-    ),
-    DoubaoImageModel(
-        model_name="doubao-seedream-5.0",
-        display_name="Seedream 5.0",
-        tool_name="image_generation_doubao_seedream_5_0",
-        description="豆包 Seedream 5.0，支持多轮顺序图像生成",
-        support_sequential_image=True,
-    ),
-    DoubaoImageModel(
-        model_name="seedream-4.0",
-        display_name="Seedream 4.0 (无前缀)",
-        tool_name="image_generation_seedream_4_0",
-        description="Seedream 4.0，支持多轮顺序图像生成",
-        support_sequential_image=True,
-    ),
-    DoubaoImageModel(
-        model_name="seedream-4.5",
-        display_name="Seedream 4.5 (无前缀)",
-        tool_name="image_generation_seedream_4_5",
-        description="Seedream 4.5，支持多轮顺序图像生成",
-        support_sequential_image=True,
-    ),
-    DoubaoImageModel(
-        model_name="seedream-5.0",
-        display_name="Seedream 5.0 (无前缀)",
-        tool_name="image_generation_seedream_5_0",
-        description="Seedream 5.0，支持多轮顺序图像生成",
-        support_sequential_image=True,
-    ),
-]
-
-
-def get_doubao_image_model(model_name: str) -> Optional[DoubaoImageModel]:
-    """
-    根据模型名称获取豆包图像生成模型配置
-    
-    Args:
-        model_name: 模型名称（可以是完整名称或部分匹配）
-    
-    Returns:
-        模型配置，如果未找到返回 None
-    """
-    model_name_lower = model_name.lower()
-    
-    # 精确匹配
-    for model in DOUBAO_IMAGE_MODELS:
-        if model.model_name.lower() == model_name_lower:
-            return model
-    
-    # 部分匹配
-    for model in DOUBAO_IMAGE_MODELS:
-        if model.model_name.lower() in model_name_lower or model_name_lower in model.model_name.lower():
-            return model
-    
-    return None
-
-
-def list_doubao_image_models() -> List[DoubaoImageModel]:
-    """列出所有豆包图像生成模型"""
-    return DOUBAO_IMAGE_MODELS.copy()
-
-
-# =============================================================================
-# 图像生成工具定义
-# =============================================================================
-
-def create_image_generation_tool(model: DoubaoImageModel) -> ToolDefinition:
-    """
-    为豆包图像生成模型创建工具定义
-    
-    Args:
-        model: 豆包图像生成模型配置
-    
-    Returns:
-        工具定义
-    """
-    parameters: List[ToolParameter] = [
-        ToolParameter(
-            name="prompt",
-            type="string",
-            description="图像生成/编辑的文本描述",
-            required=True
-        ),
-        ToolParameter(
-            name="image_size",
-            type="string",
-            description="输出图像尺寸，如 '1024x1024', '768x1344', '1344x768', '1536x1024', '1024x1536'",
-            required=False,
-            default="1024x1024",
-            enum=["1024x1024", "768x1344", "1344x768", "1536x1024", "1024x1536", "1440x720", "720x1440"]
-        ),
-        ToolParameter(
-            name="number",
-            type="integer",
-            description="生成图像数量，1-4",
-            required=False,
-            default=1
-        ),
-        ToolParameter(
-            name="output_format",
-            type="string",
-            description="输出格式",
-            required=False,
-            default="base64",
-            enum=["base64", "url"]
-        ),
-    ]
-    
-    # 如果模型支持 seed 参数
-    if model.support_seed:
-        parameters.append(ToolParameter(
-            name="seed",
-            type="integer",
-            description="随机种子，用于生成可复现的图像",
-            required=False
-        ))
-    
-    # 如果模型支持引导强度
-    if model.support_guidance_scale:
-        parameters.append(ToolParameter(
-            name="guidance_scale",
-            type="number",
-            description=f"引导强度，范围 0.1-10.0，默认 {model.default_guidance_scale}",
-            required=False,
-            default=model.default_guidance_scale
-        ))
-    
-    return ToolDefinition(
-        name=model.tool_name,
-        description=model.description,
-        parameters=parameters,
-        tool_type=ToolType.IMAGE_GENERATION
-    )
-
-
-def get_image_generation_tools() -> List[ToolDefinition]:
-    """
-    获取所有豆包图像生成工具定义
-    
-    Returns:
-        工具定义列表
-    """
-    return [create_image_generation_tool(model) for model in DOUBAO_IMAGE_MODELS]
+import httpx
+import json
 
 
 # =============================================================================
@@ -243,6 +62,7 @@ class DoubaoImageProvider:
         seed: Optional[int] = None,
         reference_images: Optional[List[str]] = None,
         watermark: bool = False,
+        support_output_format: bool = True,
     ) -> Dict[str, Any]:
         """
         调用豆包图像生成 API
@@ -259,13 +79,11 @@ class DoubaoImageProvider:
             seed: 随机种子
             reference_images: 参考图像 URL 列表（用于图生图）
             watermark: 是否添加水印
+            support_output_format: 是否支持 output_format 参数（5.0+支持，4.x 不支持）
 
         Returns:
             包含生成图像结果的字典
         """
-        import httpx
-        import json
-
         # 构造请求体（使用真实 API 字段名）
         # Always request URL format from the Doubao API; the caller is responsible
         # for converting to base64 when response_format="b64_json" is requested.
@@ -273,10 +91,13 @@ class DoubaoImageProvider:
             "model": model_name,
             "prompt": prompt,
             "stream": False,
-            "output_format": image_format,   # 图像文件格式：png / jpg
             "response_format": "url",        # Always request URL; upper layer converts if needed
             "watermark": watermark,
         }
+
+        # 只有支持 output_format 参数的模型才添加此字段
+        if support_output_format:
+            request_body["output_format"] = image_format
 
         if size:
             request_body["size"] = size
@@ -378,26 +199,6 @@ class DoubaoImageProvider:
         return images
 
 
-# =============================================================================
-# 便捷函数
-# =============================================================================
-
-def get_image_generation_tool_definition(model_name: str) -> Optional[ToolDefinition]:
-    """
-    根据模型名称获取图像生成工具定义
-    
-    Args:
-        model_name: 模型名称
-    
-    Returns:
-        工具定义，如果未找到返回 None
-    """
-    model = get_doubao_image_model(model_name)
-    if model:
-        return create_image_generation_tool(model)
-    return None
-
-
 def is_doubao_image_model(model_name: str) -> bool:
     """
     检查是否为豆包图像生成模型
@@ -408,20 +209,33 @@ def is_doubao_image_model(model_name: str) -> bool:
     Returns:
         是否为豆包图像生成模型
     """
-    return get_doubao_image_model(model_name) is not None
+    model_name_lower = model_name.lower()
+    # 检查是否包含 doubao-seedream 或 seedream
+    return "doubao-seedream" in model_name_lower or model_name_lower.startswith("seedream")
 
 
-def get_tool_name_for_model(model_name: str) -> Optional[str]:
+def get_support_output_format(model_name: str) -> bool:
     """
-    根据模型名称获取对应的工具名称
+    检查模型是否支持 output_format 参数
+    
+    5.0 及之后的版本支持，5.0 之前的版本（4.x、3.x 等）不支持。
+    
+    通过从模型名称中提取主版本号来判断：
+    - seedream-5-0, seedream-5.0, seedream-6-0 等 → 支持
+    - seedream-4-0, seedream-4-5, seedream-3-0 等 → 不支持
     
     Args:
         model_name: 模型名称
     
     Returns:
-        工具名称，如果未找到返回 None
+        是否支持 output_format 参数
     """
-    model = get_doubao_image_model(model_name)
-    if model:
-        return model.tool_name
-    return None
+    import re
+    model_name_lower = model_name.lower()
+    # 从模型名称中提取 seedream 后面的主版本号
+    # 匹配模式: seedream-X.Y 或 seedream-X-Y（X 是主版本号）
+    match = re.search(r'seedream[- ]?(\d+)[.\-]', model_name_lower)
+    if match:
+        major_version = int(match.group(1))
+        return major_version >= 5
+    return False

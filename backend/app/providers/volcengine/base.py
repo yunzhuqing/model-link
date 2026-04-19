@@ -21,8 +21,10 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.utils import gen_id
 from .image_generation import (
     DoubaoImageProvider,
+    get_support_output_format,
 )
 from .image_size_utils import resolve_seedream_size
 from .video_generation import (
@@ -1048,6 +1050,7 @@ class VolcengineProvider(BaseProvider):
                 seed=seed,
                 watermark=watermark,
                 reference_images=reference_images,
+                support_output_format=get_support_output_format(model),
             )
             
             images = image_provider.parse_image_response(response_data)
@@ -1118,17 +1121,20 @@ class VolcengineProvider(BaseProvider):
             if img_aspect:
                 img_extra['output_image_aspect'] = img_aspect
 
+            # Use gen_id to generate a unique response ID
+            response_id = gen_id("img")
+
             return ChatResponse(
-                id=f"img-{uuid.uuid4().hex[:8]}",
+                id=response_id,
                 model=model,
                 choices=[choice],
                 usage=UsageInfo(
-                    prompt_tokens=len(prompt) // 4,  # Rough estimate
-                    completion_tokens=len(json.dumps(images)) // 4,
-                    total_tokens=len(prompt) // 4 + len(json.dumps(images)) // 4,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
                     extra=img_extra,
                 ),
-                created=int(time.time()),
+                created=response_data.get("created", int(time.time())),
                 provider=self.PROVIDER_TYPE
             )
             

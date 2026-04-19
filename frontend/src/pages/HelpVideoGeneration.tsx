@@ -9,12 +9,14 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'overview', label: '功能说明' },
   { id: 'text-to-video', label: '文本生成视频' },
   { id: 'multimodal', label: '多模态素材引用' },
+  { id: 'seedance-models', label: 'Seedance 模型说明' },
+  { id: 'seedance-pricing', label: 'Seedance 收费标准' },
+  { id: 'kling-models', label: 'Kling 模型说明' },
   { id: 'gemini-veo', label: 'Gemini Veo 视频生成' },
   { id: 'vertexai-veo', label: 'VertexAI Veo 视频生成' },
   { id: 'veo-limits', label: '模型限制说明' },
   { id: 'veo-pricing', label: 'Veo 收费标准' },
   { id: 'params', label: '请求参数' },
-  { id: 'veo-params', label: 'Veo 专属参数' },
   { id: 'response-format', label: '响应格式' },
 ];
 
@@ -355,6 +357,11 @@ export default function HelpVideoGeneration() {
                     <td className="px-4 py-2.5 text-slate-500">文本/图片/视频/音频多模态，file_id 引用</td>
                   </tr>
                   <tr className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">腾讯云点播 (TencentVOD)</td>
+                    <td className="px-4 py-2.5 text-slate-600">kling-v3-omni, kling-v3, kling-v2.1-pro, ...</td>
+                    <td className="px-4 py-2.5 text-slate-500">文生视频，图生视频，支持 720p~4K，5s/15s</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50">
                     <td className="px-4 py-2.5 font-medium text-slate-700">Google Gemini (Veo)</td>
                     <td className="px-4 py-2.5 text-slate-600">veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview</td>
                     <td className="px-4 py-2.5 text-slate-500">文生视频，图生视频（首帧/尾帧插值）</td>
@@ -396,6 +403,361 @@ export default function HelpVideoGeneration() {
           <CurlSection body={VIDEO_GENERATION_REF} />
         </SectionCard>
 
+        {/* Seedance Models */}
+        <div id="seedance-models" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">Seedance 模型说明</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">火山引擎</span>
+            </div>
+            <p className="text-sm text-slate-500">豆包 Seedance 系列视频生成模型的能力对比与参数支持。</p>
+          </div>
+          <div className="p-6 space-y-6">
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">模型</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">支持分辨率</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">音频生成</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">支持输入</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">默认参数</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {[
+                    { model: 'doubao-seedance-1.0-pro',      res: '480p, 720p, 1080p', audio: '不支持', input: '图片', defaults: '16:9 / 720p' },
+                    { model: 'doubao-seedance-1.0-pro-fast', res: '480p, 720p, 1080p', audio: '不支持', input: '图片', defaults: '16:9 / 720p' },
+                    { model: 'doubao-seedance-1.5-pro',      res: '480p, 720p, 1080p', audio: '✅ 支持（默认开启）', input: '图片、视频、音频', defaults: '16:9 / 720p' },
+                    { model: 'doubao-seedance-2.0',          res: '480p, 720p, 1080p', audio: '✅ 支持（默认开启）', input: '图片、视频、音频', defaults: '16:9 / 720p' },
+                    { model: 'doubao-seedance-2.0-fast',     res: '480p, 720p',        audio: '✅ 支持（默认开启）', input: '图片、视频、音频', defaults: '16:9 / 720p' },
+                  ].map(r => (
+                    <tr key={r.model} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5"><code className="text-orange-600 font-semibold">{r.model}</code></td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.res}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.audio}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.input}</td>
+                      <td className="px-4 py-2.5 text-slate-500">{r.defaults}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-sm text-amber-800">
+              <strong>说明：</strong>
+              <ul className="list-disc list-inside mt-1 space-y-1">
+                <li>未指定 <code>aspect_ratio</code>、<code>resolution</code>、<code>size</code> 时，默认使用 <code>16:9</code> 宽高比和 <code>720p</code> 分辨率</li>
+                <li><code>generate_audio</code> 参数仅 1.5-pro 及以后版本支持；1.0 系列不支持此参数，请勿传入</li>
+                <li>1.5-pro 及以后版本默认生成有声视频；若需无声视频，设置 <code>generate_audio: false</code></li>
+                <li>2.0 系列支持通过 <code>file_id</code> 引用多模态素材（图片、视频、音频）</li>
+              </ul>
+            </div>
+
+            {/* Size mapping for 1.0 series */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                Seedance 1.0 系列尺寸映射 <span className="text-slate-400 font-normal normal-case">（size ↔ aspect_ratio + resolution）</span>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">宽高比</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { ratio: '16:9', s480: '864x480',  s720: '1248x704',  s1080: '1920x1088' },
+                      { ratio: '4:3',  s480: '736x544',  s720: '1120x832',  s1080: '1664x1248' },
+                      { ratio: '1:1',  s480: '640x640',  s720: '960x960',   s1080: '1440x1440' },
+                      { ratio: '3:4',  s480: '544x736',  s720: '832x1120',  s1080: '1248x1664' },
+                      { ratio: '9:16', s480: '480x864',  s720: '704x1248',  s1080: '1088x1920' },
+                      { ratio: '21:9', s480: '960x416',  s720: '1504x640',  s1080: '2176x928' },
+                    ].map(r => (
+                      <tr key={r.ratio} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{r.ratio}</td>
+                        <td className="px-4 py-2.5 text-slate-600 text-center font-mono text-xs">{r.s480}</td>
+                        <td className="px-4 py-2.5 text-slate-600 text-center font-mono text-xs">{r.s720}</td>
+                        <td className="px-4 py-2.5 text-slate-600 text-center font-mono text-xs">{r.s1080}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Size mapping for 1.5/2.0 series */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                Seedance 1.5 / 2.0 系列尺寸映射 <span className="text-slate-400 font-normal normal-case">（size ↔ aspect_ratio + resolution）</span>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">宽高比</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[
+                      { ratio: '16:9', s480: '864x496',  s720: '1280x720',  s1080: '1920x1080' },
+                      { ratio: '4:3',  s480: '752x560',  s720: '1112x834',  s1080: '1664x1248' },
+                      { ratio: '1:1',  s480: '640x640',  s720: '960x960',   s1080: '1440x1440' },
+                      { ratio: '3:4',  s480: '560x752',  s720: '834x1112',  s1080: '1248x1664' },
+                      { ratio: '9:16', s480: '496x864',  s720: '720x1280',  s1080: '1080x1920' },
+                      { ratio: '21:9', s480: '992x432',  s720: '1470x630',  s1080: '2206x946' },
+                    ].map(r => (
+                      <tr key={r.ratio} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{r.ratio}</td>
+                        <td className="px-4 py-2.5 text-slate-600 text-center font-mono text-xs">{r.s480}</td>
+                        <td className="px-4 py-2.5 text-slate-600 text-center font-mono text-xs">{r.s720}</td>
+                        <td className="px-4 py-2.5 text-slate-600 text-center font-mono text-xs">{r.s1080}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
+              <strong>使用方式：</strong>可通过 <code>size</code> 直接传入像素尺寸（如 <code>"496x864"</code>），系统自动解析为对应的 <code>aspect_ratio</code> 和 <code>resolution</code>；也可直接指定 <code>aspect_ratio</code> 和 <code>resolution</code> 参数。
+            </div>
+          </div>
+        </div>
+
+        {/* Seedance Pricing */}
+        <div id="seedance-pricing" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">Seedance 收费标准</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">CNY / M output tokens</span>
+            </div>
+            <p className="text-sm text-slate-500">Seedance 系列按 output tokens 计费，价格因模型、分辨率、是否含音频/视频参考而异。</p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* 1.0 Pro */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-orange-600 normal-case text-sm font-bold">doubao-seedance-1.0-pro</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥15/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥15/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥15/M</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 1.0 Pro Fast */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-orange-600 normal-case text-sm font-bold">doubao-seedance-1.0-pro-fast</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥4.2/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥4.2/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥4.2/M</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 1.5 Pro */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-orange-600 normal-case text-sm font-bold">doubao-seedance-1.5-pro</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">输出类型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">有声视频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥16/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥16/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥16/M</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">无声视频</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥8/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥8/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥8/M</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 2.0 */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-orange-600 normal-case text-sm font-bold">doubao-seedance-2.0</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">输入类型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">1080p</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">不含视频输入</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥28/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥28/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥31/M</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">含视频输入</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥46/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥46/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥51/M</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 2.0 Fast */}
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                <code className="text-orange-600 normal-case text-sm font-bold">doubao-seedance-2.0-fast</code>
+              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600">输入类型</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">480p</th>
+                      <th className="px-4 py-2.5 font-semibold text-slate-600 text-center">720p</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">不含视频输入</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥22/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥22/M</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-medium text-slate-700">含视频输入</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥37/M</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-center">¥37/M</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Kling Models (TencentVOD) */}
+        <div id="kling-models" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">Kling 模型说明</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">腾讯云点播</span>
+            </div>
+            <p className="text-sm text-slate-500">可灵 (Kling) 系列视频生成模型通过腾讯云点播 API 调用，支持文生视频和图生视频。</p>
+          </div>
+          <div className="p-6 space-y-6">
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">模型</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {[
+                    { model: 'kling-v3-omni',       desc: '可灵 3.0 Omni，最新旗舰模型，支持文生视频和图生视频' },
+                  ].map(r => (
+                    <tr key={r.model} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5"><code className="text-purple-600 font-semibold">{r.model}</code></td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">参数</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">支持值</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">默认值</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {[
+                    { param: 'resolution',   values: '720p, 1080p, 2K, 4K', defaults: '—' },
+                    { param: 'aspect_ratio',  values: '16:9, 9:16, 1:1',     defaults: '16:9' },
+                    { param: 'seconds',       values: '5, 15',               defaults: '5' },
+                  ].map(r => (
+                    <tr key={r.param} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5"><code className="text-purple-600 font-semibold">{r.param}</code></td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.values}</td>
+                      <td className="px-4 py-2.5 text-slate-500">{r.defaults}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="bg-purple-50 border border-purple-100 rounded-lg p-3 text-sm text-purple-800">
+              <strong>说明：</strong>
+              <ul className="list-disc list-inside mt-1 space-y-1">
+                <li>视频时长支持 <code>5</code> 秒和 <code>15</code> 秒，未指定时默认生成 5 秒视频</li>
+                <li>宽高比支持 <code>16:9</code>（横屏）、<code>9:16</code>（竖屏）、<code>1:1</code>（正方形），默认 <code>16:9</code></li>
+                <li>分辨率支持 <code>720p</code>、<code>1080p</code>、<code>2K</code>、<code>4K</code></li>
+                <li>支持通过 <code>input_image</code> 传入参考图片实现图生视频</li>
+                <li>可通过 <code>{"{{file_id}}"}</code> 在 prompt 中引用参考图片</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
         {/* Gemini Veo */}
         <div id="gemini-veo" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
           <div className="p-6 border-b border-slate-100">
@@ -404,7 +766,7 @@ export default function HelpVideoGeneration() {
               <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">Google</span>
             </div>
             <p className="text-sm text-slate-500">
-              使用 Google Gemini Veo 模型生成高质量视频。支持纯文本生成和图像引导生成（首帧/尾帧插值）。
+              使用 Google Gemini Veo 模型生成高质量视频。支持纯文本生成和图像引导生成（首帧/尾帧插值）。Veo 仅支持生成含声音的视频。
             </p>
           </div>
           <div className="p-6 space-y-6">
@@ -755,16 +1117,11 @@ export default function HelpVideoGeneration() {
               <tbody className="divide-y divide-slate-100">
                 {[
                   { name: 'type',              required: true,  type: 'string',  desc: '固定为 "video_generation"' },
-                  { name: 'size / video_size', required: false, type: 'string',  desc: '视频尺寸（WxH），如 "496x864"（Seedance）' },
-                  { name: 'aspect_ratio',      required: false, type: 'string',  desc: '宽高比，如 "16:9"、"9:16"；别名：ratio' },
+                  { name: 'size',              required: false, type: 'string',  desc: '视频尺寸（WxH），如 "496x864"（Seedance）' },
+                  { name: 'aspect_ratio',      required: false, type: 'string',  desc: '宽高比，如 "16:9"、"9:16"；别名：ratio。默认 "16:9"' },
                   { name: 'seconds',           required: false, type: 'number',  desc: '视频时长（秒）；别名：duration' },
-                  { name: 'resolution',        required: false, type: 'string',  desc: '分辨率等级，如 "720p"、"1080p"（Seedance）' },
-                  { name: 'n / number',        required: false, type: 'number',  desc: '生成视频数量' },
-                  { name: 'generate_audio',    required: false, type: 'boolean', desc: '是否生成音频，默认 true（Seedance）' },
-                  { name: 'negative_prompt',   required: false, type: 'string',  desc: '负面提示词' },
-                  { name: 'reference_images',  required: false, type: 'array',   desc: '参考图片 URL 列表（图生视频，Seedance）' },
-                  { name: 'reference_videos',  required: false, type: 'array',   desc: '参考视频 URL 列表（视频参考，Seedance）' },
-                  { name: 'last_frame_url',    required: false, type: 'string',  desc: '尾帧图片 URL（Seedance）' },
+                  { name: 'resolution',        required: false, type: 'string',  desc: '分辨率等级，如 "480p"、"720p"、"1080p"。默认 "720p"' },
+                  { name: 'generate_audio',    required: false, type: 'boolean', desc: '是否生成音频，默认 true（仅 Seedance 1.5+ 支持）' },
                   { name: 'seed',              required: false, type: 'number',  desc: '随机种子' },
                   { name: 'watermark',         required: false, type: 'boolean', desc: '是否添加水印' },
                 ].map((r) => (
@@ -777,49 +1134,6 @@ export default function HelpVideoGeneration() {
                 ))}
               </tbody>
             </table>
-          </div>
-        </SectionCard>
-
-        {/* Veo specific params */}
-        <SectionCard
-          id="veo-params"
-          title="Gemini Veo 专属参数"
-          badge="Veo only"
-          badgeColor="bg-blue-100 text-blue-700"
-          description="以下参数仅适用于 Gemini Veo 模型（veo-3.1-* 系列）。"
-        >
-          <div className="overflow-x-auto rounded-xl border border-slate-200">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-left">
-                <tr>
-                  <th className="px-4 py-2.5 font-semibold text-slate-600">参数</th>
-                  <th className="px-4 py-2.5 font-semibold text-slate-600">类型</th>
-                  <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {[
-                  { name: 'aspect_ratio',     type: 'string',  desc: '宽高比，如 "16:9"、"9:16"、"1:1"。若未提供，Veo 使用默认比例。' },
-                  { name: 'seconds',          type: 'number',  desc: '视频时长（秒，整数），对应 API 的 durationSeconds 参数。' },
-                  { name: 'n / sampleCount',  type: 'number',  desc: '生成视频数量，对应 API 的 sampleCount 参数。' },
-                  { name: 'negative_prompt',  type: 'string',  desc: '负面提示词，描述不希望出现的内容。' },
-                  { name: 'enhance_prompt',   type: 'boolean', desc: '是否让模型增强/改写提示词（默认 false）。' },
-                  { name: 'video_fidelity',   type: 'string',  desc: '视频质量级别，如 "HIGH"（高质量）、"MEDIUM"、"LOW"。' },
-                  { name: 'first_frame',      type: 'string',  desc: '首帧图片 base64 数据（不含 data URI 前缀），用于图生视频。也可在 content 中传入 input_image。' },
-                  { name: 'last_frame',       type: 'string',  desc: '尾帧图片 base64 数据（插值生成），与 first_frame 配合使用。' },
-                ].map((r) => (
-                  <tr key={r.name} className="hover:bg-slate-50">
-                    <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">{r.name}</code></td>
-                    <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{r.type}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700">
-            <strong>图生视频说明：</strong>可在 <code>input</code> 的 content 中传入 <code>input_image</code>（base64 格式），
-            第一张图片作为首帧，第二张（如有）作为尾帧。也可以通过 tool 参数中的 <code>first_frame</code> / <code>last_frame</code> 传入纯 base64 数据。
           </div>
         </SectionCard>
 

@@ -333,19 +333,22 @@ def _resolve_output_price(
 
     base_price: float = float(pricing_config.get('price', 0.0) or 0.0)
 
-    # If tiers exist and we have a resolution, try to match
+    # If tiers exist, try to match by resolution / audio / reference_video flags.
+    # Resolution is optional — tiers without a resolution field match any resolution.
     tiers = pricing_config.get('tiers')
-    if tiers and isinstance(tiers, list) and resolution:
-        norm_res = resolution.strip().lower()
+    if tiers and isinstance(tiers, list):
+        norm_res = resolution.strip().lower() if resolution else ''
 
-        # Collect candidate tiers that match resolution
+        # Collect candidate tiers
         candidates: list = []
         for tier in tiers:
             if not isinstance(tier, dict):
                 continue
+
+            # Resolution matching: tier without resolution → wildcard (matches any)
             tier_res = (tier.get('resolution') or '').strip().lower()
-            if not tier_res or tier_res != norm_res:
-                continue
+            if tier_res and norm_res and tier_res != norm_res:
+                continue  # Resolution mismatch
 
             # Check audio and reference_video flags
             tier_audio = tier.get('audio')            # None means wildcard
@@ -354,6 +357,10 @@ def _resolve_output_price(
             # Compute match score (higher = more specific match)
             score = 0
             match = True
+
+            # Resolution specificity bonus
+            if tier_res and norm_res and tier_res == norm_res:
+                score += 1  # Exact resolution match is preferred
 
             # Audio flag matching
             if tier_audio is not None and audio is not None:
@@ -534,6 +541,7 @@ def _build_record(
     output_video_seconds: float = extra.get('output_video_seconds', 0.0) or 0.0
     output_video_price_unit: float = extra.get('output_video_price_unit', 0.0) or 0.0
     output_video_audio: Optional[bool] = extra.get('output_video_audio')
+    output_video_reference_video: Optional[bool] = extra.get('output_video_reference_video')
 
     output_audio_tokens: int = extra.get('output_audio_tokens', 0) or 0
     output_audio_seconds: float = extra.get('output_audio_seconds', 0.0) or 0.0
@@ -549,10 +557,21 @@ def _build_record(
         if output_image_price_unit == 0.0:
             output_image_price_unit = _resolve_output_price(
                 output_pricing.get('image'), output_image_resolution)
-        if output_video_price_unit == 0.0:
-            output_video_price_unit = _resolve_output_price(
-                output_pricing.get('video'), output_video_resolution,
-                audio=output_video_audio)
+        # For video: per_token pricing uses output_price_unit (per M tokens),
+        # while per_second/per_video pricing uses output_video_price_unit.
+        video_pricing_config = output_pricing.get('video')
+        if video_pricing_config and isinstance(video_pricing_config, dict):
+            video_pricing_type = video_pricing_config.get('type', '')
+            resolved_video_price = _resolve_output_price(
+                video_pricing_config, output_video_resolution,
+                audio=output_video_audio,
+                reference_video=output_video_reference_video)
+            if video_pricing_type == 'per_token' and resolved_video_price > 0:
+                # per_token: price is ¥/M output tokens → override output_price_unit
+                output_price_unit = resolved_video_price
+            elif output_video_price_unit == 0.0:
+                # per_second / per_video: use output_video_price_unit
+                output_video_price_unit = resolved_video_price
         if output_audio_price_unit == 0.0:
             output_audio_price_unit = _resolve_output_price(
                 output_pricing.get('audio'), None)

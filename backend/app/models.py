@@ -632,6 +632,8 @@ class UsageRecord(db.Model):
             # Web search
             'web_search_requests': self.web_search_requests,
             'web_search_price_unit': self.web_search_price_unit,
+            # Currency / exchange rate
+            'currency': self.currency or 'USD',
             # Billing
             'payable_amount': self.payable_amount,
             'discount': self.discount if self.discount is not None else 1.0,

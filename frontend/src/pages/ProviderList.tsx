@@ -651,7 +651,7 @@ const ModelForm = ({
                     </div>
                   </div>
                   {/* Resolution tiers */}
-                  {cat.type !== 'per_token' && (
+                  {(
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label className="text-xs font-medium text-slate-600">
@@ -728,7 +728,7 @@ const ModelForm = ({
                               )}
                               <div className="flex-1">
                                 <label className="block text-xs text-slate-400 mb-0.5">
-                                  Price {cat.type === 'per_image' ? '($)' : '($/s)'}
+                                  Price {cat.type === 'per_token' ? '($/M)' : cat.type === 'per_image' ? '($)' : '($/s)'}
                                 </label>
                                 <input
                                   type="number"
