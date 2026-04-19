@@ -234,7 +234,7 @@ class GeminiProvider(BaseProvider):
 
         contents = []
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 continue
             gemini_msg = self._message_to_gemini(msg, call_id_to_name)
             if gemini_msg:

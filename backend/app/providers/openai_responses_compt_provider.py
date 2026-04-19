@@ -116,7 +116,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         non_system_messages: List[Message] = []
 
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM and system_content is None:
+            if msg.role.is_system_like() and system_content is None:
                 if isinstance(msg.content, str):
                     system_content = msg.content
                 elif isinstance(msg.content, list):

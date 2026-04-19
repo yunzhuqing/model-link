@@ -106,7 +106,7 @@ class StreamChunk:
     # Non-standard values (e.g. Azure internal msg_xxx IDs encoded in delta_role) are
     # silently dropped so they never leak into the client-facing /v1/chat/completions
     # stream output.
-    _STANDARD_ROLES = frozenset({"assistant", "user", "system", "tool", "function"})
+    _STANDARD_ROLES = frozenset({"assistant", "user", "system", "developer", "tool", "function"})
 
     def to_openai_format(self) -> Dict[str, Any]:
         """转换为 OpenAI 格式"""
@@ -131,16 +131,23 @@ class StreamChunk:
         if self.tool_calls:
             delta["tool_calls"] = self.tool_calls
 
+        # If delta is empty and there's no finish_reason, emit choices: []
+        # instead of sending a meaningless empty-delta choice to the client.
+        if not delta and not self.finish_reason:
+            choices = []
+        else:
+            choices = [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": self.finish_reason.value if self.finish_reason else None
+            }]
+
         result = {
             "id": self.id,
             "object": "chat.completion.chunk",
             "created": self.created,
             "model": self.model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": self.finish_reason.value if self.finish_reason else None
-            }]
+            "choices": choices,
         }
 
         if self.usage:
@@ -433,6 +440,10 @@ class StreamChunk:
                 return "".join(parts)
 
             data = self.to_openai_format()
+            # Skip emitting SSE for chunks with empty choices and no usage
+            # (e.g. empty delta without finish_reason — nothing meaningful for the client).
+            if not data.get("choices") and "usage" not in data:
+                return ""
             return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     
     @classmethod

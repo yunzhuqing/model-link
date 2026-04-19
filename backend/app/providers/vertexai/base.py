@@ -438,7 +438,7 @@ class VertexAIProvider(BaseProvider):
     def _get_system_message_object(request: ChatRequest) -> Optional[Message]:
         """Get the first system Message object from the request."""
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 return msg
         return None
 
@@ -473,7 +473,7 @@ class VertexAIProvider(BaseProvider):
 
         messages = []
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 continue
             messages.append(self._message_to_anthropic(msg))
         result["messages"] = messages
@@ -694,7 +694,7 @@ class VertexAIProvider(BaseProvider):
 
         contents = []
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 continue
             gemini_msg = self._message_to_gemini(msg, call_id_to_name)
             if gemini_msg:

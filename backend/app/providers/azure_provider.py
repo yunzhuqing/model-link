@@ -166,7 +166,7 @@ class AzureProvider(OpenAIProvider):
         system_parts = []
         non_system_messages = []
         for msg in messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 if isinstance(msg.content, str):
                     system_parts.append(msg.content)
                 elif isinstance(msg.content, list):

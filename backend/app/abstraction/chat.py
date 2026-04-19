@@ -118,15 +118,15 @@ class ChatRequest:
     metadata: Dict[str, Any] = field(default_factory=dict)  # 额外参数
     
     def get_system_message(self) -> Optional[str]:
-        """获取系统消息"""
+        """获取系统消息（包括 system 和 developer 角色）"""
         for msg in self.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 return msg.get_text_content()
         return None
     
     def get_conversation_messages(self) -> List[Message]:
-        """获取对话消息（排除系统消息）"""
-        return [msg for msg in self.messages if msg.role != MessageRole.SYSTEM]
+        """获取对话消息（排除系统消息和 developer 消息）"""
+        return [msg for msg in self.messages if not msg.role.is_system_like()]
 
 
 @dataclass

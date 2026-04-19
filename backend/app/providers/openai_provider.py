@@ -29,6 +29,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
     Returns:
         ChatRequest 对象
     """
+    print(f"Parsing OpenAI request data: {json.dumps(data, ensure_ascii=False)}")
     messages = []
     for msg_data in data.get('messages', []):
         role = MessageRole(msg_data.get('role', 'user'))

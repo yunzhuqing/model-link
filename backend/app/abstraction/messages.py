@@ -10,9 +10,14 @@ from dataclasses import dataclass
 class MessageRole(Enum):
     """消息角色枚举"""
     SYSTEM = "system"
+    DEVELOPER = "developer"  # Azure/OpenAI developer role, treated same as system
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+
+    def is_system_like(self) -> bool:
+        """Return True for roles that act as system instructions (system, developer)."""
+        return self in (MessageRole.SYSTEM, MessageRole.DEVELOPER)
 
 
 class ContentType(Enum):

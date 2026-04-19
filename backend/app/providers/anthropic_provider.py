@@ -191,7 +191,7 @@ class AnthropicProvider(BaseProvider):
         # 转换对话消息（排除 system）
         messages = []
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 continue
             anthropic_msg = self._message_to_anthropic(msg)
             if anthropic_msg:
@@ -260,7 +260,7 @@ class AnthropicProvider(BaseProvider):
     def _get_system_message_object(request: ChatRequest) -> Optional[Message]:
         """Get the first system Message object from the request."""
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 return msg
         return None
 

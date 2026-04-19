@@ -115,7 +115,7 @@ class VolcengineProvider(BaseProvider):
         # Convert messages to input array
         input_items = []
         for msg in request.messages:
-            if msg.role == MessageRole.SYSTEM:
+            if msg.role.is_system_like():
                 continue  # Already handled as instructions
 
             item = self._message_to_input_item(msg)

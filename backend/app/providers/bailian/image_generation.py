@@ -164,7 +164,7 @@ def _convert_messages_to_dashscope(messages: List[Message]) -> List[Dict[str, An
     dashscope_messages = []
 
     for msg in messages:
-        if msg.role == MessageRole.SYSTEM:
+        if msg.role.is_system_like():
             continue  # System messages are handled separately
 
         content_list: List[Dict[str, Any]] = []
