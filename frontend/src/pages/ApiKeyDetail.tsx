@@ -152,8 +152,9 @@ const ApiKeyDetail = () => {
       {/* Header */}
       <div className="flex items-center space-x-4">
         <button
-          onClick={() => navigate('/')}
+          onClick={() => navigate(-1)}
           className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+          title="返回"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>

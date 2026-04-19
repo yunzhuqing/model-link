@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, groupsApi } from '../api/client';
 import client from '../api/client';
@@ -8,6 +9,7 @@ import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Us
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all API keys. */
 const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -340,7 +342,13 @@ const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
                   <div className={`w-3 h-3 rounded-full flex-shrink-0 ${apiKey.is_active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center space-x-2">
-                      <h4 className="font-medium text-slate-800">{apiKey.name}</h4>
+                      <h4
+                        className="font-medium text-slate-800 hover:text-blue-600 cursor-pointer transition-colors"
+                        onClick={() => navigate(`/apikeys/${apiKey.id}`)}
+                        title="查看详情"
+                      >
+                        {apiKey.name}
+                      </h4>
                       {(apiKey as any).user_name && (
                         <span className="text-xs text-slate-400">by {(apiKey as any).user_name}</span>
                       )}
@@ -587,7 +595,13 @@ const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
                   <Key className={`w-5 h-5 ${apiKey.is_active ? 'text-emerald-600' : 'text-slate-400'}`} />
                 </div>
                 <div>
-                  <h3 className="font-semibold text-slate-800">{apiKey.name}</h3>
+                  <h3
+                    className="font-semibold text-slate-800 hover:text-blue-600 cursor-pointer transition-colors"
+                    onClick={() => navigate(`/apikeys/${apiKey.id}`)}
+                    title="查看详情"
+                  >
+                    {apiKey.name}
+                  </h3>
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                     apiKey.is_active 
                       ? 'bg-emerald-100 text-emerald-700' 

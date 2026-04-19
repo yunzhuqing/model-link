@@ -28,5 +28,5 @@ RUN uv sync --frozen --no-dev
 # Expose the port
 EXPOSE 8000
 
-# Run with gunicorn
-CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "app.main:app"]
+# Run with uvicorn
+CMD ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--timeout-keep-alive", "1200", "app.main:asgi_app"]

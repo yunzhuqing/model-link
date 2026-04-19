@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   Key, Cpu, TrendingUp, Zap, Copy, Check, DollarSign,
@@ -142,6 +143,7 @@ const DonutChart = ({ slices, size = 140, strokeWidth = 24, centerValue, centerL
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // ── Data queries ──────────────────────────────────────────────────────────
@@ -227,12 +229,12 @@ const Dashboard = () => {
       {/* ━━ Header ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">控制台</h1>
-          <p className="text-sm text-slate-400 mt-0.5">近 14 天 · 个人数据概览</p>
+          <h1 className="text-2xl font-bold text-slate-800">{t('dashboard.title')}</h1>
+          <p className="text-sm text-slate-400 mt-0.5">{t('dashboard.subtitle')}</p>
         </div>
         <div className="flex items-center space-x-2 px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-xl">
           <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-          <span className="text-sm font-medium text-emerald-700">系统运行正常</span>
+          <span className="text-sm font-medium text-emerald-700">{t('common.systemNormal')}</span>
         </div>
       </div>
 
@@ -247,7 +249,7 @@ const Dashboard = () => {
             <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
               <Users className="w-3.5 h-3.5" />
             </div>
-            <span className="text-xs font-medium text-white/80">参与分组</span>
+            <span className="text-xs font-medium text-white/80">{t('dashboard.groupCount')}</span>
           </div>
           <p className="text-2xl font-bold">{groups?.length ?? 0}</p>
           <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40" />
@@ -259,7 +261,7 @@ const Dashboard = () => {
             <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
               <DollarSign className="w-3.5 h-3.5" />
             </div>
-            <span className="text-xs font-medium text-white/80">消耗总金额 (USD)</span>
+            <span className="text-xs font-medium text-white/80">{t('dashboard.totalCost')}</span>
           </div>
           <p className="text-2xl font-bold">{fmtCost(byCurrency?.total_cost_usd || 0)}</p>
           {(byCurrency?.currencies?.length ?? 0) >= 1 && (
@@ -280,7 +282,7 @@ const Dashboard = () => {
             <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
               <TrendingUp className="w-3.5 h-3.5" />
             </div>
-            <span className="text-xs font-medium text-white/80">Token 总量</span>
+            <span className="text-xs font-medium text-white/80">{t('dashboard.tokenTotal')}</span>
           </div>
           <p className="text-2xl font-bold">{fmtNum(totalTokens)}</p>
         </div>
@@ -291,7 +293,7 @@ const Dashboard = () => {
             <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
               <Zap className="w-3.5 h-3.5" />
             </div>
-            <span className="text-xs font-medium text-white/80">请求次数</span>
+            <span className="text-xs font-medium text-white/80">{t('dashboard.requestCount')}</span>
           </div>
           <p className="text-2xl font-bold">{fmtNum(totals?.requests || 0)}</p>
         </div>
@@ -309,11 +311,11 @@ const Dashboard = () => {
                 <div className="w-8 h-8 bg-violet-50 rounded-lg flex items-center justify-center">
                   <Users className="w-4 h-4 text-violet-600" />
                 </div>
-                <h2 className="text-sm font-bold text-slate-800">我的分组</h2>
+                <h2 className="text-sm font-bold text-slate-800">{t('dashboard.myGroups')}</h2>
               </div>
               <button onClick={() => navigate('/groups')}
                 className="text-xs text-blue-500 hover:text-blue-700 font-medium flex items-center">
-                查看全部 <ChevronRight className="w-3.5 h-3.5 ml-0.5" />
+                {t('common.viewAll')} <ChevronRight className="w-3.5 h-3.5 ml-0.5" />
               </button>
             </div>
             <div className="divide-y divide-slate-50" style={{ maxHeight: '200px', overflowY: 'auto' }}>
@@ -322,7 +324,7 @@ const Dashboard = () => {
                   <div className="w-5 h-5 border-2 border-violet-200 border-t-violet-500 rounded-full animate-spin" />
                 </div>
               ) : !groups?.length ? (
-                <div className="text-center py-8 text-slate-400 text-sm">暂无分组</div>
+                <div className="text-center py-8 text-slate-400 text-sm">{t('dashboard.noGroups')}</div>
               ) : groups.map((g) => (
                 <div key={g.id}
                   onClick={() => navigate(`/groups/${g.id}`)}
@@ -344,7 +346,7 @@ const Dashboard = () => {
               <div className="w-8 h-8 bg-emerald-50 rounded-lg flex items-center justify-center">
                 <Key className="w-4 h-4 text-emerald-600" />
               </div>
-              <h2 className="text-sm font-bold text-slate-800">我的 API Keys</h2>
+              <h2 className="text-sm font-bold text-slate-800">{t('dashboard.myApiKeys')}</h2>
             </div>
             <div className="divide-y divide-slate-50" style={{ maxHeight: '300px', overflowY: 'auto' }}>
               {loading ? (
@@ -352,13 +354,16 @@ const Dashboard = () => {
                   <div className="w-5 h-5 border-2 border-emerald-200 border-t-emerald-500 rounded-full animate-spin" />
                 </div>
               ) : !apiKeys?.length ? (
-                <div className="text-center py-8 text-slate-400 text-sm">暂无 API Key</div>
+                <div className="text-center py-8 text-slate-400 text-sm">{t('dashboard.noApiKeys')}</div>
               ) : apiKeys.map((k) => (
-                <div key={k.id} className="px-5 py-3 hover:bg-slate-50 group">
+                <div key={k.id}
+                  onClick={() => navigate(`/apikeys/${k.id}`)}
+                  className="px-5 py-3 hover:bg-emerald-50/50 cursor-pointer group"
+                >
                   <div className="flex items-center justify-between">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center space-x-2">
-                        <span className="text-sm font-medium text-slate-800 truncate">{k.name}</span>
+                        <span className="text-sm font-medium text-slate-800 group-hover:text-emerald-600 truncate transition-colors">{k.name}</span>
                         {k.is_active ? (
                           <span className="w-2 h-2 bg-emerald-400 rounded-full flex-shrink-0" />
                         ) : (
@@ -381,6 +386,7 @@ const Dashboard = () => {
                         </button>
                       </div>
                     </div>
+                    <ChevronRight className="w-4 h-4 text-slate-200 group-hover:text-emerald-400 flex-shrink-0" />
                   </div>
                 </div>
               ))}
@@ -396,7 +402,7 @@ const Dashboard = () => {
               <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center">
                 <PieChart className="w-4 h-4 text-indigo-600" />
               </div>
-              <h2 className="text-sm font-bold text-slate-800">Token 与费用分布</h2>
+              <h2 className="text-sm font-bold text-slate-800">{t('dashboard.tokenDistribution')} & {t('dashboard.modelCostDistribution')}</h2>
             </div>
             {totalsLoading ? (
               <div className="flex items-center justify-center py-16">
@@ -406,7 +412,7 @@ const Dashboard = () => {
               <div className="grid grid-cols-2 gap-8">
                 {/* Token Distribution */}
                 <div>
-                  <h3 className="text-xs font-bold text-slate-600 mb-3">Token 分布</h3>
+                  <h3 className="text-xs font-bold text-slate-600 mb-3">{t('dashboard.tokenDistribution')}</h3>
                   <div className="flex flex-col items-center">
                     <DonutChart slices={tokenSlices} size={130} strokeWidth={22}
                       centerValue={fmtNum(totalTokens)} centerLabel="总计" />
@@ -426,7 +432,7 @@ const Dashboard = () => {
 
                 {/* Model Cost Distribution */}
                 <div>
-                  <h3 className="text-xs font-bold text-slate-600 mb-3">模型费用分布</h3>
+                  <h3 className="text-xs font-bold text-slate-600 mb-3">{t('dashboard.modelCostDistribution')}</h3>
                   <div className="flex flex-col items-center">
                     <DonutChart slices={modelCostSlices} size={130} strokeWidth={22}
                       centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel="总费用(USD)" />
@@ -458,7 +464,7 @@ const Dashboard = () => {
               <div className="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center">
                 <Cpu className="w-4 h-4 text-blue-600" />
               </div>
-              <h2 className="text-sm font-bold text-slate-800">模型消耗明细</h2>
+              <h2 className="text-sm font-bold text-slate-800">{t('dashboard.modelUsageDetail')}</h2>
             </div>
 
             {byModelLoading ? (
@@ -466,19 +472,19 @@ const Dashboard = () => {
                 <div className="w-6 h-6 border-2 border-slate-200 border-t-blue-400 rounded-full animate-spin" />
               </div>
             ) : !byModel?.length ? (
-              <div className="text-center py-12 text-slate-400 text-sm">暂无模型消耗数据</div>
+              <div className="text-center py-12 text-slate-400 text-sm">{t('dashboard.noModelUsage')}</div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-slate-50/80 border-b border-slate-200">
-                      <th className="text-left py-3 px-4 font-semibold text-slate-500 text-xs">模型名称</th>
-                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">请求数</th>
-                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">输入 Tokens</th>
-                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">输出 Tokens</th>
-                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">推理 Tokens</th>
-                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">消耗金额</th>
-                      <th className="text-left py-3 px-4 font-semibold text-slate-500 text-xs w-28">占比</th>
+                      <th className="text-left py-3 px-4 font-semibold text-slate-500 text-xs">{t('dashboard.modelName')}</th>
+                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">{t('dashboard.requests')}</th>
+                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">{t('dashboard.inputTokens')}</th>
+                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">{t('dashboard.outputTokens')}</th>
+                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">{t('dashboard.reasoningTokens')}</th>
+                      <th className="text-right py-3 px-4 font-semibold text-slate-500 text-xs">{t('dashboard.cost')}</th>
+                      <th className="text-left py-3 px-4 font-semibold text-slate-500 text-xs w-28">{t('dashboard.proportion')}</th>
                     </tr>
                   </thead>
                   <tbody>

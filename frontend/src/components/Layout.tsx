@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
+import LanguageSwitcher from './LanguageSwitcher';
 import {
   LayoutDashboard,
   Database,
@@ -18,36 +20,36 @@ import {
 
 interface SubNavItem {
   path: string;
-  label: string;
+  labelKey: string;
 }
 
 interface NavItem {
   path: string;
-  label: string;
+  labelKey: string;
   icon: React.ElementType;
-  description: string;
+  descKey: string;
   children?: SubNavItem[];
 }
 
 const navItems: NavItem[] = [
-  { path: '/', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview & Statistics' },
-  { path: '/groups', label: 'Groups', icon: Users, description: 'Manage Groups, API Keys & Providers' },
-  { path: '/model-templates', label: 'Model Templates', icon: LayoutTemplate, description: 'Manage reusable model templates' },
-  { path: '/usage', label: 'Usage Analytics', icon: BarChart3, description: '查看 API 请求消耗统计' },
+  { path: '/', labelKey: 'nav.dashboard', icon: LayoutDashboard, descKey: 'nav.dashboardDesc' },
+  { path: '/groups', labelKey: 'nav.groups', icon: Users, descKey: 'nav.groupsDesc' },
+  { path: '/model-templates', labelKey: 'nav.modelTemplates', icon: LayoutTemplate, descKey: 'nav.modelTemplatesDesc' },
+  { path: '/usage', labelKey: 'nav.usage', icon: BarChart3, descKey: 'nav.usageDesc' },
   {
     path: '/help',
-    label: '帮助中心',
+    labelKey: 'nav.help',
     icon: BookOpen,
-    description: 'API 使用指南与请求格式说明',
+    descKey: 'nav.helpDesc',
     children: [
-      { path: '/help/chat', label: 'Chat Completions' },
-      { path: '/help/messages', label: 'Messages API' },
-      { path: '/help/responses', label: 'Responses API' },
-      { path: '/help/embedding', label: 'Embedding API' },
-      { path: '/help/rerank', label: 'Rerank API' },
-      { path: '/help/image-generation', label: '图片生成' },
-      { path: '/help/video-generation', label: '视频生成' },
-      { path: '/help/3d-generation', label: '3D 生成' },
+      { path: '/help/chat', labelKey: 'nav.helpChat' },
+      { path: '/help/messages', labelKey: 'nav.helpMessages' },
+      { path: '/help/responses', labelKey: 'nav.helpResponses' },
+      { path: '/help/embedding', labelKey: 'nav.helpEmbedding' },
+      { path: '/help/rerank', labelKey: 'nav.helpRerank' },
+      { path: '/help/image-generation', labelKey: 'nav.helpImageGeneration' },
+      { path: '/help/video-generation', labelKey: 'nav.helpVideoGeneration' },
+      { path: '/help/3d-generation', labelKey: 'nav.help3dGeneration' },
     ],
   },
 ];
@@ -56,6 +58,7 @@ const Layout = () => {
   const { logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useTranslation();
 
   // Sidebar collapsed state (default: collapsed)
   const [collapsed, setCollapsed] = useState(true);
@@ -80,6 +83,9 @@ const Layout = () => {
     item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path)
   );
 
+  // Determine if we're on apikeys detail page
+  const isApiKeyDetailPage = location.pathname.startsWith('/apikeys/');
+
   const toggleExpand = (path: string) => {
     setExpanded((prev) => ({ ...prev, [path]: !prev[path] }));
   };
@@ -98,9 +104,8 @@ const Layout = () => {
               <Database className="w-5 h-5 text-white" />
             </div>
             {!collapsed && (
-              <div className="min-w-0">
+                <div className="min-w-0">
                 <h1 className="text-lg font-bold text-slate-800">AI Gateway</h1>
-                <p className="text-xs text-slate-400">Model Management</p>
               </div>
             )}
           </div>
@@ -142,7 +147,7 @@ const Layout = () => {
                       }
                     }
                   }}
-                  title={collapsed ? item.label : undefined}
+                  title={collapsed ? t(item.labelKey) : undefined}
                 >
                   <div className={`p-2 rounded-lg ${collapsed ? '' : 'mr-3'} transition-colors ${
                     isActive ? 'bg-blue-100' : 'bg-slate-100 group-hover:bg-slate-200'
@@ -152,7 +157,7 @@ const Layout = () => {
                   {!collapsed && (
                     <>
                       <div className="flex-1 min-w-0">
-                        <span className={`font-medium ${isActive ? 'text-blue-600' : ''}`}>{item.label}</span>
+                        <span className={`font-medium ${isActive ? 'text-blue-600' : ''}`}>{t(item.labelKey)}</span>
                       </div>
                       {hasChildren ? (
                         <ChevronRight
@@ -183,7 +188,7 @@ const Layout = () => {
                           }`}
                         >
                           <Layers className={`w-3.5 h-3.5 flex-shrink-0 ${childActive ? 'text-blue-500' : 'text-slate-400'}`} />
-                          {child.label}
+                          {t(child.labelKey)}
                         </Link>
                       );
                     })}
@@ -209,7 +214,7 @@ const Layout = () => {
                 <PanelLeftClose className="w-5 h-5 text-slate-500" />
               )}
             </div>
-            {!collapsed && <span className="font-medium">收起侧栏</span>}
+            {!collapsed && <span className="font-medium">{t('nav.collapseSidebar')}</span>}
           </button>
 
           {/* Logout button */}
@@ -221,7 +226,7 @@ const Layout = () => {
             <div className={`p-2 rounded-lg ${collapsed ? '' : 'mr-3'} bg-slate-100 group-hover:bg-red-100 transition-colors`}>
               <LogOut className="w-5 h-5 text-slate-500 group-hover:text-red-500" />
             </div>
-            {!collapsed && <span className="font-medium">Logout</span>}
+            {!collapsed && <span className="font-medium">{t('nav.logout')}</span>}
           </button>
         </div>
       </aside>
@@ -232,15 +237,16 @@ const Layout = () => {
         <header className="bg-white border-b border-slate-200 px-8 h-16 flex items-center justify-between shadow-sm">
           <div className="flex items-center">
             <h2 className="text-xl font-semibold text-slate-800">
-              {currentPage?.label || 'Dashboard'}
+              {isApiKeyDetailPage ? t('apiKey.viewDetail') : (currentPage ? t(currentPage.labelKey) : t('nav.dashboard'))}
             </h2>
-            {currentPage?.description && (
+            {currentPage?.descKey && !isApiKeyDetailPage && (
               <span className="ml-3 text-sm text-slate-400 hidden md:inline">
-                {currentPage.description}
+                {t(currentPage.descKey)}
               </span>
             )}
           </div>
           <div className="flex items-center space-x-4">
+            <LanguageSwitcher />
             <button className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
               <Settings className="w-5 h-5" />
             </button>
