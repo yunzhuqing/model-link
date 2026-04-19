@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import { Plus, Edit2, Trash2, Save, LayoutTemplate, Search, X, RefreshCw } from 'lucide-react';
 
@@ -83,19 +84,33 @@ const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
   support_embedding: false,
 });
 
-const FEATURES = [
-  { key: 'support_kvcache', label: 'KV Cache' },
-  { key: 'support_image', label: 'Image' },
-  { key: 'support_audio', label: 'Audio' },
-  { key: 'support_video', label: 'Video' },
-  { key: 'support_file', label: 'File' },
-  { key: 'support_web_search', label: 'Web Search' },
-  { key: 'support_tool_search', label: 'Tool Search' },
-  { key: 'support_thinking', label: 'Thinking' },
-  { key: 'support_online_image', label: 'Online Image URL' },
-  { key: 'support_online_video', label: 'Online Video URL' },
-  { key: 'support_embedding', label: 'Embedding' },
-];
+const FEATURES_KEYS = [
+  'support_kvcache',
+  'support_image',
+  'support_audio',
+  'support_video',
+  'support_file',
+  'support_web_search',
+  'support_tool_search',
+  'support_thinking',
+  'support_online_image',
+  'support_online_video',
+  'support_embedding',
+] as const;
+
+const FEATURE_I18N_MAP: Record<string, string> = {
+  support_kvcache: 'kvcache',
+  support_image: 'image',
+  support_audio: 'audio',
+  support_video: 'video',
+  support_file: 'file',
+  support_web_search: 'webSearch',
+  support_tool_search: 'toolSearch',
+  support_thinking: 'thinking',
+  support_online_image: 'onlineImage',
+  support_online_video: 'onlineVideo',
+  support_embedding: 'embedding',
+};
 
 const ALL_TAB = '__ALL__';
 
@@ -130,6 +145,7 @@ const TemplateForm = ({
   onCancel: () => void;
   isSaving: boolean;
 }) => {
+  const { t } = useTranslation();
   const set = (patch: Partial<Omit<ModelTemplate, 'id'>>) => onChange({ ...value, ...patch });
 
   return (
@@ -137,27 +153,27 @@ const TemplateForm = ({
       {/* Basic identity */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Label *</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.labelLabel')}</label>
           <input
-            placeholder="GPT-4o"
+            placeholder={t('modelTemplates.form.labelPlaceholder')}
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
             value={value.label}
             onChange={(e) => set({ label: e.target.value })}
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Provider *</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.providerLabel')}</label>
           <input
-            placeholder="OpenAI"
+            placeholder={t('modelTemplates.form.providerPlaceholder')}
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
             value={value.provider}
             onChange={(e) => set({ provider: e.target.value })}
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Model Name *</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.modelNameLabel')}</label>
           <input
-            placeholder="gpt-4o"
+            placeholder={t('modelTemplates.form.modelNamePlaceholder')}
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
             value={value.name}
             onChange={(e) => set({ name: e.target.value })}
@@ -167,16 +183,16 @@ const TemplateForm = ({
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Alias</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.aliasLabel')}</label>
           <input
-            placeholder="gpt-4o"
+            placeholder={t('modelTemplates.form.aliasPlaceholder')}
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
             value={value.alias || ''}
             onChange={(e) => set({ alias: e.target.value || null })}
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Context Size</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.contextSizeLabel')}</label>
           <input
             type="number"
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
@@ -185,7 +201,7 @@ const TemplateForm = ({
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Input Size</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.inputSizeLabel')}</label>
           <input
             type="number"
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
@@ -194,7 +210,7 @@ const TemplateForm = ({
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Output Size</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.outputSizeLabel')}</label>
           <input
             type="number"
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
@@ -203,18 +219,18 @@ const TemplateForm = ({
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Reasoning Effort</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.reasoningEffortLabel')}</label>
           <input
-            placeholder="low / medium / high"
+            placeholder={t('modelTemplates.form.reasoningEffortPlaceholder')}
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
             value={value.reasoning_effort || ''}
             onChange={(e) => set({ reasoning_effort: e.target.value || null })}
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Image Formats</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.imageFormatsLabel')}</label>
           <input
-            placeholder="png,jpeg,webp"
+            placeholder={t('modelTemplates.form.imageFormatsPlaceholder')}
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
             value={value.supported_image_formats || ''}
             onChange={(e) => set({ supported_image_formats: e.target.value || null })}
@@ -225,13 +241,13 @@ const TemplateForm = ({
       {/* Pricing Tiers */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-slate-700">Pricing Tiers <span className="text-slate-400 font-normal text-xs">(optional — for models with context-size-based pricing)</span></h3>
+          <h3 className="text-sm font-semibold text-slate-700">{t('modelTemplates.form.pricingTiersTitle')} <span className="text-slate-400 font-normal text-xs">{t('modelTemplates.form.pricingTiersOptional')}</span></h3>
           <button
             type="button"
             onClick={() => set({ pricing_tiers: [...(value.pricing_tiers ?? []), { label: '', context_size: value.context_size, input_size: value.input_size, output_size: value.output_size, input_price: value.input_price, output_price: value.output_price, cache_creation_price: value.cache_creation_price, cache_hit_price: value.cache_hit_price }] })}
             className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors"
           >
-            + Add Tier
+            {t('modelTemplates.form.addTier')}
           </button>
         </div>
         {value.pricing_tiers && value.pricing_tiers.length > 0 ? (
@@ -240,7 +256,7 @@ const TemplateForm = ({
               <div key={idx} className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                 <div className="flex items-center justify-between mb-2">
                   <input
-                    placeholder="Tier label, e.g. <=272k ctx"
+                    placeholder={t('modelTemplates.form.tierLabelPlaceholder')}
                     className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-sm mr-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
                     value={tier.label}
                     onChange={(e) => {
@@ -257,18 +273,18 @@ const TemplateForm = ({
                     }}
                     className="text-slate-400 hover:text-red-500 text-xs px-2 py-1 hover:bg-red-50 rounded-lg"
                   >
-                    Remove
+                    {t('modelTemplates.form.removeTier')}
                   </button>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                   {[
-                    { k: 'context_size', label: 'Context Size', type: 'int' },
-                    { k: 'input_size', label: 'Input Size', type: 'int' },
-                    { k: 'output_size', label: 'Output Size', type: 'int' },
-                    { k: 'input_price', label: 'Input $/M', type: 'float' },
-                    { k: 'output_price', label: 'Output $/M', type: 'float' },
-                    { k: 'cache_creation_price', label: 'Cache↑ $/M', type: 'float' },
-                    { k: 'cache_hit_price', label: 'Cache↓ $/M', type: 'float' },
+                    { k: 'context_size', label: t('modelTemplates.form.tierContextSize'), type: 'int' },
+                    { k: 'input_size', label: t('modelTemplates.form.tierInputSize'), type: 'int' },
+                    { k: 'output_size', label: t('modelTemplates.form.tierOutputSize'), type: 'int' },
+                    { k: 'input_price', label: t('modelTemplates.form.tierInputPrice'), type: 'float' },
+                    { k: 'output_price', label: t('modelTemplates.form.tierOutputPrice'), type: 'float' },
+                    { k: 'cache_creation_price', label: t('modelTemplates.form.tierCacheCreationPrice'), type: 'float' },
+                    { k: 'cache_hit_price', label: t('modelTemplates.form.tierCacheHitPrice'), type: 'float' },
                   ].map(({ k, label, type }) => (
                     <div key={k}>
                       <label className="block text-xs text-slate-500 mb-1">{label}</label>
@@ -290,16 +306,16 @@ const TemplateForm = ({
             ))}
           </div>
         ) : (
-          <p className="text-xs text-slate-400 italic">No tiers — single flat pricing used.</p>
+          <p className="text-xs text-slate-400 italic">{t('modelTemplates.form.noTiers')}</p>
         )}
       </div>
 
       {/* Pricing */}
       <div>
-        <h3 className="text-sm font-semibold text-slate-700 mb-2">Pricing (per 1M tokens)</h3>
+        <h3 className="text-sm font-semibold text-slate-700 mb-2">{t('modelTemplates.form.pricingTitle')}</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Currency</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.currencyLabel')}</label>
             <select
               className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
               value={value.currency || 'USD'}
@@ -313,10 +329,10 @@ const TemplateForm = ({
             </select>
           </div>
           {[
-            { key: 'input_price', label: 'Input /M' },
-            { key: 'output_price', label: 'Output /M' },
-            { key: 'cache_creation_price', label: 'Cache Create /M' },
-            { key: 'cache_hit_price', label: 'Cache Hit /M' },
+            { key: 'input_price', label: t('modelTemplates.form.inputPriceLabel') },
+            { key: 'output_price', label: t('modelTemplates.form.outputPriceLabel') },
+            { key: 'cache_creation_price', label: t('modelTemplates.form.cacheCreatePriceLabel') },
+            { key: 'cache_hit_price', label: t('modelTemplates.form.cacheHitPriceLabel') },
           ].map(({ key, label }) => (
             <div key={key}>
               <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
@@ -334,17 +350,17 @@ const TemplateForm = ({
 
       {/* Rate limits & discount */}
       <div>
-        <h3 className="text-sm font-semibold text-slate-700 mb-2">Rate Limits &amp; Discount</h3>
+        <h3 className="text-sm font-semibold text-slate-700 mb-2">{t('modelTemplates.form.rateLimitsTitle')}</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              RPM
-              <span className="text-slate-400 font-normal ml-1 text-xs">(requests/min, blank = unlimited)</span>
+              {t('modelTemplates.form.rpmLabel')}
+              <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.rpmHint')}</span>
             </label>
             <input
               type="number"
               min="0"
-              placeholder="unlimited"
+              placeholder={t('modelTemplates.form.rpmPlaceholder')}
               className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
               value={value.rpm ?? ''}
               onChange={(e) => set({ rpm: e.target.value ? parseInt(e.target.value) : null })}
@@ -352,13 +368,13 @@ const TemplateForm = ({
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              TPM
-              <span className="text-slate-400 font-normal ml-1 text-xs">(tokens/min, blank = unlimited)</span>
+              {t('modelTemplates.form.tpmLabel')}
+              <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.tpmHint')}</span>
             </label>
             <input
               type="number"
               min="0"
-              placeholder="unlimited"
+              placeholder={t('modelTemplates.form.tpmPlaceholder')}
               className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
               value={value.tpm ?? ''}
               onChange={(e) => set({ tpm: e.target.value ? parseInt(e.target.value) : null })}
@@ -366,8 +382,8 @@ const TemplateForm = ({
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Discount
-              <span className="text-slate-400 font-normal ml-1 text-xs">(1.0 = full price, 0.9 = 10% off)</span>
+              {t('modelTemplates.form.discountLabel')}
+              <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.discountHint')}</span>
             </label>
             <input
               type="number"
@@ -384,12 +400,12 @@ const TemplateForm = ({
 
       {/* Retirement */}
       <div>
-        <h3 className="text-sm font-semibold text-slate-700 mb-2">Retirement</h3>
+        <h3 className="text-sm font-semibold text-slate-700 mb-2">{t('modelTemplates.form.retirementTitle')}</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Retirement Date
-              <span className="text-slate-400 font-normal ml-1 text-xs">(optional — model cannot be used after this date)</span>
+              {t('modelTemplates.form.retirementDateLabel')}
+              <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.retirementDateHint')}</span>
             </label>
             <input
               type="datetime-local"
@@ -403,9 +419,9 @@ const TemplateForm = ({
 
       {/* Features */}
       <div>
-        <h3 className="text-sm font-semibold text-slate-700 mb-2">Supported Features</h3>
+        <h3 className="text-sm font-semibold text-slate-700 mb-2">{t('modelTemplates.form.featuresTitle')}</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {FEATURES.map(({ key, label }) => (
+          {FEATURES_KEYS.map((key) => (
             <label key={key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
               <input
                 type="checkbox"
@@ -413,7 +429,7 @@ const TemplateForm = ({
                 onChange={(e) => set({ [key]: e.target.checked } as any)}
                 className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm text-slate-600">{label}</span>
+              <span className="text-sm text-slate-600">{t(`modelTemplates.features.${FEATURE_I18N_MAP[key]}`)}</span>
             </label>
           ))}
         </div>
@@ -426,13 +442,13 @@ const TemplateForm = ({
           disabled={isSaving || !value.label || !value.name || !value.provider}
           className="bg-emerald-500 text-white px-5 py-2.5 rounded-xl text-sm flex items-center hover:bg-emerald-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors shadow-sm"
         >
-          <Save className="w-4 h-4 mr-2" /> {isSaving ? 'Saving…' : 'Save'}
+          <Save className="w-4 h-4 mr-2" /> {isSaving ? t('modelTemplates.saving') : t('common.save')}
         </button>
         <button
           onClick={onCancel}
           className="bg-slate-100 text-slate-600 px-5 py-2.5 rounded-xl text-sm hover:bg-slate-200 transition-colors"
         >
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </div>
@@ -448,123 +464,128 @@ const TemplateCard = ({
   tpl: ModelTemplate;
   onEdit: () => void;
   onDelete: () => void;
-}) => (
-  <div
-    className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-shadow ${tpl.is_retired ? 'border-red-200 opacity-70' : 'border-slate-200'}`}
-  >
-    <div className="flex justify-between items-start">
-      <div className="flex-1 min-w-0">
-        {/* Title row */}
-        <div className="flex items-center space-x-3 flex-wrap gap-y-1">
-          <h3 className="font-semibold text-slate-800">{tpl.label}</h3>
-          <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-mono">
-            {tpl.name}
-          </span>
-          {tpl.alias && (
-            <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs">
-              @{tpl.alias}
-            </span>
-          )}
-          {tpl.currency && tpl.currency !== 'USD' && (
-            <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">
-              {tpl.currency}
-            </span>
-          )}
-          {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 && (
-            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">
-              {tpl.pricing_tiers.length} tiers
-            </span>
-          )}
-          {tpl.is_retired && (
-            <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">
-              Retired
-            </span>
-          )}
-          {!tpl.is_retired && tpl.retirement_time && (
-            <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">
-              Retires {new Date(tpl.retirement_time).toLocaleDateString()}
-            </span>
-          )}
-        </div>
+}) => {
+  const { t } = useTranslation();
 
-        {/* Pricing row */}
-        {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 ? (
-          <div className="mt-3 space-y-1">
-            {tpl.pricing_tiers.map((tier, i) => (
-              <div key={i} className="flex flex-wrap gap-3 text-sm text-slate-600">
-                <span className="text-slate-500 text-xs font-medium w-20">{tier.label}</span>
-                <span><span className="text-slate-400 text-xs mr-1">ctx</span>{tier.context_size.toLocaleString()}</span>
-                <span><span className="text-slate-400 text-xs mr-1">in</span>${tier.input_price}/M</span>
-                <span><span className="text-slate-400 text-xs mr-1">out</span>${tier.output_price}/M</span>
-                {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↓</span>${tier.cache_hit_price}/M</span>}
-              </div>
+  return (
+    <div
+      className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-shadow ${tpl.is_retired ? 'border-red-200 opacity-70' : 'border-slate-200'}`}
+    >
+      <div className="flex justify-between items-start">
+        <div className="flex-1 min-w-0">
+          {/* Title row */}
+          <div className="flex items-center space-x-3 flex-wrap gap-y-1">
+            <h3 className="font-semibold text-slate-800">{tpl.label}</h3>
+            <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-mono">
+              {tpl.name}
+            </span>
+            {tpl.alias && (
+              <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs">
+                @{tpl.alias}
+              </span>
+            )}
+            {tpl.currency && tpl.currency !== 'USD' && (
+              <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">
+                {tpl.currency}
+              </span>
+            )}
+            {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 && (
+              <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">
+                {t('modelTemplates.tiers', { count: tpl.pricing_tiers.length })}
+              </span>
+            )}
+            {tpl.is_retired && (
+              <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">
+                {t('modelTemplates.retired')}
+              </span>
+            )}
+            {!tpl.is_retired && tpl.retirement_time && (
+              <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">
+                {t('modelTemplates.retires', { date: new Date(tpl.retirement_time).toLocaleDateString() })}
+              </span>
+            )}
+          </div>
+
+          {/* Pricing row */}
+          {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 ? (
+            <div className="mt-3 space-y-1">
+              {tpl.pricing_tiers.map((tier, i) => (
+                <div key={i} className="flex flex-wrap gap-3 text-sm text-slate-600">
+                  <span className="text-slate-500 text-xs font-medium w-20">{tier.label}</span>
+                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.ctx')}</span>{tier.context_size.toLocaleString()}</span>
+                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.in')}</span>${tier.input_price}/M</span>
+                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.out')}</span>${tier.output_price}/M</span>
+                  {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheDown')}</span>${tier.cache_hit_price}/M</span>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-4 mt-3 text-sm text-slate-600">
+              <span>
+                <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.ctx')}</span>
+                {tpl.context_size.toLocaleString()}
+              </span>
+              <span>
+                <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.in')}</span>
+                ${tpl.input_price}/M
+              </span>
+              <span>
+                <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.out')}</span>
+                ${tpl.output_price}/M
+              </span>
+              {tpl.cache_creation_price > 0 && (
+                <span>
+                  <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp')}</span>
+                  ${tpl.cache_creation_price}/M
+                </span>
+              )}
+              {tpl.cache_hit_price > 0 && (
+                <span>
+                  <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheDown')}</span>
+                  ${tpl.cache_hit_price}/M
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Feature badges */}
+          <div className="flex flex-wrap gap-1.5 mt-3">
+            {FEATURES_KEYS.filter((key) => !!(tpl as any)[key]).map((key) => (
+              <span
+                key={key}
+                className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-medium"
+              >
+                {t(`modelTemplates.features.${FEATURE_I18N_MAP[key]}`)}
+              </span>
             ))}
           </div>
-        ) : (
-          <div className="flex flex-wrap gap-4 mt-3 text-sm text-slate-600">
-            <span>
-              <span className="text-slate-400 text-xs mr-1">ctx</span>
-              {tpl.context_size.toLocaleString()}
-            </span>
-            <span>
-              <span className="text-slate-400 text-xs mr-1">in</span>
-              ${tpl.input_price}/M
-            </span>
-            <span>
-              <span className="text-slate-400 text-xs mr-1">out</span>
-              ${tpl.output_price}/M
-            </span>
-            {tpl.cache_creation_price > 0 && (
-              <span>
-                <span className="text-slate-400 text-xs mr-1">cache↑</span>
-                ${tpl.cache_creation_price}/M
-              </span>
-            )}
-            {tpl.cache_hit_price > 0 && (
-              <span>
-                <span className="text-slate-400 text-xs mr-1">cache↓</span>
-                ${tpl.cache_hit_price}/M
-              </span>
-            )}
-          </div>
-        )}
+        </div>
 
-        {/* Feature badges */}
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          {FEATURES.filter(({ key }) => !!(tpl as any)[key]).map(({ key, label }) => (
-            <span
-              key={key}
-              className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-medium"
-            >
-              {label}
-            </span>
-          ))}
+        {/* Actions */}
+        <div className="flex space-x-1 ml-4 shrink-0">
+          <button
+            onClick={onEdit}
+            className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
+            title={t('common.edit')}
+          >
+            <Edit2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onDelete}
+            className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
+            title={t('common.delete')}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
-
-      {/* Actions */}
-      <div className="flex space-x-1 ml-4 shrink-0">
-        <button
-          onClick={onEdit}
-          className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
-          title="Edit"
-        >
-          <Edit2 className="w-4 h-4" />
-        </button>
-        <button
-          onClick={onDelete}
-          className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
-          title="Delete"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
     </div>
-  </div>
-);
+  );
+};
 
 /* ─── Main page ─── */
 export default function ModelTemplates() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
   const [newTpl, setNewTpl] = useState<Omit<ModelTemplate, 'id'>>(emptyTemplate());
@@ -608,18 +629,18 @@ export default function ModelTemplates() {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['model-templates'] });
       const { added, updated } = res.data as { added: number; updated: number };
-      alert(`Sync complete: ${added} added, ${updated} updated.`);
+      alert(t('modelTemplates.syncComplete', { added, updated }));
     },
     onError: () => {
-      alert('Failed to sync templates. Please try again.');
+      alert(t('modelTemplates.syncFailed'));
     },
   });
 
   // Derive unique model families & counts
   const familyTabs = useMemo(() => {
     const countMap = new Map<string, number>();
-    for (const t of templates) {
-      const family = getModelFamily(t.label);
+    for (const tpl of templates) {
+      const family = getModelFamily(tpl.label);
       countMap.set(family, (countMap.get(family) || 0) + 1);
     }
     // Sort families alphabetically
@@ -631,16 +652,16 @@ export default function ModelTemplates() {
   const filteredTemplates = useMemo(() => {
     let list = templates;
     if (activeTab !== ALL_TAB) {
-      list = list.filter((t) => getModelFamily(t.label) === activeTab);
+      list = list.filter((tpl) => getModelFamily(tpl.label) === activeTab);
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       list = list.filter(
-        (t) =>
-          t.label.toLowerCase().includes(q) ||
-          t.name.toLowerCase().includes(q) ||
-          (t.alias && t.alias.toLowerCase().includes(q)) ||
-          t.provider.toLowerCase().includes(q)
+        (tpl) =>
+          tpl.label.toLowerCase().includes(q) ||
+          tpl.name.toLowerCase().includes(q) ||
+          (tpl.alias && tpl.alias.toLowerCase().includes(q)) ||
+          tpl.provider.toLowerCase().includes(q)
       );
     }
     return list;
@@ -649,9 +670,9 @@ export default function ModelTemplates() {
   // Group filtered templates by provider for display within a family tab
   const groupedByProvider = useMemo(() => {
     const groups = new Map<string, ModelTemplate[]>();
-    for (const t of filteredTemplates) {
-      if (!groups.has(t.provider)) groups.set(t.provider, []);
-      groups.get(t.provider)!.push(t);
+    for (const tpl of filteredTemplates) {
+      if (!groups.has(tpl.provider)) groups.set(tpl.provider, []);
+      groups.get(tpl.provider)!.push(tpl);
     }
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [filteredTemplates]);
@@ -659,7 +680,7 @@ export default function ModelTemplates() {
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-64">
-        <div className="text-slate-500">Loading…</div>
+        <div className="text-slate-500">{t('modelTemplates.loading')}</div>
       </div>
     );
   }
@@ -669,9 +690,9 @@ export default function ModelTemplates() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Model Templates</h1>
+          <h1 className="text-2xl font-bold text-slate-800">{t('modelTemplates.title')}</h1>
           <p className="text-slate-500 mt-1">
-            Pre-defined templates that auto-fill the Add Model form.
+            {t('modelTemplates.subtitle')}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -681,13 +702,13 @@ export default function ModelTemplates() {
             className="bg-amber-500 text-white px-5 py-2.5 rounded-xl flex items-center hover:bg-amber-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-all shadow-lg shadow-amber-500/25"
           >
             <RefreshCw className={`w-4 h-4 mr-2 ${seedMutation.isPending ? 'animate-spin' : ''}`} />
-            {seedMutation.isPending ? 'Syncing…' : 'Sync Templates'}
+            {seedMutation.isPending ? t('modelTemplates.syncing') : t('modelTemplates.syncTemplates')}
           </button>
           <button
             onClick={() => { setShowAdd(true); setEditingTpl(null); }}
             className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
           >
-            <Plus className="w-4 h-4 mr-2" /> Add Template
+            <Plus className="w-4 h-4 mr-2" /> {t('modelTemplates.addTemplate')}
           </button>
         </div>
       </div>
@@ -705,7 +726,7 @@ export default function ModelTemplates() {
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              All
+              {t('modelTemplates.all')}
               <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
                 activeTab === ALL_TAB ? 'bg-blue-400/30 text-white' : 'bg-slate-200 text-slate-500'
               }`}>
@@ -737,7 +758,7 @@ export default function ModelTemplates() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
-              placeholder="Search by model name, label, alias, or provider…"
+              placeholder={t('modelTemplates.searchPlaceholder')}
               className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -769,23 +790,23 @@ export default function ModelTemplates() {
       {templates.length === 0 && !showAdd ? (
         <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 text-slate-500">
           <LayoutTemplate className="w-16 h-16 mx-auto mb-4 text-slate-300" />
-          <p className="text-lg font-medium text-slate-700">No templates yet.</p>
-          <p className="text-sm mt-2">Click "Add Template" to create your first one.</p>
+          <p className="text-lg font-medium text-slate-700">{t('modelTemplates.noTemplates')}</p>
+          <p className="text-sm mt-2">{t('modelTemplates.noTemplatesHint')}</p>
         </div>
       ) : filteredTemplates.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 text-slate-500">
           <Search className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-          <p className="text-lg font-medium text-slate-700">No matching templates</p>
+          <p className="text-lg font-medium text-slate-700">{t('modelTemplates.noMatchingTemplates')}</p>
           <p className="text-sm mt-1">
             {searchQuery
-              ? `No templates match "${searchQuery}"${activeTab !== ALL_TAB ? ` in ${activeTab}` : ''}.`
-              : `No templates found for ${activeTab}.`}
+              ? t('modelTemplates.noTemplatesMatch', { query: searchQuery, tabSuffix: activeTab !== ALL_TAB ? ` in ${activeTab}` : '' })
+              : t('modelTemplates.noTemplatesForTab', { tab: activeTab })}
           </p>
           <button
             onClick={() => { setSearchQuery(''); setActiveTab(ALL_TAB); }}
             className="mt-3 text-sm text-blue-600 hover:text-blue-700 font-medium"
           >
-            Clear filters
+            {t('modelTemplates.clearFilters')}
           </button>
         </div>
       ) : (
@@ -796,7 +817,7 @@ export default function ModelTemplates() {
                 {providerName}
               </h2>
               <span className="text-xs text-slate-400">
-                {providerTemplates.length} model{providerTemplates.length !== 1 ? 's' : ''}
+                {t('modelTemplates.modelsCount', { count: providerTemplates.length })}
               </span>
             </div>
             {providerTemplates.map((tpl: ModelTemplate) =>
@@ -818,7 +839,7 @@ export default function ModelTemplates() {
                   tpl={tpl}
                   onEdit={() => { setEditingTpl(tpl); setShowAdd(false); }}
                   onDelete={() => {
-                    if (confirm(`Delete template "${tpl.label}"?`)) {
+                    if (confirm(t('modelTemplates.deleteConfirm', { label: tpl.label }))) {
                       deleteMutation.mutate(tpl.id);
                     }
                   }}

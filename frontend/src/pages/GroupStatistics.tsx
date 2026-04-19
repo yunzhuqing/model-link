@@ -1,11 +1,12 @@
 /**
- * GroupStatistics — 分组消耗统计组件
+ * GroupStatistics — Group usage statistics component
  *
- * 展示分组的消耗总金额、Token 消耗趋势、模型/API Key 费用分布等可视化图表。
- * 从 GroupDetail.tsx 拆分出来作为独立组件。
+ * Displays group consumption totals, Token trends, model/API Key cost distribution charts.
+ * Split from GroupDetail.tsx as an independent component.
  */
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import { BarChart3, TrendingUp, DollarSign, Cpu } from 'lucide-react';
 
@@ -130,9 +131,9 @@ const StatDonut = ({ slices, size = 130, strokeWidth = 22, centerValue, centerLa
 
 /* ── Daily Cost Bar Chart ──────────────────────────────────────────────── */
 
-const DailyCostChart = ({ data }: { data: StatTimeSeries[] }) => {
+const DailyCostChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, opts?: Record<string, unknown>) => string }) => {
   const [hovered, setHovered] = useState<number | null>(null);
-  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">暂无金额数据</div>;
+  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">{t('group.statistics.noCostData')}</div>;
 
   const maxCost = Math.max(...data.map(d => d.total_cost || 0), 0.001);
 
@@ -150,7 +151,7 @@ const DailyCostChart = ({ data }: { data: StatTimeSeries[] }) => {
               {isH && (
                 <div className="absolute -top-[50px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap z-20 shadow-xl">
                   <div className="font-semibold">{String(d.period).slice(5, 10)}</div>
-                  <div>消耗: {fmtCost(d.total_cost || 0)}</div>
+                  <div>{t('group.statistics.cost', { value: fmtCost(d.total_cost || 0) })}</div>
                   <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
                 </div>
               )}
@@ -171,9 +172,9 @@ const DailyCostChart = ({ data }: { data: StatTimeSeries[] }) => {
 
 /* ── Stacked Bar Chart for daily token trend ───────────────────────────── */
 
-const DailyBarChart = ({ data }: { data: StatTimeSeries[] }) => {
+const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, opts?: Record<string, unknown>) => string }) => {
   const [hovered, setHovered] = useState<number | null>(null);
-  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">暂无趋势数据</div>;
+  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">{t('group.statistics.noTrendData')}</div>;
 
   const maxVal = Math.max(...data.map(d => d.input_tokens + d.output_tokens), 1);
 
@@ -194,8 +195,8 @@ const DailyBarChart = ({ data }: { data: StatTimeSeries[] }) => {
               {isH && (
                 <div className="absolute -top-[70px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-2 rounded-lg whitespace-nowrap z-20 shadow-xl">
                   <div className="font-semibold mb-0.5">{String(d.period).slice(5, 10)}</div>
-                  <div>In: {fmtNum(d.input_tokens)} · Out: {fmtNum(d.output_tokens)}</div>
-                  <div>请求: {d.requests}</div>
+                  <div>{t('group.statistics.inOut', { in: fmtNum(d.input_tokens), out: fmtNum(d.output_tokens) })}</div>
+                  <div>{t('group.statistics.requests', { value: String(d.requests) })}</div>
                   <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
                 </div>
               )}
@@ -211,8 +212,8 @@ const DailyBarChart = ({ data }: { data: StatTimeSeries[] }) => {
         ))}
       </div>
       <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-indigo-400 rounded-sm" /> 输入 Tokens</span>
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /> 输出 Tokens</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-indigo-400 rounded-sm" /> {t('group.statistics.inputTokensLegend')}</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /> {t('group.statistics.outputTokensLegend')}</span>
       </div>
     </div>
   );
@@ -223,6 +224,7 @@ const DailyBarChart = ({ data }: { data: StatTimeSeries[] }) => {
    ══════════════════════════════════════════════════════════════════════════ */
 
 export default function GroupStatistics({ groupId }: { groupId: number }) {
+  const { t } = useTranslation();
   const [days, setDays] = useState(14);
 
   const params = useMemo(() => {
@@ -265,10 +267,10 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
     .map((k, i) => ({ label: k.api_key_name || k.api_key_preview || '—', value: k.total_cost_usd || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
 
   const tokenSlices = totals ? [
-    { label: '输入', value: totals.input_tokens, color: '#3b82f6' },
-    { label: '输出', value: totals.output_tokens, color: '#10b981' },
-    { label: '推理', value: totals.reasoning_tokens || 0, color: '#f59e0b' },
-    { label: '缓存', value: (totals.cache_tokens || 0) + (totals.cache_creation_tokens || 0), color: '#8b5cf6' },
+    { label: t('group.statistics.input'), value: totals.input_tokens, color: '#3b82f6' },
+    { label: t('group.statistics.output'), value: totals.output_tokens, color: '#10b981' },
+    { label: t('group.statistics.reasoning'), value: totals.reasoning_tokens || 0, color: '#f59e0b' },
+    { label: t('group.statistics.cache'), value: (totals.cache_tokens || 0) + (totals.cache_creation_tokens || 0), color: '#8b5cf6' },
   ].filter(s => s.value > 0) : [];
 
   return (
@@ -280,31 +282,31 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
             <BarChart3 className="w-5 h-5 text-amber-600" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-slate-800">消耗统计</h2>
-            <p className="text-sm text-slate-500">近 {days} 天分组用量概览</p>
+            <h2 className="text-lg font-bold text-slate-800">{t('group.statistics.title')}</h2>
+            <p className="text-sm text-slate-500">{t('group.statistics.subtitle', { days })}</p>
           </div>
         </div>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))}
           className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white">
-          <option value={7}>近 7 天</option>
-          <option value={14}>近 14 天</option>
-          <option value={30}>近 30 天</option>
+          <option value={7}>{t('group.statistics.last7Days')}</option>
+          <option value={14}>{t('group.statistics.last14Days')}</option>
+          <option value={30}>{t('group.statistics.last30Days')}</option>
         </select>
       </div>
 
       {loading ? (
-        <div className="text-center py-16 text-slate-400">加载中...</div>
+        <div className="text-center py-16 text-slate-400">{t('group.statistics.loading')}</div>
       ) : (!totals || totals.requests === 0) ? (
         <div className="text-center py-16 text-slate-400">
           <BarChart3 className="w-12 h-12 mx-auto mb-3 text-slate-200" />
-          <p>该分组暂无消耗数据</p>
+          <p>{t('group.statistics.noData')}</p>
         </div>
       ) : (
         <>
           {/* ── KPI Cards ──────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl p-4 text-white shadow">
-              <div className="flex items-center space-x-2 mb-1"><DollarSign className="w-4 h-4" /><span className="text-xs text-white/80">消耗总金额 (USD)</span></div>
+              <div className="flex items-center space-x-2 mb-1"><DollarSign className="w-4 h-4" /><span className="text-xs text-white/80">{t('group.statistics.totalCostUSD')}</span></div>
               <p className="text-2xl font-bold">{fmtCost(byCurrency?.total_cost_usd || 0)}</p>
               {(byCurrency?.currencies?.length ?? 0) >= 1 && (
                 <div className="mt-1.5 space-y-0.5">
@@ -318,15 +320,15 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
               )}
             </div>
             <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-4 text-white shadow">
-              <div className="flex items-center space-x-2 mb-1"><TrendingUp className="w-4 h-4" /><span className="text-xs text-white/80">消耗总 Token</span></div>
+              <div className="flex items-center space-x-2 mb-1"><TrendingUp className="w-4 h-4" /><span className="text-xs text-white/80">{t('group.statistics.totalTokens')}</span></div>
               <p className="text-2xl font-bold">{fmtNum(totalTokens)}</p>
             </div>
             <div className="bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-2xl p-4 text-white shadow">
-              <div className="flex items-center space-x-2 mb-1"><BarChart3 className="w-4 h-4" /><span className="text-xs text-white/80">请求总数</span></div>
+              <div className="flex items-center space-x-2 mb-1"><BarChart3 className="w-4 h-4" /><span className="text-xs text-white/80">{t('group.statistics.totalRequests')}</span></div>
               <p className="text-2xl font-bold">{fmtNum(totals.requests)}</p>
             </div>
             <div className="bg-gradient-to-br from-violet-500 to-violet-600 rounded-2xl p-4 text-white shadow">
-              <div className="flex items-center space-x-2 mb-1"><Cpu className="w-4 h-4" /><span className="text-xs text-white/80">使用模型数</span></div>
+              <div className="flex items-center space-x-2 mb-1"><Cpu className="w-4 h-4" /><span className="text-xs text-white/80">{t('group.statistics.usedModels')}</span></div>
               <p className="text-2xl font-bold">{byModel?.length ?? 0}</p>
             </div>
           </div>
@@ -336,16 +338,16 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center space-x-2">
                 <TrendingUp className="w-4 h-4 text-blue-500" />
-                <span>每日 Token 消耗趋势</span>
+                <span>{t('group.statistics.dailyTokenTrend')}</span>
               </h3>
-              <DailyBarChart data={timeSeries || []} />
+              <DailyBarChart data={timeSeries || []} t={t} />
             </div>
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center space-x-2">
                 <DollarSign className="w-4 h-4 text-amber-500" />
-                <span>每日金额消耗趋势</span>
+                <span>{t('group.statistics.dailyCostTrend')}</span>
               </h3>
-              <DailyCostChart data={timeSeries || []} />
+              <DailyCostChart data={timeSeries || []} t={t} />
             </div>
           </div>
 
@@ -353,9 +355,9 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Token Distribution */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-              <h3 className="text-xs font-bold text-slate-600 mb-4">Token 分布</h3>
+              <h3 className="text-xs font-bold text-slate-600 mb-4">{t('group.statistics.tokenDistribution')}</h3>
               <div className="flex flex-col items-center">
-                <StatDonut slices={tokenSlices} centerValue={fmtNum(totalTokens)} centerLabel="总计" />
+                <StatDonut slices={tokenSlices} centerValue={fmtNum(totalTokens)} centerLabel={t('group.statistics.totalLabel')} />
                 <div className="mt-4 space-y-2 w-full">
                   {tokenSlices.map((s, i) => (
                     <div key={i} className="flex items-center justify-between text-xs">
@@ -372,9 +374,9 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
 
             {/* Model Cost Distribution */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-              <h3 className="text-xs font-bold text-slate-600 mb-4">模型费用分布</h3>
+              <h3 className="text-xs font-bold text-slate-600 mb-4">{t('group.statistics.modelCostDistribution')}</h3>
               <div className="flex flex-col items-center">
-                <StatDonut slices={modelCostSlices} centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel="总费用(USD)" />
+                <StatDonut slices={modelCostSlices} centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel={t('group.statistics.totalCostLabel')} />
                 <div className="mt-4 space-y-2 w-full max-h-[140px] overflow-y-auto">
                   {modelCostSlices.map((s, i) => {
                     const total = modelCostSlices.reduce((a, sl) => a + sl.value, 0) || 1;
@@ -397,9 +399,9 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
 
             {/* API Key Cost Distribution */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-              <h3 className="text-xs font-bold text-slate-600 mb-4">API Key 费用分布</h3>
+              <h3 className="text-xs font-bold text-slate-600 mb-4">{t('group.statistics.apiKeyCostDistribution')}</h3>
               <div className="flex flex-col items-center">
-                <StatDonut slices={apiKeyCostSlices} centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel="总费用(USD)" />
+                <StatDonut slices={apiKeyCostSlices} centerValue={fmtCost(byCurrency?.total_cost_usd || 0)} centerLabel={t('group.statistics.totalCostLabel')} />
                 <div className="mt-4 space-y-2 w-full max-h-[140px] overflow-y-auto">
                   {apiKeyCostSlices.map((s, i) => {
                     const total = apiKeyCostSlices.reduce((a, sl) => a + sl.value, 0) || 1;

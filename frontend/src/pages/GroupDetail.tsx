@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
@@ -27,6 +28,7 @@ interface Member {
 }
 
 export default function GroupDetail() {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -106,7 +108,7 @@ export default function GroupDetail() {
   if (groupLoading) {
     return (
       <div className="flex justify-center items-center h-64">
-        <div className="text-slate-500">Loading...</div>
+        <div className="text-slate-500">{t('common.loading')}</div>
       </div>
     );
   }
@@ -115,9 +117,9 @@ export default function GroupDetail() {
     return (
       <div className="text-center py-12">
         <Users className="w-16 h-16 mx-auto mb-4 text-slate-300" />
-        <p className="text-lg font-medium text-slate-700">Group not found</p>
+        <p className="text-lg font-medium text-slate-700">{t('group.groupNotFound')}</p>
         <button onClick={() => navigate('/groups')} className="mt-4 text-blue-600 hover:underline">
-          Back to Groups
+          {t('group.backToGroups')}
         </button>
       </div>
     );
@@ -134,7 +136,7 @@ export default function GroupDetail() {
         </button>
         <div>
           <h1 className="text-2xl font-bold text-slate-800">{group.name}</h1>
-          <p className="text-slate-500">{group.description || 'No description'}</p>
+          <p className="text-slate-500">{group.description || t('group.noDescription')}</p>
         </div>
       </div>
 
@@ -142,11 +144,11 @@ export default function GroupDetail() {
       <div className="border-b border-slate-200">
         <nav className="flex space-x-8">
           {[
-            { key: 'statistics', label: '消耗统计', icon: BarChart3, color: 'amber' },
-            { key: 'models', label: '可用模型', icon: Cpu, color: 'indigo' },
-            { key: 'apikeys', label: 'API Keys', icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
-            { key: 'members', label: 'Members', icon: Users, color: 'violet', count: group?.users?.length || 0 },
-            { key: 'providers', label: 'Providers', icon: Database, color: 'blue', count: providers?.length || 0 },
+            { key: 'statistics', label: t('group.tabStatistics'), icon: BarChart3, color: 'amber' },
+            { key: 'models', label: t('group.tabModels'), icon: Cpu, color: 'indigo' },
+            { key: 'apikeys', label: t('group.tabApiKeys'), icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
+            { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
+            { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
           ].map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
             return (
@@ -181,15 +183,15 @@ export default function GroupDetail() {
                 <Users className="w-5 h-5 text-violet-600" />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-slate-800">Members</h2>
-                <p className="text-sm text-slate-500">{group?.users?.length || 0} members</p>
+                <h2 className="text-lg font-bold text-slate-800">{t('group.tabMembers')}</h2>
+                <p className="text-sm text-slate-500">{t('group.memberCount', { count: group?.users?.length || 0 })}</p>
               </div>
             </div>
             <button
               onClick={() => setShowInviteMember(true)}
               className="bg-violet-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-violet-600 transition-colors shadow-sm"
             >
-              <UserPlus className="w-4 h-4 mr-2" /> Invite Member
+              <UserPlus className="w-4 h-4 mr-2" /> {t('group.inviteMember')}
             </button>
           </div>
 
@@ -197,12 +199,12 @@ export default function GroupDetail() {
             <div className="bg-slate-50 p-4 rounded-xl mb-4">
               <div className="flex gap-4">
                 <div className="flex-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Email Address *</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.emailLabel')}</label>
                   <div className="relative">
                     <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
                       type="email"
-                      placeholder="user@example.com"
+                      placeholder={t('group.emailPlaceholder')}
                       className="w-full pl-10 p-3 bg-white border border-slate-200 rounded-xl text-sm"
                       value={inviteEmail}
                       onChange={(e) => setInviteEmail(e.target.value)}
@@ -211,15 +213,15 @@ export default function GroupDetail() {
                 </div>
               </div>
               <div className="mt-4">
-                <label className="block text-sm font-medium text-slate-700 mb-2">Role</label>
+                <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.role')}</label>
                 <select
                   className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm mb-4"
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}
                 >
-                  <option value="member">Member</option>
-                  <option value="admin">Admin</option>
-                  <option value="root">Root</option>
+                  <option value="member">{t('group.roleMember')}</option>
+                  <option value="admin">{t('group.roleAdmin')}</option>
+                  <option value="root">{t('group.roleRoot')}</option>
                 </select>
               </div>
               <div className="flex space-x-3">
@@ -228,17 +230,17 @@ export default function GroupDetail() {
                   disabled={!inviteEmail || inviteMemberMutation.isPending}
                   className="bg-violet-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-600 disabled:bg-slate-300"
                 >
-                  {inviteMemberMutation.isPending ? 'Inviting...' : 'Send Invite'}
+                  {inviteMemberMutation.isPending ? t('group.inviting') : t('group.sendInvite')}
                 </button>
                 <button
                   onClick={() => { setShowInviteMember(false); setInviteEmail(''); setInviteRole('member'); }}
                   className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
               </div>
               {inviteMemberMutation.isError && (
-                <p className="text-red-500 text-sm mt-2">Failed to invite member. Please check the email address.</p>
+                <p className="text-red-500 text-sm mt-2">{t('group.inviteFailed')}</p>
               )}
             </div>
           )}
@@ -254,7 +256,7 @@ export default function GroupDetail() {
                   </div>
                   <div>
                     <div className="flex items-center space-x-2">
-                      <h4 className="font-medium text-slate-800">{member.username || 'Unknown'}</h4>
+                      <h4 className="font-medium text-slate-800">{member.username || t('common.noData')}</h4>
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${getRoleBadgeColor(member.role)}`}>
                         {member.role}
                       </span>
@@ -270,23 +272,23 @@ export default function GroupDetail() {
                       onChange={(e) => updateRoleMutation.mutate({ userId: member.id, role: e.target.value })}
                       onBlur={() => setEditingMemberRole(null)}
                     >
-                      <option value="member">Member</option>
-                      <option value="admin">Admin</option>
-                      <option value="root">Root</option>
+                      <option value="member">{t('group.roleMember')}</option>
+                      <option value="admin">{t('group.roleAdmin')}</option>
+                      <option value="root">{t('group.roleRoot')}</option>
                     </select>
                   ) : (
                     <button
                       onClick={() => setEditingMemberRole(member.id)}
                       className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
-                      title="Change role"
+                      title={t('group.changeRole')}
                     >
                       <Edit2 className="w-4 h-4" />
                     </button>
                   )}
                   <button
-                    onClick={() => { if (confirm(`Remove ${member.username || member.email} from this group?`)) removeMemberMutation.mutate(member.id); }}
+                    onClick={() => { if (confirm(t('group.removeMemberConfirm', { name: member.username || member.email }))) removeMemberMutation.mutate(member.id); }}
                     className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
-                    title="Remove member"
+                    title={t('group.removeMember')}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -296,7 +298,7 @@ export default function GroupDetail() {
             {(!group?.users || group.users.length === 0) && !showInviteMember && (
               <div className="text-center py-8 text-slate-500">
                 <Users className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                <p>No members yet.</p>
+                <p>{t('group.noMembers')}</p>
               </div>
             )}
           </div>
@@ -319,8 +321,8 @@ export default function GroupDetail() {
               <Database className="w-5 h-5 text-blue-600" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-800">Providers</h2>
-              <p className="text-sm text-slate-500">Manage AI providers and models for this group</p>
+              <h2 className="text-lg font-bold text-slate-800">{t('group.tabProviders')}</h2>
+              <p className="text-sm text-slate-500">{t('group.manageProviders')}</p>
             </div>
           </div>
           {/* ProviderList handles all provider + model CRUD internally */}
