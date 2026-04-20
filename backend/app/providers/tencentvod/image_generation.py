@@ -61,10 +61,12 @@ _POLL_MAX_WAIT_S = 300   # 最大等待时间（秒）
 
 # Known TencentVOD image generation model name prefixes (case-insensitive).
 # Add new prefixes here when TencentVOD releases additional image models.
+# NOTE: "gemini-" is intentionally excluded — Gemini image models are matched
+#       by checking for "image" in the model name (see below) to avoid
+#       incorrectly routing chat models like gemini-3.1-pro-preview.
 _TENCENTVOD_IMAGE_MODEL_PREFIXES = (
     "gem-",
     "mingmou-",
-    "gemini-",   # Gemini image models routed via TencentVOD (model_name=GG)
     "hy-image-", # Hunyuan image models
 )
 
@@ -74,14 +76,21 @@ def is_tencentvod_image_model(model: str) -> bool:
     Check if the model is a TencentVOD image generation model.
 
     Matches model names whose prefix indicates a TencentVOD image generation
-    model, e.g.:
+    model, or Gemini models that contain "image" in their name, e.g.:
       - GEM-2.5
       - GEM-3.0
       - Mingmou-4.0
       - Mingmou-5.0
       - gemini-2.5-flash-image
       - gemini-3-pro-image-preview
+      - gemini-3.1-flash-image-preview
       - hy-image-v3.0
+
+    Does NOT match Gemini chat models like:
+      - gemini-3.1-pro-preview
+      - gemini-3-flash-preview
+      - gemini-2.5-pro-preview-03-25
+      - gemini-2.5-flash-preview-05-20
 
     Args:
         model: Model name (case-insensitive)
@@ -90,7 +99,13 @@ def is_tencentvod_image_model(model: str) -> bool:
         True if the model is a TencentVOD image generation model
     """
     lower = model.lower()
-    return any(lower.startswith(prefix) for prefix in _TENCENTVOD_IMAGE_MODEL_PREFIXES)
+    # Check well-known prefixes (GEM, Mingmou, hy-image)
+    if any(lower.startswith(prefix) for prefix in _TENCENTVOD_IMAGE_MODEL_PREFIXES):
+        return True
+    # Gemini image models contain "image" in their name
+    if lower.startswith("gemini-") and "image" in lower:
+        return True
+    return False
 
 
 def has_image_generation_tool(request: ChatRequest) -> bool:

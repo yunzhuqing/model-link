@@ -4,9 +4,9 @@ OpenAI 供应商实现 (OpenAI Provider)
 """
 from typing import Optional, List, Dict, Any, Generator
 import json
+import logging
 import time
 import uuid
-
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
@@ -17,6 +17,8 @@ from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, Embed
 # Internal metadata keys set by the gateway service.
 # These must be filtered out before sending requests to upstream provider APIs.
 _GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
+
+logger = logging.getLogger(__name__)
 
 
 def parse_openai_request(data: dict) -> ChatRequest:
@@ -29,7 +31,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
     Returns:
         ChatRequest 对象
     """
-    print(f"Parsing OpenAI request data: {json.dumps(data, ensure_ascii=False)}")
+    logger.debug("Parsing OpenAI request data: %s", json.dumps(data, ensure_ascii=False))
     messages = []
     for msg_data in data.get('messages', []):
         role = MessageRole(msg_data.get('role', 'user'))
@@ -586,6 +588,7 @@ class OpenAIProvider(BaseProvider):
         
         request_data = self.prepare_request(request)
         request_data["stream"] = False
+        logger.debug("Prepared OpenAI request data: %s", json.dumps(request_data, ensure_ascii=False))
         
         url = f"{self.config.base_url}/chat/completions"
         
@@ -620,7 +623,8 @@ class OpenAIProvider(BaseProvider):
         request_data["stream"] = True
         # Request usage info in the final streaming chunk
         request_data["stream_options"] = {"include_usage": True}
-        
+        logger.debug("Prepared OpenAI streaming request data: %s", json.dumps(request_data, ensure_ascii=False))
+
         url = f"{self.config.base_url}/chat/completions"
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         
@@ -655,7 +659,7 @@ class OpenAIProvider(BaseProvider):
                             if chunk:
                                 yield chunk
                         except json.JSONDecodeError as err:
-                            print(f"Failed to parse OpenAI stream chunk: {err}. Data: {data_str}")
+                            logger.warning("Failed to parse OpenAI stream chunk: %s. Data: %s", err, data_str)
                             continue
         
         except RuntimeError:

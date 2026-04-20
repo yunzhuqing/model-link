@@ -14,6 +14,7 @@ import json
 import time
 import uuid
 import sys
+import logging
 
 from ..base import ProviderConfig, ProviderCapability
 from app.abstraction.chat import ChatRequest, ChatResponse
@@ -118,6 +119,11 @@ class BailianProvider(OpenAIProvider):
             "context_size": 0,
             "supports_vision": True,
         },
+        "z-image-turbo": {
+            "description": "快速文生图模型，仅支持文本输入，使用 aspect_ratio 尺寸参数",
+            "context_size": 0,
+            "supports_vision": False,
+        },
         # DeepSeek 系列
         "deepseek-v3": {
             "description": "DeepSeek V3 模型",
@@ -203,11 +209,7 @@ class BailianProvider(OpenAIProvider):
             data["enable_thinking"] = True
 
         # 打印请求体到控制台
-        print("\n" + "=" * 50, file=sys.stderr)
-        print("[Bailian Request Body]", file=sys.stderr)
-        print("=" * 50, file=sys.stderr)
-        print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
-        print("=" * 50 + "\n", file=sys.stderr)
+        logging.debug("Prepared Bailian request data: %s", json.dumps(data, ensure_ascii=False))
 
         return data
 

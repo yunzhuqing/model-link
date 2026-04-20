@@ -374,7 +374,7 @@ def openai_responses():
     except Exception as e:
         return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
 
-    logger.info(f"Original request logged to: {json.dumps(data, ensure_ascii=False, indent=4)}")
+    logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
 
     _resp_start_time = time.monotonic()
     try:

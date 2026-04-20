@@ -799,6 +799,8 @@ class GatewayService:
         style: Optional[str] = None,
         user: Optional[str] = None,
         group_id: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
     ) -> dict:
         """
         Execute image generation and return an OpenAI-compatible response.
@@ -855,6 +857,10 @@ class GatewayService:
             "response_format": response_format,
             "image_format": output_format,
         }
+        if aspect_ratio:
+            metadata["aspect_ratio"] = aspect_ratio
+        if resolution:
+            metadata["resolution"] = resolution
 
         chat_request = ChatRequest(
             messages=messages,

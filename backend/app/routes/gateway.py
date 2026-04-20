@@ -186,7 +186,7 @@ def _handle_request(adapter):
     group_id = api_key.group_id if api_key else None
 
     # 4.5. 记录原始请求数据
-    logger.info(f"Original request logged to: {json.dumps(data, ensure_ascii=False, indent=4)}")
+    logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
 
     # 5. 调用中间层
     _request_start_time = time.monotonic()
@@ -613,6 +613,8 @@ def create_images():
     quality = data.get('quality')
     style = data.get('style')
     user_id = data.get('user')
+    aspect_ratio = data.get('aspect_ratio')
+    resolution = data.get('resolution')
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
@@ -632,6 +634,8 @@ def create_images():
             style=style,
             user=user_id,
             group_id=group_id,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         # Record usage asynchronously (fire-and-forget)

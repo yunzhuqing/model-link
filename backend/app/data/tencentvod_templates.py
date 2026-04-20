@@ -1,6 +1,108 @@
-"""TencentVOD Gemini image models + Kling video models."""
+"""TencentVOD model templates — chat (GPT, Gemini), image (Gemini), video (Kling)."""
 
 TENCENTVOD_TEMPLATES = [
+    # ── TencentVOD Chat Models (CNY pricing) ────────────────────────────────
+    # GPT-5.4 — tiered by context size
+    dict(label='GPT-5.4 (TencentVOD)', provider='TencentVOD', name='gpt-5.4', alias='gpt-5.4',
+         context_size=272000, input_size=272000, output_size=8192,
+         pricing_tiers=[
+             dict(label='≤272k ctx', context_size=272000, input_size=272000, output_size=8192,
+                  input_price=18.75, output_price=112.5, cache_creation_price=0, cache_hit_price=1.88),
+             dict(label='>272k ctx', context_size=1000000, input_size=1000000, output_size=8192,
+                  input_price=37.5, output_price=168.75, cache_creation_price=0, cache_hit_price=3.75),
+         ],
+         input_price=18.75, output_price=112.5, cache_creation_price=0, cache_hit_price=1.88,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=True,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    # GPT-5.4 Pro — tiered by context size
+    dict(label='GPT-5.4 Pro (TencentVOD)', provider='TencentVOD', name='gpt-5.4-pro', alias='gpt-5.4-pro',
+         context_size=272000, input_size=272000, output_size=8192,
+         pricing_tiers=[
+             dict(label='≤272k ctx', context_size=272000, input_size=272000, output_size=8192,
+                  input_price=225, output_price=1350, cache_creation_price=0, cache_hit_price=0),
+             dict(label='>272k ctx', context_size=1000000, input_size=1000000, output_size=8192,
+                  input_price=450, output_price=2025, cache_creation_price=0, cache_hit_price=0),
+         ],
+         input_price=225, output_price=1350, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=True,
+         support_thinking=True, support_online_image=True, support_online_video=False, support_embedding=False),
+    # GPT-5.2 — flat pricing
+    dict(label='GPT-5.2 (TencentVOD)', provider='TencentVOD', name='gpt-5.2', alias='gpt-5.2',
+         context_size=272000, input_size=272000, output_size=8192, pricing_tiers=None,
+         input_price=12.25, output_price=98, cache_creation_price=0, cache_hit_price=1.22,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    # GPT-5.1 — flat pricing
+    dict(label='GPT-5.1 (TencentVOD)', provider='TencentVOD', name='gpt-5.1', alias='gpt-5.1',
+         context_size=128000, input_size=128000, output_size=8192, pricing_tiers=None,
+         input_price=8.75, output_price=70, cache_creation_price=0, cache_hit_price=0.87,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    # Gemini 3.1 Pro Preview — tiered by context size
+    dict(label='Gemini 3.1 Pro Preview (TencentVOD)', provider='TencentVOD', name='gemini-3.1-pro-preview', alias='gemini-3.1-pro-preview',
+         context_size=1048576, input_size=1048576, output_size=65536,
+         pricing_tiers=[
+             dict(label='≤200k ctx', context_size=1048576, input_size=204800, output_size=65536,
+                  input_price=15, output_price=90, cache_creation_price=0, cache_hit_price=1.5),
+             dict(label='>200k ctx', context_size=1048576, input_size=1048576, output_size=65536,
+                  input_price=30, output_price=135, cache_creation_price=0, cache_hit_price=3),
+         ],
+         input_price=15, output_price=90, cache_creation_price=0, cache_hit_price=1.5,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=True, support_video=True,
+         support_file=True, support_web_search=True, support_tool_search=False,
+         support_thinking=True, support_online_image=True, support_online_video=True, support_embedding=False),
+    # Gemini 3 Flash Preview — tiered by audio input
+    dict(label='Gemini 3 Flash Preview (TencentVOD)', provider='TencentVOD', name='gemini-3-flash-preview', alias='gemini-3-flash-preview',
+         context_size=1048576, input_size=1048576, output_size=65536,
+         pricing_tiers=[
+             dict(label='without audio input', context_size=1048576, input_size=1048576, output_size=65536,
+                  input_price=3.5, output_price=21, cache_creation_price=0, cache_hit_price=0.35),
+             dict(label='with audio input', context_size=1048576, input_size=1048576, output_size=65536,
+                  input_price=7, output_price=21, cache_creation_price=0, cache_hit_price=0.7),
+         ],
+         input_price=3.5, output_price=21, cache_creation_price=0, cache_hit_price=0.35,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=True, support_video=True,
+         support_file=True, support_web_search=True, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False),
+    # Gemini 2.5 Pro — tiered by context size
+    dict(label='Gemini 2.5 Pro (TencentVOD)', provider='TencentVOD', name='gemini-2.5-pro-preview-03-25', alias='gemini-2.5-pro',
+         context_size=1048576, input_size=1048576, output_size=8192,
+         pricing_tiers=[
+             dict(label='≤200k ctx', context_size=1048576, input_size=204800, output_size=8192,
+                  input_price=9.37, output_price=75, cache_creation_price=0, cache_hit_price=0.93),
+             dict(label='>200k ctx', context_size=1048576, input_size=1048576, output_size=8192,
+                  input_price=18.75, output_price=112.5, cache_creation_price=0, cache_hit_price=1.87),
+         ],
+         input_price=9.37, output_price=75, cache_creation_price=0, cache_hit_price=0.93,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=True, support_video=True,
+         support_file=True, support_web_search=True, support_tool_search=False,
+         support_thinking=True, support_online_image=True, support_online_video=True, support_embedding=False),
+    # Gemini 2.5 Flash — tiered by audio input
+    dict(label='Gemini 2.5 Flash (TencentVOD)', provider='TencentVOD', name='gemini-2.5-flash-preview-05-20', alias='gemini-2.5-flash',
+         context_size=1048576, input_size=1048576, output_size=8192,
+         pricing_tiers=[
+             dict(label='without audio input', context_size=1048576, input_size=1048576, output_size=8192,
+                  input_price=2.25, output_price=18.75, cache_creation_price=0, cache_hit_price=0.22),
+             dict(label='with audio input', context_size=1048576, input_size=1048576, output_size=8192,
+                  input_price=7.5, output_price=18.75, cache_creation_price=0, cache_hit_price=0.75),
+         ],
+         input_price=2.25, output_price=18.75, cache_creation_price=0, cache_hit_price=0.22,
+         currency='CNY',
+         support_kvcache=True, support_image=True, support_audio=True, support_video=True,
+         support_file=True, support_web_search=True, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False),
+
     # ── TencentVOD Gemini Image Models ──────────────────────────────────────
     # Image pricing uses output_pricing with per_image type and resolution tiers.
     # Prices are per image, calculated based on resolution tier (512, 1K, 2K, 3K, 4K).

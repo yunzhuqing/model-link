@@ -17,6 +17,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'edits-params', label: 'Edits 请求参数' },
   { id: 'edits-response', label: 'Edits 响应格式' },
   { id: 'seedream-sizes', label: 'Seedream 尺寸' },
+  { id: 'z-image-sizes', label: 'Z-Image 尺寸' },
   { id: 'gemini-sizes', label: 'Gemini 尺寸' },
 ];
 
@@ -301,6 +302,7 @@ export default function HelpImageGeneration() {
                   {[
                     { model: 'qwen-image-2.0',                  format: 'png',       size: '512×512 ~ 2048×2048' },
                     { model: 'qwen-image-2.0-pro',               format: 'png',       size: '512×512 ~ 2048×2048' },
+                    { model: 'z-image-turbo',                     format: 'png',       size: '1K / 1.5K / 2K（见下方尺寸表）' },
                     { model: 'doubao-seedream-4.0',              format: 'jpeg',      size: '1K ~ 4K（见下方尺寸表）' },
                     { model: 'doubao-seedream-4.5',              format: 'jpeg',      size: '2K ~ 4K（见下方尺寸表）' },
                     { model: 'doubao-seedream-5.0',              format: 'png / jpg', size: '2K ~ 3K（见下方尺寸表）' },
@@ -379,10 +381,12 @@ export default function HelpImageGeneration() {
                 {[
                   { name: 'type',            required: true,  type: 'string',  desc: '固定为 "image_generation"' },
                   { name: 'n',               required: false, type: 'number',  desc: '生成图片数量，别名：number、count' },
-                  { name: 'size',            required: false, type: 'string',  desc: '图片尺寸，如 "1024x1024" 或 "2K"' },
+                  { name: 'size',            required: false, type: 'string',  desc: '图片尺寸，如 "1024x1024"' },
                   { name: 'response_format', required: false, type: 'string',  desc: '"b64_json"（默认）或 "url"' },
                   { name: 'image_format',    required: false, type: 'string',  desc: '"png"（默认）或 "jpg"；别名：output_format' },
                   { name: 'seed',            required: false, type: 'number',  desc: '随机种子，用于结果可复现' },
+                  { name: 'aspect_ratio',   required: false, type: 'string',  desc: '宽高比，如 "1:1"、"16:9"、"9:16"（Z-Image Turbo 使用）' },
+                  { name: 'resolution',      required: false, type: 'string',  desc: '分辨率档位，如 "1K"、"1.5K"、"2K"（Z-Image Turbo 使用）' },
                   { name: 'watermark',       required: false, type: 'boolean', desc: '是否添加水印' },
                 ].map((r) => (
                   <tr key={r.name} className="hover:bg-slate-50">
@@ -464,7 +468,7 @@ export default function HelpImageGeneration() {
                   { name: 'prompt',           required: true,  type: 'string',  desc: '图片描述文字' },
                   { name: 'images',           required: false, type: 'array',   desc: '参考图片列表，每项含 image_url，用于图生图场景' },
                   { name: 'n',                required: false, type: 'integer', desc: '生成图片数量，默认 1' },
-                  { name: 'size',             required: false, type: 'string',  desc: '图片尺寸，如 "1024x1024"、"2K"' },
+                  { name: 'size',             required: false, type: 'string',  desc: '图片尺寸，如 "1024x1024"' },
                   { name: 'response_format',  required: false, type: 'string',  desc: '"url"（默认）或 "b64_json"' },
                   { name: 'output_format',    required: false, type: 'string',  desc: '图片格式：png | jpeg | webp' },
                   { name: 'quality',          required: false, type: 'string',  desc: '质量：standard | hd | low | medium | high | auto' },
@@ -784,6 +788,55 @@ export default function HelpImageGeneration() {
             <ul className="mt-1 space-y-0.5 list-disc list-inside text-blue-700">
               <li>分辨率等级：<code>"1K"</code>、<code>"2K"</code>、<code>"3K"</code>、<code>"4K"</code>（自动匹配默认比例 1:1）</li>
               <li>精确分辨率：<code>"2048x2048"</code>、<code>"1728x2304"</code> 等（需与上表中的尺寸匹配）</li>
+            </ul>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          id="z-image-sizes"
+          title="Z-Image Turbo 支持尺寸"
+          description="百炼 Z-Image Turbo 模型使用 aspect_ratio（宽高比）+ 分辨率档位（1K / 1.5K / 2K）来确定输出图片尺寸。仅支持文本输入。"
+        >
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">1.5K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {[
+                  { ratio: '1:1',  k1: '1024×1024',  k15: '1280×1280',  k2: '1536×1536' },
+                  { ratio: '2:3',  k1: '832×1248',   k15: '1024×1536',  k2: '1248×1872' },
+                  { ratio: '3:2',  k1: '1248×832',   k15: '1536×1024',  k2: '1872×1248' },
+                  { ratio: '3:4',  k1: '864×1152',   k15: '1104×1472',  k2: '1296×1728' },
+                  { ratio: '4:3',  k1: '1152×864',   k15: '1472×1104',  k2: '1728×1296' },
+                  { ratio: '7:9',  k1: '896×1152',   k15: '1120×1440',  k2: '1344×1728' },
+                  { ratio: '9:7',  k1: '1152×896',   k15: '1440×1120',  k2: '1728×1344' },
+                  { ratio: '9:16', k1: '720×1280',   k15: '864×1536',   k2: '1152×2048' },
+                  { ratio: '9:21', k1: '576×1344',   k15: '720×1680',   k2: '864×2016' },
+                  { ratio: '16:9', k1: '1280×720',   k15: '1536×864',   k2: '2048×1152' },
+                  { ratio: '21:9', k1: '1344×576',   k15: '1680×720',   k2: '2016×864' },
+                ].map((r) => (
+                  <tr key={r.ratio} className="hover:bg-slate-50">
+                    <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k15}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
+            <strong>提示：</strong>Z-Image Turbo 的 size 参数使用 WxH 精确分辨率格式（如 <code>"1024*1024"</code>），需与上表中的尺寸匹配。也可通过 aspect_ratio 参数指定宽高比，系统自动匹配对应分辨率：
+            <ul className="mt-1 space-y-0.5 list-disc list-inside text-blue-700">
+              <li>size 精确分辨率：<code>size: "1024*1024"</code> → 直接使用</li>
+              <li>仅 aspect_ratio：<code>aspect_ratio: "1:1"</code> → 默认 1K档 1024×1024</li>
+              <li>size 档位 + aspect_ratio：<code>size: "2K"</code> + <code>aspect_ratio: "16:9"</code> → 自动匹配 2048×1152</li>
             </ul>
           </div>
         </SectionCard>

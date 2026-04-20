@@ -209,4 +209,29 @@ BAILIAN_TEMPLATES = [
         support_file=False, support_web_search=False, support_tool_search=False,
         support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
     ),
+    # ── Z-Image Turbo ────────────────────────────────────────────────────
+    dict(
+        label='Z-Image Turbo',
+        provider='Bailian',
+        name='z-image-turbo',
+        alias='z-image-turbo',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.1,
+                'tiers': [
+                    {'resolution': '1K', 'price': 0.1},
+                    {'resolution': '1.5K', 'price': 0.1},
+                    {'resolution': '2K', 'price': 0.1},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
 ]

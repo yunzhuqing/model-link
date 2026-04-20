@@ -1,10 +1,11 @@
 """
-阿里云百炼图像生成模块 (Qwen Image Generation)
+阿里云百炼图像生成模块 (Qwen Image Generation & Z-Image)
 
-通义千问图像生成/编辑模型支持通过 Dashscope 多模态生成 API 进行图像生成和编辑。
+通义千问图像生成/编辑模型和 Z-Image 模型支持通过 Dashscope 多模态生成 API 进行图像生成和编辑。
 
 支持的模型包括：
 - qwen-image-2.0-pro: 通义千问图像生成与编辑模型（支持文生图和图生图）
+- z-image-turbo: 快速文生图模型（仅支持文本输入，支持 aspect_ratio 尺寸参数）
 
 API 文档:
 https://help.aliyun.com/document_detail/2712195.html
@@ -90,7 +91,59 @@ QWEN_IMAGE_MODELS: List[QwenImageConfig] = [
         display_name="Qwen Image 2.0",
         description="通义千问图像生成模型，支持文生图和图生图编辑",
     ),
+    QwenImageConfig(
+        model_name="z-image-turbo",
+        display_name="Z-Image Turbo",
+        description="快速文生图模型，仅支持文本输入，使用 aspect_ratio 尺寸参数",
+    ),
 ]
+
+# ── Z-Image Turbo aspect_ratio → size 映射表 ──────────────────────────
+# 三档分辨率：1K, 1.5K, 2K（命名取 max dimension 概值）
+Z_IMAGE_SIZE_TABLE: Dict[str, Dict[str, str]] = {
+    # ── 1K 档 ──────────────────────────────────────────────────
+    '1K': {
+        '1:1':  '1024*1024',
+        '2:3':  '832*1248',
+        '3:2':  '1248*832',
+        '3:4':  '864*1152',
+        '4:3':  '1152*864',
+        '7:9':  '896*1152',
+        '9:7':  '1152*896',
+        '9:16': '720*1280',
+        '9:21': '576*1344',
+        '16:9': '1280*720',
+        '21:9': '1344*576',
+    },
+    # ── 1.5K 档 ───────────────────────────────────────────────
+    '1.5K': {
+        '1:1':  '1280*1280',
+        '2:3':  '1024*1536',
+        '3:2':  '1536*1024',
+        '3:4':  '1104*1472',
+        '4:3':  '1472*1104',
+        '7:9':  '1120*1440',
+        '9:7':  '1440*1120',
+        '9:16': '864*1536',
+        '9:21': '720*1680',
+        '16:9': '1536*864',
+        '21:9': '1680*720',
+    },
+    # ── 2K 档 ──────────────────────────────────────────────────
+    '2K': {
+        '1:1':  '1536*1536',
+        '2:3':  '1248*1872',
+        '3:2':  '1872*1248',
+        '3:4':  '1296*1728',
+        '4:3':  '1728*1296',
+        '7:9':  '1344*1728',
+        '9:7':  '1728*1344',
+        '9:16': '1152*2048',
+        '9:21': '864*2016',
+        '16:9': '2048*1152',
+        '21:9': '2016*864',
+    },
+}
 
 # Dashscope 多模态生成 API 端点
 QWEN_IMAGE_API_URL = (
@@ -105,18 +158,90 @@ QWEN_IMAGE_API_URL = (
 
 def is_qwen_image_model(model: str) -> bool:
     """
-    Check if the model is a Qwen image generation/editing model.
+    Check if the model is a Bailian image generation model.
 
-    Matches model names containing 'qwen-image' or 'qwen_image' (case-insensitive).
+    Matches model names containing 'qwen-image', 'qwen_image' (case-insensitive),
+    or exactly 'z-image-turbo' (Z-Image Turbo model).
 
     Args:
         model: Model name
 
     Returns:
-        True if the model supports Qwen image generation
+        True if the model supports Bailian image generation
     """
     model_lower = model.lower()
-    return any(kw in model_lower for kw in ('qwen-image', 'qwen_image'))
+    return any(kw in model_lower for kw in ('qwen-image', 'qwen_image')) or model_lower == 'z-image-turbo'
+
+
+def is_z_image_model(model: str) -> bool:
+    """Check if the model is a Z-Image Turbo model."""
+    return model.lower() == 'z-image-turbo'
+
+
+def _resolve_z_image_size(metadata: dict) -> Optional[str]:
+    """
+    Resolve the Dashscope size parameter for z-image-turbo from request metadata.
+
+    Z-Image Turbo uses aspect_ratio + resolution tier to determine the exact
+    pixel size. The resolution tiers are: 1K, 1.5K, 2K.
+
+    Resolution logic:
+    1. If 'size' is an exact pixel value (e.g. "1536*1536") → use directly
+    2. If 'size' is a tier label (e.g. "2K") + 'aspect_ratio' → look up table
+    3. If 'size' is a tier label without aspect_ratio → use 1:1 at that tier
+    4. If only 'aspect_ratio' is set → use 1K at that ratio
+    5. Default → "1024*1024" (1K, 1:1)
+
+    Args:
+        metadata: Request metadata dict
+
+    Returns:
+        Dashscope-format size string (WxH with * separator), or None if
+        no z-image size resolution applies
+    """
+    size = str(metadata.get('size', '') or '').strip()
+    # 'resolution' is an alias for tier label (e.g. "1K", "1.5K", "2K")
+    resolution = str(metadata.get('resolution', '') or '').strip()
+    if resolution and not size:
+        size = resolution
+    aspect_ratio = str(metadata.get('aspect_ratio', '') or '').strip()
+
+    # 1. If size is already an exact pixel value → normalize format
+    if size and ('*' in size or 'x' in size.lower()):
+        return size.replace('x', '*').replace('X', '*')
+
+    # 2. size is a tier label + aspect_ratio → look up
+    if size and aspect_ratio:
+        tier = size.upper()
+        # Normalize tier naming
+        if tier == '1.5K' or tier == '1K+':
+            tier = '1.5K'
+        table = Z_IMAGE_SIZE_TABLE.get(tier)
+        if table and aspect_ratio in table:
+            return table[aspect_ratio]
+        # Fallback: try 1K, 1.5K, 2K in order
+        for t in ('1K', '1.5K', '2K'):
+            t_table = Z_IMAGE_SIZE_TABLE.get(t)
+            if t_table and aspect_ratio in t_table:
+                return t_table[aspect_ratio]
+
+    # 3. size is a tier label only → default to 1:1 at that tier
+    if size:
+        tier = size.upper()
+        if tier == '1.5K' or tier == '1K+':
+            tier = '1.5K'
+        table = Z_IMAGE_SIZE_TABLE.get(tier)
+        if table and '1:1' in table:
+            return table['1:1']
+
+    # 4. aspect_ratio only → default 1K at that ratio
+    if aspect_ratio:
+        table = Z_IMAGE_SIZE_TABLE.get('1K', {})
+        if aspect_ratio in table:
+            return table[aspect_ratio]
+
+    # 5. Default → 1K 1:1
+    return '1024*1024'
 
 
 def has_image_generation_tool(request: ChatRequest) -> bool:
@@ -136,7 +261,7 @@ def has_image_generation_tool(request: ChatRequest) -> bool:
     meta = request.metadata
     return any(k in meta for k in (
         'size', 'number', 'image_format', 'response_format',
-        'seed', 'watermark',
+        'seed', 'watermark', 'aspect_ratio', 'resolution',
     ))
 
 
@@ -237,10 +362,16 @@ def execute_qwen_image_generation(
     # Build parameters from metadata
     parameters: Dict[str, Any] = {}
 
-    size = metadata.get('size')
-    if size:
-        # Accept "1024x1024" and "1024*1024" formats; Dashscope uses "*"
-        parameters['size'] = str(size).replace('x', '*')
+    # Z-Image Turbo uses aspect_ratio + tier to resolve exact pixel size
+    if is_z_image_model(model):
+        resolved_size = _resolve_z_image_size(metadata)
+        if resolved_size:
+            parameters['size'] = resolved_size
+    else:
+        size = metadata.get('size')
+        if size:
+            # Accept "1024x1024" and "1024*1024" formats; Dashscope uses "*"
+            parameters['size'] = str(size).replace('x', '*')
 
     n = metadata.get('number') or metadata.get('n')
     if n is not None:

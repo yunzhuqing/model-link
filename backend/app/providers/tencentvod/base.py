@@ -220,6 +220,30 @@ class TencentVODProvider(OpenAIProvider):
 
         super().__init__(config)
 
+    # ==================== 请求预处理 ====================
+
+    def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """
+        准备请求数据，针对 Gemini 模型默认设置 reasoning_effort='low'。
+
+        腾讯云点播转发 Gemini 模型时，若用户未显式指定 reasoning_effort，
+        默认设为 'low' 以降低推理成本。
+
+        Args:
+            request: 对话请求对象
+
+        Returns:
+            OpenAI 格式的请求字典
+        """
+        # 如果是 Gemini 对话模型且用户未指定 reasoning_effort，默认设为 'low'
+        if (
+            request.model.lower().startswith("gemini-")
+            and not request.reasoning_effort
+        ):
+            request.reasoning_effort = "low"
+
+        return super().prepare_request(request)
+
     # ==================== 图像/视频生成检测 ====================
 
     def is_image_generation_model(self, model: str) -> bool:

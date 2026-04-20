@@ -1,12 +1,41 @@
 """
 Flask application factory for Model Link AI Gateway.
 """
+import logging
+import os
+
 from flask import Flask, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_cors import CORS
 from flask_httpauth import HTTPBasicAuth
-import os
+
+
+def _configure_logging() -> None:
+    """
+    Configure the root logger based on the LOG_LEVEL environment variable.
+
+    Supported values (case-insensitive): DEBUG, INFO, WARNING, ERROR, CRITICAL.
+    Defaults to INFO if not set or invalid.
+
+    The format includes timestamp, logger name, level, and message — suitable
+    for both local development and production log aggregators.
+    """
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    numeric_level = getattr(logging, level_name, None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,  # Override any existing root logger config
+    )
+
+
+# Configure logging early — before any module-level getLogger() calls
+_configure_logging()
 
 # Initialize extensions
 db = SQLAlchemy()

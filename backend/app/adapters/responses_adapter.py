@@ -580,6 +580,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if watermark is not None:
                     img_metadata['watermark'] = bool(watermark)
 
+                aspect_ratio = tool_data.get('aspect_ratio')
+                if aspect_ratio:
+                    img_metadata['aspect_ratio'] = aspect_ratio
+
+                resolution = tool_data.get('resolution')
+                if resolution:
+                    img_metadata['resolution'] = resolution
+
                 # Accumulate image generation params; we'll merge into metadata below.
                 accumulated_img_metadata.update(img_metadata)
 
