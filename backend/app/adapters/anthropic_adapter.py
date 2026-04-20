@@ -15,6 +15,7 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 from app.middleware.gateway_service import GatewayServiceError, ProviderError
+from app.utils import REASONING_EFFORT_HIGH, REASONING_EFFORT_NONE, REASONING_EFFORT_DEFAULT_FOR_THINKING
 
 
 class AnthropicMessagesAdapter(BaseAdapter):
@@ -236,9 +237,15 @@ class AnthropicMessagesAdapter(BaseAdapter):
         thinking_config = data.get('thinking')
         if isinstance(thinking_config, dict):
             if thinking_config.get('type') == 'enabled':
-                reasoning_effort = 'high'
+                reasoning_effort = REASONING_EFFORT_HIGH
             else:
-                reasoning_effort = 'none'
+                reasoning_effort = REASONING_EFFORT_NONE
+
+        # 如果模型名包含 "thinking" 但没有设置任何 reasoning_effort/thinking 参数，
+        # 将 reasoning_effort 设置为默认值 "medium"
+        model_name = data.get('model', '')
+        if 'thinking' in model_name.lower() and reasoning_effort is None:
+            reasoning_effort = REASONING_EFFORT_DEFAULT_FOR_THINKING
 
         # 处理 output_config → 映射为 OpenAI 兼容的 response_format
         # Anthropic 格式:

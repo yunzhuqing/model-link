@@ -9,6 +9,7 @@ from .base import BaseAdapter
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.providers.openai_provider import parse_openai_request
+from app.utils import REASONING_EFFORT_DEFAULT_FOR_THINKING
 
 # Re-use the same formatting helper that builds the nested OpenAI usage structure
 # (prompt_tokens_details / completion_tokens_details) for streaming chunks.
@@ -43,7 +44,14 @@ class OpenAIChatAdapter(BaseAdapter):
             ...
         }
         """
-        return parse_openai_request(data)
+        chat_request = parse_openai_request(data)
+
+        # 如果模型名包含 "thinking" 但没有设置任何 reasoning_effort 参数，
+        # 将 reasoning_effort 设置为默认值
+        if 'thinking' in chat_request.model.lower() and not chat_request.reasoning_effort:
+            chat_request.reasoning_effort = REASONING_EFFORT_DEFAULT_FOR_THINKING
+
+        return chat_request
 
     def format_response(self, response: ChatResponse) -> dict:
         """

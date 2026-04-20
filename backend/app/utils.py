@@ -1,7 +1,20 @@
 """
-Shared utility functions for Model Link AI Gateway.
+Shared utility functions and constants for Model Link AI Gateway.
 """
 import os
+
+
+# ── Reasoning Effort Constants ──────────────────────────────────────────────
+# Standard reasoning_effort levels used across adapters and providers.
+# Replaces hardcoded string values ('low', 'medium', 'high', 'none').
+REASONING_EFFORT_LOW = 'low'
+REASONING_EFFORT_MEDIUM = 'medium'
+REASONING_EFFORT_HIGH = 'high'
+REASONING_EFFORT_NONE = 'none'
+
+# Default reasoning_effort applied when the model name contains "thinking"
+# but no explicit reasoning_effort / thinking parameter was provided.
+REASONING_EFFORT_DEFAULT_FOR_THINKING = REASONING_EFFORT_MEDIUM
 
 
 def gen_id(prefix: str) -> str:

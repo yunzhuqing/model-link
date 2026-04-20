@@ -353,6 +353,36 @@
       "cacheDown": "缓存↓"
     }
   },
+  "login": {
+    "title": "AI Gateway",
+    "subtitle": "登录您的账户",
+    "username": "用户名",
+    "usernamePlaceholder": "输入您的用户名",
+    "password": "密码",
+    "passwordPlaceholder": "输入您的密码",
+    "signIn": "登录",
+    "signingIn": "登录中...",
+    "loginFailed": "登录失败",
+    "loginFailedDefault": "登录失败",
+    "noAccount": "还没有账户？",
+    "createAccount": "创建账户"
+  },
+  "register": {
+    "title": "创建账户",
+    "subtitle": "开始使用 AI Gateway",
+    "username": "用户名",
+    "usernamePlaceholder": "选择一个用户名",
+    "email": "邮箱",
+    "emailPlaceholder": "输入您的邮箱",
+    "password": "密码",
+    "passwordPlaceholder": "创建密码",
+    "createAccount": "创建账户",
+    "creatingAccount": "创建账户中...",
+    "registerFailed": "注册失败",
+    "registerFailedDefault": "注册失败",
+    "hasAccount": "已有账户？",
+    "signIn": "登录"
+  },
   "lang": {
     "switch": "语言",
     "zh": "中文",

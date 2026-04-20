@@ -353,6 +353,36 @@
       "cacheDown": "cache↓"
     }
   },
+  "login": {
+    "title": "AI Gateway",
+    "subtitle": "Sign in to your account",
+    "username": "Username",
+    "usernamePlaceholder": "Enter your username",
+    "password": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "signIn": "Sign In",
+    "signingIn": "Signing in...",
+    "loginFailed": "Login Failed",
+    "loginFailedDefault": "Login failed",
+    "noAccount": "Don't have an account?",
+    "createAccount": "Create account"
+  },
+  "register": {
+    "title": "Create Account",
+    "subtitle": "Get started with AI Gateway",
+    "username": "Username",
+    "usernamePlaceholder": "Choose a username",
+    "email": "Email",
+    "emailPlaceholder": "Enter your email",
+    "password": "Password",
+    "passwordPlaceholder": "Create a password",
+    "createAccount": "Create Account",
+    "creatingAccount": "Creating account...",
+    "registerFailed": "Registration Failed",
+    "registerFailedDefault": "Registration failed",
+    "hasAccount": "Already have an account?",
+    "signIn": "Sign in"
+  },
   "lang": {
     "switch": "Language",
     "zh": "中文",

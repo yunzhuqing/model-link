@@ -31,6 +31,7 @@ from typing import Any, Dict, Generator, List, Optional
 
 from ..openai_provider import OpenAIProvider
 from ..base import ProviderConfig, ProviderCapability
+from app.utils import REASONING_EFFORT_LOW
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from .image_generation import (
@@ -224,7 +225,7 @@ class TencentVODProvider(OpenAIProvider):
 
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
-        准备请求数据，针对 Gemini 模型默认设置 reasoning_effort='low'。
+        准备请求数据，针对 Gemini 模型默认设置 reasoning_effort 为 REASONING_EFFORT_LOW。
 
         腾讯云点播转发 Gemini 模型时，若用户未显式指定 reasoning_effort，
         默认设为 'low' 以降低推理成本。
@@ -235,12 +236,12 @@ class TencentVODProvider(OpenAIProvider):
         Returns:
             OpenAI 格式的请求字典
         """
-        # 如果是 Gemini 对话模型且用户未指定 reasoning_effort，默认设为 'low'
+        # 如果是 Gemini 对话模型且用户未指定 reasoning_effort，默认设为 low
         if (
             request.model.lower().startswith("gemini-")
             and not request.reasoning_effort
         ):
-            request.reasoning_effort = "low"
+            request.reasoning_effort = REASONING_EFFORT_LOW
 
         return super().prepare_request(request)
 

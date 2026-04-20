@@ -17,7 +17,7 @@ import uuid
 from typing import Optional
 
 from .base import BaseAdapter
-from app.utils import gen_id as _gen_id
+from app.utils import gen_id as _gen_id, REASONING_EFFORT_DEFAULT_FOR_THINKING
 
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
@@ -688,6 +688,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 reasoning_effort = reasoning.get('effort')
             elif isinstance(reasoning, str):
                 reasoning_effort = reasoning
+
+        # 如果模型名包含 "thinking" 但没有设置任何 reasoning_effort 参数，
+        # 将 reasoning_effort 设置为默认值
+        model_name = data.get('model', '')
+        if 'thinking' in model_name.lower() and not reasoning_effort:
+            reasoning_effort = REASONING_EFFORT_DEFAULT_FOR_THINKING
 
         # 收集额外参数
         known_keys = {
