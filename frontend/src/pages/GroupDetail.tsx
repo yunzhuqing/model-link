@@ -5,12 +5,13 @@ import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail, BarChart3, Cpu
+  Users, UserPlus, Mail, BarChart3, Cpu, List
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';
 import GroupStatistics from './GroupStatistics';
 import GroupModels from './GroupModels';
+import UsageRecordsTable from '../components/UsageRecordsTable';
 
 interface Group {
   id: number;
@@ -33,7 +34,7 @@ export default function GroupDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers'>('statistics');
+  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage'>('statistics');
   const [showInviteMember, setShowInviteMember] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
@@ -149,6 +150,7 @@ export default function GroupDetail() {
             { key: 'apikeys', label: t('group.tabApiKeys'), icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
             { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
             { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
+            { key: 'usage', label: '消耗明细', icon: List, color: 'rose' },
           ].map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
             return (
@@ -338,6 +340,22 @@ export default function GroupDetail() {
       {/* ── Models Tab ───────────────────────────────────────────────────────── */}
       {activeTab === 'models' && (
         <GroupModels groupId={parseInt(id!)} />
+      )}
+
+      {/* ── Usage Records Tab ────────────────────────────────────────────────── */}
+      {activeTab === 'usage' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="w-10 h-10 bg-rose-100 rounded-lg flex items-center justify-center">
+              <List className="w-5 h-5 text-rose-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">消耗明细</h2>
+              <p className="text-sm text-slate-500">查看该分组下各模型的消耗记录</p>
+            </div>
+          </div>
+          <UsageRecordsTable groupId={parseInt(id!)} />
+        </div>
       )}
     </div>
   );

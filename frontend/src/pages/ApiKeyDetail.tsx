@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
 import {
   Key, ArrowLeft, Copy, Check, Cpu, DollarSign, TrendingUp, Zap,
-  Clock, Users, Shield, Gauge,
+  Clock, Users, Shield, Gauge, List, BarChart3,
 } from 'lucide-react';
 import { useState } from 'react';
+import UsageRecordsTable from '../components/UsageRecordsTable';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -35,6 +36,16 @@ interface BudgetInfo {
   remaining: number | null;
 }
 
+interface TimeSeries {
+  period: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_cost: number;
+  total_cost_usd?: number;
+  total_cost_cny?: number;
+}
+
 interface ApiKeyDetailData {
   id: number;
   key: string;
@@ -50,6 +61,7 @@ interface ApiKeyDetailData {
   token_count: number;
   allowed_models: string[];
   budget: number | null;
+  api_key_hash?: string;
   group: { id: number; name: string; description: string | null; created_at: string | null } | null;
   usage: {
     requests: number;
@@ -80,6 +92,14 @@ function fmtCost(n: number): string {
   return '$0.00';
 }
 
+function fmtCostCny(n: number): string {
+  if (n >= 1000) return '¥' + (n / 1000).toFixed(1) + 'K';
+  if (n >= 1) return '¥' + n.toFixed(2);
+  if (n >= 0.01) return '¥' + n.toFixed(3);
+  if (n > 0) return '¥' + n.toFixed(4);
+  return '¥0.00';
+}
+
 function fmtDate(s: string | null): string {
   if (!s) return '-';
   const d = s.includes('T') && !s.endsWith('Z') && !s.includes('+') ? s + 'Z' : s;
@@ -92,6 +112,7 @@ const ApiKeyDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [copiedKey, setCopiedKey] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'models' | 'model_usage' | 'usage'>('overview');
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['apiKeyDetail', id],
@@ -100,6 +121,24 @@ const ApiKeyDetail = () => {
       return res.data;
     },
     enabled: !!id,
+  });
+
+  // Fetch hourly time series for the last 24 hours (scoped by api_key_hash)
+  const now = new Date();
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const tsParams = {
+    start: oneDayAgo.toISOString(),
+    end: now.toISOString(),
+    granularity: 'hour',
+    ...(data?.api_key_hash ? { api_key_hash: data.api_key_hash } : {}),
+  };
+  const { data: timeSeries } = useQuery<TimeSeries[]>({
+    queryKey: ['apikey-time-series', id, data?.api_key_hash],
+    queryFn: async () => {
+      const res = await client.get('/api/usage/summary/time_series', { params: tsParams });
+      return res.data;
+    },
+    enabled: !!data?.api_key_hash && activeTab === 'overview',
   });
 
   const handleCopyKey = async () => {
@@ -191,245 +230,404 @@ const ApiKeyDetail = () => {
         </div>
       </div>
 
-      {/* ── Budget + Usage Overview ──────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Budget Card */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-          <div className="flex items-center space-x-2 mb-3">
-            <DollarSign className="w-5 h-5 text-amber-500" />
-            <h3 className="text-sm font-bold text-slate-800">预算</h3>
-          </div>
-          {budget.budget !== null ? (
-            <>
-              <div className="flex justify-between text-sm mb-2">
-                <span className="text-slate-500">总额</span>
-                <span className="font-bold text-slate-800">{fmtCost(budget.budget)}</span>
-              </div>
-              <div className="flex justify-between text-sm mb-2">
-                <span className="text-slate-500">已使用</span>
-                <span className="font-semibold text-amber-600">{fmtCost(budget.used)}</span>
-              </div>
-              <div className="flex justify-between text-sm mb-3">
-                <span className="text-slate-500">剩余</span>
-                <span className={`font-semibold ${(budget.remaining || 0) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                  {fmtCost(Math.max(budget.remaining || 0, 0))}
-                </span>
-              </div>
-              <div className="w-full bg-slate-100 rounded-full h-2.5">
-                <div
-                  className={`h-2.5 rounded-full transition-all ${
-                    budgetPct > 90 ? 'bg-red-400' : budgetPct > 70 ? 'bg-amber-400' : 'bg-emerald-400'
-                  }`}
-                  style={{ width: `${budgetPct}%` }}
-                />
-              </div>
-              <p className="text-xs text-slate-400 mt-1.5 text-right">{budgetPct.toFixed(1)}% 已使用</p>
-            </>
-          ) : (
-            <div className="text-center py-4">
-              <p className="text-slate-500 text-sm">无预算限制</p>
-              <p className="text-xs text-slate-400 mt-1">已消费 {fmtCost(budget.used)}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Token Stats */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-          <div className="flex items-center space-x-2 mb-3">
-            <TrendingUp className="w-5 h-5 text-emerald-500" />
-            <h3 className="text-sm font-bold text-slate-800">Token 消耗</h3>
-          </div>
-          <div className="text-2xl font-bold text-slate-800 mb-1">{fmtNum(totalTokens)}</div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
-            <div className="bg-blue-50 rounded-lg p-2.5">
-              <p className="text-xs text-blue-500">输入</p>
-              <p className="text-sm font-bold text-blue-700">{fmtNum(usage.input_tokens)}</p>
-            </div>
-            <div className="bg-emerald-50 rounded-lg p-2.5">
-              <p className="text-xs text-emerald-500">输出</p>
-              <p className="text-sm font-bold text-emerald-700">{fmtNum(usage.output_tokens)}</p>
-            </div>
-          </div>
-          {usage.reasoning_tokens > 0 && (
-            <div className="mt-2 bg-violet-50 rounded-lg p-2.5">
-              <p className="text-xs text-violet-500">推理</p>
-              <p className="text-sm font-bold text-violet-700">{fmtNum(usage.reasoning_tokens)}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Request Stats */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-          <div className="flex items-center space-x-2 mb-3">
-            <Zap className="w-5 h-5 text-blue-500" />
-            <h3 className="text-sm font-bold text-slate-800">请求统计</h3>
-          </div>
-          <div className="text-2xl font-bold text-slate-800 mb-1">{usage.requests.toLocaleString()}</div>
-          <p className="text-xs text-slate-400">总请求次数</p>
-          <div className="mt-3 space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">消费金额</span>
-              <span className="font-semibold text-amber-600">{fmtCost(usage.estimated_cost)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">最近使用</span>
-              <span className="text-slate-600">{fmtDate(data.last_used_at)}</span>
-            </div>
-          </div>
-        </div>
+      {/* Tabs */}
+      <div className="border-b border-slate-200">
+        <nav className="flex space-x-8">
+          {[
+            { key: 'overview', label: '概览', icon: Zap, color: 'blue' },
+            { key: 'models', label: '可用模型', icon: Shield, count: data.available_models.length, color: 'emerald' },
+            { key: 'model_usage', label: '模型消耗', icon: Cpu, count: data.by_model.length, color: 'violet' },
+            { key: 'usage', label: '消耗明细', icon: List, color: 'rose' },
+          ].map(({ key, label, icon: Icon, color, count }) => {
+            const active = activeTab === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key as typeof activeTab)}
+                className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 transition-colors ${
+                  active
+                    ? `border-${color}-500 text-${color}-600`
+                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{label}</span>
+                {count != null && (
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${active ? `bg-${color}-100 text-${color}-700` : 'bg-slate-100 text-slate-600'}`}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
-      {/* ── Available Models ─────────────────────────────────────────── */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex items-center space-x-2 mb-4">
-          <Shield className="w-5 h-5 text-blue-500" />
-          <h2 className="text-base font-bold text-slate-800">可用模型</h2>
-          <span className="text-xs text-slate-400 ml-2">
-            {data.allowed_models.length > 0 ? `限制 ${data.allowed_models.length} 个模型` : '不限制'}
-             · 共 {data.available_models.length} 个可用
-          </span>
+      {/* ── Overview Tab ────────────────────────────────────────────────── */}
+      {activeTab === 'overview' && (
+        <>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Budget Card */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+            <div className="flex items-center space-x-2 mb-3">
+              <DollarSign className="w-5 h-5 text-amber-500" />
+              <h3 className="text-sm font-bold text-slate-800">预算</h3>
+            </div>
+            {budget.budget !== null ? (
+              <>
+                <div className="flex justify-between text-sm mb-2">
+                  <span className="text-slate-500">总额</span>
+                  <span className="font-bold text-slate-800">{fmtCost(budget.budget)}</span>
+                </div>
+                <div className="flex justify-between text-sm mb-2">
+                  <span className="text-slate-500">已使用</span>
+                  <span className="font-semibold text-amber-600">{fmtCost(budget.used)}</span>
+                </div>
+                <div className="flex justify-between text-sm mb-3">
+                  <span className="text-slate-500">剩余</span>
+                  <span className={`font-semibold ${(budget.remaining || 0) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {fmtCost(Math.max(budget.remaining || 0, 0))}
+                  </span>
+                </div>
+                <div className="w-full bg-slate-100 rounded-full h-2.5">
+                  <div
+                    className={`h-2.5 rounded-full transition-all ${
+                      budgetPct > 90 ? 'bg-red-400' : budgetPct > 70 ? 'bg-amber-400' : 'bg-emerald-400'
+                    }`}
+                    style={{ width: `${budgetPct}%` }}
+                  />
+                </div>
+                <p className="text-xs text-slate-400 mt-1.5 text-right">{budgetPct.toFixed(1)}% 已使用</p>
+              </>
+            ) : (
+              <div className="text-center py-4">
+                <p className="text-slate-500 text-sm">无预算限制</p>
+                <p className="text-xs text-slate-400 mt-1">已消费 {fmtCost(budget.used)}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Token Stats */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+            <div className="flex items-center space-x-2 mb-3">
+              <TrendingUp className="w-5 h-5 text-emerald-500" />
+              <h3 className="text-sm font-bold text-slate-800">Token 消耗</h3>
+            </div>
+            <div className="text-2xl font-bold text-slate-800 mb-1">{fmtNum(totalTokens)}</div>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              <div className="bg-blue-50 rounded-lg p-2.5">
+                <p className="text-xs text-blue-500">输入</p>
+                <p className="text-sm font-bold text-blue-700">{fmtNum(usage.input_tokens)}</p>
+              </div>
+              <div className="bg-emerald-50 rounded-lg p-2.5">
+                <p className="text-xs text-emerald-500">输出</p>
+                <p className="text-sm font-bold text-emerald-700">{fmtNum(usage.output_tokens)}</p>
+              </div>
+            </div>
+            {usage.reasoning_tokens > 0 && (
+              <div className="mt-2 bg-violet-50 rounded-lg p-2.5">
+                <p className="text-xs text-violet-500">推理</p>
+                <p className="text-sm font-bold text-violet-700">{fmtNum(usage.reasoning_tokens)}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Request Stats */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+            <div className="flex items-center space-x-2 mb-3">
+              <Zap className="w-5 h-5 text-blue-500" />
+              <h3 className="text-sm font-bold text-slate-800">请求统计</h3>
+            </div>
+            <div className="text-2xl font-bold text-slate-800 mb-1">{usage.requests.toLocaleString()}</div>
+            <p className="text-xs text-slate-400">总请求次数</p>
+            <div className="mt-3 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">消费金额</span>
+                <span className="font-semibold text-amber-600">{fmtCost(usage.estimated_cost)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">最近使用</span>
+                <span className="text-slate-600">{fmtDate(data.last_used_at)}</span>
+              </div>
+            </div>
+          </div>
         </div>
-        {data.available_models.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200">
-                  <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">模型</th>
-                  <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">别名</th>
-                  <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">供应商</th>
-                  <th className="text-center py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">
-                    <div className="flex items-center justify-center space-x-1">
-                      <Gauge className="w-3 h-3" />
-                      <span>RPM</span>
-                    </div>
-                  </th>
-                  <th className="text-center py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">
-                    <div className="flex items-center justify-center space-x-1">
-                      <Gauge className="w-3 h-3" />
-                      <span>TPM</span>
-                    </div>
-                  </th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输入价格</th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输出价格</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.available_models.map((m, idx) => (
-                  <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
-                    <td className="py-2.5 px-3 font-medium text-slate-800">{m.name}</td>
-                    <td className="py-2.5 px-3 text-slate-500">{m.alias || '-'}</td>
-                    <td className="py-2.5 px-3 text-slate-500">{m.provider_name || '-'}</td>
-                    <td className="py-2.5 px-3 text-center">
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        m.rpm ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-400'
-                      }`}>
-                        {m.rpm ? m.rpm.toLocaleString() : '∞'}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-center">
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        m.tpm ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-400'
-                      }`}>
-                        {m.tpm ? fmtNum(m.tpm) : '∞'}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-slate-600">
-                      ${m.input_price}/{m.currency === 'CNY' ? '¥' : ''}1M
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-slate-600">
-                      ${m.output_price}/{m.currency === 'CNY' ? '¥' : ''}1M
-                    </td>
+
+        {/* Hourly Charts — Token consumption & Cost */}
+        {timeSeries && timeSeries.length > 0 && (() => {
+          const d = timeSeries;
+          const TOP_PAD = 28, LEFT_PAD = 55, BAR_H = 150, BOTTOM = TOP_PAD + BAR_H;
+          const X_LABEL_H = 50, TOTAL_H = BOTTOM + X_LABEL_H;
+          const GROUP_W = Math.max(16, Math.min(40, Math.floor(800 / d.length)));
+          const BAR_W = Math.max(8, GROUP_W - 6);
+          const CHART_W = Math.max(700, d.length * GROUP_W + LEFT_PAD + 30);
+          const labelEvery = d.length > 96 ? Math.ceil(d.length / 16) : d.length > 48 ? Math.ceil(d.length / 16) : d.length > 24 ? 4 : 2;
+
+          const HourlyBarChart = ({ title, icon, values, color, fmtY, legendLabel }: {
+            title: string; icon: React.ReactNode; values: number[];
+            color: string; fmtY: (n: number) => string; legendLabel: string;
+          }) => {
+            const [hovered, setHovered] = useState<number | null>(null);
+            const maxVal = Math.max(...values, 1);
+            const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => ({
+              val: maxVal * f, y: BOTTOM - Math.round(f * BAR_H),
+            }));
+            return (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2 text-sm">
+                  {icon}
+                  {title} <span className="text-xs text-slate-400 font-normal">（近 24 小时）</span>
+                </h2>
+                <div className="overflow-x-auto">
+                  <svg width={CHART_W} height={TOTAL_H} className="w-full" style={{ minHeight: TOTAL_H }}>
+                    {yTicks.map((t, i) => (
+                      <g key={`y-${i}`}>
+                        <line x1={LEFT_PAD} y1={t.y} x2={CHART_W - 10} y2={t.y} stroke="#e2e8f0" strokeWidth={1} strokeDasharray={i === 0 ? undefined : '4 2'} />
+                        <text x={LEFT_PAD - 6} y={t.y + 4} textAnchor="end" fontSize={10} fill="#94a3b8">{fmtY(t.val)}</text>
+                      </g>
+                    ))}
+                    {d.map((item, i) => {
+                      const gx = LEFT_PAD + i * GROUP_W;
+                      const bx = gx + (GROUP_W - BAR_W) / 2;
+                      const h = Math.max(1, Math.round((values[i] / maxVal) * BAR_H));
+                      const isHov = hovered === i;
+                      // Parse period as UTC and format in local timezone
+                      const periodStr = item.period.includes('T') && !item.period.endsWith('Z') && !item.period.includes('+') ? item.period + 'Z' : item.period;
+                      const periodDate = new Date(periodStr);
+                      const label = `${String(periodDate.getMonth() + 1).padStart(2, '0')}-${String(periodDate.getDate()).padStart(2, '0')} ${String(periodDate.getHours()).padStart(2, '0')}:00`;
+                      return (
+                        <g key={i}
+                          onMouseEnter={() => setHovered(i)}
+                          onMouseLeave={() => setHovered(null)}
+                          style={{ cursor: 'default' }}
+                        >
+                          {isHov && <rect x={gx} y={TOP_PAD} width={GROUP_W} height={BAR_H} fill="#f1f5f9" rx={3} />}
+                          <rect x={bx} y={BOTTOM - h} width={BAR_W} height={h} fill={color} opacity={isHov ? 1 : 0.7} rx={2} />
+                          {i % labelEvery === 0 && (
+                            <text x={gx + GROUP_W / 2} y={BOTTOM + 8} textAnchor="end" fontSize={9}
+                              fill={isHov ? '#334155' : '#94a3b8'} fontWeight={isHov ? '600' : '400'}
+                              transform={`rotate(-45, ${gx + GROUP_W / 2}, ${BOTTOM + 8})`}>{label}</text>
+                          )}
+                        </g>
+                      );
+                    })}
+                    {/* Hover tooltip */}
+                    {hovered !== null && (() => {
+                      const cx = LEFT_PAD + hovered * GROUP_W + GROUP_W / 2;
+                      const tipW = 130;
+                      const tipX = Math.min(Math.max(cx - tipW / 2, 4), CHART_W - tipW - 4);
+                      const hPeriodStr = d[hovered].period.includes('T') && !d[hovered].period.endsWith('Z') && !d[hovered].period.includes('+') ? d[hovered].period + 'Z' : d[hovered].period;
+                      const hDate = new Date(hPeriodStr);
+                      const timeLabel = `${String(hDate.getMonth() + 1).padStart(2, '0')}-${String(hDate.getDate()).padStart(2, '0')} ${String(hDate.getHours()).padStart(2, '0')}:00`;
+                      return (
+                        <g>
+                          <rect x={tipX} y={1} width={tipW} height={24} rx={6} fill="#1e293b" opacity={0.92} />
+                          <text x={tipX + tipW / 2} y={15} textAnchor="middle" fontSize={10} fill="white" fontWeight="500">
+                            {timeLabel} {fmtY(values[hovered])}
+                          </text>
+                        </g>
+                      );
+                    })()}
+                  </svg>
+                  <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{ backgroundColor: color }} /> {legendLabel}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          };
+
+          return (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <HourlyBarChart
+                title="Token 消耗趋势"
+                icon={<TrendingUp className="w-5 h-5 text-indigo-500" />}
+                values={d.map(x => x.input_tokens + x.output_tokens)}
+                color="#6366f1"
+                fmtY={fmtNum}
+                legendLabel="Input + Output Tokens"
+              />
+              <HourlyBarChart
+                title="金额消耗趋势"
+                icon={<DollarSign className="w-5 h-5 text-amber-500" />}
+                values={d.map(x => x.total_cost_cny ?? x.total_cost)}
+                color="#f59e0b"
+                fmtY={fmtCostCny}
+                legendLabel="消费金额 (¥)"
+              />
+            </div>
+          );
+        })()}
+        </>
+      )}
+
+      {/* ── Available Models Tab ─────────────────────────────────────────── */}
+      {activeTab === 'models' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center space-x-2 mb-4">
+            <Shield className="w-5 h-5 text-blue-500" />
+            <h2 className="text-base font-bold text-slate-800">可用模型</h2>
+            <span className="text-xs text-slate-400 ml-2">
+              {data.allowed_models.length > 0 ? `限制 ${data.allowed_models.length} 个模型` : '不限制'}
+               · 共 {data.available_models.length} 个可用
+            </span>
+          </div>
+          {data.available_models.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">模型</th>
+                    <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">别名</th>
+                    <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">供应商</th>
+                    <th className="text-center py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">
+                      <div className="flex items-center justify-center space-x-1">
+                        <Gauge className="w-3 h-3" />
+                        <span>RPM</span>
+                      </div>
+                    </th>
+                    <th className="text-center py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">
+                      <div className="flex items-center justify-center space-x-1">
+                        <Gauge className="w-3 h-3" />
+                        <span>TPM</span>
+                      </div>
+                    </th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输入价格</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输出价格</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-8 text-slate-400 text-sm">暂无可用模型</div>
-        )}
-      </div>
-
-      {/* ── Model Usage Breakdown ────────────────────────────────────── */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-        <div className="flex items-center space-x-2 mb-4">
-          <Cpu className="w-5 h-5 text-violet-500" />
-          <h2 className="text-base font-bold text-slate-800">模型消耗统计</h2>
-          <span className="text-xs text-slate-400 ml-2">全部历史</span>
-        </div>
-        {data.by_model.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200">
-                  <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">#</th>
-                  <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">模型</th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">请求数</th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输入</th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输出</th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">总 Tokens</th>
-                  <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">费用</th>
-                  <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase w-28">占比</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.by_model.map((m, idx) => {
-                  const total = m.input_tokens + m.output_tokens;
-                  const totalCost = data.by_model.reduce((s, x) => s + (x.estimated_cost || 0), 0) || 1;
-                  const pct = ((m.estimated_cost || 0) / totalCost) * 100;
-                  const colors = [
-                    'bg-blue-400', 'bg-emerald-400', 'bg-amber-400', 'bg-violet-400',
-                    'bg-rose-400', 'bg-cyan-400', 'bg-orange-400', 'bg-indigo-400',
-                  ];
-                  return (
+                </thead>
+                <tbody>
+                  {data.available_models.map((m, idx) => (
                     <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
-                      <td className="py-2.5 px-3">
-                        <span className="w-5 h-5 bg-slate-100 rounded flex items-center justify-center text-xs font-bold text-slate-500">
-                          {idx + 1}
+                      <td className="py-2.5 px-3 font-medium text-slate-800">{m.name}</td>
+                      <td className="py-2.5 px-3 text-slate-500">{m.alias || '-'}</td>
+                      <td className="py-2.5 px-3 text-slate-500">{m.provider_name || '-'}</td>
+                      <td className="py-2.5 px-3 text-center">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                          m.rpm ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-400'
+                        }`}>
+                          {m.rpm ? m.rpm.toLocaleString() : '∞'}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 font-medium text-slate-800">{m.model_name}</td>
-                      <td className="py-2.5 px-3 text-right text-slate-600">{m.requests.toLocaleString()}</td>
-                      <td className="py-2.5 px-3 text-right text-slate-500">{fmtNum(m.input_tokens)}</td>
-                      <td className="py-2.5 px-3 text-right text-slate-500">{fmtNum(m.output_tokens)}</td>
-                      <td className="py-2.5 px-3 text-right font-medium text-slate-700">{fmtNum(total)}</td>
-                      <td className="py-2.5 px-3 text-right font-semibold text-amber-600">{fmtCost(m.estimated_cost)}</td>
-                      <td className="py-2.5 px-3">
-                        <div className="flex items-center space-x-2">
-                          <div className="flex-1 bg-slate-100 rounded-full h-1.5">
-                            <div
-                              className={`h-1.5 rounded-full ${colors[idx % colors.length]} transition-all`}
-                              style={{ width: `${Math.max(pct, 1)}%` }}
-                            />
-                          </div>
-                          <span className="text-xs text-slate-400 w-9 text-right">{pct.toFixed(1)}%</span>
-                        </div>
+                      <td className="py-2.5 px-3 text-center">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                          m.tpm ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-400'
+                        }`}>
+                          {m.tpm ? fmtNum(m.tpm) : '∞'}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-slate-600">
+                        ${m.input_price}/{m.currency === 'CNY' ? '¥' : ''}1M
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-slate-600">
+                        ${m.output_price}/{m.currency === 'CNY' ? '¥' : ''}1M
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t border-slate-200 bg-slate-50/50">
-                  <td className="py-2.5 px-3" colSpan={2}>
-                    <span className="font-bold text-slate-700 text-xs uppercase">合计</span>
-                  </td>
-                  <td className="py-2.5 px-3 text-right font-bold text-slate-700">{usage.requests.toLocaleString()}</td>
-                  <td className="py-2.5 px-3 text-right font-medium text-slate-600">{fmtNum(usage.input_tokens)}</td>
-                  <td className="py-2.5 px-3 text-right font-medium text-slate-600">{fmtNum(usage.output_tokens)}</td>
-                  <td className="py-2.5 px-3 text-right font-bold text-slate-700">{fmtNum(totalTokens)}</td>
-                  <td className="py-2.5 px-3 text-right font-bold text-amber-600">{fmtCost(usage.estimated_cost)}</td>
-                  <td className="py-2.5 px-3"></td>
-                </tr>
-              </tfoot>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-slate-400 text-sm">暂无可用模型</div>
+          )}
+        </div>
+      )}
+
+      {/* ── Model Usage Breakdown Tab ────────────────────────────────────── */}
+      {activeTab === 'model_usage' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center space-x-2 mb-4">
+            <Cpu className="w-5 h-5 text-violet-500" />
+            <h2 className="text-base font-bold text-slate-800">模型消耗统计</h2>
+            <span className="text-xs text-slate-400 ml-2">全部历史</span>
           </div>
-        ) : (
-          <div className="text-center py-8">
-            <Cpu className="w-10 h-10 mx-auto mb-2 text-slate-200" />
-            <p className="text-slate-400 text-sm">暂无使用记录</p>
+          {data.by_model.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">#</th>
+                    <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">模型</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">请求数</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输入</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输出</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">总 Tokens</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">费用</th>
+                    <th className="text-left py-2.5 px-3 font-medium text-slate-500 text-xs uppercase w-28">占比</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.by_model.map((m, idx) => {
+                    const total = m.input_tokens + m.output_tokens;
+                    const totalCost = data.by_model.reduce((s, x) => s + (x.estimated_cost || 0), 0) || 1;
+                    const pct = ((m.estimated_cost || 0) / totalCost) * 100;
+                    const colors = [
+                      'bg-blue-400', 'bg-emerald-400', 'bg-amber-400', 'bg-violet-400',
+                      'bg-rose-400', 'bg-cyan-400', 'bg-orange-400', 'bg-indigo-400',
+                    ];
+                    return (
+                      <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
+                        <td className="py-2.5 px-3">
+                          <span className="w-5 h-5 bg-slate-100 rounded flex items-center justify-center text-xs font-bold text-slate-500">
+                            {idx + 1}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-medium text-slate-800">{m.model_name}</td>
+                        <td className="py-2.5 px-3 text-right text-slate-600">{m.requests.toLocaleString()}</td>
+                        <td className="py-2.5 px-3 text-right text-slate-500">{fmtNum(m.input_tokens)}</td>
+                        <td className="py-2.5 px-3 text-right text-slate-500">{fmtNum(m.output_tokens)}</td>
+                        <td className="py-2.5 px-3 text-right font-medium text-slate-700">{fmtNum(total)}</td>
+                        <td className="py-2.5 px-3 text-right font-semibold text-amber-600">{fmtCost(m.estimated_cost)}</td>
+                        <td className="py-2.5 px-3">
+                          <div className="flex items-center space-x-2">
+                            <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                              <div
+                                className={`h-1.5 rounded-full ${colors[idx % colors.length]} transition-all`}
+                                style={{ width: `${Math.max(pct, 1)}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-slate-400 w-9 text-right">{pct.toFixed(1)}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-slate-200 bg-slate-50/50">
+                    <td className="py-2.5 px-3" colSpan={2}>
+                      <span className="font-bold text-slate-700 text-xs uppercase">合计</span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-bold text-slate-700">{usage.requests.toLocaleString()}</td>
+                    <td className="py-2.5 px-3 text-right font-medium text-slate-600">{fmtNum(usage.input_tokens)}</td>
+                    <td className="py-2.5 px-3 text-right font-medium text-slate-600">{fmtNum(usage.output_tokens)}</td>
+                    <td className="py-2.5 px-3 text-right font-bold text-slate-700">{fmtNum(totalTokens)}</td>
+                    <td className="py-2.5 px-3 text-right font-bold text-amber-600">{fmtCost(usage.estimated_cost)}</td>
+                    <td className="py-2.5 px-3"></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <Cpu className="w-10 h-10 mx-auto mb-2 text-slate-200" />
+              <p className="text-slate-400 text-sm">暂无使用记录</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Usage Records Tab ────────────────────────────────────────────── */}
+      {activeTab === 'usage' && data.api_key_hash && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center space-x-2 mb-4">
+            <List className="w-5 h-5 text-rose-500" />
+            <h2 className="text-base font-bold text-slate-800">消耗明细</h2>
+            <span className="text-xs text-slate-400 ml-2">每次请求的详细记录</span>
           </div>
-        )}
-      </div>
+          <UsageRecordsTable apiKeyHash={data.api_key_hash} />
+        </div>
+      )}
     </div>
   );
 };

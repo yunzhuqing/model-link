@@ -119,6 +119,8 @@ def list_records():
     """
     Return a paginated list of raw usage records.
 
+    Only returns records belonging to the currently logged-in user.
+
     Query parameters:
         page        int   (default 1)
         page_size   int   (default 20, max 200)
@@ -130,7 +132,7 @@ def list_records():
         provider_id int
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
@@ -145,6 +147,12 @@ def list_records():
     provider_id = request.args.get("provider_id")
 
     q = db.session.query(UsageRecord)
+
+    # When filtering by group_id or api_key_hash, show all records in that scope
+    # (the user is already authorized via JWT; group membership is checked by the
+    #  frontend/API key endpoints). Otherwise, restrict to current user's records.
+    if not group_id and not api_key_hash:
+        q = q.filter(UsageRecord.user_name == current_username)
 
     if start:
         q = q.filter(UsageRecord.created_at >= start)
@@ -178,16 +186,32 @@ def list_records():
 
 # ── Summary helpers ──────────────────────────────────────────────────────────
 
-def _get_summary_filters():
-    """Parse common filter parameters from request args."""
+def _get_summary_filters(current_username: str = None):
+    """
+    Parse common filter parameters from request args.
+
+    When current_username is provided and no group_id or api_key_hash scope is
+    specified, the user_name filter is automatically set to restrict results to
+    the current user's own records.  When a group_id or api_key_hash is provided,
+    the query is already scoped, so no user filter is applied.
+    """
+    group_id = request.args.get("group_id")
+    api_key_hash = request.args.get("api_key_hash")
+
+    # Determine user_name filter: only apply when NOT scoped by group or api_key
+    if current_username and not group_id and not api_key_hash:
+        user_name = current_username
+    else:
+        user_name = request.args.get("user_name")
+
     return {
         'start': _parse_datetime(request.args.get("start")),
         'end': _parse_datetime(request.args.get("end")),
-        'group_id': request.args.get("group_id"),
-        'api_key_hash': request.args.get("api_key_hash"),
+        'group_id': group_id,
+        'api_key_hash': api_key_hash,
         'model_name': request.args.get("model_name"),
         'provider_id': request.args.get("provider_id"),
-        'user_name': request.args.get("user_name"),
+        'user_name': user_name,
         'user_id': request.args.get("user_id"),
     }
 
@@ -221,18 +245,20 @@ def _apply_filters(q, filters: dict):
 def get_summary_totals():
     """
     Return aggregated totals for the filtered usage records.
+    Only returns data belonging to the currently logged-in user.
 
     Query parameters (all optional):
         start, end, group_id, api_key_hash, model_name, provider_id
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
 
     row = _apply_filters(
         db.session.query(
@@ -273,16 +299,18 @@ def get_summary_by_model():
 
     Now includes total_cost_usd which properly converts all currencies to USD.
     total_cost remains as the raw sum of actual_amount (native currency, may mix currencies).
+    Only returns data belonging to the currently logged-in user.
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
     from app.exchange_rate_service import get_exchange_rate
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
 
     rows = _apply_filters(
         db.session.query(
@@ -342,15 +370,16 @@ def get_summary_by_model():
 
 @usage_bp.route('/api/usage/summary/by_group', methods=['GET'])
 def get_summary_by_group():
-    """Return usage aggregated by group (top 20)."""
+    """Return usage aggregated by group (top 20). Only current user's data."""
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
 
     rows = _apply_filters(
         db.session.query(
@@ -388,16 +417,18 @@ def get_summary_by_currency():
       - total_cost_cny: converted to CNY (USD amounts × exchange_rate, CNY amounts unchanged)
 
     Also returns the current USD→CNY exchange rate and the total across all currencies in USD.
+    Only returns data belonging to the currently logged-in user.
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
     from app.exchange_rate_service import get_exchange_rate
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
 
     rows = _apply_filters(
         db.session.query(
@@ -447,16 +478,18 @@ def get_summary_by_api_key():
     Return usage aggregated by API key (top 20).
 
     Now includes total_cost_usd which properly converts all currencies to USD.
+    Only returns data belonging to the currently logged-in user.
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
     from app.exchange_rate_service import get_exchange_rate
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
 
     rows = _apply_filters(
         db.session.query(
@@ -520,19 +553,21 @@ def get_summary_by_api_key():
 @usage_bp.route('/api/usage/summary/time_series', methods=['GET'])
 def get_summary_time_series():
     """
-    Return time-series usage data.
+    Return time-series usage data. Only current user's data.
 
     Additional query parameter:
         granularity   hour | day | month  (default: day)
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
+    from app.exchange_rate_service import get_exchange_rate
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
     granularity = request.args.get("granularity", "day")
 
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
@@ -543,20 +578,28 @@ def get_summary_time_series():
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost"),
+            func.coalesce(func.sum(UsageRecord.exchange_rate_to_cny * UsageRecord.actual_amount), 0).label("total_cost_cny"),
         ),
         filters,
     ).group_by("period").order_by("period").all()
 
-    return jsonify([
-        {
+    exchange_rate = get_exchange_rate()
+
+    result = []
+    for r in rows:
+        cny = float(r.total_cost_cny or 0)
+        total_cost_usd = cny / exchange_rate if exchange_rate > 0 else 0.0
+        result.append({
             "period": str(r.period),
             "requests": r.requests,
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
             "total_cost": round(float(r.total_cost or 0), 6),
-        }
-        for r in rows
-    ])
+            "total_cost_cny": round(cny, 6),
+            "total_cost_usd": round(total_cost_usd, 6),
+        })
+
+    return jsonify(result)
 
 
 # ── Legacy combined summary endpoint (kept for backward compatibility) ────────
@@ -573,15 +616,17 @@ def get_summary():
       - /api/usage/summary/by_group
       - /api/usage/summary/by_api_key
       - /api/usage/summary/time_series
+    Only returns data belonging to the currently logged-in user.
     """
     try:
-        _require_jwt()
+        current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
     from sqlalchemy import func
 
-    filters = _get_summary_filters()
+    filters = _get_summary_filters(current_username)
+
     granularity = request.args.get("granularity", "day")
 
     # ── Totals ────────────────────────────────────────────────────────────

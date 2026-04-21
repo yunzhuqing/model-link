@@ -360,6 +360,24 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     break
             response_id = f'msg_{clean_id}'
 
+        # Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
+        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention)
+        # for unified billing.  Subtract cache_read_tokens here to restore
+        # Anthropic-compatible output.
+        cache_read = response.usage.cache_read_tokens or 0
+        anthropic_input_tokens = max(response.usage.prompt_tokens - cache_read, 0)
+
+        usage_dict = {
+            'input_tokens': anthropic_input_tokens,
+            'output_tokens': response.usage.completion_tokens,
+        }
+        # Include cache fields when present
+        if cache_read:
+            usage_dict['cache_read_input_tokens'] = cache_read
+        cache_write = response.usage.cache_write_tokens or 0
+        if cache_write:
+            usage_dict['cache_creation_input_tokens'] = cache_write
+
         return {
             'id': response_id,
             'type': 'message',
@@ -368,10 +386,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             'model': response.model,
             'stop_reason': stop_reason,
             'stop_sequence': None,
-            'usage': {
-                'input_tokens': response.usage.prompt_tokens,
-                'output_tokens': response.usage.completion_tokens
-            }
+            'usage': usage_dict,
         }
 
     def format_stream_start(self, model_name: str, message_id: Optional[str] = None,
@@ -389,6 +404,9 @@ class AnthropicMessagesAdapter(BaseAdapter):
             usage: UsageInfo（从 is_first_chunk 的 chunk 中获取）
         """
         # 构建 message_start 的 usage，始终包含 output_tokens: 0
+        # Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
+        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention).
+        # Subtract cache_read_tokens here to restore Anthropic-compatible output.
         start_usage: dict = {
             'input_tokens': 0,
             'cache_creation_input_tokens': 0,
@@ -396,10 +414,11 @@ class AnthropicMessagesAdapter(BaseAdapter):
             'output_tokens': 0,
         }
         if usage:
-            start_usage['input_tokens'] = usage.prompt_tokens
+            cache_read = usage.cache_read_tokens or 0
+            start_usage['input_tokens'] = max(usage.prompt_tokens - cache_read, 0)
             start_usage['output_tokens'] = usage.completion_tokens
             start_usage['cache_creation_input_tokens'] = usage.cache_write_tokens
-            start_usage['cache_read_input_tokens'] = usage.cache_read_tokens
+            start_usage['cache_read_input_tokens'] = cache_read
             # 透传 cache_creation 嵌套对象（存储在 extra 中）
             if 'cache_creation' in usage.extra:
                 start_usage['cache_creation'] = usage.extra['cache_creation']
@@ -658,10 +677,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     # stop_reason and usage before the final message_stop.
                     # Build the Anthropic-format usage from the accumulated UsageInfo.
                     if accumulated_usage:
+                        # Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
+                        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention).
+                        # Subtract cache_read_tokens here to restore Anthropic-compatible output.
+                        fb_cache_read = accumulated_usage.cache_read_tokens or 0
                         fallback_usage = {
-                            "input_tokens": accumulated_usage.prompt_tokens,
+                            "input_tokens": max(accumulated_usage.prompt_tokens - fb_cache_read, 0),
                             "cache_creation_input_tokens": accumulated_usage.cache_write_tokens,
-                            "cache_read_input_tokens": accumulated_usage.cache_read_tokens,
+                            "cache_read_input_tokens": fb_cache_read,
                             "output_tokens": accumulated_usage.completion_tokens,
                         }
                         # 透传 cache_creation 嵌套对象（如果存在于 extra 中）

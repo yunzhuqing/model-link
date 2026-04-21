@@ -574,6 +574,7 @@ def get_api_key_detail(current_user, api_key_id):
     remaining = (budget - used) if budget is not None else None
 
     result = api_key.to_dict_with_group()
+    result['api_key_hash'] = key_hash
     result['usage'] = usage_totals
     result['by_model'] = by_model
     result['available_models'] = available_models

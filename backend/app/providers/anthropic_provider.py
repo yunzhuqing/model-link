@@ -435,12 +435,20 @@ class AnthropicProvider(BaseProvider):
         finish_reason = finish_reason_map.get(stop_reason, FinishReason.STOP)
 
         # Parse usage
+        # Anthropic returns input_tokens that EXCLUDES cache_read_input_tokens.
+        # To unify with OpenAI convention (where prompt_tokens INCLUDES cached tokens),
+        # we add cache_read_input_tokens into prompt_tokens here.
+        # The Anthropic adapter will subtract it back when formatting the output.
         usage_data = response_data.get("usage", {})
+        raw_input_tokens = usage_data.get("input_tokens", 0)
+        cache_read = usage_data.get("cache_read_input_tokens", 0)
+        output_tokens = usage_data.get("output_tokens", 0)
+        prompt_tokens = raw_input_tokens + cache_read
         usage = UsageInfo(
-            prompt_tokens=usage_data.get("input_tokens", 0),
-            completion_tokens=usage_data.get("output_tokens", 0),
-            total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
-            cache_read_tokens=usage_data.get("cache_read_input_tokens", 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=prompt_tokens + output_tokens,
+            cache_read_tokens=cache_read,
             cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
         )
 
@@ -584,13 +592,18 @@ class AnthropicProvider(BaseProvider):
                 # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
                 if "cache_creation" in usage:
                     extra["cache_creation"] = usage["cache_creation"]
-                input_tokens = usage.get("input_tokens", 0)
+                raw_input_tokens = usage.get("input_tokens", 0)
+                cache_read = usage.get("cache_read_input_tokens", 0)
                 output_tokens = usage.get("output_tokens", 0)
+                # Anthropic input_tokens EXCLUDES cache_read_input_tokens.
+                # Add cache_read to prompt_tokens to unify with OpenAI convention
+                # (prompt_tokens INCLUDES cached tokens) for correct billing.
+                prompt_tokens = raw_input_tokens + cache_read
                 usage_info = UsageInfo(
-                    prompt_tokens=input_tokens,
+                    prompt_tokens=prompt_tokens,
                     completion_tokens=output_tokens,
-                    total_tokens=input_tokens + output_tokens,
-                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    total_tokens=prompt_tokens + output_tokens,
+                    cache_read_tokens=cache_read,
                     cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
                     extra=extra,
                 )
@@ -675,13 +688,17 @@ class AnthropicProvider(BaseProvider):
 
             usage_info = None
             if usage:
-                input_tokens = usage.get("input_tokens", 0)
+                raw_input_tokens = usage.get("input_tokens", 0)
+                cache_read = usage.get("cache_read_input_tokens", 0)
                 output_tokens = usage.get("output_tokens", 0)
+                # Anthropic input_tokens EXCLUDES cache_read_input_tokens.
+                # Add cache_read to prompt_tokens to unify with OpenAI convention.
+                prompt_tokens = raw_input_tokens + cache_read
                 usage_info = UsageInfo(
-                    prompt_tokens=input_tokens,
+                    prompt_tokens=prompt_tokens,
                     completion_tokens=output_tokens,
-                    total_tokens=input_tokens + output_tokens,
-                    cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                    total_tokens=prompt_tokens + output_tokens,
+                    cache_read_tokens=cache_read,
                     cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
                 )
             return StreamChunk(

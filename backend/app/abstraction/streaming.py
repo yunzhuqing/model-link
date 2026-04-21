@@ -213,6 +213,11 @@ class StreamChunk:
         将 UsageInfo 字段映射为 Anthropic 格式，始终包含所有标准字段（零值也输出），
         并透传 cache_creation 嵌套对象（如果存在于 extra 中）。
 
+        Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
+        Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention)
+        for unified billing.  Subtract cache_read_tokens here to restore
+        Anthropic-compatible output.
+
         Anthropic usage 格式:
         {
             "input_tokens": N,
@@ -233,14 +238,17 @@ class StreamChunk:
                 "output_tokens": 0,
             }
 
-        # prompt_tokens → input_tokens
-        input_tokens = self.usage.prompt_tokens
         # completion_tokens → output_tokens
         output_tokens = self.usage.completion_tokens
         # cache_read_tokens (Anthropic-native) takes priority; fall back to cached_tokens (OpenAI/Azure)
         cache_read = self.usage.cache_read_tokens or self.usage.cached_tokens
         # cache_write_tokens → cache_creation_input_tokens
         cache_creation_tokens = self.usage.cache_write_tokens
+
+        # prompt_tokens → input_tokens
+        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention).
+        # Subtract cache_read to restore Anthropic-compatible input_tokens.
+        input_tokens = max(self.usage.prompt_tokens - cache_read, 0)
 
         result: Dict[str, Any] = {
             "input_tokens": input_tokens,

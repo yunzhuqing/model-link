@@ -91,8 +91,8 @@ class OpenAIChatAdapter(BaseAdapter):
                     'content': content
                 }
 
-                if choice.reasoning_content:
-                    choice_dict['message']['reasoning_content'] = choice.reasoning_content
+                if choice.message.reasoning_content:
+                    choice_dict['message']['reasoning_content'] = choice.message.reasoning_content
 
                 if choice.tool_calls:
                     choice_dict['message']['tool_calls'] = [
