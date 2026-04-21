@@ -32,6 +32,12 @@ from .video_generation import (
     execute_seedance_video_generation,
     stream_seedance_video_generation,
 )
+from .threed_generation import (
+    is_seed3d_model,
+    has_threed_generation_tool,
+    execute_seed3d_generation,
+    stream_seed3d_generation,
+)
 
 # Internal metadata keys that must NOT be forwarded to the upstream API.
 _INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
@@ -358,11 +364,29 @@ class VolcengineProvider(BaseProvider):
         """Check if the request carries a video_generation tool flag."""
         return bool(request.metadata.get("_video_generation"))
 
+    def _has_3d_generation_tool(self, request: ChatRequest) -> bool:
+        """Check if the request carries a 3d_generation tool flag."""
+        return has_threed_generation_tool(request)
+
+    def is_3d_generation_model(self, model: str) -> bool:
+        """Check if the model is a Seed3D 3D generation model."""
+        return is_seed3d_model(model)
+
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Execute non-streaming request via /responses."""
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        # Seed3D 3D generation models → dedicated 3D generation path
+        if is_seed3d_model(request.model) or self._has_3d_generation_tool(request):
+            return execute_seed3d_generation(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                model=request.model,
+                messages=request.messages,
+                metadata=request.metadata,
+            )
 
         # Seedance video generation models → dedicated video generation path
         if is_seedance_video_model(request.model) or self._has_video_generation_tool(request):
@@ -681,6 +705,11 @@ class VolcengineProvider(BaseProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        # Seed3D 3D generation models → dedicated 3D generation path
+        if is_seed3d_model(request.model) or self._has_3d_generation_tool(request):
+            yield from stream_seed3d_generation(self.chat, request)
+            return
 
         # Seedance video generation models → dedicated video generation path
         if is_seedance_video_model(request.model) or self._has_video_generation_tool(request):

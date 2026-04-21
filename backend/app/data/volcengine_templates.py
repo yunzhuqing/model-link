@@ -297,4 +297,29 @@ VOLCENGINE_TEMPLATES = [
         support_file=False, support_web_search=False, support_tool_search=False,
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
+    # ── Volcengine Doubao Seed3D 3D Models ──────────────────────────────────
+    dict(
+        label='Doubao-seed3d-2-0-260328 (Volcengine)',
+        provider='Volcengine',
+        name='doubao-seed3d-2-0-260328',
+        alias='doubao-seed3d-2.0',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            '3d': {
+                'type': 'per_token',
+                'price': 80,
+                'tiers': [
+                    {'subdivision': 'low',    'price': 80},
+                    {'subdivision': 'medium', 'price': 80},
+                    {'subdivision': 'high',   'price': 80},
+                ],
+            },
+        },
+        input_price=0, output_price=80, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
+    ),
 ]

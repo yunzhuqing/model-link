@@ -33,6 +33,7 @@ from app.adapters.responses_adapter import OpenAIResponsesAdapter
 
 # 导入供应商相关
 from app.providers.hunyuan.threed_generation import is_hunyuan3d_model
+from app.providers.volcengine.threed_generation import is_seed3d_model
 from app.storage import get_storage_backend
 from app.utils import gen_id
 
@@ -279,7 +280,7 @@ def openai_responses():
         isinstance(t, dict) and t.get('type') == '3d_generation'
         for t in _tools
     )
-    _is_3d_model = is_hunyuan3d_model(model_name)
+    _is_3d_model = is_hunyuan3d_model(model_name) or is_seed3d_model(model_name)
     if (_is_3d_model or _has_3d_tool) and not is_background:
         return jsonify(adapter.format_error_response(
             '3D generation only supports asynchronous mode. '

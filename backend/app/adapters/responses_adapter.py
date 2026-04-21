@@ -593,14 +593,16 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
             elif tool_type == '3d_generation':
                 # 3D generation tool — extract generation parameters into metadata.
-                # These are picked up by HunyuanProvider when routing to
-                # SubmitHunyuanTo3DRapidJob / SubmitHunyuanTo3DProJob.
+                # These are picked up by HunyuanProvider or VolcengineProvider
+                # when routing to the appropriate 3D generation API.
                 #
                 # Tool fields:
                 #   pbr             – bool, enable PBR material generation
-                #   output_format   – "OBJ"|"GLB"|"STL"|"USDZ"|"FBX"|"MP4"
+                #   output_format   – "OBJ"|"GLB"|"STL"|"USDZ"|"FBX"|"MP4" (alias: result_format)
                 #   enable_geometry – bool, geometry-only (白模) generation (alias: geometry)
-                #   face_count      – int (Pro only, not effective for LowPoly): 3000–1500000
+                #   face_count      – int: 3000–1500000
+                #                     Hunyuan: passed as FaceCount
+                #                     Seed3D:  mapped to subdivisionlevel (0-100k→low, 100k-500k→medium, >500k→high)
                 #   generate_type   – "Normal"|"LowPoly"|"Geometry"|"Sketch" (Pro only)
                 #   polygon_type    – "triangle"|"quadrilateral" (Pro+LowPoly only)
                 #
