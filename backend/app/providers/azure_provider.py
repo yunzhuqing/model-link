@@ -253,13 +253,10 @@ class AzureProvider(OpenAIProvider):
                                     "image_url": block.url
                                 })
                             elif block.type == ContentType.IMAGE_BASE64:
+                                media_type = block.media_type or "image/jpeg"
                                 content_parts.append({
                                     "type": "input_image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": block.media_type or "image/jpeg",
-                                        "data": block.data
-                                    }
+                                    "image_url": f"data:{media_type};base64,{block.data or ''}"
                                 })
                         if content_parts:
                             remaining_item: Dict[str, Any] = {
@@ -296,13 +293,10 @@ class AzureProvider(OpenAIProvider):
                             "image_url": block.url
                         })
                     elif block.type == ContentType.IMAGE_BASE64:
+                        media_type = block.media_type or "image/jpeg"
                         content_parts.append({
                             "type": "input_image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": block.media_type or "image/jpeg",
-                                "data": block.data
-                            }
+                            "image_url": f"data:{media_type};base64,{block.data or ''}"
                         })
                 if content_parts:
                     item["content"] = content_parts
