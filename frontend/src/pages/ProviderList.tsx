@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import { Plus, Edit2, Trash2, ChevronDown, ChevronUp, X, Save, Database, Cpu, Link as LinkIcon } from 'lucide-react';
 import ProviderFormFields, { type ProviderFormData } from '../components/ProviderFormFields';
@@ -211,6 +212,7 @@ const defaultModelState = {
 // ── ModelCard ─────────────────────────────────────────────────────────────────
 
 const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit: () => void; onDelete: () => void; onToggle: () => void }) => {
+  const { t } = useTranslation();
   const sym = currencySymbol(model.currency);
   const hasTiers = model.pricing_tiers && model.pricing_tiers.length > 0 && !model.output_pricing;
 
@@ -223,22 +225,22 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
               <Cpu className="w-5 h-5 text-slate-600" />
             </div>
             <h5 className="font-semibold text-slate-800">{model.name}</h5>
-            {!model.is_active && <span className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-xs font-semibold">Disabled</span>}
+            {!model.is_active && <span className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-xs font-semibold">{t('provider.disabled')}</span>}
             {model.alias && <span className="bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded text-xs font-medium">@{model.alias}</span>}
             {model.currency && model.currency !== 'USD' && <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded text-xs font-medium">{model.currency}</span>}
-            {hasTiers && <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">{model.pricing_tiers!.length} tiers</span>}
-            {model.is_retired && <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">Retired</span>}
-            {!model.is_retired && model.retirement_time && <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">Retires {new Date(model.retirement_time).toLocaleDateString()}</span>}
+            {hasTiers && <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">{t('provider.tiers', { count: model.pricing_tiers!.length })}</span>}
+            {model.is_retired && <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs font-medium">{t('provider.retired')}</span>}
+            {!model.is_retired && model.retirement_time && <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs font-medium">{t('provider.retires', { date: new Date(model.retirement_time).toLocaleDateString() })}</span>}
           </div>
 
           {hasTiers ? (
             <div className="mt-4">
               <div className="grid grid-cols-2 gap-4 text-sm mb-3">
-                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Context</span><span className="text-slate-700 font-medium">{model.context_size?.toLocaleString()}</span></div>
-                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Input Size</span><span className="text-slate-700 font-medium">{model.input_size?.toLocaleString()}</span></div>
+                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">{t('provider.context')}</span><span className="text-slate-700 font-medium">{model.context_size?.toLocaleString()}</span></div>
+                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">{t('provider.inputSize')}</span><span className="text-slate-700 font-medium">{model.input_size?.toLocaleString()}</span></div>
               </div>
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                <span className="text-amber-600 text-xs font-semibold block mb-2">Tiered Pricing ({model.currency || 'USD'})</span>
+                <span className="text-amber-600 text-xs font-semibold block mb-2">{t('provider.tieredPricing')} ({model.currency || 'USD'})</span>
                 <div className="space-y-1.5">
                   {model.pricing_tiers!.map((tier, i) => (
                     <div key={i} className="flex flex-wrap gap-3 text-sm text-slate-600">
@@ -257,10 +259,10 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
-              <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Context</span><span className="text-slate-700 font-medium">{model.context_size?.toLocaleString()}</span></div>
-              <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Input Size</span><span className="text-slate-700 font-medium">{model.input_size?.toLocaleString()}</span></div>
-              <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Input Price</span><span className="text-slate-700 font-medium">{sym}{model.input_price}/M {model.currency || 'USD'}</span></div>
-              <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">Output Price</span><span className="text-slate-700 font-medium">{sym}{model.output_price}/M {model.currency || 'USD'}</span></div>
+                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">{t('provider.context')}</span><span className="text-slate-700 font-medium">{model.context_size?.toLocaleString()}</span></div>
+                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">{t('provider.inputSize')}</span><span className="text-slate-700 font-medium">{model.input_size?.toLocaleString()}</span></div>
+                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">{t('provider.inputPrice')}</span><span className="text-slate-700 font-medium">{sym}{model.input_price}/M {model.currency || 'USD'}</span></div>
+                <div className="bg-slate-50 p-3 rounded-lg"><span className="text-slate-400 block text-xs mb-1">{t('provider.outputPrice')}</span><span className="text-slate-700 font-medium">{sym}{model.output_price}/M {model.currency || 'USD'}</span></div>
             </div>
           )}
 
@@ -298,31 +300,31 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
           )}
 
           <div className="flex flex-wrap gap-2 mt-4">
-            {model.support_kvcache && <FeatureBadge label="KV Cache" color="violet" />}
-            {model.support_image && <FeatureBadge label="Image" color="blue" />}
-            {model.support_audio && <FeatureBadge label="Audio" color="emerald" />}
-            {model.support_video && <FeatureBadge label="Video" color="rose" />}
-            {model.support_file && <FeatureBadge label="File" color="amber" />}
-            {model.support_web_search && <FeatureBadge label="Web Search" color="indigo" />}
-            {model.support_tool_search && <FeatureBadge label="Tool Search" color="pink" />}
-            {model.support_thinking && <FeatureBadge label="Thinking" color="cyan" />}
-            {model.support_online_image === false && <FeatureBadge label="Base64 Image Only" color="slate" />}
-            {model.support_online_video === false && <FeatureBadge label="Base64 Video Only" color="slate" />}
-            {model.support_embedding && <FeatureBadge label="Embedding" color="emerald" />}
+            {model.support_kvcache && <FeatureBadge label={t('modelTemplates.features.kvcache')} color="violet" />}
+            {model.support_image && <FeatureBadge label={t('modelTemplates.features.image')} color="blue" />}
+            {model.support_audio && <FeatureBadge label={t('modelTemplates.features.audio')} color="emerald" />}
+            {model.support_video && <FeatureBadge label={t('modelTemplates.features.video')} color="rose" />}
+            {model.support_file && <FeatureBadge label={t('modelTemplates.features.file')} color="amber" />}
+            {model.support_web_search && <FeatureBadge label={t('modelTemplates.features.webSearch')} color="indigo" />}
+            {model.support_tool_search && <FeatureBadge label={t('modelTemplates.features.toolSearch')} color="pink" />}
+            {model.support_thinking && <FeatureBadge label={t('modelTemplates.features.thinking')} color="cyan" />}
+            {model.support_online_image === false && <FeatureBadge label={t('provider.disabled') + ' Image Only'} color="slate" />}
+            {model.support_online_video === false && <FeatureBadge label={t('provider.disabled') + ' Video Only'} color="slate" />}
+            {model.support_embedding && <FeatureBadge label={t('modelTemplates.features.embedding')} color="emerald" />}
           </div>
         </div>
         <div className="flex items-center space-x-1 ml-4">
           <button
             onClick={onToggle}
             className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${model.is_active ? 'bg-emerald-500' : 'bg-slate-300'}`}
-            title={model.is_active ? 'Disable Model' : 'Enable Model'}
+            title={model.is_active ? t('provider.disableModel') : t('provider.enableModel')}
           >
             <span
               className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${model.is_active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
             />
           </button>
-          <button onClick={onEdit} className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors" title="Edit Model"><Edit2 className="w-4 h-4" /></button>
-          <button onClick={onDelete} className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors" title="Delete Model"><Trash2 className="w-4 h-4" /></button>
+          <button onClick={onEdit} className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors" title={t('provider.editModelTitle')}><Edit2 className="w-4 h-4" /></button>
+          <button onClick={onDelete} className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors" title={t('provider.deleteModelTitle')}><Trash2 className="w-4 h-4" /></button>
         </div>
       </div>
     </div>
@@ -851,6 +853,7 @@ const ModelForm = ({
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all providers with a group selector. */
 const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [showProviderModal, setShowProviderModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
@@ -1013,10 +1016,10 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
               </div>
               <div>
                 <h2 className="text-lg font-bold text-slate-800">
-                  {editingProvider ? 'Edit Provider' : 'Add Provider'}
+                  {editingProvider ? t('provider.editProvider') : t('provider.addProvider')}
                 </h2>
                 <p className="text-sm text-slate-500">
-                  {editingProvider ? editingProvider.name : 'Configure a new AI provider'}
+                  {editingProvider ? editingProvider.name : t('provider.configureNew')}
                 </p>
               </div>
             </div>
@@ -1050,10 +1053,10 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
               className="bg-emerald-500 text-white px-5 py-2.5 rounded-xl flex items-center hover:bg-emerald-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors shadow-sm"
             >
               <Save className="w-4 h-4 mr-2" />
-              {(editingProvider ? updateProviderMutation.isPending : createProviderMutation.isPending) ? 'Saving...' : 'Save'}
+              {(editingProvider ? updateProviderMutation.isPending : createProviderMutation.isPending) ? t('provider.saving') : t('provider.save')}
             </button>
             <button onClick={closeModal} className="bg-slate-100 text-slate-600 px-5 py-2.5 rounded-xl hover:bg-slate-200 transition-colors">
-              Cancel
+              {t('provider.cancel')}
             </button>
           </div>
         </div>
@@ -1063,7 +1066,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
 
   if (isLoading) return (
     <div className="flex justify-center items-center h-64">
-      <div className="text-slate-500">Loading...</div>
+      <div className="text-slate-500">{t('provider.loading')}</div>
     </div>
   );
 
@@ -1090,24 +1093,24 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                 <p className="text-sm text-slate-500 flex items-center">
                   {provider.base_url ? (
                     <><LinkIcon className="w-3 h-3 mr-1" />{provider.base_url}</>
-                  ) : 'No base URL configured'}
+                  ) : t('provider.noBaseUrl')}
                 </p>
               </div>
             </div>
             <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
               {!provider.is_active && (
                 <span className="bg-red-100 text-red-600 px-2.5 py-1 rounded-lg text-xs font-semibold mr-1">
-                  Disabled
+                  {t('provider.disabled')}
                 </span>
               )}
               <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-sm font-medium mr-2">
-                {provider.models.length} models
+                {t('provider.modelsCount', { count: provider.models.length })}
               </span>
               {/* Toggle switch */}
               <button
                 onClick={() => toggleProviderMutation.mutate({ id: provider.id, is_active: !provider.is_active })}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${provider.is_active ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                title={provider.is_active ? 'Disable Provider' : 'Enable Provider'}
+                title={provider.is_active ? t('provider.disableProvider') : t('provider.enableProvider')}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${provider.is_active ? 'translate-x-6' : 'translate-x-1'}`}
@@ -1116,14 +1119,14 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
               <button
                 onClick={() => openEditModal(provider)}
                 className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
-                title="Edit Provider"
+                title={t('provider.editProviderTitle')}
               >
                 <Edit2 className="w-4 h-4" />
               </button>
               <button
-                onClick={() => { if (confirm('Are you sure you want to delete this provider?')) deleteProviderMutation.mutate(provider.id); }}
+                onClick={() => { if (confirm(t('provider.deleteProviderConfirm'))) deleteProviderMutation.mutate(provider.id); }}
                 className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
-                title="Delete Provider"
+                title={t('provider.deleteProviderTitle')}
               >
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -1136,12 +1139,12 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
           {expandedProvider === provider.id && (
             <div className="p-5 bg-slate-50 border-t border-slate-200">
               <div className="flex justify-between items-center mb-4">
-                <h4 className="font-bold text-slate-700">Models ({provider.models.length})</h4>
+                <h4 className="font-bold text-slate-700">{t('provider.modelsLabel')} ({provider.models.length})</h4>
                 <button
                   onClick={() => { setShowAddModel(provider.id); setEditingModel(null); }}
                   className="bg-blue-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-blue-600 transition-colors shadow-sm"
                 >
-                  <Plus className="w-4 h-4 mr-2" /> Add Model
+                  <Plus className="w-4 h-4 mr-2" /> {t('provider.addModel')}
                 </button>
               </div>
 
@@ -1172,7 +1175,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                       <ModelCard
                         model={model}
                         onEdit={() => handleEditModel(model)}
-                        onDelete={() => { if (confirm('Are you sure you want to delete this model?')) deleteModelMutation.mutate(model.id); }}
+                        onDelete={() => { if (confirm(t('provider.deleteModelConfirm'))) deleteModelMutation.mutate(model.id); }}
                         onToggle={() => toggleModelMutation.mutate({ id: model.id, is_active: !model.is_active })}
                       />
                     )}
@@ -1181,8 +1184,8 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                 {provider.models.length === 0 && !showAddModel && (
                   <div className="text-center py-8 text-slate-500">
                     <Cpu className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                    <p>No models added yet.</p>
-                    <p className="text-sm mt-1">Click "Add Model" to get started.</p>
+                    <p>{t('provider.noModelsYet')}</p>
+                    <p className="text-sm mt-1">{t('provider.noModelsHint')}</p>
                   </div>
                 )}
               </div>
@@ -1193,8 +1196,8 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       {(!providers || providers.length === 0) && (
         <div className="text-center py-12 text-slate-500 bg-white rounded-2xl border border-slate-200">
           <Database className="w-16 h-16 mx-auto mb-4 text-slate-300" />
-          <p className="text-lg font-medium text-slate-700">No providers configured yet.</p>
-          <p className="text-sm mt-2">Click "Add Provider" to add your first AI provider.</p>
+          <p className="text-lg font-medium text-slate-700">{t('provider.noProvidersYet')}</p>
+          <p className="text-sm mt-2">{t('provider.noProvidersHint')}</p>
         </div>
       )}
     </div>
@@ -1207,12 +1210,12 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
         {providerModal}
         <div className="space-y-4">
           <div className="flex justify-between items-center">
-            <p className="text-sm text-slate-500">{providers?.length || 0} providers</p>
+            <p className="text-sm text-slate-500">{t('provider.providersCount', { count: providers?.length || 0 })}</p>
             <button
               onClick={openAddModal}
               className="bg-blue-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-blue-600 transition-colors shadow-sm text-sm"
             >
-              <Plus className="w-4 h-4 mr-2" /> Add Provider
+              <Plus className="w-4 h-4 mr-2" /> {t('provider.addProvider')}
             </button>
           </div>
           {providerListContent}
@@ -1228,15 +1231,15 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Providers & Models</h1>
-            <p className="text-slate-500 mt-1">Manage your AI providers and their models</p>
+            <h1 className="text-2xl font-bold text-slate-800">{t('provider.providersAndModels')}</h1>
+            <p className="text-slate-500 mt-1">{t('provider.manageProviders')}</p>
           </div>
           <button
             onClick={openAddModal}
             className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
           >
-            <Plus className="w-4 h-4 mr-2" /> Add Provider
-          </button>
+              <Plus className="w-4 h-4 mr-2" /> {t('provider.addProvider')}
+            </button>
         </div>
         {providerListContent}
       </div>

@@ -48,6 +48,8 @@ interface StatTimeSeries {
   requests: number;
   input_tokens: number;
   output_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
   total_cost: number;
 }
 
@@ -174,26 +176,32 @@ const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, o
   const [hovered, setHovered] = useState<number | null>(null);
   if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">{t('group.statistics.noTrendData')}</div>;
 
-  const maxVal = Math.max(...data.map(d => d.input_tokens + d.output_tokens), 1);
+  const maxVal = Math.max(...data.map(d => d.input_tokens + d.output_tokens + (d.reasoning_tokens || 0) + (d.cache_creation_tokens || 0)), 1);
 
   return (
     <div>
       <div className="flex items-end space-x-[3px] h-44">
         {data.map((d, i) => {
           const inH = Math.max((d.input_tokens / maxVal) * 160, 1);
+          const cacheH = Math.max(((d.cache_creation_tokens || 0) / maxVal) * 160, 1);
           const outH = Math.max((d.output_tokens / maxVal) * 160, 1);
+          const reasonH = Math.max(((d.reasoning_tokens || 0) / maxVal) * 160, 1);
           const isH = hovered === i;
           return (
             <div key={i} className="flex-1 flex flex-col items-center relative"
               onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
               <div className="w-full flex flex-col-reverse">
                 <div className="w-full bg-indigo-400 rounded-t-sm transition-all" style={{ height: `${inH}px`, opacity: isH ? 1 : 0.7 }} />
+                <div className="w-full bg-violet-400 rounded-t-sm transition-all" style={{ height: `${cacheH}px`, opacity: isH ? 1 : 0.7 }} />
                 <div className="w-full bg-emerald-400 rounded-t-sm transition-all" style={{ height: `${outH}px`, opacity: isH ? 1 : 0.7 }} />
+                <div className="w-full bg-amber-400 rounded-t-sm transition-all" style={{ height: `${reasonH}px`, opacity: isH ? 1 : 0.7 }} />
               </div>
               {isH && (
                 <div className="absolute -top-[70px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-2 rounded-lg whitespace-nowrap z-20 shadow-xl">
                   <div className="font-semibold mb-0.5">{String(d.period).slice(5, 10)}</div>
-                  <div>{t('group.statistics.inOut', { in: fmtNum(d.input_tokens), out: fmtNum(d.output_tokens) })}</div>
+                  <div>{t('group.statistics.inOut', { in: fmtNum(d.input_tokens + (d.cache_creation_tokens || 0)), out: fmtNum(d.output_tokens + (d.reasoning_tokens || 0)) })}</div>
+                  {(d.cache_creation_tokens || 0) > 0 && <div>Cache Creation: {fmtNum(d.cache_creation_tokens)}</div>}
+                  {(d.reasoning_tokens || 0) > 0 && <div>Reasoning: {fmtNum(d.reasoning_tokens)}</div>}
                   <div>{t('group.statistics.requests', { value: String(d.requests) })}</div>
                   <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
                 </div>
@@ -211,7 +219,9 @@ const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, o
       </div>
       <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-indigo-400 rounded-sm" /> {t('group.statistics.inputTokensLegend')}</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-violet-400 rounded-sm" /> {t('group.statistics.cache')}</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /> {t('group.statistics.outputTokensLegend')}</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-amber-400 rounded-sm" /> {t('group.statistics.reasoning')}</span>
       </div>
     </div>
   );
@@ -223,7 +233,7 @@ const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, o
 
 export default function GroupStatistics({ groupId }: { groupId: number }) {
   const { t } = useTranslation();
-  const [days, setDays] = useState(14);
+  const [days, setDays] = useState(7);
 
   const params = useMemo(() => {
     const now = new Date();
@@ -253,7 +263,7 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
   });
 
   const loading = totalsLoading || byModelLoading || byApiKeyLoading || tsLoading || byCurrencyLoading;
-  const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0);
+  const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0) + (totals?.reasoning_tokens || 0) + (totals?.cache_creation_tokens || 0);
 
   // Donut slices — use total_cost_usd for proper cross-currency comparison
   const modelCostSlices = (byModel || [])

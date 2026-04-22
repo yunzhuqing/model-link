@@ -150,7 +150,7 @@ export default function GroupDetail() {
             { key: 'apikeys', label: t('group.tabApiKeys'), icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
             { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
             { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
-            { key: 'usage', label: '消耗明细', icon: List, color: 'rose' },
+            { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
           ].map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
             return (
@@ -350,8 +350,8 @@ export default function GroupDetail() {
               <List className="w-5 h-5 text-rose-600" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-800">消耗明细</h2>
-              <p className="text-sm text-slate-500">查看该分组下各模型的消耗记录</p>
+              <h2 className="text-lg font-bold text-slate-800">{t('group.tabUsage')}</h2>
+              <p className="text-sm text-slate-500">{t('group.usageDesc')}</p>
             </div>
           </div>
           <UsageRecordsTable groupId={parseInt(id!)} />

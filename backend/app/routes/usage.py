@@ -482,6 +482,8 @@ def get_summary_time_series():
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
             func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
         ),
         filters,
@@ -494,6 +496,8 @@ def get_summary_time_series():
             "requests": r.requests,
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
+            "reasoning_tokens": int(r.reasoning_tokens),
+            "cache_creation_tokens": int(r.cache_creation_tokens),
             "total_cost": round(float(r.total_cost_usd or 0), 6),
             "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
         })
@@ -646,6 +650,8 @@ def get_summary():
             func.count(UsageRecord.id).label("requests"),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
         ),
         filters,
     ).group_by("period").order_by("period").all()
@@ -656,6 +662,8 @@ def get_summary():
             "requests": r.requests,
             "input_tokens": int(r.input_tokens),
             "output_tokens": int(r.output_tokens),
+            "reasoning_tokens": int(r.reasoning_tokens),
+            "cache_creation_tokens": int(r.cache_creation_tokens),
         }
         for r in time_series_rows
     ]
