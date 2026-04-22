@@ -572,10 +572,9 @@ class UsageRecord(db.Model):
     # ── Currency / exchange rate ────────────────────────────────────────────
     # Pricing currency of the model (e.g. "USD", "CNY"). Copied from Model.currency.
     currency = db.Column(db.String(10), nullable=True, default='USD')
-    # USD→CNY exchange rate at the time of the request.
-    # When currency is already CNY this is 1.0.
-    # cost_cny ≈ native_cost * exchange_rate_to_cny
-    exchange_rate_to_cny = db.Column(db.Float, nullable=True, default=None)
+    # Exchange rate from USD to the model's pricing currency at the time of request.
+    # When currency is USD this is 1.0; when currency is CNY this is the USD→CNY rate.
+    exchange_rate = db.Column(db.Float, nullable=True, default=1.0)
 
     # ── Duration ───────────────────────────────────────────────────────────
     # Total wall-clock time of the request in milliseconds
@@ -586,8 +585,10 @@ class UsageRecord(db.Model):
     payable_amount = db.Column(db.Float, nullable=True, default=0.0)
     # discount: discount multiplier applied (e.g. 0.9 = 10% off; 1.0 = no discount)
     discount = db.Column(db.Float, nullable=True, default=1.0)
-    # actual_amount: actual cost after discount = payable_amount * discount
+    # actual_amount: actual cost after discount = payable_amount * discount (in native currency)
     actual_amount = db.Column(db.Float, nullable=True, default=0.0)
+    # actual_amount_usd: actual cost in USD = actual_amount / exchange_rate
+    actual_amount_usd = db.Column(db.Float, nullable=True, default=0.0)
 
     # ── Timestamp ──────────────────────────────────────────────────────────
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)

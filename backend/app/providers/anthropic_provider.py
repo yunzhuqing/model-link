@@ -447,12 +447,17 @@ class AnthropicProvider(BaseProvider):
         cache_read = usage_data.get("cache_read_input_tokens", 0)
         output_tokens = usage_data.get("output_tokens", 0)
         prompt_tokens = raw_input_tokens + cache_creation + cache_read
+        extra: Dict[str, Any] = {}
+        # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
+        if "cache_creation" in usage_data:
+            extra["cache_creation"] = usage_data["cache_creation"]
         usage = UsageInfo(
             prompt_tokens=prompt_tokens,
             completion_tokens=output_tokens,
             total_tokens=prompt_tokens + output_tokens,
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_creation,
+            extra=extra,
         )
 
         return ChatResponse(

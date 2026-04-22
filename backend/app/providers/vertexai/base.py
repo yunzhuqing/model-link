@@ -587,12 +587,17 @@ class VertexAIProvider(BaseProvider):
         cache_read = usage_data.get("cache_read_input_tokens", 0)
         output_tokens_val = usage_data.get("output_tokens", 0)
         prompt_tokens_val = raw_input_tokens + cache_creation + cache_read
+        extra: Dict[str, Any] = {}
+        # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
+        if "cache_creation" in usage_data:
+            extra["cache_creation"] = usage_data["cache_creation"]
         usage = UsageInfo(
             prompt_tokens=prompt_tokens_val,
             completion_tokens=output_tokens_val,
             total_tokens=prompt_tokens_val + output_tokens_val,
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_creation,
+            extra=extra,
         )
 
         return ChatResponse(
@@ -611,6 +616,10 @@ class VertexAIProvider(BaseProvider):
             usage = message.get("usage", {})
             usage_info = None
             if usage:
+                extra: Dict[str, Any] = {}
+                # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等）
+                if "cache_creation" in usage:
+                    extra["cache_creation"] = usage["cache_creation"]
                 raw_input_tokens = usage.get("input_tokens", 0)
                 cache_creation = usage.get("cache_creation_input_tokens", 0)
                 cache_read = usage.get("cache_read_input_tokens", 0)
@@ -626,6 +635,7 @@ class VertexAIProvider(BaseProvider):
                     total_tokens=prompt_tokens + output_tokens,
                     cache_read_tokens=cache_read,
                     cache_write_tokens=cache_creation,
+                    extra=extra,
                 )
             return StreamChunk(
                 id=message.get("id", response_id), model=message.get("model", model),

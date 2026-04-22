@@ -54,12 +54,10 @@ interface StatTimeSeries {
 interface CurrencyCost {
   currency: string;
   total_cost_native: number;
-  total_cost_cny: number;
   total_cost_usd: number;
 }
 
 interface StatByCurrency {
-  exchange_rate_usd_to_cny: number;
   currencies: CurrencyCost[];
   total_cost_usd: number;
 }

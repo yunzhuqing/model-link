@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
 import {
   Key, ArrowLeft, Copy, Check, Cpu, DollarSign, TrendingUp, Zap,
-  Clock, Users, Shield, Gauge, List, BarChart3,
+  Clock, Users, Shield, Gauge, List,
 } from 'lucide-react';
 import { useState } from 'react';
 import UsageRecordsTable from '../components/UsageRecordsTable';
@@ -43,7 +43,6 @@ interface TimeSeries {
   output_tokens: number;
   total_cost: number;
   total_cost_usd?: number;
-  total_cost_cny?: number;
 }
 
 interface ApiKeyDetailData {
@@ -450,7 +449,7 @@ const ApiKeyDetail = () => {
               <HourlyBarChart
                 title="金额消耗趋势"
                 icon={<DollarSign className="w-5 h-5 text-amber-500" />}
-                values={d.map(x => x.total_cost_cny ?? x.total_cost)}
+                values={d.map(x => x.total_cost_usd ?? x.total_cost)}
                 color="#f59e0b"
                 fmtY={fmtCostCny}
                 legendLabel="消费金额 (¥)"

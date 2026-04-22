@@ -25,10 +25,10 @@ Example tiers ($ per 1M tokens):
 Currency / exchange-rate handling
 ----------------------------------
 Each usage record stores:
-  - currency            – pricing currency of the model ("USD", "CNY", …)
-  - exchange_rate_to_cny – USD→CNY rate at the time of the request
-                           (1.0 when currency is already CNY, so callers can
-                           always compute cost_cny = native_cost * exchange_rate)
+  - currency          – pricing currency of the model ("USD", "CNY", …)
+  - exchange_rate     – USD→{currency} rate at the time of the request
+                        (1.0 when currency is USD)
+  - actual_amount_usd – cost converted to USD = actual_amount / exchange_rate
 
 The exchange rate is read from the in-memory cache maintained by
 exchange_rate_service (refreshed daily from frankfurter.app).
@@ -120,7 +120,7 @@ def record_usage(
     # Discount multiplier from model (e.g. 0.9 = 10% off; 1.0 = no discount)
     discount: float = getattr(db_model, 'discount', 1.0) or 1.0
 
-    exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
+    exchange_rate = _get_exchange_rate_for_currency(currency)
 
     thread = threading.Thread(
         target=_persist_usage,
@@ -141,15 +141,11 @@ def record_usage(
             cache_5m_creation_price_unit=cache_5m_creation_price_unit,
             cache_1h_creation_price_unit=cache_1h_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
-            cache_creation_price_unit=cache_creation_price_unit,
-            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
-            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
-            cache_token_price_unit=cache_token_price_unit,
             pricing_tiers=pricing_tiers,
             output_pricing=output_pricing,
             currency=currency,
             duration_ms=duration_ms,
-            exchange_rate_to_cny=exchange_rate_to_cny,
+            exchange_rate=exchange_rate,
             discount=discount,
             user_id=api_key_user_id,
         ),
@@ -197,7 +193,7 @@ def record_stream_usage(
     All arguments must be plain Python primitives (no ORM objects), since
     the SQLAlchemy session is already closed by the time the stream ends.
     """
-    exchange_rate_to_cny = _get_exchange_rate_for_currency(currency)
+    exchange_rate = _get_exchange_rate_for_currency(currency)
 
     thread = threading.Thread(
         target=_persist_usage,
@@ -222,7 +218,7 @@ def record_stream_usage(
             output_pricing=output_pricing,
             currency=currency,
             duration_ms=duration_ms,
-            exchange_rate_to_cny=exchange_rate_to_cny,
+            exchange_rate=exchange_rate,
             discount=discount,
             user_id=user_id,
         ),
@@ -235,13 +231,17 @@ def record_stream_usage(
 
 def _get_exchange_rate_for_currency(currency: str) -> float:
     """
-    Return the effective USD→CNY exchange rate for the given pricing currency.
+    Return the exchange rate from USD to the model's pricing currency.
 
-    - If currency is 'CNY', cost is already in CNY → rate = 1.0
-    - If currency is 'USD' (or anything else), return the live USD→CNY rate
-      from the in-memory cache maintained by exchange_rate_service.
+    - If currency is 'USD', rate = 1.0 (no conversion needed).
+    - If currency is 'CNY', return the live USD→CNY rate from the in-memory
+      cache maintained by exchange_rate_service.
+    - For other currencies, return the USD→CNY rate as fallback.
+
+    This rate is stored in UsageRecord.exchange_rate and used to compute
+    actual_amount_usd = actual_amount / exchange_rate.
     """
-    if (currency or 'USD').upper() == 'CNY':
+    if (currency or 'USD').upper() == 'USD':
         return 1.0
     try:
         from app.exchange_rate_service import get_exchange_rate
@@ -436,7 +436,7 @@ def _persist_usage(
     output_pricing=None,
     currency='USD',
     duration_ms=None,
-    exchange_rate_to_cny=None,
+    exchange_rate=None,
     discount=1.0,
     user_id=None,
 ) -> None:
@@ -458,15 +458,15 @@ def _persist_usage(
                 provider_name=provider_name,
                 input_price_unit=input_price_unit,
                 output_price_unit=output_price_unit,
-            cache_creation_price_unit=cache_creation_price_unit,
-            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
-            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
-            cache_token_price_unit=cache_token_price_unit,
+                cache_creation_price_unit=cache_creation_price_unit,
+                cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+                cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+                cache_token_price_unit=cache_token_price_unit,
                 pricing_tiers=pricing_tiers,
                 output_pricing=output_pricing,
                 currency=currency,
                 duration_ms=duration_ms,
-                exchange_rate_to_cny=exchange_rate_to_cny,
+                exchange_rate=exchange_rate,
                 discount=discount,
                 user_id=user_id,
             )
@@ -497,7 +497,7 @@ def _build_record(
     output_pricing=None,
     currency='USD',
     duration_ms=None,
-    exchange_rate_to_cny=None,
+    exchange_rate=None,
     discount=1.0,
     user_id=None,
 ):
@@ -642,6 +642,9 @@ def _build_record(
     # Ensure discount is valid
     effective_discount: float = discount if discount and discount > 0 else 1.0
     actual_amount: float = payable_amount * effective_discount
+    # Convert to USD: actual_amount is in native currency, exchange_rate is USD→native
+    effective_exchange_rate: float = exchange_rate if exchange_rate and exchange_rate > 0 else 1.0
+    actual_amount_usd: float = actual_amount / effective_exchange_rate
 
     return UsageRecord(
         user_name=user_name,
@@ -692,9 +695,10 @@ def _build_record(
         duration_ms=duration_ms,
         # Currency / exchange rate
         currency=currency,
-        exchange_rate_to_cny=exchange_rate_to_cny,
+        exchange_rate=effective_exchange_rate,
         # Billing
         payable_amount=payable_amount,
         discount=effective_discount,
         actual_amount=actual_amount,
+        actual_amount_usd=actual_amount_usd,
     )
