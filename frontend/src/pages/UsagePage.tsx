@@ -216,23 +216,39 @@ const StatCard = ({
   );
 };
 
-/** Extracts a smart x-axis label from a period string based on its format. */
+/** Extracts a smart x-axis label from a period string based on its format.
+ *  Converts UTC period timestamps to the user's local timezone for display. */
 function periodLabel(period: string, granularity: string): string {
-  // period examples: "2026-04-14", "2026-04-14T13:00:00", "2026-04"
-  if (granularity === 'hour') {
-    // Show "MM-DD HH:00"
-    const match = period.match(/(\d{2})-(\d{2})T?(\d{2})/);
-    if (match) return `${match[1]}-${match[2]} ${match[3]}:00`;
-    // fallback: try to find HH
-    const hMatch = period.match(/(\d{2}):\d{2}/);
-    if (hMatch) return `${hMatch[1]}:00`;
-    return period.slice(5, 16);
+  // Backend returns UTC timestamps like "2026-04-14T13:00:00"
+  // Parse as UTC and format in local timezone
+  const pad = (n: number) => String(n).padStart(2, '0');
+  try {
+    // Ensure the period is parsed as UTC
+    let utcStr = period;
+    if (utcStr.includes('T') && !utcStr.endsWith('Z') && !utcStr.includes('+') && !/[-]\d{2}:\d{2}$/.test(utcStr)) {
+      utcStr += 'Z';
+    }
+    const d = new Date(utcStr);
+    if (isNaN(d.getTime())) throw new Error('invalid');
+
+    if (granularity === 'hour') {
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`;
+    }
+    if (granularity === 'month') {
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+    }
+    // day: MM-DD
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  } catch {
+    // Fallback: raw string extraction
+    if (granularity === 'hour') {
+      const match = period.match(/(\d{2})-(\d{2})T?(\d{2})/);
+      if (match) return `${match[1]}-${match[2]} ${match[3]}:00`;
+      return period.slice(5, 16);
+    }
+    if (granularity === 'month') return period.slice(0, 7);
+    return period.slice(5, 10);
   }
-  if (granularity === 'month') {
-    return period.slice(0, 7); // YYYY-MM
-  }
-  // day: MM-DD
-  return period.slice(5, 10);
 }
 
 /** Bar chart with token values, proper x-axis labels, and larger size. */

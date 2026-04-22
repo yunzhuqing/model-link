@@ -218,11 +218,27 @@ def _handle_request(adapter):
 
             def _chunks_with_usage_recording():
                 last_usage = None
+                # Preserve extra data (e.g. cache_creation with ephemeral_5m/1h tokens)
+                # from earlier usage chunks, since the final usage chunk (message_delta)
+                # may not carry them.
+                _accumulated_extra = {}
                 try:
                     for chunk in chunks:
                         if chunk.usage is not None:
+                            # Accumulate extra from all usage-bearing chunks
+                            if hasattr(chunk.usage, 'extra') and chunk.usage.extra:
+                                _accumulated_extra.update(chunk.usage.extra)
                             last_usage = chunk.usage
                         yield chunk
+                    # Merge accumulated extra into the final usage
+                    if last_usage is not None and _accumulated_extra:
+                        if hasattr(last_usage, 'extra'):
+                            # Only add keys not already present in last_usage.extra
+                            for k, v in _accumulated_extra.items():
+                                if k not in last_usage.extra:
+                                    last_usage.extra[k] = v
+                        else:
+                            last_usage.extra = _accumulated_extra
                 finally:
                     if last_usage is not None:
                         try:
