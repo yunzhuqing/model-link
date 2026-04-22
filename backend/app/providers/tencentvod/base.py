@@ -245,6 +245,37 @@ class TencentVODProvider(OpenAIProvider):
 
         return super().prepare_request(request)
 
+    def _content_block_to_openai(self, block) -> Dict[str, Any]:
+        """
+        将 ContentBlock 转换为腾讯云点播 AI 格式。
+
+        腾讯云点播 AI 对话模型对视频和文件数据使用 ``file`` 类型格式：
+            {"type": "file", "file_url": "url_or_data_uri"}
+
+        而非 OpenAI 标准的 ``video_url`` / ``file_url`` 嵌套格式。
+        图片数据仍使用 OpenAI 标准格式。
+        """
+        from app.abstraction.messages import ContentType
+
+        if block.type == ContentType.VIDEO_URL:
+            return {"type": "file", "file_url": block.url or ""}
+        elif block.type == ContentType.VIDEO_BASE64:
+            media_type = block.media_type or "video/mp4"
+            return {
+                "type": "file",
+                "file_url": f"data:{media_type};base64,{block.data or ''}"
+            }
+        elif block.type == ContentType.FILE_URL:
+            return {"type": "file", "file_url": block.url or ""}
+        elif block.type == ContentType.FILE_BASE64:
+            media_type = block.media_type or "application/octet-stream"
+            return {
+                "type": "file",
+                "file_url": f"data:{media_type};base64,{block.data or ''}"
+            }
+        # 其他类型（图片、音频、文本等）使用标准 OpenAI 格式
+        return super()._content_block_to_openai(block)
+
     # ==================== 图像/视频生成检测 ====================
 
     def is_image_generation_model(self, model: str) -> bool:

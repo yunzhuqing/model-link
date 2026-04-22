@@ -83,6 +83,30 @@ def parse_openai_request(data: dict) -> ChatRequest:
                     file_url = item.get('file_url', {})
                     url = file_url.get('url', '')
                     blocks.append(ContentBlock.from_file_url(url) if hasattr(ContentBlock, 'from_file_url') else ContentBlock.from_video_url(url))
+                elif item_type == 'file':
+                    # TencentVOD chat API uses {"type": "file", "file_url": "url_or_data_uri"} format
+                    file_url_val = item.get('file_url', '')
+                    if isinstance(file_url_val, dict):
+                        url = file_url_val.get('url', '')
+                    else:
+                        url = file_url_val
+                    if url and url.startswith('data:'):
+                        parts = url.split(',')
+                        media_type = parts[0].replace('data:', '').replace(';base64', '')
+                        data_str = parts[1] if len(parts) > 1 else ''
+                        if media_type.startswith('video/'):
+                            blocks.append(ContentBlock.from_video_base64(data_str, media_type))
+                        elif media_type.startswith('image/'):
+                            blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                        else:
+                            blocks.append(ContentBlock.from_file_base64(data_str, media_type))
+                    elif url:
+                        # Heuristic: if URL looks like a video, use VIDEO_URL; otherwise FILE_URL
+                        _video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v')
+                        if any(url.lower().split('?')[0].endswith(ext) for ext in _video_exts):
+                            blocks.append(ContentBlock.from_video_url(url))
+                        else:
+                            blocks.append(ContentBlock.from_file_url(url) if hasattr(ContentBlock, 'from_file_url') else ContentBlock.from_video_url(url))
             content = blocks if blocks else None
         elif blocks:
             if content:

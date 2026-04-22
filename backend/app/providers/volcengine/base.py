@@ -192,9 +192,8 @@ class VolcengineProvider(BaseProvider):
         elif support_thinking:
             # Model supports thinking; build reasoning config
             effort = request.reasoning_effort
-            if effort == 'none':
-                # Explicitly disable
-                pass
+            if not effort or effort == 'none':
+                result["reasoning"] = {"effort": effort or "minimal"}
             else:
                 result["reasoning"] = {"effort": effort or "medium"}
         elif request.reasoning_effort and request.reasoning_effort != 'none':
