@@ -399,7 +399,7 @@ class GatewayService:
             model_meta keys:
                 provider_id, provider_name, model_alias, model_real_name,
                 input_price_unit, output_price_unit,
-                cache_creation_price_unit, cache_token_price_unit
+                cache_creation_price_unit, cache_5m_creation_price_unit, cache_1h_creation_price_unit, cache_token_price_unit
         """
         # 1. Resolve model (DB access)
         resolved = self.resolve_model(request.model, group_id)
@@ -431,6 +431,8 @@ class GatewayService:
             'input_price_unit': getattr(resolved.db_model, 'input_price', 0.0) or 0.0,
             'output_price_unit': getattr(resolved.db_model, 'output_price', 0.0) or 0.0,
             'cache_creation_price_unit': getattr(resolved.db_model, 'cache_creation_price', 0.0) or 0.0,
+            'cache_5m_creation_price_unit': getattr(resolved.db_model, 'cache_5m_creation_price', 0.0) or 0.0,
+            'cache_1h_creation_price_unit': getattr(resolved.db_model, 'cache_1h_creation_price', 0.0) or 0.0,
             'cache_token_price_unit': getattr(resolved.db_model, 'cache_hit_price', 0.0) or 0.0,
             'currency': getattr(resolved.db_model, 'currency', 'USD') or 'USD',
             # Tiered pricing — plain list, safe to pass across thread boundaries

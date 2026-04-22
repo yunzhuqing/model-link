@@ -243,6 +243,8 @@ def _handle_request(adapter):
                                 input_price_unit=model_meta.get('input_price_unit', 0.0),
                                 output_price_unit=model_meta.get('output_price_unit', 0.0),
                                 cache_creation_price_unit=model_meta.get('cache_creation_price_unit', 0.0),
+                                cache_5m_creation_price_unit=model_meta.get('cache_5m_creation_price_unit', 0.0),
+                                cache_1h_creation_price_unit=model_meta.get('cache_1h_creation_price_unit', 0.0),
                                 cache_token_price_unit=model_meta.get('cache_token_price_unit', 0.0),
                                 pricing_tiers=model_meta.get('pricing_tiers'),
                                 output_pricing=model_meta.get('output_pricing'),

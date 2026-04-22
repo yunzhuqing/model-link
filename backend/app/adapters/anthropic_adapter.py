@@ -360,12 +360,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     break
             response_id = f'msg_{clean_id}'
 
-        # Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
-        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention)
-        # for unified billing.  Subtract cache_read_tokens here to restore
+        # Anthropic convention: input_tokens EXCLUDES both
+        # cache_creation_input_tokens and cache_read_input_tokens.
+        # Internally prompt_tokens INCLUDES both (OpenAI convention)
+        # for unified billing.  Subtract both here to restore
         # Anthropic-compatible output.
         cache_read = response.usage.cache_read_tokens or 0
-        anthropic_input_tokens = max(response.usage.prompt_tokens - cache_read, 0)
+        cache_write = response.usage.cache_write_tokens or 0
+        anthropic_input_tokens = max(response.usage.prompt_tokens - cache_read - cache_write, 0)
 
         usage_dict = {
             'input_tokens': anthropic_input_tokens,
@@ -404,9 +406,10 @@ class AnthropicMessagesAdapter(BaseAdapter):
             usage: UsageInfo（从 is_first_chunk 的 chunk 中获取）
         """
         # 构建 message_start 的 usage，始终包含 output_tokens: 0
-        # Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
-        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention).
-        # Subtract cache_read_tokens here to restore Anthropic-compatible output.
+        # Anthropic convention: input_tokens EXCLUDES both
+        # cache_creation_input_tokens and cache_read_input_tokens.
+        # Internally prompt_tokens INCLUDES both (OpenAI convention).
+        # Subtract both here to restore Anthropic-compatible output.
         start_usage: dict = {
             'input_tokens': 0,
             'cache_creation_input_tokens': 0,
@@ -415,7 +418,8 @@ class AnthropicMessagesAdapter(BaseAdapter):
         }
         if usage:
             cache_read = usage.cache_read_tokens or 0
-            start_usage['input_tokens'] = max(usage.prompt_tokens - cache_read, 0)
+            cache_write = usage.cache_write_tokens or 0
+            start_usage['input_tokens'] = max(usage.prompt_tokens - cache_read - cache_write, 0)
             start_usage['output_tokens'] = usage.completion_tokens
             start_usage['cache_creation_input_tokens'] = usage.cache_write_tokens
             start_usage['cache_read_input_tokens'] = cache_read
@@ -677,12 +681,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     # stop_reason and usage before the final message_stop.
                     # Build the Anthropic-format usage from the accumulated UsageInfo.
                     if accumulated_usage:
-                        # Anthropic convention: input_tokens EXCLUDES cache_read_input_tokens.
-                        # Internally prompt_tokens INCLUDES cache_read_tokens (OpenAI convention).
-                        # Subtract cache_read_tokens here to restore Anthropic-compatible output.
+                        # Anthropic convention: input_tokens EXCLUDES both
+                        # cache_creation_input_tokens and cache_read_input_tokens.
+                        # Internally prompt_tokens INCLUDES both (OpenAI convention).
+                        # Subtract both here to restore Anthropic-compatible output.
                         fb_cache_read = accumulated_usage.cache_read_tokens or 0
+                        fb_cache_write = accumulated_usage.cache_write_tokens or 0
                         fallback_usage = {
-                            "input_tokens": max(accumulated_usage.prompt_tokens - fb_cache_read, 0),
+                            "input_tokens": max(accumulated_usage.prompt_tokens - fb_cache_read - fb_cache_write, 0),
                             "cache_creation_input_tokens": accumulated_usage.cache_write_tokens,
                             "cache_read_input_tokens": fb_cache_read,
                             "output_tokens": accumulated_usage.completion_tokens,

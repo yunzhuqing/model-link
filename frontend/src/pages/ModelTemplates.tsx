@@ -12,6 +12,8 @@ interface PricingTier {
   input_price: number;
   output_price: number;
   cache_creation_price: number;
+  cache_5m_creation_price: number;
+  cache_1h_creation_price: number;
   cache_hit_price: number;
 }
 
@@ -30,6 +32,8 @@ interface ModelTemplate {
   input_price: number;
   output_price: number;
   cache_creation_price: number;
+  cache_5m_creation_price: number;
+  cache_1h_creation_price: number;
   cache_hit_price: number;
   currency: string;
   retirement_time: string | null;
@@ -64,6 +68,8 @@ const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
   input_price: 0,
   output_price: 0,
   cache_creation_price: 0,
+  cache_5m_creation_price: 0,
+  cache_1h_creation_price: 0,
   cache_hit_price: 0,
   currency: 'USD',
   retirement_time: null,
@@ -244,7 +250,7 @@ const TemplateForm = ({
           <h3 className="text-sm font-semibold text-slate-700">{t('modelTemplates.form.pricingTiersTitle')} <span className="text-slate-400 font-normal text-xs">{t('modelTemplates.form.pricingTiersOptional')}</span></h3>
           <button
             type="button"
-            onClick={() => set({ pricing_tiers: [...(value.pricing_tiers ?? []), { label: '', context_size: value.context_size, input_size: value.input_size, output_size: value.output_size, input_price: value.input_price, output_price: value.output_price, cache_creation_price: value.cache_creation_price, cache_hit_price: value.cache_hit_price }] })}
+            onClick={() => set({ pricing_tiers: [...(value.pricing_tiers ?? []), { label: '', context_size: value.context_size, input_size: value.input_size, output_size: value.output_size, input_price: value.input_price, output_price: value.output_price, cache_creation_price: value.cache_creation_price, cache_5m_creation_price: value.cache_5m_creation_price ?? 0, cache_1h_creation_price: value.cache_1h_creation_price ?? 0, cache_hit_price: value.cache_hit_price }] })}
             className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors"
           >
             {t('modelTemplates.form.addTier')}
@@ -284,6 +290,8 @@ const TemplateForm = ({
                     { k: 'input_price', label: t('modelTemplates.form.tierInputPrice'), type: 'float' },
                     { k: 'output_price', label: t('modelTemplates.form.tierOutputPrice'), type: 'float' },
                     { k: 'cache_creation_price', label: t('modelTemplates.form.tierCacheCreationPrice'), type: 'float' },
+                    { k: 'cache_5m_creation_price', label: t('modelTemplates.form.tierCache5mCreationPrice'), type: 'float' },
+                    { k: 'cache_1h_creation_price', label: t('modelTemplates.form.tierCache1hCreationPrice'), type: 'float' },
                     { k: 'cache_hit_price', label: t('modelTemplates.form.tierCacheHitPrice'), type: 'float' },
                   ].map(({ k, label, type }) => (
                     <div key={k}>
@@ -332,6 +340,8 @@ const TemplateForm = ({
             { key: 'input_price', label: t('modelTemplates.form.inputPriceLabel') },
             { key: 'output_price', label: t('modelTemplates.form.outputPriceLabel') },
             { key: 'cache_creation_price', label: t('modelTemplates.form.cacheCreatePriceLabel') },
+            { key: 'cache_5m_creation_price', label: t('modelTemplates.form.cache5mCreatePriceLabel') },
+            { key: 'cache_1h_creation_price', label: t('modelTemplates.form.cache1hCreatePriceLabel') },
             { key: 'cache_hit_price', label: t('modelTemplates.form.cacheHitPriceLabel') },
           ].map(({ key, label }) => (
             <div key={key}>
@@ -537,6 +547,18 @@ const TemplateCard = ({
                 <span>
                   <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp')}</span>
                   ${tpl.cache_creation_price}/M
+                </span>
+              )}
+              {tpl.cache_5m_creation_price > 0 && (
+                <span>
+                  <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp5m')}</span>
+                  ${tpl.cache_5m_creation_price}/M
+                </span>
+              )}
+              {tpl.cache_1h_creation_price > 0 && (
+                <span>
+                  <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp1h')}</span>
+                  ${tpl.cache_1h_creation_price}/M
                 </span>
               )}
               {tpl.cache_hit_price > 0 && (

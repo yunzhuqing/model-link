@@ -233,6 +233,8 @@ def create_model(current_user):
         input_price=data.get('input_price', 0.0),
         output_price=data.get('output_price', 0.0),
         cache_creation_price=data.get('cache_creation_price', 0.0),
+        cache_5m_creation_price=data.get('cache_5m_creation_price', 0.0),
+        cache_1h_creation_price=data.get('cache_1h_creation_price', 0.0),
         cache_hit_price=data.get('cache_hit_price', 0.0),
         currency=data.get('currency') or 'USD',
         retirement_time=retirement_time,
@@ -269,7 +271,7 @@ def update_model(current_user, model_id):
     
     data = request.get_json()
     for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
-                  'input_price', 'output_price', 'cache_creation_price', 'cache_hit_price',
+                  'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
                   'currency', 'rpm', 'tpm', 'discount',
                    'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',

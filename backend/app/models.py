@@ -295,6 +295,8 @@ class ModelTemplate(db.Model):
     input_price = db.Column(db.Float, default=0.0)
     output_price = db.Column(db.Float, default=0.0)
     cache_creation_price = db.Column(db.Float, default=0.0)
+    cache_5m_creation_price = db.Column(db.Float, default=0.0)  # 5-minute ephemeral cache creation price ($ per 1M tokens)
+    cache_1h_creation_price = db.Column(db.Float, default=0.0)  # 1-hour ephemeral cache creation price ($ per 1M tokens)
     cache_hit_price = db.Column(db.Float, default=0.0)
 
     # Currency for pricing (e.g. "USD", "CNY")
@@ -347,6 +349,8 @@ class ModelTemplate(db.Model):
             'input_price': self.input_price,
             'output_price': self.output_price,
             'cache_creation_price': self.cache_creation_price,
+            'cache_5m_creation_price': self.cache_5m_creation_price,
+            'cache_1h_creation_price': self.cache_1h_creation_price,
             'cache_hit_price': self.cache_hit_price,
             'currency': self.currency or 'USD',
             'retirement_time': self.retirement_time.isoformat() if self.retirement_time else None,
@@ -405,7 +409,9 @@ class Model(db.Model):
     output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Cache pricing
-    cache_creation_price = db.Column(db.Float, default=0.0)
+    cache_creation_price = db.Column(db.Float, default=0.0)  # Simple cache creation price ($ per 1M tokens)
+    cache_5m_creation_price = db.Column(db.Float, default=0.0)  # 5-minute ephemeral cache creation price ($ per 1M tokens)
+    cache_1h_creation_price = db.Column(db.Float, default=0.0)  # 1-hour ephemeral cache creation price ($ per 1M tokens)
     cache_hit_price = db.Column(db.Float, default=0.0)
 
     # Currency for pricing (e.g. "USD", "CNY")
@@ -460,6 +466,8 @@ class Model(db.Model):
             'input_price': self.input_price,
             'output_price': self.output_price,
             'cache_creation_price': self.cache_creation_price,
+            'cache_5m_creation_price': self.cache_5m_creation_price,
+            'cache_1h_creation_price': self.cache_1h_creation_price,
             'cache_hit_price': self.cache_hit_price,
             'currency': self.currency or 'USD',
             'retirement_time': self.retirement_time.isoformat() if self.retirement_time else None,
@@ -524,6 +532,11 @@ class UsageRecord(db.Model):
     # Cache creation (Anthropic prompt caching write)
     cache_creation_tokens = db.Column(db.BigInteger, default=0)
     cache_creation_price_unit = db.Column(db.Float, default=0.0)
+    # 5-minute and 1-hour ephemeral cache creation tokens & prices
+    cache_5m_creation_tokens = db.Column(db.BigInteger, default=0)
+    cache_5m_creation_price_unit = db.Column(db.Float, default=0.0)
+    cache_1h_creation_tokens = db.Column(db.BigInteger, default=0)
+    cache_1h_creation_price_unit = db.Column(db.Float, default=0.0)
 
     # Cache hit (Anthropic prompt caching read / OpenAI cached_tokens)
     cache_tokens = db.Column(db.BigInteger, default=0)
@@ -609,6 +622,10 @@ class UsageRecord(db.Model):
             'output_price_unit': self.output_price_unit,
             'cache_creation_tokens': self.cache_creation_tokens,
             'cache_creation_price_unit': self.cache_creation_price_unit,
+            'cache_5m_creation_tokens': self.cache_5m_creation_tokens,
+            'cache_5m_creation_price_unit': self.cache_5m_creation_price_unit,
+            'cache_1h_creation_tokens': self.cache_1h_creation_tokens,
+            'cache_1h_creation_price_unit': self.cache_1h_creation_price_unit,
             'cache_tokens': self.cache_tokens,
             'cache_token_price_unit': self.cache_token_price_unit,
             'reasoning_tokens': self.reasoning_tokens,

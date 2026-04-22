@@ -105,6 +105,8 @@ export interface Model {
   input_price: number;
   output_price: number;
   cache_creation_price: number | null;
+  cache_5m_creation_price: number | null;
+  cache_1h_creation_price: number | null;
   cache_read_price: number | null;
   supports_kv_cache: boolean;
   supports_vision: boolean;
@@ -132,6 +134,8 @@ export interface ModelCreate {
   input_price: number;
   output_price: number;
   cache_creation_price?: number;
+  cache_5m_creation_price?: number;
+  cache_1h_creation_price?: number;
   cache_read_price?: number;
   supports_kv_cache?: boolean;
   supports_vision?: boolean;

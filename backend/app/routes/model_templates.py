@@ -82,6 +82,8 @@ def create_model_template(current_user):
         input_price=data.get('input_price', 0.0),
         output_price=data.get('output_price', 0.0),
         cache_creation_price=data.get('cache_creation_price', 0.0),
+        cache_5m_creation_price=data.get('cache_5m_creation_price', 0.0),
+        cache_1h_creation_price=data.get('cache_1h_creation_price', 0.0),
         cache_hit_price=data.get('cache_hit_price', 0.0),
         currency=data.get('currency') or 'USD',
         retirement_time=retirement_time,
@@ -117,7 +119,7 @@ def update_model_template(current_user, template_id):
     data = request.get_json()
     for field in [
         'label', 'provider', 'name', 'alias', 'context_size', 'input_size', 'output_size',
-        'input_price', 'output_price', 'cache_creation_price', 'cache_hit_price',
+        'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
         'currency', 'rpm', 'tpm', 'discount',
         'support_kvcache', 'support_image', 'support_audio', 'support_video',
         'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',

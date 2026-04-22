@@ -14,6 +14,8 @@ interface PricingTier {
   input_price: number;
   output_price: number;
   cache_creation_price: number;
+  cache_5m_creation_price: number;
+  cache_1h_creation_price: number;
   cache_hit_price: number;
 }
 
@@ -51,6 +53,8 @@ interface Model {
   input_price: number;
   output_price: number;
   cache_creation_price: number;
+  cache_5m_creation_price: number;
+  cache_1h_creation_price: number;
   cache_hit_price: number;
   currency: string;
   retirement_time: string | null;
@@ -107,6 +111,8 @@ interface ModelTemplate {
   input_price: number;
   output_price: number;
   cache_creation_price: number;
+  cache_5m_creation_price: number;
+  cache_1h_creation_price: number;
   cache_hit_price: number;
   currency: string;
   support_kvcache: boolean;
@@ -181,6 +187,8 @@ const defaultModelState = {
   input_price: 0,
   output_price: 0,
   cache_creation_price: 0,
+  cache_5m_creation_price: 0,
+  cache_1h_creation_price: 0,
   cache_hit_price: 0,
   currency: 'USD',
   retirement_time: null as string | null,
@@ -240,6 +248,8 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
                       <span><span className="text-slate-400 text-xs mr-1">out</span>{sym}{tier.output_price}/M</span>
                       {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↓</span>{sym}{tier.cache_hit_price}/M</span>}
                       {tier.cache_creation_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↑</span>{sym}{tier.cache_creation_price}/M</span>}
+                      {tier.cache_5m_creation_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↑5m</span>{sym}{tier.cache_5m_creation_price}/M</span>}
+                      {tier.cache_1h_creation_price > 0 && <span><span className="text-slate-400 text-xs mr-1">cache↑1h</span>{sym}{tier.cache_1h_creation_price}/M</span>}
                     </div>
                   ))}
                 </div>
@@ -350,6 +360,8 @@ const ModelForm = ({
       input_price: tpl.input_price,
       output_price: tpl.output_price,
       cache_creation_price: tpl.cache_creation_price,
+      cache_5m_creation_price: tpl.cache_5m_creation_price ?? 0,
+      cache_1h_creation_price: tpl.cache_1h_creation_price ?? 0,
       cache_hit_price: tpl.cache_hit_price,
       pricing_tiers: tpl.pricing_tiers,
       output_pricing: tpl.output_pricing ?? null,
@@ -413,6 +425,8 @@ const ModelForm = ({
           { label: 'Input Price ($/M)', key: 'input_price', type: 'number', step: '0.01' },
           { label: 'Output Price ($/M)', key: 'output_price', type: 'number', step: '0.01' },
           { label: 'Cache Create ($/M)', key: 'cache_creation_price', type: 'number', step: '0.01' },
+          { label: 'Cache 5min ($/M)', key: 'cache_5m_creation_price', type: 'number', step: '0.01' },
+          { label: 'Cache 1hour ($/M)', key: 'cache_1h_creation_price', type: 'number', step: '0.01' },
           { label: 'Cache Hit ($/M)', key: 'cache_hit_price', type: 'number', step: '0.01' },
         ].map(({ label, key, type, placeholder, step }) => (
           <div key={key}>
@@ -492,6 +506,8 @@ const ModelForm = ({
                     input_price: model.input_price || 0,
                     output_price: model.output_price || 0,
                     cache_creation_price: model.cache_creation_price || 0,
+                    cache_5m_creation_price: model.cache_5m_creation_price || 0,
+                    cache_1h_creation_price: model.cache_1h_creation_price || 0,
                     cache_hit_price: model.cache_hit_price || 0,
                   },
                 ],
@@ -536,6 +552,8 @@ const ModelForm = ({
                     { k: 'input_price', label: 'Input $/M', type: 'float' },
                     { k: 'output_price', label: 'Output $/M', type: 'float' },
                     { k: 'cache_creation_price', label: 'Cache↑ $/M', type: 'float' },
+                    { k: 'cache_5m_creation_price', label: 'Cache↑5m $/M', type: 'float' },
+                    { k: 'cache_1h_creation_price', label: 'Cache↑1h $/M', type: 'float' },
                     { k: 'cache_hit_price', label: 'Cache↓ $/M', type: 'float' },
                   ].map(({ k, label, type }) => (
                     <div key={k}>

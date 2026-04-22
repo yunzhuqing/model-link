@@ -108,6 +108,8 @@ def record_usage(
     input_price_unit: float = getattr(db_model, 'input_price', 0.0) or 0.0
     output_price_unit: float = getattr(db_model, 'output_price', 0.0) or 0.0
     cache_creation_price_unit: float = getattr(db_model, 'cache_creation_price', 0.0) or 0.0
+    cache_5m_creation_price_unit: float = getattr(db_model, 'cache_5m_creation_price', 0.0) or 0.0
+    cache_1h_creation_price_unit: float = getattr(db_model, 'cache_1h_creation_price', 0.0) or 0.0
     cache_token_price_unit: float = getattr(db_model, 'cache_hit_price', 0.0) or 0.0
     currency: str = getattr(db_model, 'currency', 'USD') or 'USD'
     # Tiered pricing — serialised as a plain list so it's safe to pass to a thread
@@ -136,6 +138,12 @@ def record_usage(
             input_price_unit=input_price_unit,
             output_price_unit=output_price_unit,
             cache_creation_price_unit=cache_creation_price_unit,
+            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+            cache_token_price_unit=cache_token_price_unit,
+            cache_creation_price_unit=cache_creation_price_unit,
+            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
             pricing_tiers=pricing_tiers,
             output_pricing=output_pricing,
@@ -168,6 +176,8 @@ def record_stream_usage(
     input_price_unit: float = 0.0,
     output_price_unit: float = 0.0,
     cache_creation_price_unit: float = 0.0,
+    cache_5m_creation_price_unit: float = 0.0,
+    cache_1h_creation_price_unit: float = 0.0,
     cache_token_price_unit: float = 0.0,
     pricing_tiers: Optional[list] = None,
     output_pricing: Optional[dict] = None,
@@ -205,6 +215,8 @@ def record_stream_usage(
             input_price_unit=input_price_unit,
             output_price_unit=output_price_unit,
             cache_creation_price_unit=cache_creation_price_unit,
+            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
             cache_token_price_unit=cache_token_price_unit,
             pricing_tiers=pricing_tiers,
             output_pricing=output_pricing,
@@ -417,6 +429,8 @@ def _persist_usage(
     input_price_unit,
     output_price_unit,
     cache_creation_price_unit,
+    cache_5m_creation_price_unit,
+    cache_1h_creation_price_unit,
     cache_token_price_unit,
     pricing_tiers=None,
     output_pricing=None,
@@ -444,8 +458,10 @@ def _persist_usage(
                 provider_name=provider_name,
                 input_price_unit=input_price_unit,
                 output_price_unit=output_price_unit,
-                cache_creation_price_unit=cache_creation_price_unit,
-                cache_token_price_unit=cache_token_price_unit,
+            cache_creation_price_unit=cache_creation_price_unit,
+            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+            cache_token_price_unit=cache_token_price_unit,
                 pricing_tiers=pricing_tiers,
                 output_pricing=output_pricing,
                 currency=currency,
@@ -474,6 +490,8 @@ def _build_record(
     input_price_unit,
     output_price_unit,
     cache_creation_price_unit,
+    cache_5m_creation_price_unit,
+    cache_1h_creation_price_unit,
     cache_token_price_unit,
     pricing_tiers=None,
     output_pricing=None,
@@ -500,12 +518,22 @@ def _build_record(
     output_tokens: int = usage.completion_tokens or 0
     cache_creation_tokens: int = usage.cache_write_tokens or 0
     cache_tokens: int = usage.cache_read_tokens or usage.cached_tokens or 0
+
+    # Extract 5m and 1h cache creation tokens from Anthropic's cache_creation nested object
+    cache_creation_detail = usage.extra.get('cache_creation', {}) if usage.extra else {}
+    cache_5m_creation_tokens: int = 0
+    cache_1h_creation_tokens: int = 0
+    if isinstance(cache_creation_detail, dict):
+        # Anthropic format: ephemeral_5m_input_tokens, ephemeral_1h_input_tokens
+        cache_5m_creation_tokens = int(cache_creation_detail.get('ephemeral_5m_input_tokens', 0) or 0)
+        cache_1h_creation_tokens = int(cache_creation_detail.get('ephemeral_1h_input_tokens', 0) or 0)
     reasoning_tokens: int = usage.reasoning_tokens or 0
 
-    # Many providers (Bailian, OpenAI, etc.) return prompt_tokens that INCLUDES
-    # cached tokens.  For accurate billing, subtract cache_tokens so that
-    # input_tokens represents only the non-cached tokens (billed at input price).
-    # Cached tokens are already billed separately at cache_token_price_unit.
+    # prompt_tokens includes cache_read and cache_creation tokens.
+    # For billing: input_tokens = raw_input + cache_creation (both billed at
+    # input_price_unit).  Only cache_read tokens are billed separately at
+    # cache_token_price_unit (cache_hit price).  So we only subtract
+    # cache_tokens (cache_read) from prompt_tokens to get input_tokens.
     input_tokens: int = max(raw_prompt_tokens - cache_tokens, 0)
 
     # ── Tier-aware pricing ─────────────────────────────────────────────────
@@ -579,10 +607,32 @@ def _build_record(
     # ── Billing amounts ───────────────────────────────────────────────────
     # payable_amount = total cost before discount (in native currency)
     # Prices are per 1M tokens for text; per unit for image/video/audio/search.
+    # Note: input_tokens already includes cache_creation_tokens; both are
+    # billed at input_price_unit.  cache_tokens (cache_read) are billed
+    # separately at cache_token_price_unit.
+    # Cache creation cost calculation:
+    # - If the response includes 5m/1h ephemeral cache creation tokens (Anthropic),
+    #   use the respective 5m/1h prices for those tokens.
+    # - Remaining cache_creation_tokens (not accounted by 5m/1h) use cache_creation_price_unit.
+    # - If no 5m/1h tokens, use simple cache_creation_price_unit for all cache_creation_tokens.
+    cache_creation_cost: float = 0.0
+    if cache_5m_creation_tokens > 0 or cache_1h_creation_tokens > 0:
+        # Anthropic ephemeral cache pricing: 5m and 1h tokens billed at their respective prices
+        cache_creation_cost = (
+            cache_5m_creation_tokens * cache_5m_creation_price_unit / 1_000_000
+            + cache_1h_creation_tokens * cache_1h_creation_price_unit / 1_000_000
+        )
+        # Remaining tokens (cache_creation_tokens - 5m - 1h) use simple price
+        remaining_tokens = max(cache_creation_tokens - cache_5m_creation_tokens - cache_1h_creation_tokens, 0)
+        cache_creation_cost += remaining_tokens * cache_creation_price_unit / 1_000_000
+    elif cache_creation_price_unit > 0:
+        # Simple per-token cache creation pricing (legacy / other models)
+        cache_creation_cost = cache_creation_tokens * cache_creation_price_unit / 1_000_000
+
     payable_amount: float = (
         input_tokens * input_price_unit / 1_000_000
         + output_tokens * output_price_unit / 1_000_000
-        + cache_creation_tokens * cache_creation_price_unit / 1_000_000
+        + cache_creation_cost
         + cache_tokens * cache_token_price_unit / 1_000_000
         + output_image_number * output_image_price_unit
         + output_video_number * output_video_price_unit
@@ -611,6 +661,10 @@ def _build_record(
         output_price_unit=output_price_unit,
         cache_creation_tokens=cache_creation_tokens,
         cache_creation_price_unit=cache_creation_price_unit,
+        cache_5m_creation_tokens=cache_5m_creation_tokens,
+        cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+        cache_1h_creation_tokens=cache_1h_creation_tokens,
+        cache_1h_creation_price_unit=cache_1h_creation_price_unit,
         cache_tokens=cache_tokens,
         cache_token_price_unit=cache_token_price_unit,
         reasoning_tokens=reasoning_tokens,
