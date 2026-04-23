@@ -1,3 +1,3 @@
 """
-Flask routes package.
+Quart routes package.
 """

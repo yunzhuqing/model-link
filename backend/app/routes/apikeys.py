@@ -1,7 +1,7 @@
 """
 API Key and Group management routes.
 """
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 from datetime import datetime
 import secrets
 
@@ -21,18 +21,18 @@ def generate_api_key():
 
 @apikeys_bp.route('/groups/', methods=['GET'])
 @token_required
-def list_groups(current_user):
+async def list_groups(current_user):
     """List all groups the current user belongs to."""
     return jsonify([g.to_dict() for g in current_user.groups])
 
 
 @apikeys_bp.route('/groups/', methods=['POST'])
 @token_required
-def create_group(current_user):
+async def create_group(current_user):
     """Create a new group."""
     from app.models import UserGroup
     
-    data = request.get_json()
+    data = await request.get_json()
     
     # Check if group name already exists
     existing = db.session.query(Group).filter(Group.name == data.get('name')).first()
@@ -61,7 +61,7 @@ def create_group(current_user):
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['GET'])
 @token_required
-def get_group(current_user, group_id):
+async def get_group(current_user, group_id):
     """Get a specific group."""
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -75,7 +75,7 @@ def get_group(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['PUT'])
 @token_required
-def update_group(current_user, group_id):
+async def update_group(current_user, group_id):
     """Update a group."""
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -84,7 +84,7 @@ def update_group(current_user, group_id):
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
     
-    data = request.get_json()
+    data = await request.get_json()
     if 'name' in data:
         # Check if new name already exists
         existing = db.session.query(Group).filter(
@@ -106,7 +106,7 @@ def update_group(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['DELETE'])
 @token_required
-def delete_group(current_user, group_id):
+async def delete_group(current_user, group_id):
     """Delete a group."""
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -123,7 +123,7 @@ def delete_group(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>', methods=['POST'])
 @token_required
-def add_user_to_group(current_user, group_id, user_id):
+async def add_user_to_group(current_user, group_id, user_id):
     """Add a user to a group."""
     from app.models import User
     
@@ -150,7 +150,7 @@ def add_user_to_group(current_user, group_id, user_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>', methods=['DELETE'])
 @token_required
-def remove_user_from_group(current_user, group_id, user_id):
+async def remove_user_from_group(current_user, group_id, user_id):
     """Remove a user from a group."""
     from app.models import User
     
@@ -177,7 +177,7 @@ def remove_user_from_group(current_user, group_id, user_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/invite', methods=['POST'])
 @token_required
-def invite_member(current_user, group_id):
+async def invite_member(current_user, group_id):
     """Invite a member to a group by email."""
     from app.models import User, UserGroup
     
@@ -188,7 +188,7 @@ def invite_member(current_user, group_id):
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
     
-    data = request.get_json()
+    data = await request.get_json()
     email = data.get('email')
     role = data.get('role', 'member')  # Default to member role
     
@@ -222,7 +222,7 @@ def invite_member(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>/role', methods=['PUT'])
 @token_required
-def update_member_role(current_user, group_id, user_id):
+async def update_member_role(current_user, group_id, user_id):
     """Update a member's role in a group."""
     from app.models import User, UserGroup
     
@@ -243,7 +243,7 @@ def update_member_role(current_user, group_id, user_id):
     if current_user_group.role not in ['root', 'admin']:
         return jsonify({'detail': 'Only root or admin can change member roles'}), 403
     
-    data = request.get_json()
+    data = await request.get_json()
     new_role = data.get('role')
     
     # Validate role
@@ -274,7 +274,7 @@ def update_member_role(current_user, group_id, user_id):
 
 @apikeys_bp.route('/apikeys/', methods=['GET'])
 @token_required
-def list_api_keys(current_user):
+async def list_api_keys(current_user):
     """List all API keys for groups the user belongs to."""
     api_keys = []
     for group in current_user.groups:
@@ -284,7 +284,7 @@ def list_api_keys(current_user):
 
 @apikeys_bp.route('/apikeys/group/<int:group_id>', methods=['GET'])
 @token_required
-def list_api_keys_by_group(current_user, group_id):
+async def list_api_keys_by_group(current_user, group_id):
     """List all API keys for a specific group."""
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -298,7 +298,7 @@ def list_api_keys_by_group(current_user, group_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['GET'])
 @token_required
-def get_api_key(current_user, api_key_id):
+async def get_api_key(current_user, api_key_id):
     """Get a specific API key."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
@@ -312,9 +312,9 @@ def get_api_key(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/', methods=['POST'])
 @token_required
-def create_api_key(current_user):
+async def create_api_key(current_user):
     """Create a new API key."""
-    data = request.get_json()
+    data = await request.get_json()
     
     # Check if the group exists and user is a member
     group = db.session.query(Group).filter(Group.id == data.get('group_id')).first()
@@ -346,7 +346,7 @@ def create_api_key(current_user):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['PUT'])
 @token_required
-def update_api_key(current_user, api_key_id):
+async def update_api_key(current_user, api_key_id):
     """Update an API key."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
@@ -355,7 +355,7 @@ def update_api_key(current_user, api_key_id):
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
     
-    data = request.get_json()
+    data = await request.get_json()
     if 'name' in data:
         api_key.name = data['name']
     if 'is_active' in data:
@@ -379,7 +379,7 @@ def update_api_key(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/models', methods=['GET'])
 @token_required
-def get_api_key_models(current_user, api_key_id):
+async def get_api_key_models(current_user, api_key_id):
     """Get the list of models available to this API key, with per-model usage stats."""
     from app.models import UsageRecord, Provider, Model as MLModel
     import hashlib
@@ -454,7 +454,7 @@ def get_api_key_models(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/detail', methods=['GET'])
 @token_required
-def get_api_key_detail(current_user, api_key_id):
+async def get_api_key_detail(current_user, api_key_id):
     """
     Get comprehensive detail for a single API key:
     - Basic info + budget
@@ -589,7 +589,7 @@ def get_api_key_detail(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['DELETE'])
 @token_required
-def delete_api_key(current_user, api_key_id):
+async def delete_api_key(current_user, api_key_id):
     """Delete an API key."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
@@ -606,7 +606,7 @@ def delete_api_key(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/regenerate', methods=['POST'])
 @token_required
-def regenerate_api_key(current_user, api_key_id):
+async def regenerate_api_key(current_user, api_key_id):
     """Regenerate an API key (revokes the old one)."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:

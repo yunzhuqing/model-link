@@ -442,7 +442,12 @@ def _persist_usage(
 ) -> None:
     """Worker that actually writes the UsageRecord to the database."""
     try:
-        with app.app_context():
+        # Quart's app_context() is async-only; in this sync background thread
+        # we set Flask's _cv_app ContextVar directly so Flask-SQLAlchemy works.
+        from flask.globals import _cv_app
+        from flask.ctx import AppContext
+        _token = _cv_app.set(AppContext(app))
+        try:
             from app import db
             from app.models import UsageRecord
 
@@ -472,6 +477,8 @@ def _persist_usage(
             )
             db.session.add(record)
             db.session.commit()
+        finally:
+            _cv_app.reset(_token)
     except Exception as exc:
         logger.exception(f"[usage] Failed to persist usage record: {exc}")
 

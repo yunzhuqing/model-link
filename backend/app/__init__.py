@@ -1,14 +1,13 @@
 """
-Flask application factory for Model Link AI Gateway.
+Quart application factory for Model Link AI Gateway.
 """
 import logging
 import os
 
-from flask import Flask, send_from_directory
+from quart import Quart, send_from_directory
+from quart_cors import cors as quart_cors_init
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
-from flask_cors import CORS
-from flask_httpauth import HTTPBasicAuth
 
 
 def _configure_logging() -> None:
@@ -40,13 +39,11 @@ _configure_logging()
 # Initialize extensions
 db = SQLAlchemy()
 migrate = Migrate()
-cors = CORS()
-auth = HTTPBasicAuth()
 
 
 def create_app(config=None):
-    """Create and configure the Flask application."""
-    app = Flask(__name__)
+    """Create and configure the Quart application."""
+    app = Quart(__name__)
     
     # Load configuration
     database_url = os.getenv('DATABASE_URL')
@@ -76,7 +73,59 @@ def create_app(config=None):
     # Initialize extensions with app
     db.init_app(app)
     migrate.init_app(app, db)
-    cors.init_app(app, resources={r"/*": {"origins": "*"}})
+
+    # ── Fix Flask-SQLAlchemy compatibility with Quart 0.20 ──────────────────
+    #
+    # Problem: Flask-SQLAlchemy uses Flask's `current_app` proxy (via werkzeug's
+    # `_cv_app` ContextVar) to scope DB sessions. Quart 0.20 inherits from Flask
+    # but uses its own async app context that does NOT set Flask's `_cv_app`
+    # ContextVar. This causes "Working outside of application context" errors
+    # whenever db.session is accessed in any route handler.
+    #
+    # Solution:
+    # 1. Register a before_request hook that pushes Flask's _cv_app ContextVar
+    #    so Flask-SQLAlchemy can find the current app during request handling.
+    # 2. Replace Flask-SQLAlchemy's sync teardown handler with an async one
+    #    that gracefully handles the context being already cleared.
+
+    from flask.globals import _cv_app
+    from flask.ctx import AppContext
+
+    @app.before_request
+    async def _push_flask_app_context():
+        """Ensure Flask's _cv_app ContextVar is set for Flask-SQLAlchemy."""
+        from quart import g
+        if not hasattr(g, '_flask_ctx_token'):
+            g._flask_ctx_token = _cv_app.set(AppContext(app))
+
+    @app.after_request
+    async def _pop_flask_app_context(response):
+        """Reset Flask's _cv_app ContextVar after request."""
+        from quart import g
+        token = getattr(g, '_flask_ctx_token', None)
+        if token is not None:
+            try:
+                _cv_app.reset(token)
+            except (ValueError, RuntimeError):
+                pass
+        return response
+
+    # Remove Flask-SQLAlchemy's sync teardown handler and register async version
+    app.teardown_appcontext_funcs[:] = [
+        fn for fn in app.teardown_appcontext_funcs
+        if not getattr(fn, '__qualname__', '').startswith('SQLAlchemy.')
+    ]
+
+    @app.teardown_appcontext
+    async def _teardown_db_session(exc):
+        try:
+            db.session.remove()
+        except RuntimeError:
+            # App context already popped — safe to ignore
+            pass
+    
+    # Enable CORS for all origins
+    quart_cors_init(app, allow_origin="*")
     
     # Initialise the storage backend eagerly so any misconfiguration
     # (e.g. missing S3 bucket name) surfaces at startup rather than on
@@ -114,17 +163,17 @@ def create_app(config=None):
     if os.path.isdir(static_dir) and os.path.isfile(os.path.join(static_dir, 'index.html')):
         @app.route('/', defaults={'path': ''})
         @app.route('/<path:path>')
-        def serve_react(path):
+        async def serve_react(path):
             """Serve React frontend. API routes take priority via blueprints."""
             # Serve static files (JS, CSS, images, etc.)
             if path and os.path.isfile(os.path.join(static_dir, path)):
-                return send_from_directory(static_dir, path)
+                return await send_from_directory(static_dir, path)
             # For all other routes, serve index.html (React Router handles client-side routing)
-            return send_from_directory(static_dir, 'index.html')
+            return await send_from_directory(static_dir, 'index.html')
     else:
         # API-only mode (no frontend build present)
         @app.route('/')
-        def index():
+        async def index():
             return {
                 "message": "Welcome to AI Gateway API",
                 "docs": "/docs",
@@ -140,7 +189,7 @@ def create_app(config=None):
             }
 
     @app.route('/health')
-    def health():
+    async def health():
         return {"status": "healthy"}
     
     return app

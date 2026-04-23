@@ -8,7 +8,7 @@ OpenAI Responses API 路由层
 
 此模块从 gateway.py 拆分而来，专门处理 Responses API 相关的路由。
 """
-from flask import Blueprint, request, jsonify, current_app
+from quart import Blueprint, request, jsonify, current_app
 from typing import Optional
 import json
 import logging
@@ -99,7 +99,12 @@ def _run_background_response(
     """
     import os
 
-    with app.app_context():
+    # Quart's app_context() is async-only; in this sync background thread
+    # we set Flask's _cv_app ContextVar directly so Flask-SQLAlchemy works.
+    from flask.globals import _cv_app
+    from flask.ctx import AppContext
+    _token = _cv_app.set(AppContext(app))
+    try:
         db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
         storage = get_storage_backend()
 
@@ -242,12 +247,14 @@ def _run_background_response(
             _bg_dao.mark_failed(db_url, response_id, final_error)
         else:
             _bg_dao.mark_completed(db_url, response_id)
+    finally:
+        _cv_app.reset(_token)
 
 
 # ============== Responses API 端点 ==============
 
 @gateway_responses_bp.route('/v1/responses', methods=['POST'])
-def openai_responses():
+async def openai_responses():
     """
     OpenAI Responses API endpoint.
 
@@ -265,7 +272,7 @@ def openai_responses():
     adapter = OpenAIResponsesAdapter()
 
     # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
-    data = request.get_json(force=True, silent=True)
+    data = await request.get_json(force=True, silent=True)
     if not data:
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
 
@@ -482,7 +489,7 @@ def openai_responses():
 
 
 @gateway_responses_bp.route('/v1/responses/<response_id>', methods=['GET'])
-def get_response(response_id: str):
+async def get_response(response_id: str):
     """
     Retrieve a background response by ID.
 

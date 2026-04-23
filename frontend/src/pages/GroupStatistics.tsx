@@ -53,6 +53,18 @@ interface StatTimeSeries {
   total_cost: number;
 }
 
+interface StatTimeSeriesByModel {
+  period: string;
+  model_name: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
+  total_cost: number;
+  total_cost_usd: number;
+}
+
 interface CurrencyCost {
   currency: string;
   total_cost_native: number;
@@ -176,30 +188,37 @@ const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, o
   const [hovered, setHovered] = useState<number | null>(null);
   if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">{t('group.statistics.noTrendData')}</div>;
 
-  const maxVal = Math.max(...data.map(d => d.input_tokens + d.output_tokens + (d.reasoning_tokens || 0) + (d.cache_creation_tokens || 0)), 1);
+  // input_tokens from the API already includes cache_creation_tokens (both
+  // are billed at input_price_unit).  To avoid double-counting in the
+  // stacked bar chart we compute "pure input" = input_tokens - cache_creation.
+  const pureInput = (d: StatTimeSeries) => Math.max(d.input_tokens - (d.cache_creation_tokens || 0), 0);
+
+  const maxVal = Math.max(...data.map(d => d.input_tokens + d.output_tokens + (d.reasoning_tokens || 0)), 1);
 
   return (
     <div>
       <div className="flex items-end space-x-[3px] h-44">
         {data.map((d, i) => {
-          const inH = Math.max((d.input_tokens / maxVal) * 160, 1);
-          const cacheH = Math.max(((d.cache_creation_tokens || 0) / maxVal) * 160, 1);
-          const outH = Math.max((d.output_tokens / maxVal) * 160, 1);
-          const reasonH = Math.max(((d.reasoning_tokens || 0) / maxVal) * 160, 1);
+          const inH = (pureInput(d) / maxVal) * 160;
+          const cacheH = ((d.cache_creation_tokens || 0) / maxVal) * 160;
+          const outH = (d.output_tokens / maxVal) * 160;
+          const reasonH = ((d.reasoning_tokens || 0) / maxVal) * 160;
+          const totalH = Math.max(inH + cacheH + outH + reasonH, 1);
           const isH = hovered === i;
           return (
             <div key={i} className="flex-1 flex flex-col items-center relative"
               onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
-              <div className="w-full flex flex-col-reverse">
-                <div className="w-full bg-indigo-400 rounded-t-sm transition-all" style={{ height: `${inH}px`, opacity: isH ? 1 : 0.7 }} />
-                <div className="w-full bg-violet-400 rounded-t-sm transition-all" style={{ height: `${cacheH}px`, opacity: isH ? 1 : 0.7 }} />
-                <div className="w-full bg-emerald-400 rounded-t-sm transition-all" style={{ height: `${outH}px`, opacity: isH ? 1 : 0.7 }} />
-                <div className="w-full bg-amber-400 rounded-t-sm transition-all" style={{ height: `${reasonH}px`, opacity: isH ? 1 : 0.7 }} />
+              <div className="w-full rounded-t-sm overflow-hidden transition-all" style={{ height: `${totalH}px`, opacity: isH ? 1 : 0.7 }}>
+                {/* Top→bottom visual: reasoning, output, cache, input */}
+                {reasonH > 0 && <div className="w-full bg-amber-400" style={{ height: `${reasonH}px` }} />}
+                {outH > 0 && <div className="w-full bg-emerald-400" style={{ height: `${outH}px` }} />}
+                {cacheH > 0 && <div className="w-full bg-purple-400" style={{ height: `${cacheH}px` }} />}
+                {inH > 0 && <div className="w-full bg-blue-400" style={{ height: `${inH}px` }} />}
               </div>
               {isH && (
                 <div className="absolute -top-[70px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-2 rounded-lg whitespace-nowrap z-20 shadow-xl">
                   <div className="font-semibold mb-0.5">{String(d.period).slice(5, 10)}</div>
-                  <div>{t('group.statistics.inOut', { in: fmtNum(d.input_tokens + (d.cache_creation_tokens || 0)), out: fmtNum(d.output_tokens + (d.reasoning_tokens || 0)) })}</div>
+                  <div>{t('group.statistics.inOut', { in: fmtNum(pureInput(d)), out: fmtNum(d.output_tokens) })}</div>
                   {(d.cache_creation_tokens || 0) > 0 && <div>Cache Creation: {fmtNum(d.cache_creation_tokens)}</div>}
                   {(d.reasoning_tokens || 0) > 0 && <div>Reasoning: {fmtNum(d.reasoning_tokens)}</div>}
                   <div>{t('group.statistics.requests', { value: String(d.requests) })}</div>
@@ -218,10 +237,98 @@ const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, o
         ))}
       </div>
       <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-indigo-400 rounded-sm" /> {t('group.statistics.inputTokensLegend')}</span>
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-violet-400 rounded-sm" /> {t('group.statistics.cache')}</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-blue-400 rounded-sm" /> {t('group.statistics.inputTokensLegend')}</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-purple-400 rounded-sm" /> {t('group.statistics.cache')}</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /> {t('group.statistics.outputTokensLegend')}</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-amber-400 rounded-sm" /> {t('group.statistics.reasoning')}</span>
+      </div>
+    </div>
+  );
+};
+
+/* ── Stacked Cost-by-Model Chart ──────────────────────────────────────── */
+
+const DailyCostByModelChart = ({ data, t }: { data: StatTimeSeriesByModel[]; t: (key: string, opts?: Record<string, unknown>) => string }) => {
+  const [hovered, setHovered] = useState<{ bar: number; segment: string } | null>(null);
+  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">{t('group.statistics.noCostData')}</div>;
+
+  // Build a map of period → { model_name → cost } and collect all unique periods & models
+  const periodMap: Record<string, Record<string, number>> = {};
+  const modelSet = new Set<string>();
+  for (const d of data) {
+    const p = String(d.period);
+    if (!periodMap[p]) periodMap[p] = {};
+    periodMap[p][d.model_name || 'unknown'] = d.total_cost_usd || 0;
+    modelSet.add(d.model_name || 'unknown');
+  }
+
+  // Sort models by total cost descending for color assignment
+  const modelTotalCost: Record<string, number> = {};
+  for (const m of modelSet) {
+    modelTotalCost[m] = Object.values(periodMap).reduce((s, pm) => s + (pm[m] || 0), 0);
+  }
+  const models = Array.from(modelSet).sort((a, b) => (modelTotalCost[b] || 0) - (modelTotalCost[a] || 0));
+  const periods = Object.keys(periodMap).sort();
+
+  const maxCost = Math.max(...periods.map(p => Object.values(periodMap[p]).reduce((s, v) => s + v, 0)), 0.001);
+
+  return (
+    <div>
+      <div className="flex items-end space-x-[3px] h-44">
+        {periods.map((p, i) => {
+          const dayModels = periodMap[p];
+          const segments = models.filter(m => (dayModels[m] || 0) > 0);
+          const isH = hovered?.bar === i;
+          return (
+            <div key={i} className="flex-1 flex flex-col items-center relative"
+              onMouseEnter={() => setHovered({ bar: i, segment: '' })}
+              onMouseLeave={() => setHovered(null)}>
+              <div className="w-full rounded-t-sm overflow-hidden transition-all" style={{ height: `${Math.max(Object.values(dayModels).reduce((s, v) => s + v, 0) / maxCost * 160, 1)}px`, opacity: isH ? 1 : 0.7 }}>
+                {segments.map((m, si) => {
+                  const cost = dayModels[m] || 0;
+                  const segH = (cost / maxCost) * 160;
+                  const color = PIE_COLORS[models.indexOf(m) % PIE_COLORS.length];
+                  return (
+                    <div key={si} className="w-full transition-all cursor-default"
+                      style={{ height: `${segH}px`, backgroundColor: color }}
+                      onMouseEnter={() => setHovered({ bar: i, segment: m })} />
+                  );
+                })}
+              </div>
+              {isH && (
+                <div className="absolute -top-[60px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap z-20 shadow-xl max-w-[200px]">
+                  <div className="font-semibold">{p.slice(5, 10)}</div>
+                  {hovered?.segment && (
+                    <div className="flex items-center space-x-1">
+                      <span className="w-2 h-2 rounded-sm inline-block" style={{ backgroundColor: PIE_COLORS[models.indexOf(hovered.segment) % PIE_COLORS.length] }} />
+                      <span>{hovered.segment}: {fmtCost(dayModels[hovered.segment] || 0)}</span>
+                    </div>
+                  )}
+                  {!hovered?.segment && (
+                    <div>{t('group.statistics.cost', { value: fmtCost(Object.values(dayModels).reduce((s, v) => s + v, 0)) })}</div>
+                  )}
+                  <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex justify-between text-xs text-slate-400 mt-2">
+        {periods.map((p, i) => (
+          i % Math.max(1, Math.ceil(periods.length / 7)) === 0 || i === periods.length - 1
+            ? <span key={i}>{p.slice(5, 10)}</span>
+            : <span key={i} />
+        ))}
+      </div>
+      <div className="flex items-center gap-3 mt-3 text-xs text-slate-500 flex-wrap">
+        {models.slice(0, 8).map((m, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+            <span className="truncate max-w-[120px]">{m}</span>
+          </span>
+        ))}
+        {models.length > 8 && <span className="text-slate-400">+{models.length - 8}</span>}
       </div>
     </div>
   );
@@ -261,9 +368,17 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
     queryKey: ['grp-stat-by-currency', groupId, days],
     queryFn: async () => (await client.get('/api/usage/summary/by_currency', { params })).data,
   });
+  const { data: timeSeriesByModel, isLoading: tsByModelLoading } = useQuery<StatTimeSeriesByModel[]>({
+    queryKey: ['grp-stat-ts-by-model', groupId, days],
+    queryFn: async () => (await client.get('/api/usage/summary/time_series_by_model', { params: { ...params, granularity: 'day' } })).data,
+  });
 
-  const loading = totalsLoading || byModelLoading || byApiKeyLoading || tsLoading || byCurrencyLoading;
-  const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0) + (totals?.reasoning_tokens || 0) + (totals?.cache_creation_tokens || 0);
+  const loading = totalsLoading || byModelLoading || byApiKeyLoading || tsLoading || byCurrencyLoading || tsByModelLoading;
+
+  // input_tokens from the API already includes cache_creation_tokens.
+  // Compute "pure input" to avoid double-counting cache_creation in totals.
+  const pureInputTotal = Math.max((totals?.input_tokens || 0) - (totals?.cache_creation_tokens || 0), 0);
+  const totalTokens = pureInputTotal + (totals?.cache_creation_tokens || 0) + (totals?.output_tokens || 0) + (totals?.reasoning_tokens || 0);
 
   // Donut slices — use total_cost_usd for proper cross-currency comparison
   const modelCostSlices = (byModel || [])
@@ -275,7 +390,7 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
     .map((k, i) => ({ label: k.api_key_name || k.api_key_preview || '—', value: k.total_cost_usd || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
 
   const tokenSlices = totals ? [
-    { label: t('group.statistics.input'), value: totals.input_tokens, color: '#3b82f6' },
+    { label: t('group.statistics.input'), value: pureInputTotal, color: '#3b82f6' },
     { label: t('group.statistics.output'), value: totals.output_tokens, color: '#10b981' },
     { label: t('group.statistics.reasoning'), value: totals.reasoning_tokens || 0, color: '#f59e0b' },
     { label: t('group.statistics.cache'), value: (totals.cache_tokens || 0) + (totals.cache_creation_tokens || 0), color: '#8b5cf6' },
@@ -357,6 +472,15 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
               </h3>
               <DailyCostChart data={timeSeries || []} t={t} />
             </div>
+          </div>
+
+          {/* ── Daily Cost by Model Stacked Bar Chart ───────────────────── */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+            <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center space-x-2">
+              <BarChart3 className="w-4 h-4 text-indigo-500" />
+              <span>{t('group.statistics.dailyCostByModel')}</span>
+            </h3>
+            <DailyCostByModelChart data={timeSeriesByModel || []} t={t} />
           </div>
 
           {/* ── Donut Charts Row: Token Distribution + Model Cost + API Key Cost */}

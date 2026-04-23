@@ -1,7 +1,7 @@
 """
 User authentication and management routes.
 """
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 from datetime import timedelta
 from functools import wraps
 import os
@@ -43,7 +43,7 @@ class UserResponse(BaseModel):
 def token_required(f):
     """Decorator to require JWT token for an endpoint."""
     @wraps(f)
-    def decorated(*args, **kwargs):
+    async def decorated(*args, **kwargs):
         token = None
         auth_header = request.headers.get('Authorization')
         
@@ -66,15 +66,15 @@ def token_required(f):
         if user is None:
             return jsonify({'detail': 'User not found'}), 401
         
-        return f(current_user=user, *args, **kwargs)
+        return await f(current_user=user, *args, **kwargs)
     
     return decorated
 
 
 @users_bp.route('/register', methods=['POST'])
-def register():
+async def register():
     """Register a new user."""
-    data = request.get_json()
+    data = await request.get_json()
     
     try:
         user_create = UserCreate(**data)
@@ -101,16 +101,17 @@ def register():
 
 
 @users_bp.route('/token', methods=['POST'])
-def login():
+async def login():
     """Login and get access token."""
     # Handle both form data and JSON
     if request.is_json:
-        data = request.get_json()
+        data = await request.get_json()
         username = data.get('username')
         password = data.get('password')
     else:
-        username = request.form.get('username')
-        password = request.form.get('password')
+        form = await request.form
+        username = form.get('username')
+        password = form.get('password')
     
     if not username or not password:
         return jsonify({'detail': 'Username and password required'}), 400
@@ -133,14 +134,14 @@ def login():
 
 @users_bp.route('/users/me', methods=['GET'])
 @token_required
-def get_current_user_info(current_user):
+async def get_current_user_info(current_user):
     """Get current user info."""
     return jsonify(current_user.to_dict())
 
 
 @users_bp.route('/users/<int:user_id>', methods=['DELETE'])
 @token_required
-def delete_user(current_user, user_id):
+async def delete_user(current_user, user_id):
     """Delete a user."""
     if user_id != current_user.id:
         return jsonify({'detail': 'Not authorized to delete this user'}), 403

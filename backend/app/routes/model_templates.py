@@ -2,7 +2,7 @@
 Model Template routes — CRUD + built-in seed data.
 """
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 
 from app import db
 from app.models import ModelTemplate
@@ -44,7 +44,7 @@ def seed_builtin_templates():
 
 @model_templates_bp.route('/model-templates/', methods=['GET'])
 @token_required
-def list_model_templates(current_user):
+async def list_model_templates(current_user):
     """List all model templates."""
     templates = db.session.query(ModelTemplate).order_by(
         ModelTemplate.provider, ModelTemplate.id
@@ -54,9 +54,9 @@ def list_model_templates(current_user):
 
 @model_templates_bp.route('/model-templates/', methods=['POST'])
 @token_required
-def create_model_template(current_user):
+async def create_model_template(current_user):
     """Create a custom model template."""
-    data = request.get_json()
+    data = await request.get_json()
     if not data.get('label') or not data.get('name') or not data.get('provider'):
         return jsonify({'detail': 'label, name and provider are required'}), 400
 
@@ -110,13 +110,13 @@ def create_model_template(current_user):
 
 @model_templates_bp.route('/model-templates/<int:template_id>', methods=['PUT'])
 @token_required
-def update_model_template(current_user, template_id):
+async def update_model_template(current_user, template_id):
     """Update a model template."""
     tpl = db.session.query(ModelTemplate).filter(ModelTemplate.id == template_id).first()
     if not tpl:
         return jsonify({'detail': 'Template not found'}), 404
 
-    data = request.get_json()
+    data = await request.get_json()
     for field in [
         'label', 'provider', 'name', 'alias', 'context_size', 'input_size', 'output_size',
         'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
@@ -155,7 +155,7 @@ def update_model_template(current_user, template_id):
 
 @model_templates_bp.route('/model-templates/<int:template_id>', methods=['DELETE'])
 @token_required
-def delete_model_template(current_user, template_id):
+async def delete_model_template(current_user, template_id):
     """Delete a model template."""
     tpl = db.session.query(ModelTemplate).filter(ModelTemplate.id == template_id).first()
     if not tpl:
@@ -168,7 +168,7 @@ def delete_model_template(current_user, template_id):
 
 @model_templates_bp.route('/model-templates/seed', methods=['POST'])
 @token_required
-def reseed_model_templates(current_user):
+async def reseed_model_templates(current_user):
     """
     Re-seed built-in templates.
     Inserts missing built-ins and updates existing ones with latest data.

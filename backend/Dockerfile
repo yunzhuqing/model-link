@@ -28,5 +28,5 @@ RUN uv sync --frozen --no-dev
 # Expose the port
 EXPOSE 8000
 
-# Run with uvicorn
-CMD ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--timeout-keep-alive", "1200", "app.main:asgi_app"]
+# Run with uvicorn — Quart app is native ASGI
+CMD ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--timeout-keep-alive", "1200", "app.main:app"]

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Generator, Optional
 import json
 
-from flask import Response
+from quart import Response
 
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
@@ -108,7 +108,7 @@ class BaseAdapter(ABC):
             Flask Response 对象
         """
         import itertools
-        from flask import jsonify
+        from quart import jsonify
 
         # ------------------------------------------------------------------
         # Eagerly consume the first chunk to surface provider errors early.

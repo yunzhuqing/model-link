@@ -1476,7 +1476,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         upstream generator.  By catching them here we return a proper JSON error
         response with ``content-type: application/json`` instead of an SSE event.
         """
-        from flask import Response, jsonify
+        from quart import Response, jsonify
         from app.middleware.gateway_service import GatewayServiceError, ProviderError
         import itertools
 
@@ -1838,7 +1838,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 yield self.format_stream_error(e)
                 yield self.format_stream_end()
 
-        from flask import Response
+        from quart import Response
         return Response(
             generate(),
             mimetype='text/event-stream',

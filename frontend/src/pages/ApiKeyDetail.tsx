@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
 import {
   Key, ArrowLeft, Copy, Check, Cpu, DollarSign, TrendingUp, Zap,
-  Clock, Users, Shield, Gauge, List,
+  Clock, Users, Shield, Gauge, List, BarChart3,
 } from 'lucide-react';
 import { useState } from 'react';
 import UsageRecordsTable from '../components/UsageRecordsTable';
@@ -105,6 +105,115 @@ function fmtDate(s: string | null): string {
   return new Date(d).toLocaleString('zh-CN');
 }
 
+/* ── Colors ─────────────────────────────────────────────────────────────── */
+
+const PIE_COLORS = [
+  '#6366f1', '#06b6d4', '#f59e0b', '#ef4444', '#10b981',
+  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6',
+];
+
+/* ── TimeSeriesByModel interface ─────────────────────────────────────── */
+
+interface TimeSeriesByModel {
+  period: string;
+  model_name: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
+  total_cost: number;
+  total_cost_usd: number;
+}
+
+/* ── Stacked Cost-by-Model Chart ──────────────────────────────────────── */
+
+const DailyCostByModelChart = ({ data }: { data: TimeSeriesByModel[] }) => {
+  const [hovered, setHovered] = useState<{ bar: number; segment: string } | null>(null);
+  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">暂无模型消费数据</div>;
+
+  // Build a map of period → { model_name → cost }
+  const periodMap: Record<string, Record<string, number>> = {};
+  const modelSet = new Set<string>();
+  for (const d of data) {
+    const p = String(d.period);
+    if (!periodMap[p]) periodMap[p] = {};
+    periodMap[p][d.model_name || 'unknown'] = d.total_cost_usd || 0;
+    modelSet.add(d.model_name || 'unknown');
+  }
+
+  // Sort models by total cost descending
+  const modelTotalCost: Record<string, number> = {};
+  for (const m of modelSet) {
+    modelTotalCost[m] = Object.values(periodMap).reduce((s, pm) => s + (pm[m] || 0), 0);
+  }
+  const models = Array.from(modelSet).sort((a, b) => (modelTotalCost[b] || 0) - (modelTotalCost[a] || 0));
+  const periods = Object.keys(periodMap).sort();
+
+  const maxCost = Math.max(...periods.map(p => Object.values(periodMap[p]).reduce((s, v) => s + v, 0)), 0.001);
+
+  return (
+    <div>
+      <div className="flex items-end space-x-[3px] h-44">
+        {periods.map((p, i) => {
+          const dayModels = periodMap[p];
+          const segments = models.filter(m => (dayModels[m] || 0) > 0);
+          const isH = hovered?.bar === i;
+          return (
+            <div key={i} className="flex-1 flex flex-col items-center relative"
+              onMouseEnter={() => setHovered({ bar: i, segment: '' })}
+              onMouseLeave={() => setHovered(null)}>
+              <div className="w-full rounded-t-sm overflow-hidden transition-all" style={{ height: `${Math.max(Object.values(dayModels).reduce((s, v) => s + v, 0) / maxCost * 160, 1)}px`, opacity: isH ? 1 : 0.7 }}>
+                {segments.map((m, si) => {
+                  const cost = dayModels[m] || 0;
+                  const segH = (cost / maxCost) * 160;
+                  const color = PIE_COLORS[models.indexOf(m) % PIE_COLORS.length];
+                  return (
+                    <div key={si} className="w-full transition-all cursor-default"
+                      style={{ height: `${segH}px`, backgroundColor: color }}
+                      onMouseEnter={() => setHovered({ bar: i, segment: m })} />
+                  );
+                })}
+              </div>
+              {isH && (
+                <div className="absolute -top-[60px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap z-20 shadow-xl max-w-[200px]">
+                  <div className="font-semibold">{p.slice(5, 10)}</div>
+                  {hovered?.segment && (
+                    <div className="flex items-center space-x-1">
+                      <span className="w-2 h-2 rounded-sm inline-block" style={{ backgroundColor: PIE_COLORS[models.indexOf(hovered.segment) % PIE_COLORS.length] }} />
+                      <span>{hovered.segment}: {fmtCost(dayModels[hovered.segment] || 0)}</span>
+                    </div>
+                  )}
+                  {!hovered?.segment && (
+                    <div>消耗: {fmtCost(Object.values(dayModels).reduce((s, v) => s + v, 0))}</div>
+                  )}
+                  <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex justify-between text-xs text-slate-400 mt-2">
+        {periods.map((p, i) => (
+          i % Math.max(1, Math.ceil(periods.length / 7)) === 0 || i === periods.length - 1
+            ? <span key={i}>{p.slice(5, 10)}</span>
+            : <span key={i} />
+        ))}
+      </div>
+      <div className="flex items-center gap-3 mt-3 text-xs text-slate-500 flex-wrap">
+        {models.slice(0, 8).map((m, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+            <span className="truncate max-w-[120px]">{m}</span>
+          </span>
+        ))}
+        {models.length > 8 && <span className="text-slate-400">+{models.length - 8}</span>}
+      </div>
+    </div>
+  );
+};
+
 /* ── Component ─────────────────────────────────────────────────────────── */
 
 const ApiKeyDetail = () => {
@@ -112,6 +221,7 @@ const ApiKeyDetail = () => {
   const navigate = useNavigate();
   const [copiedKey, setCopiedKey] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'models' | 'model_usage' | 'usage'>('overview');
+  const [costDays, setCostDays] = useState(7);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['apiKeyDetail', id],
@@ -135,6 +245,23 @@ const ApiKeyDetail = () => {
     queryKey: ['apikey-time-series', id, data?.api_key_hash],
     queryFn: async () => {
       const res = await client.get('/api/usage/summary/time_series', { params: tsParams });
+      return res.data;
+    },
+    enabled: !!data?.api_key_hash && activeTab === 'overview',
+  });
+
+  // Fetch daily cost-by-model time series (scoped by api_key_hash)
+  const costStart = new Date(Date.now() - costDays * 86400000);
+  const costByModelParams = {
+    start: costStart.toISOString(),
+    end: new Date().toISOString(),
+    granularity: 'day',
+    ...(data?.api_key_hash ? { api_key_hash: data.api_key_hash } : {}),
+  };
+  const { data: costByModel } = useQuery<TimeSeriesByModel[]>({
+    queryKey: ['apikey-cost-by-model', id, data?.api_key_hash, costDays],
+    queryFn: async () => {
+      const res = await client.get('/api/usage/summary/time_series_by_model', { params: costByModelParams });
       return res.data;
     },
     enabled: !!data?.api_key_hash && activeTab === 'overview',
@@ -457,6 +584,23 @@ const ApiKeyDetail = () => {
             </div>
           );
         })()}
+
+        {/* ── Daily Cost by Model Stacked Bar Chart ───────────────────── */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold text-slate-800 flex items-center space-x-2">
+              <BarChart3 className="w-4 h-4 text-indigo-500" />
+              <span>每日模型消费统计</span>
+            </h3>
+            <select value={costDays} onChange={(e) => setCostDays(Number(e.target.value))}
+              className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white">
+              <option value={7}>近 7 天</option>
+              <option value={14}>近 14 天</option>
+              <option value={30}>近 30 天</option>
+            </select>
+          </div>
+          <DailyCostByModelChart data={costByModel || []} />
+        </div>
         </>
       )}
 

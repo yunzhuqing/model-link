@@ -1,5 +1,5 @@
 """
-Database models for Flask-SQLAlchemy.
+Database models for Flask-SQLAlchemy (used with Quart via flask-sqlalchemy compatibility).
 """
 from datetime import datetime
 from app import db

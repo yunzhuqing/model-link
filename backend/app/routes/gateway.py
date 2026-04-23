@@ -15,7 +15,7 @@ Responses API 端点已拆分至 gateway_responses 模块。
   - 具体使用哪个供应商（由中间层决定）
   - 供应商 API 的差异（由供应商层处理）
 """
-from flask import Blueprint, request, jsonify, current_app
+from quart import Blueprint, request, jsonify, current_app
 from datetime import datetime
 from typing import Optional
 import json
@@ -141,7 +141,7 @@ def get_current_user_or_api_key():
 
 # ============== 统一请求处理 ==============
 
-def _handle_request(adapter):
+async def _handle_request(adapter):
     """
     统一的请求处理函数。
 
@@ -162,7 +162,7 @@ def _handle_request(adapter):
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     # 2. 获取请求数据 (force=True to accept any Content-Type)
-    data = request.get_json(force=True, silent=True)
+    data = await request.get_json(force=True, silent=True)
 
     if not data:
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
@@ -305,31 +305,31 @@ def _handle_request(adapter):
 # ============== API 端点 ==============
 
 @gateway_bp.route('/v1/chat/completions', methods=['POST'])
-def chat_completions():
+async def chat_completions():
     """
     OpenAI-compatible chat completions endpoint.
 
     支持任意供应商（OpenAI、Claude、Gemini 等），
     中间层自动根据模型名称路由到正确的供应商。
     """
-    return _handle_request(OpenAIChatAdapter())
+    return await _handle_request(OpenAIChatAdapter())
 
 
 @gateway_bp.route('/v1/messages', methods=['POST'])
-def anthropic_messages():
+async def anthropic_messages():
     """
     Anthropic-compatible messages endpoint.
 
     支持任意供应商（OpenAI、Claude、Gemini 等），
     中间层自动根据模型名称路由到正确的供应商。
     """
-    return _handle_request(AnthropicMessagesAdapter())
+    return await _handle_request(AnthropicMessagesAdapter())
 
 
 # ============== 模型列表 ==============
 
 @gateway_bp.route('/v1/models', methods=['GET'])
-def list_models():
+async def list_models():
     """List all available models (OpenAI compatible)."""
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
@@ -391,7 +391,7 @@ def list_models():
 # ============== 供应商管理端点 ==============
 
 @gateway_bp.route('/v1/providers', methods=['GET'])
-def list_providers_api():
+async def list_providers_api():
     """列出所有已注册的供应商类型"""
     providers = list_providers()
     return jsonify({
@@ -400,7 +400,7 @@ def list_providers_api():
 
 
 @gateway_bp.route('/v1/providers/<provider_type>/models', methods=['GET'])
-def list_provider_models(provider_type: str):
+async def list_provider_models(provider_type: str):
     """列出供应商支持的模型"""
     provider_class = get_provider_class(provider_type)
 
@@ -434,7 +434,7 @@ def list_provider_models(provider_type: str):
 # ============== Embeddings API ==============
 
 @gateway_bp.route('/v1/embeddings', methods=['POST'])
-def create_embeddings():
+async def create_embeddings():
     """
     OpenAI-compatible embeddings endpoint.
     
@@ -483,7 +483,7 @@ def create_embeddings():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = request.get_json(force=True, silent=True)
+    data = await request.get_json(force=True, silent=True)
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
@@ -572,7 +572,7 @@ def create_embeddings():
 # ============== Images Generations API ==============
 
 @gateway_bp.route('/v1/images/generations', methods=['POST'])
-def create_images():
+async def create_images():
     """
     OpenAI-compatible image generation endpoint.
 
@@ -605,7 +605,7 @@ def create_images():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = request.get_json(force=True, silent=True)
+    data = await request.get_json(force=True, silent=True)
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
@@ -683,7 +683,7 @@ def create_images():
 # ============== Images Edits API ==============
 
 @gateway_bp.route('/v1/images/edits', methods=['POST'])
-def edit_images():
+async def edit_images():
     """
     OpenAI-compatible image editing endpoint.
 
@@ -722,7 +722,7 @@ def edit_images():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = request.get_json(force=True, silent=True)
+    data = await request.get_json(force=True, silent=True)
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
@@ -802,7 +802,7 @@ def edit_images():
 # ============== File Serving API ==============
 
 @gateway_bp.route('/v1/files/<path:filename>', methods=['GET'])
-def serve_file(filename: str):
+async def serve_file(filename: str):
     """
     Serve a binary file (e.g. generated video) stored by the local storage backend.
 
@@ -814,7 +814,7 @@ def serve_file(filename: str):
     token (it is derived from a securely generated response ID).
     """
     import mimetypes
-    from flask import send_file
+    from quart import send_file
 
     storage = get_storage_backend()
 
@@ -836,13 +836,13 @@ def serve_file(filename: str):
     mime_type, _ = mimetypes.guess_type(file_path)
     mime_type = mime_type or "application/octet-stream"
 
-    return send_file(file_path, mimetype=mime_type)
+    return await send_file(file_path, mimetype=mime_type)
 
 
 # ============== Rerank API ==============
 
 @gateway_bp.route('/v1/rerank', methods=['POST'])
-def create_rerank():
+async def create_rerank():
     """
     Rerank endpoint (compatible with vLLM /v1/rerank API format).
 
@@ -888,7 +888,7 @@ def create_rerank():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = request.get_json(force=True, silent=True)
+    data = await request.get_json(force=True, silent=True)
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 

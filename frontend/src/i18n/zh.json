@@ -259,7 +259,8 @@
       "noCostData": "暂无金额数据",
       "noTrendData": "暂无趋势数据",
       "inputTokensLegend": "输入 Tokens",
-      "outputTokensLegend": "输出 Tokens"
+      "outputTokensLegend": "输出 Tokens",
+      "dailyCostByModel": "每日模型消费统计"
     }
   },
   "modelTemplates": {

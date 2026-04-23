@@ -259,7 +259,8 @@
       "noCostData": "No cost data yet",
       "noTrendData": "No trend data yet",
       "inputTokensLegend": "Input Tokens",
-      "outputTokensLegend": "Output Tokens"
+      "outputTokensLegend": "Output Tokens",
+      "dailyCostByModel": "Daily Cost by Model"
     }
   },
   "modelTemplates": {

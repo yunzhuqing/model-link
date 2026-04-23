@@ -5,7 +5,7 @@ Endpoints:
   GET /api/usage/records  - Paginated list of raw usage records with filters
   GET /api/usage/summary  - Aggregated statistics (by time / group / model / api-key)
 """
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 from datetime import datetime, timedelta
 from typing import Optional
 import os
@@ -98,7 +98,7 @@ def _granularity_trunc(granularity: str, dt_col):
 # ── Records endpoint ─────────────────────────────────────────────────────────
 
 @usage_bp.route('/api/usage/records', methods=['GET'])
-def list_records():
+async def list_records():
     """
     Return a paginated list of raw usage records.
 
@@ -225,7 +225,7 @@ def _apply_filters(q, filters: dict):
 # ── Summary endpoints (split for parallel frontend fetching) ─────────────────
 
 @usage_bp.route('/api/usage/summary/totals', methods=['GET'])
-def get_summary_totals():
+async def get_summary_totals():
     """
     Return aggregated totals for the filtered usage records.
     All costs are aggregated in USD via actual_amount_usd.
@@ -276,7 +276,7 @@ def get_summary_totals():
 
 
 @usage_bp.route('/api/usage/summary/by_model', methods=['GET'])
-def get_summary_by_model():
+async def get_summary_by_model():
     """
     Return usage aggregated by model name (top 20).
     Uses actual_amount_usd for cost aggregation — no runtime currency conversion needed.
@@ -320,7 +320,7 @@ def get_summary_by_model():
 
 
 @usage_bp.route('/api/usage/summary/by_group', methods=['GET'])
-def get_summary_by_group():
+async def get_summary_by_group():
     """Return usage aggregated by group (top 20). Only current user's data."""
     try:
         current_username = _require_jwt()
@@ -357,7 +357,7 @@ def get_summary_by_group():
 
 
 @usage_bp.route('/api/usage/summary/by_currency', methods=['GET'])
-def get_summary_by_currency():
+async def get_summary_by_currency():
     """
     Return usage cost aggregated by pricing currency.
 
@@ -408,7 +408,7 @@ def get_summary_by_currency():
 
 
 @usage_bp.route('/api/usage/summary/by_api_key', methods=['GET'])
-def get_summary_by_api_key():
+async def get_summary_by_api_key():
     """
     Return usage aggregated by API key (top 20).
     Uses actual_amount_usd for cost aggregation.
@@ -455,8 +455,64 @@ def get_summary_by_api_key():
     return jsonify(result)
 
 
+@usage_bp.route('/api/usage/summary/time_series_by_model', methods=['GET'])
+async def get_summary_time_series_by_model():
+    """
+    Return time-series usage data grouped by model name.
+    Only current user's data. Uses actual_amount_usd for cost aggregation.
+
+    Additional query parameter:
+        granularity   hour | day | month  (default: day)
+
+    Returns a list of dicts, each with:
+        period, model_name, requests, input_tokens, output_tokens,
+        reasoning_tokens, cache_creation_tokens, total_cost, total_cost_usd
+    """
+    try:
+        current_username = _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from sqlalchemy import func
+
+    filters = _get_summary_filters(current_username)
+
+    granularity = request.args.get("granularity", "day")
+
+    period_col = _granularity_trunc(granularity, UsageRecord.created_at)
+    rows = _apply_filters(
+        db.session.query(
+            period_col.label("period"),
+            UsageRecord.model_name,
+            func.count(UsageRecord.id).label("requests"),
+            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+        ),
+        filters,
+    ).group_by("period", UsageRecord.model_name).order_by("period", UsageRecord.model_name).all()
+
+    result = []
+    for r in rows:
+        result.append({
+            "period": str(r.period),
+            "model_name": r.model_name,
+            "requests": r.requests,
+            "input_tokens": int(r.input_tokens),
+            "output_tokens": int(r.output_tokens),
+            "reasoning_tokens": int(r.reasoning_tokens),
+            "cache_creation_tokens": int(r.cache_creation_tokens),
+            "total_cost": round(float(r.total_cost_usd or 0), 6),
+            "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
+        })
+
+    return jsonify(result)
+
+
 @usage_bp.route('/api/usage/summary/time_series', methods=['GET'])
-def get_summary_time_series():
+async def get_summary_time_series():
     """
     Return time-series usage data. Only current user's data.
     Uses actual_amount_usd for cost aggregation.
@@ -508,7 +564,7 @@ def get_summary_time_series():
 # ── Legacy combined summary endpoint (kept for backward compatibility) ────────
 
 @usage_bp.route('/api/usage/summary', methods=['GET'])
-def get_summary():
+async def get_summary():
     """
     Return aggregated usage statistics (combined endpoint).
 

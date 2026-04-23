@@ -7,7 +7,7 @@ import json
 import time
 from typing import Optional, Generator
 
-from flask import Response
+from quart import Response
 
 from .base import BaseAdapter
 from app.abstraction.chat import ChatRequest, ChatResponse, UsageInfo
@@ -549,7 +549,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
         3. 继续消费剩余 chunk，累积 usage
         4. 流结束后，将累积的 usage 注入 finish chunk 并输出
         """
-        from flask import jsonify
+        from quart import jsonify
 
         # ------------------------------------------------------------------
         # Eagerly consume the first chunk to surface provider errors early.

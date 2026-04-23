@@ -2,7 +2,7 @@
 Provider and Model management routes.
 """
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 from functools import wraps
 import os
 
@@ -54,7 +54,7 @@ providers_bp = Blueprint('providers', __name__)
 
 @providers_bp.route('/providers/', methods=['GET'])
 @token_required
-def list_providers(current_user):
+async def list_providers(current_user):
     """List all providers, optionally filtered by group_id."""
     skip = request.args.get('skip', 0, type=int)
     limit = request.args.get('limit', 100, type=int)
@@ -70,9 +70,9 @@ def list_providers(current_user):
 
 @providers_bp.route('/providers/', methods=['POST'])
 @token_required
-def create_provider(current_user):
+async def create_provider(current_user):
     """Create a new provider in a group."""
-    data = request.get_json()
+    data = await request.get_json()
     
     group_id = data.get('group_id')
     if not group_id:
@@ -118,7 +118,7 @@ def create_provider(current_user):
 
 @providers_bp.route('/providers/<int:provider_id>', methods=['GET'])
 @token_required
-def get_provider(current_user, provider_id):
+async def get_provider(current_user, provider_id):
     """Get a specific provider."""
     provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
@@ -128,13 +128,13 @@ def get_provider(current_user, provider_id):
 
 @providers_bp.route('/providers/<int:provider_id>', methods=['PUT'])
 @token_required
-def update_provider(current_user, provider_id):
+async def update_provider(current_user, provider_id):
     """Update a provider."""
     provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
     
-    data = request.get_json()
+    data = await request.get_json()
     if 'name' in data and data['name'] != provider.name:
         # Check for duplicate name within the same group
         existing = db.session.query(Provider).filter(
@@ -181,7 +181,7 @@ def update_provider(current_user, provider_id):
 
 @providers_bp.route('/providers/<int:provider_id>', methods=['DELETE'])
 @token_required
-def delete_provider(current_user, provider_id):
+async def delete_provider(current_user, provider_id):
     """Delete a provider."""
     provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
@@ -197,7 +197,7 @@ def delete_provider(current_user, provider_id):
 
 @providers_bp.route('/models/', methods=['GET'])
 @token_required
-def list_models(current_user):
+async def list_models(current_user):
     """List all models."""
     skip = request.args.get('skip', 0, type=int)
     limit = request.args.get('limit', 100, type=int)
@@ -207,9 +207,9 @@ def list_models(current_user):
 
 @providers_bp.route('/models/', methods=['POST'])
 @token_required
-def create_model(current_user):
+async def create_model(current_user):
     """Create a new model."""
-    data = request.get_json()
+    data = await request.get_json()
     
     # Parse retirement_time if provided as ISO string
     retirement_time = None
@@ -263,13 +263,13 @@ def create_model(current_user):
 
 @providers_bp.route('/models/<int:model_id>', methods=['PUT'])
 @token_required
-def update_model(current_user, model_id):
+async def update_model(current_user, model_id):
     """Update a model."""
     model = db.session.query(Model).filter(Model.id == model_id).first()
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
     
-    data = request.get_json()
+    data = await request.get_json()
     for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
                   'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
                   'currency', 'rpm', 'tpm', 'discount',
@@ -307,7 +307,7 @@ def update_model(current_user, model_id):
 
 @providers_bp.route('/models/<int:model_id>', methods=['DELETE'])
 @token_required
-def delete_model(current_user, model_id):
+async def delete_model(current_user, model_id):
     """Delete a model."""
     model = db.session.query(Model).filter(Model.id == model_id).first()
     if not model:

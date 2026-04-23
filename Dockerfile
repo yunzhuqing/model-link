@@ -1,5 +1,5 @@
 # =============================================================
-# Multi-stage Dockerfile: React frontend + Flask backend
+# Multi-stage Dockerfile: React frontend + Quart backend
 # Build from monorepo root: docker build -t model-link .
 # Uses uv for fast Python dependency management.
 # =============================================================
@@ -42,11 +42,11 @@ COPY backend/ .
 # Install the project itself
 RUN uv sync --frozen --no-dev
 
-# Copy React build output into static/ folder (Flask will serve it)
+# Copy React build output into static/ folder (Quart will serve it)
 COPY --from=frontend-build /app/frontend/dist ./static
 
 # Expose the port
 EXPOSE 8000
 
-# Run with uvicorn (use uv run to ensure venv is activated)
-CMD ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--timeout-keep-alive", "1200", "app.main:asgi_app"]
+# Run with uvicorn — Quart app is native ASGI
+CMD ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--timeout-keep-alive", "1200", "app.main:app"]
