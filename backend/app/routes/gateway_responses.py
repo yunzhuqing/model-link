@@ -121,11 +121,38 @@ def _run_background_response(
             adapter = OpenAIResponsesAdapter()
             chat_request = adapter.parse_request(data)
 
-            # ── Long-running LLM / video generation call ──────────────────
-            # No DB connection is open at this point.
-            # Use chat_ex() to also get resolved model info for usage recording.
+            # ── LLM / video generation call ────────────────────────────────
+            # chat_ex() uses db.session for model resolution; the actual
+            # provider API call may be long-running.
             _bg_start_time = time.monotonic()
             response, resolved = _gateway_service.chat_ex(chat_request, group_id)
+
+            # Eagerly extract all ORM data we need for usage recording,
+            # then release the DB session so the connection returns to the
+            # pool immediately — before any long-running polling begins.
+            _db_model = resolved.db_model
+            _db_provider = resolved.db_provider
+            _provider_instance = resolved.provider_instance
+            # Pre-extract primitive pricing fields from ORM objects
+            _pricing_snapshot = {
+                'provider_id': _db_provider.id if _db_provider else None,
+                'provider_name': _db_provider.name if _db_provider else None,
+                'input_price': getattr(_db_model, 'input_price', 0.0) or 0.0,
+                'output_price': getattr(_db_model, 'output_price', 0.0) or 0.0,
+                'cache_creation_price': getattr(_db_model, 'cache_creation_price', 0.0) or 0.0,
+                'cache_5m_creation_price': getattr(_db_model, 'cache_5m_creation_price', 0.0) or 0.0,
+                'cache_1h_creation_price': getattr(_db_model, 'cache_1h_creation_price', 0.0) or 0.0,
+                'cache_hit_price': getattr(_db_model, 'cache_hit_price', 0.0) or 0.0,
+                'pricing_tiers': getattr(_db_model, 'pricing_tiers', None),
+                'output_pricing': getattr(_db_model, 'output_pricing', None),
+                'currency': getattr(_db_model, 'currency', 'USD') or 'USD',
+                'discount': getattr(_db_model, 'discount', 1.0) or 1.0,
+            }
+            # Release the DB session — return the connection to the pool
+            try:
+                db.session.remove()
+            except Exception:
+                pass
 
             # ── Check if upstream is itself async ─────────────────────────
             # Some upstream Responses API providers (e.g. OpenAI-compatible
@@ -145,6 +172,14 @@ def _run_background_response(
                 # resolve_model() will find it by name.
                 resolved = _gateway_service.resolve_model(chat_request.model, group_id)
                 provider_instance = resolved.provider_instance
+                # Update pricing snapshot with re-resolved model data
+                _pricing_snapshot['provider_id'] = resolved.db_provider.id if resolved.db_provider else None
+                _pricing_snapshot['provider_name'] = resolved.db_provider.name if resolved.db_provider else None
+                # Release the DB session again before the long-running polling loop
+                try:
+                    db.session.remove()
+                except Exception:
+                    pass
 
                 if not hasattr(provider_instance, 'get_response'):
                     raise RuntimeError(
@@ -193,15 +228,11 @@ def _run_background_response(
             formatted_output = json.dumps(formatted, ensure_ascii=False)
 
             # Record usage for background response.
-            # Identity info (user_name, api_key_*) was eagerly extracted in the
-            # request thread and passed as plain primitives — safe across threads.
-            # Pricing info is read from resolved.db_model (loaded in THIS thread's
-            # session via chat_ex / resolve_model).
+            # All pricing info comes from _pricing_snapshot (plain primitives
+            # eagerly extracted before db.session.remove()).
             _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
             try:
                 from app.usage_service import record_stream_usage
-                _db_model = resolved.db_model
-                _db_provider = resolved.db_provider
                 record_stream_usage(
                     app=app,
                     usage_info=response.usage,
@@ -212,18 +243,18 @@ def _run_background_response(
                     api_key_group_id=api_key_group_id,
                     api_key_group_name=api_key_group_name,
                     model_name=data.get('model', ''),
-                    provider_id=_db_provider.id if _db_provider else None,
-                    provider_name=_db_provider.name if _db_provider else None,
-                    input_price_unit=getattr(_db_model, 'input_price', 0.0) or 0.0,
-                    output_price_unit=getattr(_db_model, 'output_price', 0.0) or 0.0,
-                    cache_creation_price_unit=getattr(_db_model, 'cache_creation_price', 0.0) or 0.0,
-                    cache_5m_creation_price_unit=getattr(_db_model, 'cache_5m_creation_price', 0.0) or 0.0,
-                    cache_1h_creation_price_unit=getattr(_db_model, 'cache_1h_creation_price', 0.0) or 0.0,
-                    cache_token_price_unit=getattr(_db_model, 'cache_hit_price', 0.0) or 0.0,
-                    pricing_tiers=getattr(_db_model, 'pricing_tiers', None),
-                    output_pricing=getattr(_db_model, 'output_pricing', None),
-                    currency=getattr(_db_model, 'currency', 'USD') or 'USD',
-                    discount=getattr(_db_model, 'discount', 1.0) or 1.0,
+                    provider_id=_pricing_snapshot['provider_id'],
+                    provider_name=_pricing_snapshot['provider_name'],
+                    input_price_unit=_pricing_snapshot['input_price'],
+                    output_price_unit=_pricing_snapshot['output_price'],
+                    cache_creation_price_unit=_pricing_snapshot['cache_creation_price'],
+                    cache_5m_creation_price_unit=_pricing_snapshot['cache_5m_creation_price'],
+                    cache_1h_creation_price_unit=_pricing_snapshot['cache_1h_creation_price'],
+                    cache_token_price_unit=_pricing_snapshot['cache_hit_price'],
+                    pricing_tiers=_pricing_snapshot['pricing_tiers'],
+                    output_pricing=_pricing_snapshot['output_pricing'],
+                    currency=_pricing_snapshot['currency'],
+                    discount=_pricing_snapshot['discount'],
                     duration_ms=_bg_duration_ms,
                 )
             except Exception as _ue:

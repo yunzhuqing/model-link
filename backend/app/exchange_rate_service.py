@@ -99,13 +99,25 @@ def _refresh_loop() -> None:
       2. Calculate how many seconds remain until the next 00:00 local time.
       3. Sleep until midnight, then fetch again.
       4. After that, sleep exactly 24 h between fetches (keeping alignment with midnight).
+
+    In a multi-node deployment only the **leader** performs the actual fetch.
+    Follower nodes skip the API call but still run the loop so they pick up
+    leadership changes promptly.
     """
-    # Initial fetch on startup
-    _fetch_once()
+    from app.election_service import is_leader
+
+    # Initial fetch on startup (only if leader)
+    if is_leader():
+        _fetch_once()
+    else:
+        logger.info("[exchange_rate] Not leader — skipping initial fetch.")
 
     # Wait until next midnight, then loop daily
     while True:
         wait = _seconds_until_next_midnight()
         logger.info(f"[exchange_rate] Next refresh in {wait:.0f}s (at local midnight).")
         time.sleep(wait)
-        _fetch_once()
+        if is_leader():
+            _fetch_once()
+        else:
+            logger.debug("[exchange_rate] Not leader — skipping scheduled fetch.")

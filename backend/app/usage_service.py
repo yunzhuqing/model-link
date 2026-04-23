@@ -440,47 +440,65 @@ def _persist_usage(
     discount=1.0,
     user_id=None,
 ) -> None:
-    """Worker that actually writes the UsageRecord to the database."""
-    try:
-        # Quart's app_context() is async-only; in this sync background thread
-        # we set Flask's _cv_app ContextVar directly so Flask-SQLAlchemy works.
-        from flask.globals import _cv_app
-        from flask.ctx import AppContext
-        _token = _cv_app.set(AppContext(app))
-        try:
-            from app import db
-            from app.models import UsageRecord
+    """Worker that actually writes the UsageRecord to the database.
 
-            record = _build_record(
-                response=response,
-                user_name=user_name,
-                api_key_raw=api_key_raw,
-                api_key_name=api_key_name,
-                api_key_group_id=api_key_group_id,
-                api_key_group_name=api_key_group_name,
-                model_name=model_name,
-                provider_id=provider_id,
-                provider_name=provider_name,
-                input_price_unit=input_price_unit,
-                output_price_unit=output_price_unit,
-                cache_creation_price_unit=cache_creation_price_unit,
-                cache_5m_creation_price_unit=cache_5m_creation_price_unit,
-                cache_1h_creation_price_unit=cache_1h_creation_price_unit,
-                cache_token_price_unit=cache_token_price_unit,
-                pricing_tiers=pricing_tiers,
-                output_pricing=output_pricing,
-                currency=currency,
-                duration_ms=duration_ms,
-                exchange_rate=exchange_rate,
-                discount=discount,
-                user_id=user_id,
-            )
-            db.session.add(record)
-            db.session.commit()
-        finally:
-            _cv_app.reset(_token)
+    Runs in a short-lived daemon thread.  Uses a dedicated NullPool engine
+    (one physical connection per call, closed immediately after use) to avoid
+    occupying slots from the main QueuePool used by request handlers.
+    """
+    try:
+        from app.models import UsageRecord
+
+        record = _build_record(
+            response=response,
+            user_name=user_name,
+            api_key_raw=api_key_raw,
+            api_key_name=api_key_name,
+            api_key_group_id=api_key_group_id,
+            api_key_group_name=api_key_group_name,
+            model_name=model_name,
+            provider_id=provider_id,
+            provider_name=provider_name,
+            input_price_unit=input_price_unit,
+            output_price_unit=output_price_unit,
+            cache_creation_price_unit=cache_creation_price_unit,
+            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+            cache_token_price_unit=cache_token_price_unit,
+            pricing_tiers=pricing_tiers,
+            output_pricing=output_pricing,
+            currency=currency,
+            duration_ms=duration_ms,
+            exchange_rate=exchange_rate,
+            discount=discount,
+            user_id=user_id,
+        )
+
+        # Use a NullPool engine so the connection is closed immediately after
+        # the INSERT, instead of being borrowed from the main QueuePool.
+        db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+        _persist_record_via_nullpool(db_url, record)
     except Exception as exc:
         logger.exception(f"[usage] Failed to persist usage record: {exc}")
+
+
+def _persist_record_via_nullpool(db_url: str, record) -> None:
+    """Insert a UsageRecord row using a disposable NullPool connection.
+
+    This avoids occupying the main QueuePool and prevents connection leaks
+    from short-lived background threads.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(db_url, poolclass=NullPool)
+    try:
+        with Session(engine) as session:
+            session.add(record)
+            session.commit()
+    finally:
+        engine.dispose()
 
 
 def _build_record(

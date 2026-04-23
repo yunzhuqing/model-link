@@ -57,13 +57,18 @@ def create_app(config=None):
     # Allow large request bodies (base64 images can be several MB)
     app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB default
     
-    # Database connection pooling settings for long-lived connections
+    # Database connection pooling settings for long-lived connections.
+    # All values can be overridden via environment variables.
+    #
+    # IMPORTANT: Background tasks (usage recording, background responses) use
+    # their own NullPool engines and do NOT consume slots from this pool.
+    # Only request-handler threads use this pool.
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': 10,           # Number of connections to keep in the pool
-        'max_overflow': 20,        # Maximum connections beyond pool_size
-        'pool_timeout': 60,        # Timeout (seconds) for getting connection from pool
-        'pool_recycle': 3600,      # Recycle connections after 1 hour (prevents MySQL gone away)
-        'pool_pre_ping': True,     # Enable connection health checks
+        'pool_size': int(os.getenv('SQLALCHEMY_POOL_SIZE', 5)),
+        'max_overflow': int(os.getenv('SQLALCHEMY_MAX_OVERFLOW', 10)),
+        'pool_timeout': int(os.getenv('SQLALCHEMY_POOL_TIMEOUT', 30)),
+        'pool_recycle': int(os.getenv('SQLALCHEMY_POOL_RECYCLE', 1800)),
+        'pool_pre_ping': os.getenv('SQLALCHEMY_POOL_PRE_PING', 'true').lower() == 'true',
     }
     
     # Apply any custom config
@@ -139,6 +144,13 @@ def create_app(config=None):
     from app.exchange_rate_service import start_daily_refresh as _start_exchange_rate_refresh
     _start_exchange_rate_refresh()
 
+    # Start the distributed leader-election service.
+    # In single-node / dev setups (no COORDINATOR_URL) the node automatically
+    # becomes leader.  In production, set COORDINATOR_URL to a shared backend
+    # (e.g. redis://…, zookeeper://…) so that exactly one instance is elected.
+    from app.election_service import start_election as _start_election
+    _start_election()
+
     # Register blueprints
     from app.routes.users import users_bp
     from app.routes.providers import providers_bp
@@ -190,6 +202,14 @@ def create_app(config=None):
 
     @app.route('/health')
     async def health():
-        return {"status": "healthy"}
+        from app.election_service import is_leader, get_node_id, get_leader_node_id
+        return {
+            "status": "healthy",
+            "election": {
+                "node_id": get_node_id(),
+                "is_leader": is_leader(),
+                "leader_node_id": get_leader_node_id(),
+            },
+        }
     
     return app

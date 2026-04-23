@@ -121,6 +121,11 @@ def get_current_user_or_api_key():
         api_key.request_count += 1
         db.session.commit()
 
+        # Eagerly load relationships that may be needed downstream so they
+        # are available even after the session is released.
+        _ = api_key.user
+        _ = api_key.group
+
         return None, api_key, None, 200
 
     # Try JWT token authentication
