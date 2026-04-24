@@ -103,6 +103,8 @@ _started: bool = False
 _coordinator = None          # tooz coordinator instance
 _election_lock = None        # tooz distributed lock
 _stop_event = threading.Event()
+_on_leader_callbacks: list = []  # callbacks to invoke when this node becomes leader
+_on_lost_leader_callbacks: list = []  # callbacks to invoke when this node loses leadership
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -122,6 +124,38 @@ def get_leader_node_id() -> Optional[str]:
     """Return the node-id of the current leader, or ``None``."""
     with _lock:
         return _leader_node_id
+
+
+def register_on_leader(callback) -> None:
+    """
+    Register a callback to be invoked when this node becomes leader.
+
+    The callback is called in a background thread (the election thread).
+    It receives no arguments.  If the node is already the leader when this
+    is called, the callback is fired immediately in a new thread.
+
+    Safe to call before or after ``start_election()``.
+    """
+    with _lock:
+        _on_leader_callbacks.append(callback)
+        already_leader = _is_leader
+
+    if already_leader:
+        # Fire immediately in a separate thread to avoid blocking the caller
+        threading.Thread(target=_fire_callback_safe, args=(callback,), daemon=True).start()
+
+
+def register_on_lost_leader(callback) -> None:
+    """
+    Register a callback to be invoked when this node loses leadership.
+
+    The callback is called in the election background thread.
+    It receives no arguments.
+
+    Safe to call before or after ``start_election()``.
+    """
+    with _lock:
+        _on_lost_leader_callbacks.append(callback)
 
 
 def start_election() -> None:
@@ -230,6 +264,7 @@ def _election_loop() -> None:
             _is_leader = True
             _leader_node_id = _node_id
         logger.warning("[election] Falling back to standalone leader mode.")
+        _fire_on_leader_callbacks()
         return
 
     # ------------------------------------------------------------------
@@ -252,9 +287,13 @@ def _election_loop() -> None:
             _coordinator.heartbeat()
         except Exception as exc:
             logger.warning(f"[election] Heartbeat error: {exc}")
+            was_leader = False
             with _lock:
+                was_leader = _is_leader
                 _is_leader = False
                 _leader_node_id = None
+            if was_leader:
+                _fire_on_lost_leader_callbacks()
 
         # If we are not the leader, keep trying to acquire the lock
         if not is_leader():
@@ -263,6 +302,30 @@ def _election_loop() -> None:
         _stop_event.wait(timeout=heartbeat)
 
     logger.info("[election] Election loop terminated.")
+
+
+def _fire_callback_safe(callback) -> None:
+    """Invoke a single callback, catching and logging any exception."""
+    try:
+        callback()
+    except Exception as exc:
+        logger.error(f"[election] on_leader callback error: {exc}")
+
+
+def _fire_on_leader_callbacks() -> None:
+    """Fire all registered on-leader callbacks (once, when becoming leader)."""
+    with _lock:
+        callbacks = list(_on_leader_callbacks)
+    for cb in callbacks:
+        _fire_callback_safe(cb)
+
+
+def _fire_on_lost_leader_callbacks() -> None:
+    """Fire all registered on-lost-leader callbacks (once, when losing leadership)."""
+    with _lock:
+        callbacks = list(_on_lost_leader_callbacks)
+    for cb in callbacks:
+        _fire_callback_safe(cb)
 
 
 def _try_acquire_leadership() -> None:
@@ -275,20 +338,30 @@ def _try_acquire_leadership() -> None:
     try:
         acquired = _election_lock.acquire(blocking=False)
         if acquired:
+            was_leader = False
             with _lock:
+                was_leader = _is_leader
                 _is_leader = True
                 _leader_node_id = _node_id
             logger.info(f"[election] 🏆 This node ({_node_id}) acquired the leader lock.")
+            if not was_leader:
+                _fire_on_leader_callbacks()
         else:
+            was_leader = False
             with _lock:
-                if _is_leader:
-                    # We lost the lock
+                was_leader = _is_leader
+                if was_leader:
                     logger.info(f"[election] This node ({_node_id}) lost leadership.")
                 _is_leader = False
-                # We don't know who the leader is in lock-based mode
                 _leader_node_id = None
+            if was_leader:
+                _fire_on_lost_leader_callbacks()
     except Exception as exc:
         logger.error(f"[election] Error acquiring lock: {exc}")
+        was_leader = False
         with _lock:
+            was_leader = _is_leader
             _is_leader = False
             _leader_node_id = None
+        if was_leader:
+            _fire_on_lost_leader_callbacks()

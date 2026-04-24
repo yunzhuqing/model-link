@@ -159,17 +159,31 @@ class ApiKey(db.Model):
     expires_at = db.Column(db.DateTime, nullable=True)
     last_used_at = db.Column(db.DateTime, nullable=True)
     
-    # Usage stats
+    # Usage stats (updated periodically from cache by leader node)
     request_count = db.Column(db.Integer, default=0)
     token_count = db.Column(db.Integer, default=0)
+    
+    # Historical cumulative usage stats (synced from cache)
+    total_input_tokens = db.Column(db.BigInteger, default=0)
+    total_output_tokens = db.Column(db.BigInteger, default=0)
+    total_reasoning_tokens = db.Column(db.BigInteger, default=0)
+    total_cost_usd = db.Column(db.Float, default=0.0)        # Total cost in USD
+    total_image_count = db.Column(db.Integer, default=0)      # Total images generated
+    total_video_count = db.Column(db.Integer, default=0)      # Total videos generated
+    total_audio_seconds = db.Column(db.Float, default=0.0)    # Total audio seconds generated
     
     # Allowed models — JSON list of model names (e.g. ["gpt-4o", "claude-3.5-sonnet"])
     # NULL or empty list means all models are allowed.
     allowed_models = db.Column(db.JSON, nullable=True, default=None)
     
-    # Budget — total spending limit for this API key (in USD).
-    # NULL means unlimited budget.
+    # Budget — remaining spending allowance for this API key (in USD).
+    # When adding budget, it is appended to the current remaining amount.
+    # NULL means no budget has been set yet (check unlimited_budget for behavior).
     budget = db.Column(db.Float, nullable=True, default=None)
+    
+    # Unlimited budget flag — if True, no budget deduction is performed.
+    # The API key can spend without limit regardless of the budget field.
+    unlimited_budget = db.Column(db.Boolean, default=True, nullable=False)
     
     # Relationships
     group = db.relationship("Group", back_populates="api_keys")
@@ -191,6 +205,7 @@ class ApiKey(db.Model):
             'token_count': self.token_count,
             'allowed_models': self.allowed_models or [],
             'budget': self.budget,
+            'unlimited_budget': self.unlimited_budget,
         }
 
     def to_dict_simple(self):

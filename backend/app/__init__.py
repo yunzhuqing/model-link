@@ -64,8 +64,8 @@ def create_app(config=None):
     # their own NullPool engines and do NOT consume slots from this pool.
     # Only request-handler threads use this pool.
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': int(os.getenv('SQLALCHEMY_POOL_SIZE', 5)),
-        'max_overflow': int(os.getenv('SQLALCHEMY_MAX_OVERFLOW', 10)),
+        'pool_size': int(os.getenv('SQLALCHEMY_POOL_SIZE', 10)),
+        'max_overflow': int(os.getenv('SQLALCHEMY_MAX_OVERFLOW', 20)),
         'pool_timeout': int(os.getenv('SQLALCHEMY_POOL_TIMEOUT', 30)),
         'pool_recycle': int(os.getenv('SQLALCHEMY_POOL_RECYCLE', 1800)),
         'pool_pre_ping': os.getenv('SQLALCHEMY_POOL_PRE_PING', 'true').lower() == 'true',
@@ -144,11 +144,22 @@ def create_app(config=None):
     from app.exchange_rate_service import start_daily_refresh as _start_exchange_rate_refresh
     _start_exchange_rate_refresh()
 
+    # Initialise the cache middleware (memory or Redis, based on CACHE_BACKEND env).
+    from app.cache import init_cache as _init_cache
+    _init_cache()
+
     # Start the distributed leader-election service.
     # In single-node / dev setups (no COORDINATOR_URL) the node automatically
     # becomes leader.  In production, set COORDINATOR_URL to a shared backend
     # (e.g. redis://…, zookeeper://…) so that exactly one instance is elected.
-    from app.election_service import start_election as _start_election
+    from app.election_service import start_election as _start_election, register_on_leader, register_on_lost_leader
+
+    # Register the usage-sync daemon to start only when this node becomes leader,
+    # and stop it immediately when leadership is lost.
+    from app.usage_sync_service import start_usage_sync as _start_usage_sync, stop_usage_sync as _stop_usage_sync
+    register_on_leader(lambda: _start_usage_sync(app))
+    register_on_lost_leader(_stop_usage_sync)
+
     _start_election()
 
     # Register blueprints
@@ -211,5 +222,50 @@ def create_app(config=None):
                 "leader_node_id": get_leader_node_id(),
             },
         }
-    
+
+    @app.route('/monitor/threads')
+    async def monitor_threads():
+        """Return information about all running Python threads.
+
+        This is useful for debugging thread leaks, hung background tasks,
+        and general runtime introspection.
+
+        Response JSON:
+            thread_count: total number of active threads
+            threads: list of thread details (id, name, daemon, alive, state)
+        """
+        import threading
+        import sys
+        import traceback
+
+        # Grab current stack frames for all threads so we can include
+        # a lightweight "state" description (top frame location).
+        frames = sys._current_frames()
+
+        threads_info = []
+        for t in threading.enumerate():
+            frame = frames.get(t.ident)
+            if frame:
+                # Format the top-most stack frame as a short location string
+                top_frame = traceback.extract_stack(frame, limit=1)[0]
+                current_location = f"{top_frame.filename}:{top_frame.lineno} in {top_frame.name}"
+                stack_trace = "".join(traceback.format_stack(frame))
+            else:
+                current_location = "N/A"
+                stack_trace = "N/A"
+
+            threads_info.append({
+                "id": t.ident,
+                "name": t.name,
+                "daemon": t.daemon,
+                "alive": t.is_alive(),
+                "current_location": current_location,
+                "stack_trace": stack_trace,
+            })
+
+        return {
+            "thread_count": threading.active_count(),
+            "threads": threads_info,
+        }
+
     return app

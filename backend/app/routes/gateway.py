@@ -90,6 +90,11 @@ def get_current_user_or_api_key():
     1. Authorization: Bearer <token>  (JWT or API key)
     2. Authorization: <token>         (API key without Bearer prefix)
     3. x-api-key: <key>              (Anthropic SDK compatible)
+
+    API key lookups are accelerated by the cache middleware:
+    - On cache hit: validates is_active / expires_at from cached data,
+      then updates last_used_at / request_count in DB asynchronously.
+    - On cache miss: falls back to a DB query and populates the cache.
     """
     auth_header = request.headers.get('Authorization')
     x_api_key = request.headers.get('x-api-key')
@@ -106,7 +111,51 @@ def get_current_user_or_api_key():
     else:
         token = auth_header
 
-    # First, try to find as API key
+    # ── Try cache first for API key authentication ────────────────────────
+    from app.cache import get_cache
+    cache = get_cache()
+    cached_info = cache.get_api_key_info(token)
+
+    if cached_info is not None:
+        # Validate from cached data
+        if not cached_info.get('is_active', True):
+            return None, None, {'detail': 'API key is inactive'}, 401
+
+        expires_at_str = cached_info.get('expires_at')
+        if expires_at_str:
+            try:
+                expires_at = datetime.fromisoformat(expires_at_str)
+                if expires_at < datetime.utcnow():
+                    return None, None, {'detail': 'API key has expired'}, 401
+            except (ValueError, TypeError):
+                pass
+
+        # Check budget from cache (if budget is set)
+        budget = cached_info.get('budget')
+        if budget is not None:
+            budget_used = cached_info.get('budget_used', 0.0)
+            if budget_used >= budget:
+                return None, None, {'detail': 'API key budget exceeded'}, 403
+
+        # Cache hit — still need the ORM object for downstream usage recording.
+        # Load from DB but skip validation (already done from cache).
+        api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
+        if api_key:
+            # Update last used time
+            api_key.last_used_at = datetime.utcnow()
+            api_key.request_count += 1
+            db.session.commit()
+
+            # Eagerly load relationships
+            _ = api_key.user
+            _ = api_key.group
+
+            return None, api_key, None, 200
+        else:
+            # Key was in cache but deleted from DB — invalidate cache
+            cache.invalidate_api_key(token)
+
+    # ── Cache miss — fall back to DB query ────────────────────────────────
     api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
 
     if api_key:
@@ -126,6 +175,12 @@ def get_current_user_or_api_key():
         _ = api_key.user
         _ = api_key.group
 
+        # ── Populate cache with API key info + budget usage ───────────────
+        try:
+            _populate_api_key_cache(api_key, cache)
+        except Exception as _ce:
+            logger.debug(f"[cache] Failed to populate API key cache: {_ce}")
+
         return None, api_key, None, 200
 
     # Try JWT token authentication
@@ -142,6 +197,32 @@ def get_current_user_or_api_key():
         return None, None, {'detail': 'User not found'}, 401
 
     return user, None, None, 200
+
+
+def _populate_api_key_cache(api_key, cache):
+    """
+    Compute the current budget_used from UsageRecord and populate the cache.
+
+    Only computes budget_used if the API key has a budget set, to avoid
+    unnecessary aggregate queries.
+    """
+    import hashlib
+    from app.models import UsageRecord
+
+    budget_used = 0.0
+    if api_key.budget is not None:
+        key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
+        row = (
+            db.session.query(
+                db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0)
+            )
+            .filter(UsageRecord.api_key_hash == key_hash)
+            .scalar()
+        )
+        budget_used = float(row or 0)
+
+    info = cache.build_api_key_cache_info(api_key, budget_used=budget_used)
+    cache.set_api_key_info(api_key.key, info)
 
 
 # ============== 统一请求处理 ==============

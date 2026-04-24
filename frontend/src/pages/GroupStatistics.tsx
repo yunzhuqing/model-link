@@ -141,47 +141,6 @@ const StatDonut = ({ slices, size = 130, strokeWidth = 22, centerValue, centerLa
   );
 };
 
-/* ── Daily Cost Bar Chart ──────────────────────────────────────────────── */
-
-const DailyCostChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, opts?: Record<string, unknown>) => string }) => {
-  const [hovered, setHovered] = useState<number | null>(null);
-  if (!data || data.length === 0) return <div className="text-center py-10 text-slate-400 text-sm">{t('group.statistics.noCostData')}</div>;
-
-  const maxCost = Math.max(...data.map(d => d.total_cost || 0), 0.001);
-
-  return (
-    <div>
-      <div className="flex items-end space-x-[3px] h-36">
-        {data.map((d, i) => {
-          const h = Math.max(((d.total_cost || 0) / maxCost) * 130, 1);
-          const isH = hovered === i;
-          return (
-            <div key={i} className="flex-1 flex flex-col items-center relative"
-              onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
-              <div className="w-full bg-amber-400 rounded-t-sm transition-all"
-                style={{ height: `${h}px`, opacity: isH ? 1 : 0.7 }} />
-              {isH && (
-                <div className="absolute -top-[50px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap z-20 shadow-xl">
-                  <div className="font-semibold">{String(d.period).slice(5, 10)}</div>
-                  <div>{t('group.statistics.cost', { value: fmtCost(d.total_cost || 0) })}</div>
-                  <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div className="flex justify-between text-xs text-slate-400 mt-2">
-        {data.map((d, i) => (
-          i % Math.max(1, Math.ceil(data.length / 7)) === 0 || i === data.length - 1
-            ? <span key={i}>{String(d.period).slice(5, 10)}</span>
-            : <span key={i} />
-        ))}
-      </div>
-    </div>
-  );
-};
-
 /* ── Stacked Bar Chart for daily token trend ───────────────────────────── */
 
 const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, opts?: Record<string, unknown>) => string }) => {
@@ -195,52 +154,63 @@ const DailyBarChart = ({ data, t }: { data: StatTimeSeries[]; t: (key: string, o
 
   const maxVal = Math.max(...data.map(d => d.input_tokens + d.output_tokens + (d.reasoning_tokens || 0)), 1);
 
+  // Generate Y-axis ticks for tokens
+  const yTicks = [0, maxVal * 0.25, maxVal * 0.5, maxVal * 0.75, maxVal];
+
   return (
-    <div>
-      <div className="flex items-end space-x-[3px] h-44">
-        {data.map((d, i) => {
-          const inH = (pureInput(d) / maxVal) * 160;
-          const cacheH = ((d.cache_creation_tokens || 0) / maxVal) * 160;
-          const outH = (d.output_tokens / maxVal) * 160;
-          const reasonH = ((d.reasoning_tokens || 0) / maxVal) * 160;
-          const totalH = Math.max(inH + cacheH + outH + reasonH, 1);
-          const isH = hovered === i;
-          return (
-            <div key={i} className="flex-1 flex flex-col items-center relative"
-              onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
-              <div className="w-full rounded-t-sm overflow-hidden transition-all" style={{ height: `${totalH}px`, opacity: isH ? 1 : 0.7 }}>
-                {/* Top→bottom visual: reasoning, output, cache, input */}
-                {reasonH > 0 && <div className="w-full bg-amber-400" style={{ height: `${reasonH}px` }} />}
-                {outH > 0 && <div className="w-full bg-emerald-400" style={{ height: `${outH}px` }} />}
-                {cacheH > 0 && <div className="w-full bg-purple-400" style={{ height: `${cacheH}px` }} />}
-                {inH > 0 && <div className="w-full bg-blue-400" style={{ height: `${inH}px` }} />}
-              </div>
-              {isH && (
-                <div className="absolute -top-[70px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-2 rounded-lg whitespace-nowrap z-20 shadow-xl">
-                  <div className="font-semibold mb-0.5">{String(d.period).slice(5, 10)}</div>
-                  <div>{t('group.statistics.inOut', { in: fmtNum(pureInput(d)), out: fmtNum(d.output_tokens) })}</div>
-                  {(d.cache_creation_tokens || 0) > 0 && <div>Cache Creation: {fmtNum(d.cache_creation_tokens)}</div>}
-                  {(d.reasoning_tokens || 0) > 0 && <div>Reasoning: {fmtNum(d.reasoning_tokens)}</div>}
-                  <div>{t('group.statistics.requests', { value: String(d.requests) })}</div>
-                  <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+    <div className="flex">
+      {/* Y-axis */}
+      <div className="flex flex-col justify-between text-xs text-slate-400 pr-2 h-44 text-right w-14 flex-shrink-0">
+        {yTicks.map((tick, i) => (
+          <span key={i}>{fmtNum(Math.round(tick))}</span>
+        )).reverse()}
+      </div>
+      <div className="flex-1">
+        <div className="flex items-end space-x-[3px] h-44">
+            {data.map((d, i) => {
+              const inH = (pureInput(d) / maxVal) * 160;
+              const cacheH = ((d.cache_creation_tokens || 0) / maxVal) * 160;
+              const outH = (d.output_tokens / maxVal) * 160;
+              const reasonH = ((d.reasoning_tokens || 0) / maxVal) * 160;
+              const totalH = Math.max(inH + cacheH + outH + reasonH, 1);
+              const isH = hovered === i;
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center relative"
+                  onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
+                  <div className="w-full rounded-t-sm overflow-hidden transition-all" style={{ height: `${totalH}px`, opacity: isH ? 1 : 0.7 }}>
+                    {/* Top→bottom visual: reasoning, output, cache, input */}
+                    {reasonH > 0 && <div className="w-full bg-amber-400" style={{ height: `${reasonH}px` }} />}
+                    {outH > 0 && <div className="w-full bg-emerald-400" style={{ height: `${outH}px` }} />}
+                    {cacheH > 0 && <div className="w-full bg-purple-400" style={{ height: `${cacheH}px` }} />}
+                    {inH > 0 && <div className="w-full bg-blue-400" style={{ height: `${inH}px` }} />}
+                  </div>
+                  {isH && (
+                    <div className="absolute -top-[70px] left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-3 py-2 rounded-lg whitespace-nowrap z-20 shadow-xl">
+                      <div className="font-semibold mb-0.5">{String(d.period).slice(5, 10)}</div>
+                      <div>{t('group.statistics.inOut', { in: fmtNum(pureInput(d)), out: fmtNum(d.output_tokens) })}</div>
+                      {(d.cache_creation_tokens || 0) > 0 && <div>Cache Creation: {fmtNum(d.cache_creation_tokens)}</div>}
+                      {(d.reasoning_tokens || 0) > 0 && <div>Reasoning: {fmtNum(d.reasoning_tokens)}</div>}
+                      <div>{t('group.statistics.requests', { value: String(d.requests) })}</div>
+                      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div className="flex justify-between text-xs text-slate-400 mt-2">
-        {data.map((d, i) => (
-          i % Math.max(1, Math.ceil(data.length / 7)) === 0 || i === data.length - 1
-            ? <span key={i}>{String(d.period).slice(5, 10)}</span>
-            : <span key={i} />
-        ))}
-      </div>
-      <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-blue-400 rounded-sm" /> {t('group.statistics.inputTokensLegend')}</span>
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-purple-400 rounded-sm" /> {t('group.statistics.cache')}</span>
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /> {t('group.statistics.outputTokensLegend')}</span>
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-amber-400 rounded-sm" /> {t('group.statistics.reasoning')}</span>
+              );
+            })}
+        </div>
+        <div className="flex justify-between text-xs text-slate-400 mt-2">
+          {data.map((d, i) => (
+            i % Math.max(1, Math.ceil(data.length / 7)) === 0 || i === data.length - 1
+              ? <span key={i}>{String(d.period).slice(5, 10)}</span>
+              : <span key={i} />
+          ))}
+        </div>
+        <div className="flex items-center gap-4 mt-3 text-xs text-slate-500">
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-blue-400 rounded-sm" /> {t('group.statistics.inputTokensLegend')}</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-purple-400 rounded-sm" /> {t('group.statistics.cache')}</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-emerald-400 rounded-sm" /> {t('group.statistics.outputTokensLegend')}</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-amber-400 rounded-sm" /> {t('group.statistics.reasoning')}</span>
+        </div>
       </div>
     </div>
   );
@@ -272,10 +242,20 @@ const DailyCostByModelChart = ({ data, t }: { data: StatTimeSeriesByModel[]; t: 
 
   const maxCost = Math.max(...periods.map(p => Object.values(periodMap[p]).reduce((s, v) => s + v, 0)), 0.001);
 
+  // Generate Y-axis ticks for cost
+  const yTicks = [0, maxCost * 0.25, maxCost * 0.5, maxCost * 0.75, maxCost];
+
   return (
-    <div>
-      <div className="flex items-end space-x-[3px] h-44">
-        {periods.map((p, i) => {
+    <div className="flex">
+      {/* Y-axis */}
+      <div className="flex flex-col justify-between text-xs text-slate-400 pr-2 h-44 text-right w-14 flex-shrink-0">
+        {yTicks.map((tick, i) => (
+          <span key={i}>{fmtCost(tick)}</span>
+        )).reverse()}
+      </div>
+      <div className="flex-1">
+        <div className="flex items-end space-x-[3px] h-44">
+          {periods.map((p, i) => {
           const dayModels = periodMap[p];
           const segments = models.filter(m => (dayModels[m] || 0) > 0);
           const isH = hovered?.bar === i;
@@ -313,22 +293,23 @@ const DailyCostByModelChart = ({ data, t }: { data: StatTimeSeriesByModel[]; t: 
             </div>
           );
         })}
-      </div>
-      <div className="flex justify-between text-xs text-slate-400 mt-2">
-        {periods.map((p, i) => (
-          i % Math.max(1, Math.ceil(periods.length / 7)) === 0 || i === periods.length - 1
-            ? <span key={i}>{p.slice(5, 10)}</span>
-            : <span key={i} />
-        ))}
-      </div>
-      <div className="flex items-center gap-3 mt-3 text-xs text-slate-500 flex-wrap">
-        {models.slice(0, 8).map((m, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
-            <span className="truncate max-w-[120px]">{m}</span>
-          </span>
-        ))}
-        {models.length > 8 && <span className="text-slate-400">+{models.length - 8}</span>}
+        </div>
+        <div className="flex justify-between text-xs text-slate-400 mt-2">
+          {periods.map((p, i) => (
+            i % Math.max(1, Math.ceil(periods.length / 7)) === 0 || i === periods.length - 1
+              ? <span key={i}>{p.slice(5, 10)}</span>
+              : <span key={i} />
+          ))}
+        </div>
+        <div className="flex items-center gap-3 mt-3 text-xs text-slate-500 flex-wrap">
+          {models.slice(0, 8).map((m, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+              <span className="truncate max-w-[120px]">{m}</span>
+            </span>
+          ))}
+          {models.length > 8 && <span className="text-slate-400">+{models.length - 8}</span>}
+        </div>
       </div>
     </div>
   );
@@ -375,10 +356,8 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
 
   const loading = totalsLoading || byModelLoading || byApiKeyLoading || tsLoading || byCurrencyLoading || tsByModelLoading;
 
-  // input_tokens from the API already includes cache_creation_tokens.
-  // Compute "pure input" to avoid double-counting cache_creation in totals.
-  const pureInputTotal = Math.max((totals?.input_tokens || 0) - (totals?.cache_creation_tokens || 0), 0);
-  const totalTokens = pureInputTotal + (totals?.cache_creation_tokens || 0) + (totals?.output_tokens || 0) + (totals?.reasoning_tokens || 0);
+  // Token distribution: input, output, reasoning, cache hit
+  const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0) + (totals?.reasoning_tokens || 0) + (totals?.cache_tokens || 0);
 
   // Donut slices — use total_cost_usd for proper cross-currency comparison
   const modelCostSlices = (byModel || [])
@@ -390,10 +369,10 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
     .map((k, i) => ({ label: k.api_key_name || k.api_key_preview || '—', value: k.total_cost_usd || 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
 
   const tokenSlices = totals ? [
-    { label: t('group.statistics.input'), value: pureInputTotal, color: '#3b82f6' },
+    { label: t('group.statistics.input'), value: totals.input_tokens, color: '#3b82f6' },
     { label: t('group.statistics.output'), value: totals.output_tokens, color: '#10b981' },
     { label: t('group.statistics.reasoning'), value: totals.reasoning_tokens || 0, color: '#f59e0b' },
-    { label: t('group.statistics.cache'), value: (totals.cache_tokens || 0) + (totals.cache_creation_tokens || 0), color: '#8b5cf6' },
+    { label: t('group.statistics.cacheHit'), value: totals.cache_tokens || 0, color: '#8b5cf6' },
   ].filter(s => s.value > 0) : [];
 
   return (
@@ -468,19 +447,10 @@ export default function GroupStatistics({ groupId }: { groupId: number }) {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center space-x-2">
                 <DollarSign className="w-4 h-4 text-amber-500" />
-                <span>{t('group.statistics.dailyCostTrend')}</span>
+                <span>{t('group.statistics.dailyCostByModel')}</span>
               </h3>
-              <DailyCostChart data={timeSeries || []} t={t} />
+              <DailyCostByModelChart data={timeSeriesByModel || []} t={t} />
             </div>
-          </div>
-
-          {/* ── Daily Cost by Model Stacked Bar Chart ───────────────────── */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-            <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center space-x-2">
-              <BarChart3 className="w-4 h-4 text-indigo-500" />
-              <span>{t('group.statistics.dailyCostByModel')}</span>
-            </h3>
-            <DailyCostByModelChart data={timeSeriesByModel || []} t={t} />
           </div>
 
           {/* ── Donut Charts Row: Token Distribution + Model Cost + API Key Cost */}

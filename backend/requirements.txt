@@ -16,3 +16,4 @@ uvicorn[standard]>=0.30.0
 google-auth>=2.29.0
 requests>=2.31.0
 tooz>=6.0.0
+redis>=5.0.0

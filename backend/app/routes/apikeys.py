@@ -1,5 +1,10 @@
 """
 API Key and Group management routes.
+
+Cache integration:
+  - API key detail/info endpoints read from cache first (cache.get_api_key_info_by_id).
+  - Create / update / delete / regenerate operations invalidate the cache
+    (cache.invalidate_api_key_by_id) so stale data is never served.
 """
 from quart import Blueprint, request, jsonify
 from datetime import datetime
@@ -299,7 +304,21 @@ async def list_api_keys_by_group(current_user, group_id):
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['GET'])
 @token_required
 async def get_api_key(current_user, api_key_id):
-    """Get a specific API key."""
+    """Get a specific API key. Tries cache first for basic info."""
+    # Try cache first for a quick response
+    from app.cache import get_cache
+    cache = get_cache()
+    cached = cache.get_api_key_info_by_id(api_key_id)
+    if cached is not None:
+        # Still need to verify group membership from DB
+        api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+        if not api_key:
+            cache.invalidate_api_key_by_id(api_key_id)
+            return jsonify({'detail': 'API key not found'}), 404
+        if current_user not in api_key.group.users:
+            return jsonify({'detail': 'You do not have access to this API key'}), 403
+        return jsonify(api_key.to_dict_with_group())
+
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
@@ -347,7 +366,7 @@ async def create_api_key(current_user):
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['PUT'])
 @token_required
 async def update_api_key(current_user, api_key_id):
-    """Update an API key."""
+    """Update an API key. Invalidates cache after update."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
@@ -367,12 +386,26 @@ async def update_api_key(current_user, api_key_id):
         # Convert empty string to None for expires_at (empty string is not valid for timestamp)
         expires_at = data['expires_at']
         api_key.expires_at = None if expires_at == '' else expires_at
+    if 'unlimited_budget' in data:
+        api_key.unlimited_budget = bool(data['unlimited_budget'])
     if 'budget' in data:
         val = data['budget']
-        api_key.budget = float(val) if val is not None and val != '' else None
+        if val is not None and val != '':
+            add_amount = float(val)
+            # Budget is additive: append to current remaining budget
+            current_budget = api_key.budget or 0.0
+            api_key.budget = current_budget + add_amount
+        # If val is None or '', don't change the budget (use unlimited_budget flag instead)
     
     db.session.commit()
     db.session.refresh(api_key)
+    
+    # Invalidate cache so stale data is not served
+    try:
+        from app.cache import get_cache
+        get_cache().invalidate_api_key_by_id(api_key_id)
+    except Exception:
+        pass
     
     return jsonify(api_key.to_dict())
 
@@ -457,11 +490,13 @@ async def get_api_key_models(current_user, api_key_id):
 async def get_api_key_detail(current_user, api_key_id):
     """
     Get comprehensive detail for a single API key:
-    - Basic info + budget
+    - Basic info + budget (separated from usage stats)
+    - Usage stats from cache (real-time) with DB fallback
     - Available models (with rpm/tpm)
-    - Usage summary: total cost, tokens, by-model breakdown
+    - By-model breakdown (from DB)
     """
     from app.models import UsageRecord, Provider, Model as MLModel
+    from app.cache import get_cache
     import hashlib
 
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
@@ -472,9 +507,74 @@ async def get_api_key_detail(current_user, api_key_id):
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
     key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
+    cache = get_cache()
 
-    # ── Cost expression ───────────────────────────────────────────────────
-    _cost_expr = (
+    # ── Try reading usage stats from cache first ─────────────────────────
+    cached_info = cache.get_api_key_info(api_key.key)
+    if cached_info is not None:
+        # Use cached usage stats (updated in real-time by each request)
+        usage_totals = {
+            'requests': int(cached_info.get('request_count', 0) or 0),
+            'input_tokens': int(cached_info.get('total_input_tokens', 0) or 0),
+            'output_tokens': int(cached_info.get('total_output_tokens', 0) or 0),
+            'reasoning_tokens': int(cached_info.get('total_reasoning_tokens', 0) or 0),
+            'estimated_cost': round(float(cached_info.get('total_cost_usd', 0) or 0), 6),
+            'total_image_count': int(cached_info.get('total_image_count', 0) or 0),
+            'total_video_count': int(cached_info.get('total_video_count', 0) or 0),
+            'total_audio_seconds': round(float(cached_info.get('total_audio_seconds', 0) or 0), 4),
+        }
+    else:
+        # Cache miss — fall back to DB aggregation and populate cache
+        _cost_expr = (
+            UsageRecord.input_tokens * UsageRecord.input_price_unit / 1000000.0
+            + UsageRecord.output_tokens * UsageRecord.output_price_unit / 1000000.0
+            + UsageRecord.cache_creation_tokens * UsageRecord.cache_creation_price_unit / 1000000.0
+            + UsageRecord.cache_tokens * UsageRecord.cache_token_price_unit / 1000000.0
+            + UsageRecord.output_image_number * UsageRecord.output_image_price_unit
+            + UsageRecord.output_video_number * UsageRecord.output_video_price_unit
+            + UsageRecord.output_audio_seconds * UsageRecord.output_audio_price_unit
+            + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
+        )
+
+        totals_row = (
+            db.session.query(
+                db.func.count(UsageRecord.id).label('requests'),
+                db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+                db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0).label('total_cost_usd'),
+                db.func.coalesce(db.func.sum(UsageRecord.output_image_number), 0).label('total_image_count'),
+                db.func.coalesce(db.func.sum(UsageRecord.output_video_number), 0).label('total_video_count'),
+                db.func.coalesce(db.func.sum(UsageRecord.output_audio_seconds), 0).label('total_audio_seconds'),
+            )
+            .filter(UsageRecord.api_key_hash == key_hash)
+            .one()
+        )
+
+        usage_totals = {
+            'requests': totals_row.requests or 0,
+            'input_tokens': int(totals_row.input_tokens or 0),
+            'output_tokens': int(totals_row.output_tokens or 0),
+            'reasoning_tokens': int(totals_row.reasoning_tokens or 0),
+            'estimated_cost': round(float(totals_row.total_cost_usd or 0), 6),
+            'total_image_count': int(totals_row.total_image_count or 0),
+            'total_video_count': int(totals_row.total_video_count or 0),
+            'total_audio_seconds': round(float(totals_row.total_audio_seconds or 0), 4),
+        }
+
+        # Populate cache with DB data for future reads
+        cache_info = cache.build_api_key_cache_info(api_key, budget_used=usage_totals['estimated_cost'])
+        cache_info['total_input_tokens'] = usage_totals['input_tokens']
+        cache_info['total_output_tokens'] = usage_totals['output_tokens']
+        cache_info['total_reasoning_tokens'] = usage_totals['reasoning_tokens']
+        cache_info['total_cost_usd'] = usage_totals['estimated_cost']
+        cache_info['total_image_count'] = usage_totals['total_image_count']
+        cache_info['total_video_count'] = usage_totals['total_video_count']
+        cache_info['total_audio_seconds'] = usage_totals['total_audio_seconds']
+        cache.set_api_key_info(api_key.key, cache_info)
+
+    # ── By model usage (always from DB for accuracy) ──────────────────────
+    _cost_expr_model = (
         UsageRecord.input_tokens * UsageRecord.input_price_unit / 1000000.0
         + UsageRecord.output_tokens * UsageRecord.output_price_unit / 1000000.0
         + UsageRecord.cache_creation_tokens * UsageRecord.cache_creation_price_unit / 1000000.0
@@ -485,28 +585,6 @@ async def get_api_key_detail(current_user, api_key_id):
         + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
     )
 
-    # ── Total usage for this API key ──────────────────────────────────────
-    totals_row = (
-        db.session.query(
-            db.func.count(UsageRecord.id).label('requests'),
-            db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-            db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-            db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-            db.func.coalesce(db.func.sum(_cost_expr), 0).label('estimated_cost'),
-        )
-        .filter(UsageRecord.api_key_hash == key_hash)
-        .one()
-    )
-
-    usage_totals = {
-        'requests': totals_row.requests or 0,
-        'input_tokens': int(totals_row.input_tokens or 0),
-        'output_tokens': int(totals_row.output_tokens or 0),
-        'reasoning_tokens': int(totals_row.reasoning_tokens or 0),
-        'estimated_cost': round(float(totals_row.estimated_cost or 0), 6),
-    }
-
-    # ── By model usage ────────────────────────────────────────────────────
     by_model_rows = (
         db.session.query(
             UsageRecord.model_name,
@@ -514,11 +592,11 @@ async def get_api_key_detail(current_user, api_key_id):
             db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
             db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
             db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-            db.func.coalesce(db.func.sum(_cost_expr), 0).label('estimated_cost'),
+            db.func.coalesce(db.func.sum(_cost_expr_model), 0).label('estimated_cost'),
         )
         .filter(UsageRecord.api_key_hash == key_hash)
         .group_by(UsageRecord.model_name)
-        .order_by(db.func.coalesce(db.func.sum(_cost_expr), 0).desc())
+        .order_by(db.func.coalesce(db.func.sum(_cost_expr_model), 0).desc())
         .limit(50)
         .all()
     )
@@ -568,10 +646,12 @@ async def get_api_key_detail(current_user, api_key_id):
             'currency': m.currency or 'USD',
         })
 
-    # ── Budget info ───────────────────────────────────────────────────────
-    budget = api_key.budget
+    # ── Budget info (separate from usage stats) ───────────────────────────
+    # budget field is the remaining allowance (additive model)
+    # unlimited_budget flag determines whether budget deduction is enforced
+    is_unlimited = api_key.unlimited_budget
+    budget_remaining = api_key.budget  # This IS the remaining amount
     used = usage_totals['estimated_cost']
-    remaining = (budget - used) if budget is not None else None
 
     result = api_key.to_dict_with_group()
     result['api_key_hash'] = key_hash
@@ -579,9 +659,10 @@ async def get_api_key_detail(current_user, api_key_id):
     result['by_model'] = by_model
     result['available_models'] = available_models
     result['budget_info'] = {
-        'budget': budget,
+        'unlimited_budget': is_unlimited,
+        'budget': budget_remaining,
         'used': round(used, 6),
-        'remaining': round(remaining, 6) if remaining is not None else None,
+        'remaining': round(budget_remaining, 6) if budget_remaining is not None else None,
     }
 
     return jsonify(result)
@@ -590,13 +671,20 @@ async def get_api_key_detail(current_user, api_key_id):
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['DELETE'])
 @token_required
 async def delete_api_key(current_user, api_key_id):
-    """Delete an API key."""
+    """Delete an API key. Invalidates cache."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
     
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
+    
+    # Invalidate cache before deleting (need the raw key for cache lookup)
+    try:
+        from app.cache import get_cache
+        get_cache().invalidate_api_key(api_key.key)
+    except Exception:
+        pass
     
     db.session.delete(api_key)
     db.session.commit()
@@ -607,13 +695,21 @@ async def delete_api_key(current_user, api_key_id):
 @apikeys_bp.route('/apikeys/<int:api_key_id>/regenerate', methods=['POST'])
 @token_required
 async def regenerate_api_key(current_user, api_key_id):
-    """Regenerate an API key (revokes the old one)."""
+    """Regenerate an API key (revokes the old one). Invalidates cache for old key."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
     
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
+    
+    # Invalidate cache for the old key before regenerating
+    old_key = api_key.key
+    try:
+        from app.cache import get_cache
+        get_cache().invalidate_api_key(old_key)
+    except Exception:
+        pass
     
     api_key.key = generate_api_key()
     api_key.request_count = 0

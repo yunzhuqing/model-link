@@ -477,16 +477,24 @@ def _persist_usage(
         # Use a NullPool engine so the connection is closed immediately after
         # the INSERT, instead of being borrowed from the main QueuePool.
         db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-        _persist_record_via_nullpool(db_url, record)
+        _persist_record_via_nullpool(db_url, record, api_key_raw=api_key_raw)
     except Exception as exc:
         logger.exception(f"[usage] Failed to persist usage record: {exc}")
 
 
-def _persist_record_via_nullpool(db_url: str, record) -> None:
+def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -> None:
     """Insert a UsageRecord row using a disposable NullPool connection.
 
     This avoids occupying the main QueuePool and prevents connection leaks
     from short-lived background threads.
+
+    After a successful DB write, if the API key has a budget set, the
+    actual_amount_usd is deducted from the cache so that budget checks
+    remain accurate without waiting for the cache to expire.
+
+    Also increments the cached usage stats (tokens, cost, image/video/audio
+    counts) so that the API key detail page can show real-time data from
+    cache without querying the database.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
@@ -497,6 +505,34 @@ def _persist_record_via_nullpool(db_url: str, record) -> None:
         with Session(engine) as session:
             session.add(record)
             session.commit()
+
+            # ── Sync budget deduction + usage stats to cache ──────────────
+            if api_key_raw:
+                try:
+                    from app.cache import get_cache
+                    cache = get_cache()
+
+                    actual_usd = getattr(record, 'actual_amount_usd', None) or 0.0
+                    # Only deduct budget if the key is NOT unlimited
+                    cached_info = cache.get_api_key_info(api_key_raw)
+                    is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
+                    if actual_usd > 0 and not is_unlimited:
+                        cache.deduct_budget(api_key_raw, actual_usd)
+
+                    # Increment real-time usage stats in cache
+                    cache.increment_usage_stats(
+                        api_key_raw,
+                        request_count=1,
+                        input_tokens=int(getattr(record, 'input_tokens', 0) or 0),
+                        output_tokens=int(getattr(record, 'output_tokens', 0) or 0),
+                        reasoning_tokens=int(getattr(record, 'reasoning_tokens', 0) or 0),
+                        cost_usd=actual_usd,
+                        image_count=int(getattr(record, 'output_image_number', 0) or 0),
+                        video_count=int(getattr(record, 'output_video_number', 0) or 0),
+                        audio_seconds=float(getattr(record, 'output_audio_seconds', 0.0) or 0.0),
+                    )
+                except Exception as _ce:
+                    logger.debug(f"[cache] Failed to update cache after usage record: {_ce}")
     finally:
         engine.dispose()
 
