@@ -96,14 +96,6 @@ function fmtCost(n: number): string {
   return '$0.00';
 }
 
-function fmtCostCny(n: number): string {
-  if (n >= 1000) return '¥' + (n / 1000).toFixed(1) + 'K';
-  if (n >= 1) return '¥' + n.toFixed(2);
-  if (n >= 0.01) return '¥' + n.toFixed(3);
-  if (n > 0) return '¥' + n.toFixed(4);
-  return '¥0.00';
-}
-
 function fmtDate(s: string | null): string {
   if (!s) return '-';
   const d = s.includes('T') && !s.endsWith('Z') && !s.includes('+') ? s + 'Z' : s;
@@ -619,7 +611,6 @@ const ApiKeyDetail = () => {
   const budget = data.budget_info;
   const usage = data.usage;
   const totalTokens = usage.input_tokens + usage.output_tokens;
-  const budgetPct = budget.budget && budget.budget > 0 ? Math.min((budget.used / budget.budget) * 100, 100) : 0;
 
   return (
     <div className="space-y-6">
