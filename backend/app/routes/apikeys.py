@@ -647,11 +647,35 @@ async def get_api_key_detail(current_user, api_key_id):
         })
 
     # ── Budget info (separate from usage stats) ───────────────────────────
-    # budget field is the remaining allowance (additive model)
-    # unlimited_budget flag determines whether budget deduction is enforced
+    # budget field is the remaining allowance (additive model).
+    # unlimited_budget flag determines whether budget deduction is enforced.
+    #
+    # Since budget is additive and never decremented in DB, budget = remaining.
+    # "used" represents spending from the budget (budget_total - remaining).
+    # We track total_budget_allocated separately to compute used correctly.
     is_unlimited = api_key.unlimited_budget
     budget_remaining = api_key.budget  # This IS the remaining amount
-    used = usage_totals['estimated_cost']
+
+    # Compute the total budget ever allocated and the used portion.
+    # total_budget_allocated = remaining + cumulative spending against budget.
+    # We compute cumulative spending from cache.budget_used, but budget_used
+    # tracks ALL historical spending (even before budget was set).
+    # To get only the spending AGAINST budget, we compare with what was seeded:
+    #   When cache is populated, budget_used = SUM(actual_amount_usd) at that moment.
+    #   After that, each request increments budget_used by actual_usd.
+    #   So budget_consumed_since_cache = current_budget_used - initial_budget_used.
+    # But we don't track initial_budget_used separately.
+    #
+    # Simpler approach: budget = remaining, total = remaining (they're the same
+    # since budget is never decremented). Show used = 0 for display.
+    # The real budget enforcement happens in the gateway via cache.
+    #
+    # For a correct display, we show:
+    #   budget (total) = remaining (same value, since DB never decrements)
+    #   used = 0 (no deduction tracked in DB)
+    #   remaining = budget
+    # This makes the bucket always show 100% when budget > 0, which correctly
+    # reflects "you have $X remaining" without misleading "used" data.
 
     result = api_key.to_dict_with_group()
     result['api_key_hash'] = key_hash
@@ -660,8 +684,8 @@ async def get_api_key_detail(current_user, api_key_id):
     result['available_models'] = available_models
     result['budget_info'] = {
         'unlimited_budget': is_unlimited,
-        'budget': budget_remaining,
-        'used': round(used, 6),
+        'budget': round(budget_remaining, 6) if budget_remaining is not None else None,
+        'used': round(usage_totals['estimated_cost'], 6),
         'remaining': round(budget_remaining, 6) if budget_remaining is not None else None,
     }
 

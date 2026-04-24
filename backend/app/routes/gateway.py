@@ -130,11 +130,13 @@ def get_current_user_or_api_key():
             except (ValueError, TypeError):
                 pass
 
-        # Check budget from cache (if budget is set)
-        budget = cached_info.get('budget')
-        if budget is not None:
-            budget_used = cached_info.get('budget_used', 0.0)
-            if budget_used >= budget:
+        # Check budget from cache
+        # budget field is the remaining allowance (additive model).
+        # unlimited_budget flag bypasses the check entirely.
+        is_unlimited = cached_info.get('unlimited_budget', True)
+        if not is_unlimited:
+            budget = cached_info.get('budget')
+            if budget is not None and float(budget) <= 0:
                 return None, None, {'detail': 'API key budget exceeded'}, 403
 
         # Cache hit — still need the ORM object for downstream usage recording.

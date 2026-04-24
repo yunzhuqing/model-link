@@ -227,11 +227,13 @@ const BudgetBucket = ({
   onEdit: () => void;
 }) => {
   const hasBudget = budget !== null && budget > 0;
-  const pct = hasBudget ? Math.min((used / budget) * 100, 100) : 0;
-  const fillPct = hasBudget ? 100 - pct : 0; // Remaining fill from bottom
-  // Color based on usage level
-  const bucketColor = pct > 90 ? '#ef4444' : pct > 70 ? '#f59e0b' : '#10b981';
-  const bucketGradientTop = pct > 90 ? '#fca5a5' : pct > 70 ? '#fcd34d' : '#6ee7b7';
+  // budget = total budget allocated, remaining = what's left, used = consumed from budget
+  const remainingVal = remaining !== null ? Math.max(remaining, 0) : 0;
+  const fillPct = hasBudget ? Math.min((remainingVal / budget) * 100, 100) : 0;
+  const pct = 100 - fillPct; // pct = how much has been consumed
+  // Color based on remaining level (low remaining = danger)
+  const bucketColor = fillPct < 10 ? '#ef4444' : fillPct < 30 ? '#f59e0b' : '#10b981';
+  const bucketGradientTop = fillPct < 10 ? '#fca5a5' : fillPct < 30 ? '#fcd34d' : '#6ee7b7';
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
@@ -294,11 +296,11 @@ const BudgetBucket = ({
               <path d="M14,14 Q32,0 50,14" stroke="#94a3b8" strokeWidth="2" fill="none" strokeLinecap="round" />
               {/* Percentage text in center */}
               <text x="32" y="75" textAnchor="middle" fontSize="14" fontWeight="700"
-                fill={pct > 50 ? 'white' : '#334155'}>
-                {pct.toFixed(0)}%
+                fill={fillPct > 50 ? 'white' : '#334155'}>
+                {fillPct.toFixed(0)}%
               </text>
-              <text x="32" y="89" textAnchor="middle" fontSize="8" fill={pct > 60 ? 'rgba(255,255,255,0.8)' : '#94a3b8'}>
-                已使用
+              <text x="32" y="89" textAnchor="middle" fontSize="8" fill={fillPct > 60 ? 'rgba(255,255,255,0.8)' : '#94a3b8'}>
+                剩余
               </text>
             </svg>
           </div>
@@ -311,7 +313,9 @@ const BudgetBucket = ({
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">已使用</span>
-              <span className="font-semibold" style={{ color: bucketColor }}>{fmtCost(used)}</span>
+              <span className="font-semibold" style={{ color: bucketColor }}>
+                {fmtCost(Math.max(budget - remainingVal, 0))}
+              </span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">剩余</span>
@@ -319,11 +323,11 @@ const BudgetBucket = ({
                 {fmtCost(Math.max(remaining || 0, 0))}
               </span>
             </div>
-            {/* Mini progress bar */}
+            {/* Mini progress bar — shows remaining capacity */}
             <div className="w-full bg-slate-100 rounded-full h-1.5 mt-1">
               <div
                 className="h-1.5 rounded-full transition-all"
-                style={{ width: `${pct}%`, backgroundColor: bucketColor }}
+                style={{ width: `${fillPct}%`, backgroundColor: bucketColor }}
               />
             </div>
           </div>
