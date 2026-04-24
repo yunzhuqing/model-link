@@ -137,6 +137,12 @@ class TencentVODProvider(OpenAIProvider):
             "supports_vision": True,
             "is_image_model": True,
         },
+        "gpt-image-2": {
+            "description": "GPT Image 2 图像生成模型（OG image2，支持 low/medium/high 质量）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_image_model": True,
+        },
         # 视频生成模型 — 可灵 Kling (ModelName=Kling)
         "kling-v3-omni": {
             "description": "可灵 v3 旗舰版 Omni 视频生成模型（Kling 3.0-Omni）",

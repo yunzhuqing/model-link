@@ -22,6 +22,7 @@ interface PricingTier {
 
 interface OutputPricingTier {
   resolution: string;
+  quality?: string;
   audio?: boolean;
   reference_video?: boolean;
   price: number;
@@ -284,6 +285,7 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
                         {catConfig.tiers.map((tier, i) => (
                           <div key={i} className="flex items-center gap-3 text-sm text-slate-600">
                             <span className="text-slate-500 text-xs font-medium min-w-[50px]">{tier.resolution}</span>
+                            {tier.quality && <span className="text-purple-500 text-xs font-medium">{tier.quality}</span>}
                             <span>{sym}{tier.price}{typeLabel}</span>
                             {cat === 'video' && tier.audio && <span className="text-xs text-slate-400">+audio</span>}
                             {cat === 'video' && tier.reference_video && <span className="text-xs text-slate-400">+ref_video</span>}
@@ -683,6 +685,7 @@ const ModelForm = ({
                             const newTier: OutputPricingTier = {
                               resolution: tierResolutionHints[category][0] || '',
                               price: cat.price,
+                              ...(category === 'image' ? { quality: '' } : {}),
                               ...(category === 'video' ? { audio: false } : {}),
                             };
                             updateCategory({ tiers: [...(cat.tiers ?? []), newTier] });
@@ -710,6 +713,22 @@ const ModelForm = ({
                                   }}
                                 />
                               </div>
+                              {category === 'image' && (
+                                <div className="flex-1">
+                                  <label className="block text-xs text-slate-400 mb-0.5">Quality</label>
+                                  <input
+                                    type="text"
+                                    placeholder="low, medium, high"
+                                    className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                    value={tier.quality || ''}
+                                    onChange={(e) => {
+                                      const tiers = [...(cat.tiers ?? [])];
+                                      tiers[idx] = { ...tiers[idx], quality: e.target.value || undefined };
+                                      updateCategory({ tiers });
+                                    }}
+                                  />
+                                </div>
+                              )}
                               {category === 'video' && (
                                 <div className="flex-shrink-0">
                                   <label className="block text-xs text-slate-400 mb-0.5">Audio</label>

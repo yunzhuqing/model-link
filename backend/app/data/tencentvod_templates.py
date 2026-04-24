@@ -214,6 +214,58 @@ TENCENTVOD_TEMPLATES = [
         support_file=False, support_web_search=False, support_tool_search=False,
         support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
     ),
+    # ── TencentVOD GPT Image 2 (OG) ─────────────────────────────────────────
+    # GPT Image 2 — quality-dependent pricing (low/medium/high).
+    # ModelName=OG, ModelVersion determined by quality parameter:
+    #   quality=low|auto  → image2_low
+    #   quality=medium    → image2_medium
+    #   quality=high      → image2_high
+    # Pricing varies by quality × resolution tier (1K / 2K / 4K).
+    # Supported AspectRatios: 1:1, 3:2, 2:3, 3:4, 4:3, 16:9, 9:16, 21:9, 9:21.
+    dict(
+        label='GPT Image 2 (TencentVOD)',
+        provider='TencentVOD',
+        name='gpt-image-2',
+        alias='gpt-image-2',
+        context_size=4096, input_size=4096, output_size=1,
+        supported_image_formats=(
+            '1024x1024,2048x2048,3840x3840,'
+            '1536x1024,3072x2048,3840x2560,'
+            '1024x1536,2048x3072,2560x3840,'
+            '768x1024,1536x2048,2880x3840,'
+            '1024x768,2048x1536,3840x2880,'
+            '1024x576,2048x1152,3840x2160,'
+            '576x1024,1152x2048,2160x3840,'
+            '1024x439,2048x878,3840x1646,'
+            '439x1024,878x2048,1646x3840'
+        ),
+        pricing_tiers=None,
+        output_pricing={
+            'image': {
+                'type': 'per_image',
+                'price': 0.3,
+                'tiers': [
+                    # ── quality=low (image2_low) ──
+                    {'resolution': '1K', 'quality': 'low', 'price': 0.3},
+                    {'resolution': '2K', 'quality': 'low', 'price': 0.338},
+                    {'resolution': '4K', 'quality': 'low', 'price': 0.398},
+                    # ── quality=medium (image2_medium) ──
+                    {'resolution': '1K', 'quality': 'medium', 'price': 0.638},
+                    {'resolution': '2K', 'quality': 'medium', 'price': 1.05},
+                    {'resolution': '4K', 'quality': 'medium', 'price': 1.583},
+                    # ── quality=high (image2_high) ──
+                    {'resolution': '1K', 'quality': 'high', 'price': 1.838},
+                    {'resolution': '2K', 'quality': 'high', 'price': 3.45},
+                    {'resolution': '4K', 'quality': 'high', 'price': 5.588},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
     # ── TencentVOD Kling Video Models ───────────────────────────────────────
     # Kling v3 Omni — video generation with per-second pricing.
     # Pricing varies by resolution × audio × reference_video (16 tiers).

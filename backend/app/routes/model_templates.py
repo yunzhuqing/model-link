@@ -79,6 +79,7 @@ async def create_model_template(current_user):
         reasoning_effort=data.get('reasoning_effort') or None,
         supported_image_formats=data.get('supported_image_formats') or None,
         pricing_tiers=data.get('pricing_tiers') or None,
+        output_pricing=data.get('output_pricing') or None,
         input_price=data.get('input_price', 0.0),
         output_price=data.get('output_price', 0.0),
         cache_creation_price=data.get('cache_creation_price', 0.0),
@@ -124,7 +125,7 @@ async def update_model_template(current_user, template_id):
         'support_kvcache', 'support_image', 'support_audio', 'support_video',
         'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
         'support_online_image', 'support_online_video', 'support_embedding',
-        'output_size', 'reasoning_effort', 'supported_image_formats', 'pricing_tiers',
+        'output_size', 'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
     ]:
         if field in data:
             setattr(tpl, field, data[field])

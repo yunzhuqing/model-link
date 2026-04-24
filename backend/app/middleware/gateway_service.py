@@ -862,6 +862,8 @@ class GatewayService:
             metadata["aspect_ratio"] = aspect_ratio
         if resolution:
             metadata["resolution"] = resolution
+        if quality:
+            metadata["quality"] = quality
 
         chat_request = ChatRequest(
             messages=messages,

@@ -588,6 +588,10 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if resolution:
                     img_metadata['resolution'] = resolution
 
+                quality = tool_data.get('quality')
+                if quality:
+                    img_metadata['quality'] = quality
+
                 # Accumulate image generation params; we'll merge into metadata below.
                 accumulated_img_metadata.update(img_metadata)
 

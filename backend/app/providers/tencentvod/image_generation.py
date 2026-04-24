@@ -68,6 +68,7 @@ _TENCENTVOD_IMAGE_MODEL_PREFIXES = (
     "gem-",
     "mingmou-",
     "hy-image-", # Hunyuan image models
+    "gpt-image-", # GPT Image models (e.g. gpt-image-2)
 )
 
 
@@ -126,6 +127,7 @@ def has_image_generation_tool(request: ChatRequest) -> bool:
     return any(k in meta for k in (
         "size", "number", "image_format", "response_format",
         "seed", "watermark", "aspect_ratio", "resolution",
+        "quality",
     ))
 
 
@@ -147,7 +149,46 @@ _MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     "gemini-3.1-flash-image-preview":  ("GG", "3.1"),
     # ── Hunyuan image models ───────────────────────────────────────────────
     "hy-image-v3.0":                   ("Hunyuan", "3.0"),
+    # ── GPT Image models (quality-dependent version, see _resolve_gpt_image_version) ──
+    # Default version (low quality); actual version is resolved dynamically
+    # based on the ``quality`` metadata parameter.
+    "gpt-image-2":                     ("OG", "image2_low"),
 }
+
+# =============================================================================
+# GPT Image quality → model_version mapping
+# =============================================================================
+
+# GPT Image models use ``quality`` to select the model version.
+# quality values: "low", "medium", "high", "auto"
+# "auto" defaults to "low" (image2_low).
+_GPT_IMAGE_QUALITY_VERSION_MAP: Dict[str, str] = {
+    "low":    "image2_low",
+    "medium": "image2_medium",
+    "high":   "image2_high",
+    "auto":   "image2_low",   # auto defaults to low
+}
+
+
+def _resolve_gpt_image_version(model: str, quality: str) -> Optional[str]:
+    """
+    Resolve the TencentVOD ModelVersion for GPT Image models based on quality.
+
+    Only applies to models whose ModelName is "OG" (i.e. gpt-image-*).
+    For other models, returns None (no override).
+
+    Args:
+        model:   Model identifier (e.g. "gpt-image-2")
+        quality: Quality tier from metadata ("low", "medium", "high", "auto")
+
+    Returns:
+        ModelVersion string if this is a GPT Image model, else None
+    """
+    key = model.lower().strip()
+    if not key.startswith("gpt-image-"):
+        return None
+    q = (quality or "auto").lower().strip()
+    return _GPT_IMAGE_QUALITY_VERSION_MAP.get(q, "image2_low")
 
 
 def _parse_model_name_version(model: str) -> Tuple[str, str]:
@@ -641,6 +682,14 @@ def execute_tencentvod_image_generation(
     # Parse model name / version
     model_name, model_version = _parse_model_name_version(model)
 
+    # For GPT Image models, override model_version based on quality parameter.
+    # quality: "low" → "image2_low", "medium" → "image2_medium",
+    #          "high" → "image2_high", "auto"/default → "image2_low"
+    quality = str(metadata.get("quality", "") or "").strip()
+    gpt_version = _resolve_gpt_image_version(model, quality)
+    if gpt_version is not None:
+        model_version = gpt_version
+
     # Extract prompt and reference images from the last user message.
     # Reference images are passed as IMAGE_URL / IMAGE_BASE64 content blocks.
     prompt = ""
@@ -745,6 +794,7 @@ def execute_tencentvod_image_generation(
                 'output_image_number': image_count,
                 'output_image_resolution': resolution or None,
                 'output_image_aspect': aspect_ratio or None,
+                'output_image_quality': quality or None,
             },
         ),
         created=int(time.time()),
