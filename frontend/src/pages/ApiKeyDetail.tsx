@@ -38,6 +38,15 @@ interface BudgetInfo {
   remaining: number | null;
 }
 
+interface BudgetRecord {
+  id: number;
+  api_key_id: number;
+  amount: number;
+  remaining: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 interface TimeSeries {
   period: string;
   requests: number;
@@ -77,6 +86,8 @@ interface ApiKeyDetailData {
   by_model: ModelUsage[];
   available_models: AvailableModel[];
   budget_info: BudgetInfo;
+  budgets?: BudgetRecord[];
+  total_budget_remaining?: number;
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
@@ -213,27 +224,26 @@ const DailyCostByModelChart = ({ data }: { data: TimeSeriesByModel[] }) => {
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
-/* ── Budget Bucket Component ─────────────────────────────────────────── */
+/* ── Budget Stacked Bar Component ────────────────────────────────────── */
 
-const BudgetBucket = ({
-  budget,
+const BUDGET_COLORS = ['#6366f1', '#06b6d4', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#f97316', '#3b82f6'];
+
+const BudgetBars = ({
+  budgets,
+  totalRemaining,
+  isUnlimited,
   used,
-  remaining,
   onEdit,
 }: {
-  budget: number | null;
+  budgets: BudgetRecord[];
+  totalRemaining: number;
+  isUnlimited: boolean;
   used: number;
-  remaining: number | null;
   onEdit: () => void;
 }) => {
-  const hasBudget = budget !== null && budget > 0;
-  // budget = total budget allocated, remaining = what's left, used = consumed from budget
-  const remainingVal = remaining !== null ? Math.max(remaining, 0) : 0;
-  const fillPct = hasBudget ? Math.min((remainingVal / budget) * 100, 100) : 0;
-  const pct = 100 - fillPct; // pct = how much has been consumed
-  // Color based on remaining level (low remaining = danger)
-  const bucketColor = fillPct < 10 ? '#ef4444' : fillPct < 30 ? '#f59e0b' : '#10b981';
-  const bucketGradientTop = fillPct < 10 ? '#fca5a5' : fillPct < 30 ? '#fcd34d' : '#6ee7b7';
+  // Filter budgets: only show those with remaining > 0 (not exhausted)
+  const activeBudgets = budgets.filter(b => b.remaining > 0);
+  const totalActive = activeBudgets.reduce((s, b) => s + b.amount, 0);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
@@ -248,101 +258,95 @@ const BudgetBucket = ({
           title="编辑预算"
         >
           <Pencil className="w-3.5 h-3.5" />
-          <span>编辑</span>
+          <span>管理</span>
         </button>
       </div>
 
-      {hasBudget ? (
-        <div className="flex items-stretch gap-4">
-          {/* Bucket visualization */}
-          <div className="flex flex-col items-center">
-            <svg width="64" height="120" viewBox="0 0 64 120" fill="none" className="flex-shrink-0">
-              {/* Bucket body (trapezoid shape) */}
-              <defs>
-                <clipPath id="bucketClip">
-                  <path d="M8,20 L4,110 Q4,116 10,116 L54,116 Q60,116 60,110 L56,20 Z" />
-                </clipPath>
-                <linearGradient id="waterGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={bucketGradientTop} stopOpacity="0.9" />
-                  <stop offset="100%" stopColor={bucketColor} stopOpacity="0.8" />
-                </linearGradient>
-                <linearGradient id="bucketBg" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f8fafc" />
-                  <stop offset="100%" stopColor="#f1f5f9" />
-                </linearGradient>
-              </defs>
-              {/* Bucket outline */}
-              <path d="M8,20 L4,110 Q4,116 10,116 L54,116 Q60,116 60,110 L56,20 Z"
-                fill="url(#bucketBg)" stroke="#cbd5e1" strokeWidth="1.5" />
-              {/* Water fill */}
-              {fillPct > 0 && (
-                <g clipPath="url(#bucketClip)">
-                  <rect x="0" y={20 + (96 * pct / 100)} width="64" height={96 * fillPct / 100}
-                    fill="url(#waterGrad)" />
-                  {/* Wave effect on water surface */}
-                  {fillPct > 2 && fillPct < 98 && (
-                    <path
-                      d={`M0,${20 + (96 * pct / 100)} Q16,${17 + (96 * pct / 100)} 32,${20 + (96 * pct / 100)} Q48,${23 + (96 * pct / 100)} 64,${20 + (96 * pct / 100)} L64,${20 + (96 * pct / 100) + 4} Q48,${23 + (96 * pct / 100) + 4} 32,${20 + (96 * pct / 100) + 4} Q16,${17 + (96 * pct / 100) + 4} 0,${20 + (96 * pct / 100) + 4} Z`}
-                      fill={bucketGradientTop}
-                      opacity="0.5"
-                    />
-                  )}
-                </g>
-              )}
-              {/* Bucket rim (ellipse at top) */}
-              <ellipse cx="32" cy="20" rx="24" ry="6" fill="white" stroke="#cbd5e1" strokeWidth="1.5" />
-              <ellipse cx="32" cy="20" rx="22" ry="4.5" fill="#f8fafc" />
-              {/* Bucket handle */}
-              <path d="M14,14 Q32,0 50,14" stroke="#94a3b8" strokeWidth="2" fill="none" strokeLinecap="round" />
-              {/* Percentage text in center */}
-              <text x="32" y="75" textAnchor="middle" fontSize="14" fontWeight="700"
-                fill={fillPct > 50 ? 'white' : '#334155'}>
-                {fillPct.toFixed(0)}%
-              </text>
-              <text x="32" y="89" textAnchor="middle" fontSize="8" fill={fillPct > 60 ? 'rgba(255,255,255,0.8)' : '#94a3b8'}>
-                剩余
-              </text>
-            </svg>
+      {!isUnlimited && activeBudgets.length > 0 ? (
+        <div className="space-y-3">
+          {/* Available quota */}
+          <div className="flex justify-between items-baseline">
+            <span className="text-xs text-slate-500">可用额度</span>
+            <span className="text-2xl font-bold text-emerald-600">{fmtCost(totalRemaining)}</span>
           </div>
 
-          {/* Budget details */}
-          <div className="flex-1 flex flex-col justify-center space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">总额</span>
-              <span className="font-bold text-slate-800">{fmtCost(budget)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">已使用</span>
-              <span className="font-semibold" style={{ color: bucketColor }}>
-                {fmtCost(Math.max(budget - remainingVal, 0))}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">剩余</span>
-              <span className={`font-semibold ${(remaining || 0) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                {fmtCost(Math.max(remaining || 0, 0))}
-              </span>
-            </div>
-            {/* Mini progress bar — shows remaining capacity */}
-            <div className="w-full bg-slate-100 rounded-full h-1.5 mt-1">
-              <div
-                className="h-1.5 rounded-full transition-all"
-                style={{ width: `${fillPct}%`, backgroundColor: bucketColor }}
-              />
-            </div>
+          {/* Stacked bar — each segment represents a budget record */}
+          <div className="flex rounded-lg overflow-hidden h-6" title={`共 ${activeBudgets.length} 笔预算`}>
+            {activeBudgets.map((b, i) => {
+              const widthPct = totalActive > 0 ? (b.amount / totalActive) * 100 : 0;
+              const usedPct = b.amount > 0 ? ((b.amount - b.remaining) / b.amount) * 100 : 0;
+              const color = BUDGET_COLORS[i % BUDGET_COLORS.length];
+              return (
+                <div
+                  key={b.id}
+                  className="relative group cursor-default"
+                  style={{ width: `${Math.max(widthPct, 2)}%` }}
+                >
+                  {/* Background (total amount) */}
+                  <div className="absolute inset-0" style={{ backgroundColor: color, opacity: 0.2 }} />
+                  {/* Remaining fill (from bottom) */}
+                  <div
+                    className="absolute bottom-0 left-0 right-0 transition-all"
+                    style={{
+                      height: `${100 - usedPct}%`,
+                      backgroundColor: color,
+                      opacity: 0.7,
+                    }}
+                  />
+                  {/* First budget indicator (currently being consumed) */}
+                  {i === 0 && (
+                    <div className="absolute top-0 left-0 w-full h-full border-2 rounded-l-lg" style={{ borderColor: color }} />
+                  )}
+                  {/* Tooltip */}
+                  <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2.5 py-1.5 rounded-lg whitespace-nowrap z-20 shadow-xl hidden group-hover:block">
+                    <div className="font-semibold">预算 #{i + 1}</div>
+                    <div>总额: {fmtCost(b.amount)} · 剩余: {fmtCost(b.remaining)}</div>
+                    <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+                  </div>
+                </div>
+              );
+            })}
           </div>
+
+          {/* Legend for active budgets */}
+          <div className="space-y-1">
+            {activeBudgets.map((b, i) => {
+              const color = BUDGET_COLORS[i % BUDGET_COLORS.length];
+              return (
+                <div key={b.id} className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: color }} />
+                    <span className="text-slate-500">
+                      {i === 0 ? '🔥 当前' : `预算 #${i + 1}`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">{fmtCost(b.amount)}</span>
+                    <span className="font-semibold" style={{ color }}>
+                      剩余 {fmtCost(b.remaining)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Exhausted budgets count */}
+          {budgets.length > activeBudgets.length && (
+            <p className="text-xs text-slate-400">
+              已耗尽 {budgets.length - activeBudgets.length} 笔预算
+            </p>
+          )}
+        </div>
+      ) : !isUnlimited && budgets.length === 0 ? (
+        <div className="text-center py-4">
+          <p className="text-slate-500 text-sm">暂无预算</p>
+          <p className="text-xs text-slate-400 mt-1">点击"管理"追加预算</p>
+          <p className="text-xs text-slate-400 mt-0.5">已消费 {fmtCost(used)}</p>
         </div>
       ) : (
         <div className="text-center py-4">
-          <div className="flex justify-center mb-3">
-            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="text-slate-300">
-              <path d="M8,16 L6,40 Q6,44 10,44 L38,44 Q42,44 42,40 L40,16 Z"
-                fill="#f8fafc" stroke="#e2e8f0" strokeWidth="1.5" />
-              <ellipse cx="24" cy="16" rx="16" ry="5" fill="white" stroke="#e2e8f0" strokeWidth="1.5" />
-              <path d="M12,12 Q24,4 36,12" stroke="#cbd5e1" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-              <text x="24" y="34" textAnchor="middle" fontSize="10" fill="#94a3b8">∞</text>
-            </svg>
-          </div>
+          <div className="text-3xl mb-1">∞</div>
           <p className="text-slate-500 text-sm">无预算限制</p>
           <p className="text-xs text-slate-400 mt-1">已消费 {fmtCost(used)}</p>
         </div>
@@ -357,19 +361,22 @@ const BudgetEditModal = ({
   apiKeyId,
   isUnlimitedBudget,
   currentRemaining,
+  budgets: existingBudgets,
   onClose,
 }: {
   apiKeyId: number;
   isUnlimitedBudget: boolean;
   currentRemaining: number | null;
+  budgets: BudgetRecord[];
   onClose: () => void;
 }) => {
   const [addAmount, setAddAmount] = useState('');
   const [isUnlimited, setIsUnlimited] = useState(isUnlimitedBudget);
   const queryClient = useQueryClient();
 
-  const mutation = useMutation({
-    mutationFn: async (params: { unlimited_budget: boolean; budget?: number }) => {
+  // Toggle unlimited mutation
+  const toggleMutation = useMutation({
+    mutationFn: async (params: { unlimited_budget: boolean }) => {
       await client.put(`/api/apikeys/${apiKeyId}`, params);
     },
     onSuccess: () => {
@@ -378,24 +385,54 @@ const BudgetEditModal = ({
     },
   });
 
-  const handleSave = () => {
-    if (isUnlimited) {
-      mutation.mutate({ unlimited_budget: true });
-    } else {
-      const val = parseFloat(addAmount);
-      if (!isNaN(val) && val > 0) {
-        // Budget is additive: send the amount to add
-        mutation.mutate({ unlimited_budget: false, budget: val });
+  // Add budget record mutation (new API)
+  const addBudgetMutation = useMutation({
+    mutationFn: async (amount: number) => {
+      await client.post(`/api/apikeys/${apiKeyId}/budgets`, { amount });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeyDetail', String(apiKeyId)] });
+      setAddAmount('');
+    },
+  });
+
+  // Delete budget record mutation
+  const deleteBudgetMutation = useMutation({
+    mutationFn: async (budgetId: number) => {
+      await client.delete(`/api/apikeys/${apiKeyId}/budgets/${budgetId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeyDetail', String(apiKeyId)] });
+    },
+  });
+
+  const handleAddBudget = () => {
+    const val = parseFloat(addAmount);
+    if (!isNaN(val) && val > 0) {
+      // First ensure unlimited is off
+      if (isUnlimited) {
+        // Switch to limited mode, then add budget
+        toggleMutation.mutate({ unlimited_budget: false }, {
+          onSuccess: () => {
+            addBudgetMutation.mutate(val);
+          },
+        });
       } else {
-        // Just switch to limited mode without adding budget
-        mutation.mutate({ unlimited_budget: false });
+        addBudgetMutation.mutate(val);
       }
     }
   };
 
+  const handleToggleUnlimited = () => {
+    toggleMutation.mutate({ unlimited_budget: !isUnlimited });
+  };
+
+  const activeBudgets = existingBudgets.filter(b => b.remaining > 0);
+  const isPending = toggleMutation.isPending || addBudgetMutation.isPending || deleteBudgetMutation.isPending;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md mx-4 p-6" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg mx-4 p-6 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
             <DollarSign className="w-5 h-5 text-amber-500" />
@@ -408,25 +445,72 @@ const BudgetEditModal = ({
 
         <div className="space-y-4">
           {/* Toggle unlimited */}
-          <label className="flex items-center space-x-3 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={isUnlimited}
-              onChange={(e) => {
-                setIsUnlimited(e.target.checked);
-                if (e.target.checked) setAddAmount('');
-              }}
-              className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
-            />
-            <span className="text-sm text-slate-700">无预算限制</span>
-          </label>
+          <div className="flex items-center justify-between">
+            <label className="flex items-center space-x-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isUnlimited}
+                onChange={(e) => setIsUnlimited(e.target.checked)}
+                className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+              />
+              <span className="text-sm text-slate-700">无预算限制</span>
+            </label>
+            {isUnlimited !== isUnlimitedBudget && (
+              <button
+                onClick={handleToggleUnlimited}
+                disabled={isPending}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+              >
+                {isPending ? '保存中...' : '应用'}
+              </button>
+            )}
+          </div>
 
-          {/* Current remaining display */}
-          {!isUnlimited && (
-            <div className="bg-slate-50 rounded-lg p-3">
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">当前剩余额度</span>
-                <span className="font-bold text-slate-800">{fmtCost(currentRemaining || 0)}</span>
+          {/* Existing budget records */}
+          {!isUnlimited && existingBudgets.length > 0 && (
+            <div>
+              <p className="text-xs text-slate-500 mb-2">预算记录</p>
+              <div className="space-y-1.5">
+                {existingBudgets.map((b, i) => {
+                  const isExhausted = b.remaining <= 0;
+                  const color = BUDGET_COLORS[i % BUDGET_COLORS.length];
+                  return (
+                    <div key={b.id} className={`flex items-center justify-between text-xs px-3 py-2 rounded-lg ${isExhausted ? 'bg-slate-50 opacity-50' : 'bg-slate-50'}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: isExhausted ? '#cbd5e1' : color }} />
+                        <span className="text-slate-600">
+                          {fmtCost(b.amount)}
+                        </span>
+                        <span className="text-slate-400">→</span>
+                        <span className={isExhausted ? 'text-slate-400' : 'text-emerald-600 font-semibold'}>
+                          {isExhausted ? '已耗尽' : `剩余 ${fmtCost(b.remaining)}`}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-400">{b.created_at ? fmtDate(b.created_at).slice(0, 10) : ''}</span>
+                        {b.remaining > 0 && (
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`确定要删除这笔预算 (${fmtCost(b.amount)}) 吗？剩余 ${fmtCost(b.remaining)} 将被退回。`)) {
+                                deleteBudgetMutation.mutate(b.id);
+                              }
+                            }}
+                            className="text-slate-300 hover:text-red-500 transition-colors"
+                            title="删除预算"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex justify-between text-xs mt-2 px-1">
+                <span className="text-slate-400">共 {existingBudgets.length} 笔</span>
+                <span className="text-emerald-600 font-semibold">
+                  可用: {fmtCost(currentRemaining || 0)}
+                </span>
               </div>
             </div>
           )}
@@ -437,25 +521,37 @@ const BudgetEditModal = ({
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
                 追加预算 (USD)
               </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">+$</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={addAmount}
-                  onChange={(e) => setAddAmount(e.target.value)}
-                  placeholder="追加金额，例如: 100.00"
-                  className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-colors"
-                  autoFocus
-                />
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">+$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={addAmount}
+                    onChange={(e) => setAddAmount(e.target.value)}
+                    placeholder="金额，例如: 100.00"
+                    className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-colors"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAddBudget();
+                    }}
+                  />
+                </div>
+                <button
+                  onClick={handleAddBudget}
+                  disabled={isPending || !addAmount || parseFloat(addAmount) <= 0}
+                  className="flex items-center space-x-1.5 px-4 py-2.5 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 rounded-xl transition-colors flex-shrink-0"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{addBudgetMutation.isPending ? '追加中...' : '追加'}</span>
+                </button>
               </div>
               {addAmount && parseFloat(addAmount) > 0 && (
                 <p className="text-xs text-emerald-600 mt-1.5">
-                  追加后剩余: {fmtCost((currentRemaining || 0) + parseFloat(addAmount))}
+                  追加后可用: {fmtCost((currentRemaining || 0) + parseFloat(addAmount))}
                 </p>
               )}
-              <p className="text-xs text-slate-400 mt-1">预算将追加到当前剩余额度上</p>
             </div>
           )}
 
@@ -482,26 +578,18 @@ const BudgetEditModal = ({
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex justify-end space-x-3 mt-6 pt-4 border-t border-slate-100">
+        {/* Close */}
+        <div className="flex justify-end mt-6 pt-4 border-t border-slate-100">
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors"
           >
-            取消
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={mutation.isPending}
-            className="flex items-center space-x-1.5 px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 rounded-xl transition-colors"
-          >
-            <Save className="w-4 h-4" />
-            <span>{mutation.isPending ? '保存中...' : '保存'}</span>
+            关闭
           </button>
         </div>
 
-        {mutation.isError && (
-          <p className="text-xs text-red-500 mt-2">保存失败，请重试</p>
+        {(toggleMutation.isError || addBudgetMutation.isError || deleteBudgetMutation.isError) && (
+          <p className="text-xs text-red-500 mt-2">操作失败，请重试</p>
         )}
       </div>
     </div>
@@ -697,11 +785,12 @@ const ApiKeyDetail = () => {
       {activeTab === 'overview' && (
         <>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Budget Bucket Card */}
-          <BudgetBucket
-            budget={budget.budget}
+          {/* Budget Bars Card */}
+          <BudgetBars
+            budgets={data.budgets || []}
+            totalRemaining={data.total_budget_remaining || 0}
+            isUnlimited={budget.unlimited_budget}
             used={budget.used}
-            remaining={budget.remaining}
             onEdit={() => setShowBudgetModal(true)}
           />
 
@@ -1067,7 +1156,8 @@ const ApiKeyDetail = () => {
         <BudgetEditModal
           apiKeyId={data.id}
           isUnlimitedBudget={budget.unlimited_budget}
-          currentRemaining={budget.remaining}
+          currentRemaining={data.total_budget_remaining || budget.remaining || 0}
+          budgets={data.budgets || []}
           onClose={() => setShowBudgetModal(false)}
         />
       )}

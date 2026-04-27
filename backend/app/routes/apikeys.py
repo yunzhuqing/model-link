@@ -11,7 +11,7 @@ from datetime import datetime
 import secrets
 
 from app import db
-from app.models import Group, ApiKey
+from app.models import Group, ApiKey, ApiKeyBudget
 from app.routes.users import token_required
 
 apikeys_bp = Blueprint('apikeys', __name__)
@@ -400,10 +400,19 @@ async def update_api_key(current_user, api_key_id):
     db.session.commit()
     db.session.refresh(api_key)
     
-    # Invalidate cache so stale data is not served
+    # Update cache with new values so budget/unlimited checks see them immediately
     try:
         from app.cache import get_cache
-        get_cache().invalidate_api_key_by_id(api_key_id)
+        cache = get_cache()
+        cached_info = cache.get_api_key_info(api_key.key)
+        if cached_info is not None:
+            cached_info['budget'] = api_key.budget
+            cached_info['unlimited_budget'] = api_key.unlimited_budget
+            cached_info['is_active'] = api_key.is_active
+            cached_info['allowed_models'] = api_key.allowed_models or []
+            cache.set_api_key_info(api_key.key, cached_info)
+        else:
+            cache.invalidate_api_key_by_id(api_key_id)
     except Exception:
         pass
     
@@ -677,6 +686,17 @@ async def get_api_key_detail(current_user, api_key_id):
     # This makes the bucket always show 100% when budget > 0, which correctly
     # reflects "you have $X remaining" without misleading "used" data.
 
+    # ── Budget records from ml_api_key_budgets ────────────────────────────
+    budget_records = (
+        db.session.query(ApiKeyBudget)
+        .filter(ApiKeyBudget.api_key_id == api_key_id)
+        .order_by(ApiKeyBudget.created_at.asc())
+        .all()
+    )
+    budgets_list = [b.to_dict() for b in budget_records]
+    # Total remaining across all budget records
+    total_remaining = sum(b.remaining for b in budget_records if b.remaining > 0)
+
     result = api_key.to_dict_with_group()
     result['api_key_hash'] = key_hash
     result['usage'] = usage_totals
@@ -688,6 +708,8 @@ async def get_api_key_detail(current_user, api_key_id):
         'used': round(usage_totals['estimated_cost'], 6),
         'remaining': round(budget_remaining, 6) if budget_remaining is not None else None,
     }
+    result['budgets'] = budgets_list
+    result['total_budget_remaining'] = round(total_remaining, 6)
 
     return jsonify(result)
 
@@ -742,3 +764,122 @@ async def regenerate_api_key(current_user, api_key_id):
     db.session.refresh(api_key)
     
     return jsonify(api_key.to_dict())
+
+
+# ============== Budget Management ==============
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/budgets', methods=['GET'])
+@token_required
+async def list_budgets(current_user, api_key_id):
+    """List all budget records for an API key."""
+    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+    if current_user not in api_key.group.users:
+        return jsonify({'detail': 'You do not have access to this API key'}), 403
+
+    budgets = (
+        db.session.query(ApiKeyBudget)
+        .filter(ApiKeyBudget.api_key_id == api_key_id)
+        .order_by(ApiKeyBudget.created_at.asc())
+        .all()
+    )
+    return jsonify([b.to_dict() for b in budgets])
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/budgets', methods=['POST'])
+@token_required
+async def add_budget(current_user, api_key_id):
+    """
+    Add a new budget entry to an API key.
+
+    Request body: { "amount": 100.0 }
+
+    Creates a new budget record and also updates the ApiKey.budget field
+    (total remaining) for backward compatibility.
+    """
+    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+    if current_user not in api_key.group.users:
+        return jsonify({'detail': 'You do not have access to this API key'}), 403
+
+    data = await request.get_json()
+    amount = data.get('amount')
+    if amount is None or amount == '':
+        return jsonify({'detail': 'amount is required'}), 400
+    amount = float(amount)
+    if amount <= 0:
+        return jsonify({'detail': 'amount must be positive'}), 400
+
+    budget_entry = ApiKeyBudget(
+        api_key_id=api_key_id,
+        amount=amount,
+        remaining=amount,
+    )
+    db.session.add(budget_entry)
+
+    # Also update ApiKey.budget for backward compatibility
+    current_budget = api_key.budget or 0.0
+    api_key.budget = current_budget + amount
+
+    db.session.commit()
+    db.session.refresh(budget_entry)
+    db.session.refresh(api_key)
+
+    # Update cache with new budget value so budget checks see it immediately
+    try:
+        from app.cache import get_cache
+        cache = get_cache()
+        cached_info = cache.get_api_key_info(api_key.key)
+        if cached_info is not None:
+            cached_info['budget'] = api_key.budget
+            cache.set_api_key_info(api_key.key, cached_info)
+        else:
+            # Cache miss — populate from scratch
+            cache.invalidate_api_key_by_id(api_key_id)
+    except Exception:
+        pass
+
+    return jsonify(budget_entry.to_dict()), 201
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/budgets/<int:budget_id>', methods=['DELETE'])
+@token_required
+async def delete_budget(current_user, api_key_id, budget_id):
+    """Delete a budget entry. Only allowed if budget has remaining > 0 (refund scenario)."""
+    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+    if current_user not in api_key.group.users:
+        return jsonify({'detail': 'You do not have access to this API key'}), 403
+
+    budget_entry = db.session.query(ApiKeyBudget).filter(
+        ApiKeyBudget.id == budget_id,
+        ApiKeyBudget.api_key_id == api_key_id,
+    ).first()
+    if not budget_entry:
+        return jsonify({'detail': 'Budget entry not found'}), 404
+
+    # Subtract the remaining amount from ApiKey.budget for backward compat
+    if api_key.budget is not None:
+        api_key.budget = max((api_key.budget or 0.0) - budget_entry.remaining, 0.0)
+
+    db.session.delete(budget_entry)
+    db.session.commit()
+    db.session.refresh(api_key)
+
+    # Update cache with new budget value so budget checks see it immediately
+    try:
+        from app.cache import get_cache
+        cache = get_cache()
+        cached_info = cache.get_api_key_info(api_key.key)
+        if cached_info is not None:
+            cached_info['budget'] = api_key.budget
+            cache.set_api_key_info(api_key.key, cached_info)
+        else:
+            cache.invalidate_api_key_by_id(api_key_id)
+    except Exception:
+        pass
+
+    return '', 204

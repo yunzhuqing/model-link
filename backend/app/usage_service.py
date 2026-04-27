@@ -422,6 +422,65 @@ def _resolve_output_price(
     return base_price
 
 
+def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None:
+    """
+    Deduct spending from budget records in the ml_api_key_budgets table.
+
+    Deducts from the oldest budget with remaining > 0 first. If a budget
+    is exhausted, continues to the next one. Also updates ApiKey.budget
+    (total remaining) for backward compatibility.
+
+    Args:
+        session: The active SQLAlchemy Session (from the NullPool engine).
+        api_key_raw: The raw API key string.
+        amount_usd: Amount in USD to deduct.
+    """
+    if amount_usd <= 0:
+        return
+
+    try:
+        from app.models import ApiKey as AK, ApiKeyBudget as AKB
+
+        # Find the API key by raw key
+        ak = session.query(AK).filter(AK.key == api_key_raw).first()
+        if not ak:
+            return
+
+        # Get budget records with remaining > 0, ordered by created_at (oldest first)
+        budgets = (
+            session.query(AKB)
+            .filter(AKB.api_key_id == ak.id, AKB.remaining > 0)
+            .order_by(AKB.created_at.asc())
+            .all()
+        )
+
+        if not budgets:
+            return
+
+        remaining_to_deduct = amount_usd
+        for budget in budgets:
+            if remaining_to_deduct <= 0:
+                break
+            if budget.remaining >= remaining_to_deduct:
+                budget.remaining = round(budget.remaining - remaining_to_deduct, 6)
+                remaining_to_deduct = 0
+            else:
+                remaining_to_deduct = round(remaining_to_deduct - budget.remaining, 6)
+                budget.remaining = 0.0
+
+        # Also update ApiKey.budget (total remaining) for backward compat
+        if ak.budget is not None:
+            ak.budget = max(round(ak.budget - amount_usd, 6), 0.0)
+
+        session.commit()
+    except Exception as exc:
+        logger.debug(f"[budget] Failed to deduct budget records: {exc}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+
 class _UsageOnlyResponse:
     """Minimal response-like object wrapping a UsageInfo for _persist_usage compatibility."""
     def __init__(self, usage_info):
@@ -532,6 +591,8 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
                     is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
                     if actual_usd > 0 and not is_unlimited:
                         cache.deduct_budget(api_key_raw, actual_usd)
+                        # Also deduct from budget records in DB (oldest first)
+                        _deduct_budget_records(session, api_key_raw, actual_usd)
 
                     # Increment real-time usage stats in cache
                     cache.increment_usage_stats(

@@ -137,7 +137,7 @@ def get_current_user_or_api_key():
         if not is_unlimited:
             budget = cached_info.get('budget')
             if budget is not None and float(budget) <= 0:
-                return None, None, {'detail': 'API key budget exceeded'}, 403
+                return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
 
         # Cache hit — still need the ORM object for downstream usage recording.
         # Load from DB but skip validation (already done from cache).
@@ -166,6 +166,12 @@ def get_current_user_or_api_key():
 
         if api_key.expires_at and api_key.expires_at < datetime.utcnow():
             return None, None, {'detail': 'API key has expired'}, 401
+
+        # Check budget from DB (budget field = total remaining across all budget records)
+        if not api_key.unlimited_budget:
+            budget_val = api_key.budget
+            if budget_val is not None and budget_val <= 0:
+                return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
 
         # Update last used time
         api_key.last_used_at = datetime.utcnow()

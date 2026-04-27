@@ -2,6 +2,7 @@
 Database models for Flask-SQLAlchemy (used with Quart via flask-sqlalchemy compatibility).
 """
 from datetime import datetime
+from decimal import Decimal
 from app import db
 import hashlib
 
@@ -188,6 +189,8 @@ class ApiKey(db.Model):
     # Relationships
     group = db.relationship("Group", back_populates="api_keys")
     user = db.relationship("User", backref="api_keys")
+    budgets = db.relationship("ApiKeyBudget", back_populates="api_key", cascade="all, delete-orphan",
+                              order_by="ApiKeyBudget.created_at")
 
     def to_dict(self):
         return {
@@ -307,12 +310,12 @@ class ModelTemplate(db.Model):
     output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Pricing ($ per 1M tokens)  — these are the default / first-tier values
-    input_price = db.Column(db.Float, default=0.0)
-    output_price = db.Column(db.Float, default=0.0)
-    cache_creation_price = db.Column(db.Float, default=0.0)
-    cache_5m_creation_price = db.Column(db.Float, default=0.0)  # 5-minute ephemeral cache creation price ($ per 1M tokens)
-    cache_1h_creation_price = db.Column(db.Float, default=0.0)  # 1-hour ephemeral cache creation price ($ per 1M tokens)
-    cache_hit_price = db.Column(db.Float, default=0.0)
+    input_price = db.Column(db.Numeric(20, 10), default=0)
+    output_price = db.Column(db.Numeric(20, 10), default=0)
+    cache_creation_price = db.Column(db.Numeric(20, 10), default=0)
+    cache_5m_creation_price = db.Column(db.Numeric(20, 10), default=0)  # 5-minute ephemeral cache creation price ($ per 1M tokens)
+    cache_1h_creation_price = db.Column(db.Numeric(20, 10), default=0)  # 1-hour ephemeral cache creation price ($ per 1M tokens)
+    cache_hit_price = db.Column(db.Numeric(20, 10), default=0)
 
     # Currency for pricing (e.g. "USD", "CNY")
     currency = db.Column(db.String(10), nullable=True, default='USD')
@@ -325,7 +328,7 @@ class ModelTemplate(db.Model):
     tpm = db.Column(db.Integer, nullable=True, default=None)   # tokens per minute (None = unlimited)
 
     # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
-    discount = db.Column(db.Float, nullable=True, default=1.0)
+    discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
 
     # Feature flags
     support_kvcache = db.Column(db.Boolean, default=False)
@@ -399,8 +402,8 @@ class Model(db.Model):
     context_size = db.Column(db.Integer, default=4096)
     input_size = db.Column(db.Integer, default=4096)
     output_size = db.Column(db.Integer, default=4096)  # Maximum output tokens
-    input_price = db.Column(db.Float, default=0.0)
-    output_price = db.Column(db.Float, default=0.0)
+    input_price = db.Column(db.Numeric(20, 10), default=0)
+    output_price = db.Column(db.Numeric(20, 10), default=0)
 
     # Reasoning effort default (none / low / medium / high)
     reasoning_effort = db.Column(db.String(20), nullable=True, default=None)
@@ -424,10 +427,10 @@ class Model(db.Model):
     output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Cache pricing
-    cache_creation_price = db.Column(db.Float, default=0.0)  # Simple cache creation price ($ per 1M tokens)
-    cache_5m_creation_price = db.Column(db.Float, default=0.0)  # 5-minute ephemeral cache creation price ($ per 1M tokens)
-    cache_1h_creation_price = db.Column(db.Float, default=0.0)  # 1-hour ephemeral cache creation price ($ per 1M tokens)
-    cache_hit_price = db.Column(db.Float, default=0.0)
+    cache_creation_price = db.Column(db.Numeric(20, 10), default=0)  # Simple cache creation price ($ per 1M tokens)
+    cache_5m_creation_price = db.Column(db.Numeric(20, 10), default=0)  # 5-minute ephemeral cache creation price ($ per 1M tokens)
+    cache_1h_creation_price = db.Column(db.Numeric(20, 10), default=0)  # 1-hour ephemeral cache creation price ($ per 1M tokens)
+    cache_hit_price = db.Column(db.Numeric(20, 10), default=0)
 
     # Currency for pricing (e.g. "USD", "CNY")
     currency = db.Column(db.String(10), nullable=True, default='USD')
@@ -440,7 +443,7 @@ class Model(db.Model):
     tpm = db.Column(db.Integer, nullable=True, default=None)   # tokens per minute (None = unlimited)
 
     # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
-    discount = db.Column(db.Float, nullable=True, default=1.0)
+    discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
 
     # Feature support
     support_kvcache = db.Column(db.Boolean, default=False)
@@ -505,6 +508,49 @@ class Model(db.Model):
         }
 
 
+class ApiKeyBudget(db.Model):
+    """
+    Budget records for API keys.
+
+    Each API key can have multiple budget entries. Budgets are consumed in
+    chronological order (oldest first). When a request costs money, the
+    system deducts from the oldest budget with remaining > 0. If that budget
+    is exhausted, it continues to the next one.
+
+    The available quota for an API key is the sum of `remaining` across all
+    its budget records.
+
+    Fields:
+        id          - Auto-increment primary key.
+        api_key_id  - Foreign key to ml_api_keys.id.
+        amount      - Original budget amount in USD.
+        remaining   - Remaining budget in USD (decremented on each request).
+        created_at  - When this budget entry was created.
+        updated_at  - Last time this budget entry was modified.
+    """
+    __tablename__ = "ml_api_key_budgets"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    api_key_id = db.Column(db.Integer, db.ForeignKey("ml_api_keys.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = db.Column(db.Numeric(20, 6), nullable=False, default=0)      # Original budget amount (USD)
+    remaining = db.Column(db.Numeric(20, 6), nullable=False, default=0)   # Remaining budget (USD)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship back to ApiKey
+    api_key = db.relationship("ApiKey", back_populates="budgets")
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'api_key_id': self.api_key_id,
+            'amount': round(self.amount, 6) if self.amount is not None else 0.0,
+            'remaining': round(self.remaining, 6) if self.remaining is not None else 0.0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class UsageRecord(db.Model):
     """
     Records the token consumption details for each API request.
@@ -539,23 +585,23 @@ class UsageRecord(db.Model):
 
     # ── Text token usage ───────────────────────────────────────────────────
     input_tokens = db.Column(db.BigInteger, default=0)
-    input_price_unit = db.Column(db.Float, default=0.0)   # $ per 1M tokens
+    input_price_unit = db.Column(db.Numeric(20, 10), default=0)   # $ per 1M tokens
 
     output_tokens = db.Column(db.BigInteger, default=0)
-    output_price_unit = db.Column(db.Float, default=0.0)  # $ per 1M tokens
+    output_price_unit = db.Column(db.Numeric(20, 10), default=0)  # $ per 1M tokens
 
     # Cache creation (Anthropic prompt caching write)
     cache_creation_tokens = db.Column(db.BigInteger, default=0)
-    cache_creation_price_unit = db.Column(db.Float, default=0.0)
+    cache_creation_price_unit = db.Column(db.Numeric(20, 10), default=0)
     # 5-minute and 1-hour ephemeral cache creation tokens & prices
     cache_5m_creation_tokens = db.Column(db.BigInteger, default=0)
-    cache_5m_creation_price_unit = db.Column(db.Float, default=0.0)
+    cache_5m_creation_price_unit = db.Column(db.Numeric(20, 10), default=0)
     cache_1h_creation_tokens = db.Column(db.BigInteger, default=0)
-    cache_1h_creation_price_unit = db.Column(db.Float, default=0.0)
+    cache_1h_creation_price_unit = db.Column(db.Numeric(20, 10), default=0)
 
     # Cache hit (Anthropic prompt caching read / OpenAI cached_tokens)
     cache_tokens = db.Column(db.BigInteger, default=0)
-    cache_token_price_unit = db.Column(db.Float, default=0.0)
+    cache_token_price_unit = db.Column(db.Numeric(20, 10), default=0)
 
     # Reasoning / thinking tokens (inside output)
     reasoning_tokens = db.Column(db.BigInteger, default=0)
@@ -565,7 +611,7 @@ class UsageRecord(db.Model):
     output_image_tokens = db.Column(db.BigInteger, default=0)
     output_image_resolution = db.Column(db.String(50), nullable=True)  # e.g. "1024x1024"
     output_image_aspect = db.Column(db.String(20), nullable=True)      # e.g. "1:1"
-    output_image_price_unit = db.Column(db.Float, default=0.0)        # $ per image
+    output_image_price_unit = db.Column(db.Numeric(20, 10), default=0)        # $ per image
 
     # ── Video output ───────────────────────────────────────────────────────
     output_video_number = db.Column(db.Integer, default=0)
@@ -573,23 +619,23 @@ class UsageRecord(db.Model):
     output_video_resolution = db.Column(db.String(50), nullable=True)
     output_video_aspect = db.Column(db.String(20), nullable=True)
     output_video_seconds = db.Column(db.Float, default=0.0)
-    output_video_price_unit = db.Column(db.Float, default=0.0)
+    output_video_price_unit = db.Column(db.Numeric(20, 10), default=0)
 
     # ── Audio output ───────────────────────────────────────────────────────
     output_audio_tokens = db.Column(db.BigInteger, default=0)
     output_audio_seconds = db.Column(db.Float, default=0.0)
-    output_audio_price_unit = db.Column(db.Float, default=0.0)
+    output_audio_price_unit = db.Column(db.Numeric(20, 10), default=0)
 
     # ── Web search ─────────────────────────────────────────────────────────
     web_search_requests = db.Column(db.Integer, default=0)
-    web_search_price_unit = db.Column(db.Float, default=0.0)  # $ per search request
+    web_search_price_unit = db.Column(db.Numeric(20, 10), default=0)  # $ per search request
 
     # ── Currency / exchange rate ────────────────────────────────────────────
     # Pricing currency of the model (e.g. "USD", "CNY"). Copied from Model.currency.
     currency = db.Column(db.String(10), nullable=True, default='USD')
     # Exchange rate from USD to the model's pricing currency at the time of request.
     # When currency is USD this is 1.0; when currency is CNY this is the USD→CNY rate.
-    exchange_rate = db.Column(db.Float, nullable=True, default=1.0)
+    exchange_rate = db.Column(db.Numeric(20, 10), nullable=True, default=1)
 
     # ── Duration ───────────────────────────────────────────────────────────
     # Total wall-clock time of the request in milliseconds
@@ -597,13 +643,13 @@ class UsageRecord(db.Model):
 
     # ── Billing ────────────────────────────────────────────────────────────
     # payable_amount: total cost before discount (in native currency)
-    payable_amount = db.Column(db.Float, nullable=True, default=0.0)
+    payable_amount = db.Column(db.Numeric(20, 10), nullable=True, default=0)
     # discount: discount multiplier applied (e.g. 0.9 = 10% off; 1.0 = no discount)
-    discount = db.Column(db.Float, nullable=True, default=1.0)
+    discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
     # actual_amount: actual cost after discount = payable_amount * discount (in native currency)
-    actual_amount = db.Column(db.Float, nullable=True, default=0.0)
+    actual_amount = db.Column(db.Numeric(20, 10), nullable=True, default=0)
     # actual_amount_usd: actual cost in USD = actual_amount / exchange_rate
-    actual_amount_usd = db.Column(db.Float, nullable=True, default=0.0)
+    actual_amount_usd = db.Column(db.Numeric(20, 10), nullable=True, default=0)
 
     # ── Timestamp ──────────────────────────────────────────────────────────
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)

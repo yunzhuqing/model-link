@@ -196,8 +196,11 @@ class CacheService:
     _API_KEY_PREFIX = "apikey:"
     _API_KEY_ID_PREFIX = "apikey_id:"
 
-    def __init__(self, backend: CacheBackend):
+    def __init__(self, backend: CacheBackend, api_key_ttl: Optional[int] = None):
         self._backend = backend
+        # Dedicated TTL for API key cache entries (default: 24 hours = 86400s).
+        # Configurable via CACHE_APIKEY_TTL environment variable.
+        self._api_key_ttl = api_key_ttl
 
     # ── API Key info ──────────────────────────────────────────────────────
 
@@ -214,12 +217,16 @@ class CacheService:
         return self._backend.get(f"{self._API_KEY_PREFIX}{api_key}")
 
     def set_api_key_info(self, api_key: str, info: Dict[str, Any], ttl: Optional[int] = None) -> None:
-        """Cache API key information keyed by the raw API key string."""
-        self._backend.set(f"{self._API_KEY_PREFIX}{api_key}", info, ttl)
+        """Cache API key information keyed by the raw API key string.
+        
+        Uses the dedicated API key TTL (default 24h) unless an explicit ttl is provided.
+        """
+        effective_ttl = ttl if ttl is not None else self._api_key_ttl
+        self._backend.set(f"{self._API_KEY_PREFIX}{api_key}", info, effective_ttl)
         # Also index by ID for invalidation from admin routes
         api_key_id = info.get('id')
         if api_key_id is not None:
-            self._backend.set(f"{self._API_KEY_ID_PREFIX}{api_key_id}", {"key": api_key}, ttl)
+            self._backend.set(f"{self._API_KEY_ID_PREFIX}{api_key_id}", {"key": api_key}, effective_ttl)
 
     def get_api_key_info_by_id(self, api_key_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -397,6 +404,10 @@ def init_cache() -> CacheService:
 
     backend_type = os.getenv("CACHE_BACKEND", "memory").lower().strip()
     default_ttl = int(os.getenv("CACHE_TTL", "300"))
+    # Dedicated TTL for API key cache entries (default: 24 hours = 86400s).
+    # API key data changes infrequently but is read on every request,
+    # so a long TTL reduces DB load while budget/usage updates keep it fresh.
+    api_key_ttl = int(os.getenv("CACHE_APIKEY_TTL", "86400"))
 
     if backend_type == "redis":
         redis_url = os.getenv("CACHE_REDIS_URL", "redis://localhost:6379/0")
@@ -406,12 +417,12 @@ def init_cache() -> CacheService:
             default_ttl=default_ttl,
             key_prefix=key_prefix,
         )
-        logger.info(f"Cache initialised: Redis backend ({redis_url}), TTL={default_ttl}s")
+        logger.info(f"Cache initialised: Redis backend ({redis_url}), TTL={default_ttl}s, API key TTL={api_key_ttl}s")
     else:
         backend = MemoryCacheBackend(default_ttl=default_ttl)
-        logger.info(f"Cache initialised: Memory backend, TTL={default_ttl}s")
+        logger.info(f"Cache initialised: Memory backend, TTL={default_ttl}s, API key TTL={api_key_ttl}s")
 
-    _cache = CacheService(backend)
+    _cache = CacheService(backend, api_key_ttl=api_key_ttl)
     return _cache
 
 
