@@ -99,11 +99,12 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-function fmtCost(n: number): string {
-  if (n >= 1000) return '$' + (n / 1000).toFixed(1) + 'K';
-  if (n >= 1) return '$' + n.toFixed(2);
-  if (n >= 0.01) return '$' + n.toFixed(3);
-  if (n > 0) return '$' + n.toFixed(4);
+function fmtCost(n: number | null | undefined): string {
+  const v = Number(n) || 0;
+  if (v >= 1000) return '$' + (v / 1000).toFixed(1) + 'K';
+  if (v >= 1) return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(3);
+  if (v > 0) return '$' + v.toFixed(4);
   return '$0.00';
 }
 

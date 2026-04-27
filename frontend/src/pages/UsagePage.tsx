@@ -124,13 +124,14 @@ function fmtNum(n: number): string {
   return String(n);
 }
 
-function fmtAmount(amount: number | null | undefined, currency?: string): string {
-  if (amount == null || amount === 0) return '—';
+function fmtAmount(amount: number | string | null | undefined, currency?: string): string {
+  const v = Number(amount);
+  if (amount == null || isNaN(v) || v === 0) return '—';
   const sym = (currency || 'USD').toUpperCase() === 'CNY' ? '¥' : '$';
-  if (amount < 0.0001) return `${sym}${amount.toExponential(2)}`;
-  if (amount < 0.01) return `${sym}${amount.toFixed(6)}`;
-  if (amount < 1) return `${sym}${amount.toFixed(4)}`;
-  return `${sym}${amount.toFixed(4)}`;
+  if (v < 0.0001) return `${sym}${v.toExponential(2)}`;
+  if (v < 0.01) return `${sym}${v.toFixed(6)}`;
+  if (v < 1) return `${sym}${v.toFixed(4)}`;
+  return `${sym}${v.toFixed(4)}`;
 }
 
 function fmtDate(iso: string): string {
@@ -766,9 +767,9 @@ const UsagePage = () => {
                           <span className="text-orange-700 font-mono text-xs font-medium">
                             {fmtAmount(r.actual_amount, r.currency)}
                           </span>
-                          {r.discount != null && r.discount < 1 && (
+                          {r.discount != null && Number(r.discount) < 1 && (
                             <span className="ml-1 text-xs text-green-600 bg-green-50 px-1 py-0.5 rounded">
-                              {Math.round((1 - r.discount) * 100)}%off
+                              {Math.round((1 - Number(r.discount)) * 100)}%off
                             </span>
                           )}
                         </td>

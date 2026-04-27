@@ -67,11 +67,12 @@ function fmtNum(n: number): string {
   return String(n);
 }
 
-function fmtPrice(n: number, currency: string): string {
+function fmtPrice(n: number | string | null | undefined, currency: string): string {
+  const v = Number(n) || 0;
   const sym = currency?.toUpperCase() === 'CNY' ? '¥' : '$';
-  if (n === 0) return `${sym}0`;
-  if (n < 0.01) return `${sym}${n.toFixed(4)}`;
-  return `${sym}${n.toFixed(2)}`;
+  if (v === 0) return `${sym}0`;
+  if (v < 0.01) return `${sym}${v.toFixed(4)}`;
+  return `${sym}${v.toFixed(2)}`;
 }
 
 const FeatureBadge = ({ active, icon: Icon, label }: { active: boolean; icon: React.ElementType; label: string }) => {

@@ -67,20 +67,22 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-function fmtCost(n: number): string {
-  if (n >= 1000) return '$' + (n / 1000).toFixed(1) + 'K';
-  if (n >= 1) return '$' + n.toFixed(2);
-  if (n >= 0.01) return '$' + n.toFixed(3);
-  if (n > 0) return '$' + n.toFixed(4);
+function fmtCost(n: number | string | null | undefined): string {
+  const v = Number(n) || 0;
+  if (v >= 1000) return '$' + (v / 1000).toFixed(1) + 'K';
+  if (v >= 1) return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(3);
+  if (v > 0) return '$' + v.toFixed(4);
   return '$0.00';
 }
 
-function fmtCostWithSymbol(n: number, currency: string): string {
+function fmtCostWithSymbol(n: number | string | null | undefined, currency: string): string {
+  const v = Number(n) || 0;
   const sym = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : currency + ' ';
-  if (n >= 1000) return sym + (n / 1000).toFixed(1) + 'K';
-  if (n >= 1) return sym + n.toFixed(2);
-  if (n >= 0.01) return sym + n.toFixed(3);
-  if (n > 0) return sym + n.toFixed(4);
+  if (v >= 1000) return sym + (v / 1000).toFixed(1) + 'K';
+  if (v >= 1) return sym + v.toFixed(2);
+  if (v >= 0.01) return sym + v.toFixed(3);
+  if (v > 0) return sym + v.toFixed(4);
   return sym + '0.00';
 }
 

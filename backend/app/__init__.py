@@ -105,14 +105,12 @@ def create_app(config=None):
 
     @app.after_request
     async def _pop_flask_app_context(response):
-        """Reset Flask's _cv_app ContextVar after request."""
-        from quart import g
-        token = getattr(g, '_flask_ctx_token', None)
-        if token is not None:
-            try:
-                _cv_app.reset(token)
-            except (ValueError, RuntimeError):
-                pass
+        """No-op: Flask context cleanup moved to teardown_appcontext.
+
+        Previously this reset _cv_app here, but that caused db.session.remove()
+        in teardown_appcontext to fail silently (RuntimeError caught), leaking
+        DB connections until the QueuePool was exhausted.
+        """
         return response
 
     # Remove Flask-SQLAlchemy's sync teardown handler and register async version
@@ -123,11 +121,26 @@ def create_app(config=None):
 
     @app.teardown_appcontext
     async def _teardown_db_session(exc):
+        """Release the DB session first, then reset Flask's _cv_app ContextVar.
+
+        Order matters: db.session.remove() needs Flask's _cv_app to still be
+        set so that Flask-SQLAlchemy can locate the correct scoped session and
+        return the underlying connection to the pool.  Only after the session
+        is fully cleaned up do we reset the ContextVar.
+        """
         try:
             db.session.remove()
         except RuntimeError:
             # App context already popped — safe to ignore
             pass
+        # Now safe to reset the Flask app context ContextVar
+        from quart import g
+        token = getattr(g, '_flask_ctx_token', None)
+        if token is not None:
+            try:
+                _cv_app.reset(token)
+            except (ValueError, RuntimeError):
+                pass
     
     # Enable CORS for all origins
     quart_cors_init(app, allow_origin="*")
