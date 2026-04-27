@@ -427,7 +427,6 @@ const BudgetEditModal = ({
     toggleMutation.mutate({ unlimited_budget: !isUnlimited });
   };
 
-  const activeBudgets = existingBudgets.filter(b => b.remaining > 0);
   const isPending = toggleMutation.isPending || addBudgetMutation.isPending || deleteBudgetMutation.isPending;
 
   return (
