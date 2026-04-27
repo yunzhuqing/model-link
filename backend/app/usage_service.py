@@ -105,12 +105,13 @@ def record_usage(
     )
 
     # Flat (base) prices — used when no tier matches
-    input_price_unit: float = getattr(db_model, 'input_price', 0.0) or 0.0
-    output_price_unit: float = getattr(db_model, 'output_price', 0.0) or 0.0
-    cache_creation_price_unit: float = getattr(db_model, 'cache_creation_price', 0.0) or 0.0
-    cache_5m_creation_price_unit: float = getattr(db_model, 'cache_5m_creation_price', 0.0) or 0.0
-    cache_1h_creation_price_unit: float = getattr(db_model, 'cache_1h_creation_price', 0.0) or 0.0
-    cache_token_price_unit: float = getattr(db_model, 'cache_hit_price', 0.0) or 0.0
+    # Note: DB columns are Numeric → Decimal; coerce to float to avoid mixed-type arithmetic.
+    input_price_unit: float = float(getattr(db_model, 'input_price', 0) or 0)
+    output_price_unit: float = float(getattr(db_model, 'output_price', 0) or 0)
+    cache_creation_price_unit: float = float(getattr(db_model, 'cache_creation_price', 0) or 0)
+    cache_5m_creation_price_unit: float = float(getattr(db_model, 'cache_5m_creation_price', 0) or 0)
+    cache_1h_creation_price_unit: float = float(getattr(db_model, 'cache_1h_creation_price', 0) or 0)
+    cache_token_price_unit: float = float(getattr(db_model, 'cache_hit_price', 0) or 0)
     currency: str = getattr(db_model, 'currency', 'USD') or 'USD'
     # Tiered pricing — serialised as a plain list so it's safe to pass to a thread
     pricing_tiers: Optional[list] = getattr(db_model, 'pricing_tiers', None)
@@ -118,7 +119,7 @@ def record_usage(
     output_pricing: Optional[dict] = getattr(db_model, 'output_pricing', None)
 
     # Discount multiplier from model (e.g. 0.9 = 10% off; 1.0 = no discount)
-    discount: float = getattr(db_model, 'discount', 1.0) or 1.0
+    discount: float = float(getattr(db_model, 'discount', 1) or 1)
 
     exchange_rate = _get_exchange_rate_for_currency(currency)
 
@@ -435,6 +436,8 @@ def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None
         api_key_raw: The raw API key string.
         amount_usd: Amount in USD to deduct.
     """
+    # Coerce to float in case amount_usd is a Decimal (e.g. from UsageRecord.actual_amount_usd)
+    amount_usd = float(amount_usd)
     if amount_usd <= 0:
         return
 
@@ -461,11 +464,13 @@ def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None
         for budget in budgets:
             if remaining_to_deduct <= 0:
                 break
-            if budget.remaining >= remaining_to_deduct:
-                budget.remaining = round(budget.remaining - remaining_to_deduct, 6)
+            # Coerce Decimal → float to avoid mixed-type arithmetic errors
+            budget_remaining = float(budget.remaining or 0)
+            if budget_remaining >= remaining_to_deduct:
+                budget.remaining = round(budget_remaining - remaining_to_deduct, 6)
                 remaining_to_deduct = 0
             else:
-                remaining_to_deduct = round(remaining_to_deduct - budget.remaining, 6)
+                remaining_to_deduct = round(remaining_to_deduct - budget_remaining, 6)
                 budget.remaining = 0.0
 
         # Also update ApiKey.budget (total remaining) for backward compat
@@ -585,7 +590,7 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
                     from app.cache import get_cache
                     cache = get_cache()
 
-                    actual_usd = getattr(record, 'actual_amount_usd', None) or 0.0
+                    actual_usd = float(getattr(record, 'actual_amount_usd', None) or 0)
                     # Only deduct budget if the key is NOT unlimited
                     cached_info = cache.get_api_key_info(api_key_raw)
                     is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
@@ -767,7 +772,7 @@ def _build_record(
         # Simple per-token cache creation pricing (legacy / other models)
         cache_creation_cost = cache_creation_tokens * cache_creation_price_unit / 1_000_000
 
-    payable_amount: float = (
+    payable_amount: float = float(
         input_tokens * input_price_unit / 1_000_000
         + output_tokens * output_price_unit / 1_000_000
         + cache_creation_cost
@@ -777,11 +782,11 @@ def _build_record(
         + output_audio_seconds * output_audio_price_unit
         + web_search_requests * web_search_price_unit
     )
-    # Ensure discount is valid
-    effective_discount: float = discount if discount and discount > 0 else 1.0
+    # Ensure discount is valid (coerce to float to handle decimal.Decimal from DB)
+    effective_discount: float = float(discount) if discount and discount > 0 else 1.0
     actual_amount: float = payable_amount * effective_discount
     # Convert to USD: actual_amount is in native currency, exchange_rate is USD→native
-    effective_exchange_rate: float = exchange_rate if exchange_rate and exchange_rate > 0 else 1.0
+    effective_exchange_rate: float = float(exchange_rate) if exchange_rate and exchange_rate > 0 else 1.0
     actual_amount_usd: float = actual_amount / effective_exchange_rate
 
     return UsageRecord(

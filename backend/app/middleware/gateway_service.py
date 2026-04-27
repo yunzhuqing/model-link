@@ -428,19 +428,19 @@ class GatewayService:
             'provider_name': resolved.db_provider.name,
             'model_alias': resolved.db_model.alias,
             'model_real_name': resolved.db_model.name,
-            'input_price_unit': getattr(resolved.db_model, 'input_price', 0.0) or 0.0,
-            'output_price_unit': getattr(resolved.db_model, 'output_price', 0.0) or 0.0,
-            'cache_creation_price_unit': getattr(resolved.db_model, 'cache_creation_price', 0.0) or 0.0,
-            'cache_5m_creation_price_unit': getattr(resolved.db_model, 'cache_5m_creation_price', 0.0) or 0.0,
-            'cache_1h_creation_price_unit': getattr(resolved.db_model, 'cache_1h_creation_price', 0.0) or 0.0,
-            'cache_token_price_unit': getattr(resolved.db_model, 'cache_hit_price', 0.0) or 0.0,
+            'input_price_unit': float(getattr(resolved.db_model, 'input_price', 0) or 0),
+            'output_price_unit': float(getattr(resolved.db_model, 'output_price', 0) or 0),
+            'cache_creation_price_unit': float(getattr(resolved.db_model, 'cache_creation_price', 0) or 0),
+            'cache_5m_creation_price_unit': float(getattr(resolved.db_model, 'cache_5m_creation_price', 0) or 0),
+            'cache_1h_creation_price_unit': float(getattr(resolved.db_model, 'cache_1h_creation_price', 0) or 0),
+            'cache_token_price_unit': float(getattr(resolved.db_model, 'cache_hit_price', 0) or 0),
             'currency': getattr(resolved.db_model, 'currency', 'USD') or 'USD',
             # Tiered pricing — plain list, safe to pass across thread boundaries
             'pricing_tiers': getattr(resolved.db_model, 'pricing_tiers', None),
             # Output pricing strategies for image/video/audio — plain dict
             'output_pricing': getattr(resolved.db_model, 'output_pricing', None),
             # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
-            'discount': getattr(resolved.db_model, 'discount', 1.0) or 1.0,
+            'discount': float(getattr(resolved.db_model, 'discount', 1) or 1),
         }
 
         # 7. Release the DB session — same rationale as stream_chat()

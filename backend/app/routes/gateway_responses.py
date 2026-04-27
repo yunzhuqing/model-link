@@ -137,16 +137,16 @@ def _run_background_response(
             _pricing_snapshot = {
                 'provider_id': _db_provider.id if _db_provider else None,
                 'provider_name': _db_provider.name if _db_provider else None,
-                'input_price': getattr(_db_model, 'input_price', 0.0) or 0.0,
-                'output_price': getattr(_db_model, 'output_price', 0.0) or 0.0,
-                'cache_creation_price': getattr(_db_model, 'cache_creation_price', 0.0) or 0.0,
-                'cache_5m_creation_price': getattr(_db_model, 'cache_5m_creation_price', 0.0) or 0.0,
-                'cache_1h_creation_price': getattr(_db_model, 'cache_1h_creation_price', 0.0) or 0.0,
-                'cache_hit_price': getattr(_db_model, 'cache_hit_price', 0.0) or 0.0,
+                'input_price': float(getattr(_db_model, 'input_price', 0) or 0),
+                'output_price': float(getattr(_db_model, 'output_price', 0) or 0),
+                'cache_creation_price': float(getattr(_db_model, 'cache_creation_price', 0) or 0),
+                'cache_5m_creation_price': float(getattr(_db_model, 'cache_5m_creation_price', 0) or 0),
+                'cache_1h_creation_price': float(getattr(_db_model, 'cache_1h_creation_price', 0) or 0),
+                'cache_hit_price': float(getattr(_db_model, 'cache_hit_price', 0) or 0),
                 'pricing_tiers': getattr(_db_model, 'pricing_tiers', None),
                 'output_pricing': getattr(_db_model, 'output_pricing', None),
                 'currency': getattr(_db_model, 'currency', 'USD') or 'USD',
-                'discount': getattr(_db_model, 'discount', 1.0) or 1.0,
+                'discount': float(getattr(_db_model, 'discount', 1) or 1),
             }
             # Release the DB session — return the connection to the pool
             try:

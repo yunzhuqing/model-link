@@ -695,7 +695,7 @@ async def get_api_key_detail(current_user, api_key_id):
     )
     budgets_list = [b.to_dict() for b in budget_records]
     # Total remaining across all budget records
-    total_remaining = sum(b.remaining for b in budget_records if b.remaining > 0)
+    total_remaining = float(sum(float(b.remaining or 0) for b in budget_records if b.remaining and b.remaining > 0))
 
     result = api_key.to_dict_with_group()
     result['api_key_hash'] = key_hash
@@ -863,7 +863,7 @@ async def delete_budget(current_user, api_key_id, budget_id):
 
     # Subtract the remaining amount from ApiKey.budget for backward compat
     if api_key.budget is not None:
-        api_key.budget = max((api_key.budget or 0.0) - budget_entry.remaining, 0.0)
+        api_key.budget = max((api_key.budget or 0.0) - float(budget_entry.remaining or 0), 0.0)
 
     db.session.delete(budget_entry)
     db.session.commit()

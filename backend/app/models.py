@@ -544,8 +544,8 @@ class ApiKeyBudget(db.Model):
         return {
             'id': self.id,
             'api_key_id': self.api_key_id,
-            'amount': round(self.amount, 6) if self.amount is not None else 0.0,
-            'remaining': round(self.remaining, 6) if self.remaining is not None else 0.0,
+            'amount': round(float(self.amount), 6) if self.amount is not None else 0.0,
+            'remaining': round(float(self.remaining), 6) if self.remaining is not None else 0.0,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
