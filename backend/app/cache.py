@@ -61,6 +61,23 @@ class CacheBackend(ABC):
         Returns the new value, or None if the key doesn't exist.
         """
 
+    # ── Scalar float operations (for simple numeric keys) ─────────────────
+
+    @abstractmethod
+    def get_float(self, key: str) -> Optional[float]:
+        """Return a cached scalar float value, or None if missing/expired."""
+
+    @abstractmethod
+    def set_float(self, key: str, value: float, ttl: Optional[int] = None) -> None:
+        """Store a scalar float value with optional TTL in seconds."""
+
+    @abstractmethod
+    def incr_float_scalar(self, key: str, amount: float) -> Optional[float]:
+        """
+        Atomically increment a scalar float key by the given amount.
+        Returns the new value, or None if the key doesn't exist.
+        """
+
 
 # ── Memory backend ───────────────────────────────────────────────────────────
 
@@ -109,6 +126,38 @@ class MemoryCacheBackend(CacheBackend):
             current = value.get(field, 0.0)
             new_val = current + amount
             value[field] = new_val
+            return new_val
+
+    # ── Scalar float operations ───────────────────────────────────────────
+
+    def get_float(self, key: str) -> Optional[float]:
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            value, expires_at = entry
+            if expires_at and time.time() > expires_at:
+                del self._store[key]
+                return None
+            return float(value) if value is not None else None
+
+    def set_float(self, key: str, value: float, ttl: Optional[int] = None) -> None:
+        effective_ttl = ttl if ttl is not None else self._default_ttl
+        expires_at = time.time() + effective_ttl if effective_ttl > 0 else None
+        with self._lock:
+            self._store[key] = (value, expires_at)
+
+    def incr_float_scalar(self, key: str, amount: float) -> Optional[float]:
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            value, expires_at = entry
+            if expires_at and time.time() > expires_at:
+                del self._store[key]
+                return None
+            new_val = float(value or 0) + amount
+            self._store[key] = (new_val, expires_at)
             return new_val
 
 
@@ -182,6 +231,34 @@ class RedisCacheBackend(CacheBackend):
             return None
         return float(result)
 
+    # ── Scalar float operations ───────────────────────────────────────────
+
+    def get_float(self, key: str) -> Optional[float]:
+        raw = self._client.get(self._key(key))
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
+
+    def set_float(self, key: str, value: float, ttl: Optional[int] = None) -> None:
+        effective_ttl = ttl if ttl is not None else self._default_ttl
+        rk = self._key(key)
+        if effective_ttl > 0:
+            self._client.setex(rk, effective_ttl, str(value))
+        else:
+            self._client.set(rk, str(value))
+
+    def incr_float_scalar(self, key: str, amount: float) -> Optional[float]:
+        """Atomically increment a scalar float key using Redis INCRBYFLOAT."""
+        rk = self._key(key)
+        # INCRBYFLOAT returns an error if key doesn't exist; check first.
+        if not self._client.exists(rk):
+            return None
+        result = self._client.incrbyfloat(rk, amount)
+        return float(result)
+
 
 # ── Cache service (high-level API) ────────────────────────────────────────────
 
@@ -195,6 +272,7 @@ class CacheService:
     # Cache key prefixes
     _API_KEY_PREFIX = "apikey:"
     _API_KEY_ID_PREFIX = "apikey_id:"
+    _BUDGET_REMAINING_PREFIX = "budget_remaining:"
 
     def __init__(self, backend: CacheBackend, api_key_ttl: Optional[int] = None):
         self._backend = backend
@@ -254,40 +332,60 @@ class CacheService:
             self._backend.delete(f"{self._API_KEY_PREFIX}{mapping['key']}")
         self._backend.delete(f"{self._API_KEY_ID_PREFIX}{api_key_id}")
 
-    # ── Budget tracking ───────────────────────────────────────────────────
+    # ── Budget tracking (dedicated key) ───────────────────────────────────
 
-    def deduct_budget(self, api_key: str, amount_usd: float) -> Optional[float]:
+    def set_budget_remaining(self, api_key: str, remaining: float, ttl: Optional[int] = None) -> None:
         """
-        Deduct an amount (in USD) from the cached budget_used for this API key.
+        Set the real-time remaining budget for an API key in a dedicated cache key.
 
-        This is called AFTER the database write succeeds, to keep the cache
-        in sync with the authoritative database.
+        Stores a plain float value (not a dict). This key is the single source
+        of truth for budget checks in the gateway. It is updated:
+          - When the API key cache is first populated (from DB)
+          - After each request (decremented by actual_amount_usd)
+          - When budget is added/deleted via admin routes
 
-        Returns the new budget_used value, or None if the key is not cached.
+        Args:
+            api_key: The raw API key string.
+            remaining: The remaining budget in USD.
+            ttl: Optional TTL in seconds. If None, uses the default TTL from
+                 the BudgetManager (typically 600s / 10 minutes).
         """
-        if amount_usd <= 0:
-            return None
-        return self._backend.incr_float(
-            f"{self._API_KEY_PREFIX}{api_key}",
-            "budget_used",
-            amount_usd,
+        self._backend.set_float(
+            f"{self._BUDGET_REMAINING_PREFIX}{api_key}",
+            remaining,
+            ttl=ttl,
         )
 
     def get_budget_remaining(self, api_key: str) -> Optional[float]:
         """
-        Get the remaining budget for an API key from cache.
+        Get the real-time remaining budget for an API key from the dedicated cache key.
 
-        Returns None if the key is not cached or has no budget set.
-        Returns the remaining amount in USD if budget is set.
+        Returns None if not cached (caller should fall back to DB).
+        Returns the remaining amount in USD.
         """
-        info = self.get_api_key_info(api_key)
-        if info is None:
+        return self._backend.get_float(f"{self._BUDGET_REMAINING_PREFIX}{api_key}")
+
+    def deduct_budget(self, api_key: str, amount_usd: float) -> Optional[float]:
+        """
+        Atomically deduct an amount (in USD) from the dedicated budget remaining key.
+
+        This is called AFTER the database write succeeds, to keep the cache
+        in sync with the authoritative database.
+
+        The amount is *subtracted* from the remaining balance (negative increment).
+
+        Returns the new remaining value, or None if the key doesn't exist in cache.
+        """
+        if amount_usd <= 0:
             return None
-        budget = info.get('budget')
-        if budget is None:
-            return None  # Unlimited budget
-        budget_used = info.get('budget_used', 0.0)
-        return budget - budget_used
+        return self._backend.incr_float_scalar(
+            f"{self._BUDGET_REMAINING_PREFIX}{api_key}",
+            -amount_usd,  # subtract from remaining
+        )
+
+    def invalidate_budget_remaining(self, api_key: str) -> None:
+        """Remove the dedicated budget remaining cache key."""
+        self._backend.delete(f"{self._BUDGET_REMAINING_PREFIX}{api_key}")
 
     # ── Usage stats tracking ──────────────────────────────────────────────
 

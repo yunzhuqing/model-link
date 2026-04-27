@@ -223,6 +223,12 @@ def _do_sync(app) -> None:
                     if cache_dirty:
                         cache.set_api_key_info(ak.key, cached)
 
+                # Sync the dedicated budget_remaining key from DB's authoritative
+                # api_key.budget value so the gateway always has accurate data.
+                if not ak.unlimited_budget and ak.budget is not None:
+                    from app.budget_manager import get_budget_manager
+                    get_budget_manager().set_remaining(ak.key, float(ak.budget))
+
             if updated_count > 0:
                 session.commit()
                 logger.info(f"[usage_sync] Synced {updated_count} API key(s) usage stats to DB")

@@ -130,13 +130,13 @@ def get_current_user_or_api_key():
             except (ValueError, TypeError):
                 pass
 
-        # Check budget from cache
-        # budget field is the remaining allowance (additive model).
+        # Check budget from BudgetManager (real-time, with DB fallback on cache miss).
         # unlimited_budget flag bypasses the check entirely.
         is_unlimited = cached_info.get('unlimited_budget', True)
         if not is_unlimited:
-            budget = cached_info.get('budget')
-            if budget is not None and float(budget) <= 0:
+            from app.budget_manager import get_budget_manager
+            budget_remaining = get_budget_manager().get_remaining(token)
+            if budget_remaining is not None and float(budget_remaining) <= 0:
                 return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
 
         # Cache hit — still need the ORM object for downstream usage recording.
@@ -211,6 +211,9 @@ def _populate_api_key_cache(api_key, cache):
     """
     Compute the current budget_used from UsageRecord and populate the cache.
 
+    Also sets the dedicated budget_remaining key so that real-time budget
+    checks in the gateway always use up-to-date remaining values.
+
     Only computes budget_used if the API key has a budget set, to avoid
     unnecessary aggregate queries.
     """
@@ -231,6 +234,12 @@ def _populate_api_key_cache(api_key, cache):
 
     info = cache.build_api_key_cache_info(api_key, budget_used=budget_used)
     cache.set_api_key_info(api_key.key, info)
+
+    # Set the dedicated budget remaining key from the DB's authoritative value
+    # via BudgetManager (which handles TTL).
+    if not api_key.unlimited_budget and api_key.budget is not None:
+        from app.budget_manager import get_budget_manager
+        get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
 
 
 # ============== 统一请求处理 ==============

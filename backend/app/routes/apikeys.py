@@ -413,6 +413,15 @@ async def update_api_key(current_user, api_key_id):
             cache.set_api_key_info(api_key.key, cached_info)
         else:
             cache.invalidate_api_key_by_id(api_key_id)
+        # Update the dedicated budget remaining key so gateway budget checks
+        # see the new value immediately.
+        from app.budget_manager import get_budget_manager
+        bm = get_budget_manager()
+        if not api_key.unlimited_budget and api_key.budget is not None:
+            bm.set_remaining(api_key.key, float(api_key.budget))
+        elif api_key.unlimited_budget:
+            # Unlimited budget — remove the dedicated remaining key
+            bm.invalidate(api_key.key)
     except Exception:
         pass
     
@@ -728,7 +737,9 @@ async def delete_api_key(current_user, api_key_id):
     # Invalidate cache before deleting (need the raw key for cache lookup)
     try:
         from app.cache import get_cache
+        from app.budget_manager import get_budget_manager
         get_cache().invalidate_api_key(api_key.key)
+        get_budget_manager().invalidate(api_key.key)
     except Exception:
         pass
     
@@ -753,7 +764,9 @@ async def regenerate_api_key(current_user, api_key_id):
     old_key = api_key.key
     try:
         from app.cache import get_cache
+        from app.budget_manager import get_budget_manager
         get_cache().invalidate_api_key(old_key)
+        get_budget_manager().invalidate(old_key)
     except Exception:
         pass
     
@@ -838,6 +851,11 @@ async def add_budget(current_user, api_key_id):
         else:
             # Cache miss — populate from scratch
             cache.invalidate_api_key_by_id(api_key_id)
+        # Update the dedicated budget remaining key so gateway budget checks
+        # see the new value immediately.
+        if not api_key.unlimited_budget and api_key.budget is not None:
+            from app.budget_manager import get_budget_manager
+            get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
     except Exception:
         pass
 
@@ -879,6 +897,11 @@ async def delete_budget(current_user, api_key_id, budget_id):
             cache.set_api_key_info(api_key.key, cached_info)
         else:
             cache.invalidate_api_key_by_id(api_key_id)
+        # Update the dedicated budget remaining key so gateway budget checks
+        # see the new value immediately.
+        if not api_key.unlimited_budget and api_key.budget is not None:
+            from app.budget_manager import get_budget_manager
+            get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
     except Exception:
         pass
 

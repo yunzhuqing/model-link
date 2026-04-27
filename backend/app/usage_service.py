@@ -595,7 +595,9 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
                     cached_info = cache.get_api_key_info(api_key_raw)
                     is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
                     if actual_usd > 0 and not is_unlimited:
-                        cache.deduct_budget(api_key_raw, actual_usd)
+                        # Deduct from dedicated budget remaining key via BudgetManager
+                        from app.budget_manager import get_budget_manager
+                        get_budget_manager().deduct(api_key_raw, actual_usd)
                         # Also deduct from budget records in DB (oldest first)
                         _deduct_budget_records(session, api_key_raw, actual_usd)
 
