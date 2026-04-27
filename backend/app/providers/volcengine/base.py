@@ -86,7 +86,7 @@ class VolcengineProvider(BaseProvider):
         if self._client is None:
             import httpx
             self._client = httpx.Client(
-                timeout=self.config.timeout,
+                timeout=self.DEFAULT_TIMEOUT,
                 headers=self.get_headers()
             )
         return self._client
@@ -408,7 +408,8 @@ class VolcengineProvider(BaseProvider):
         url = f"{self.config.base_url}/responses"
 
         try:
-            response = self.client.post(url, json=request_data)
+            req_timeout = self._get_request_timeout(request)
+            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
             if response.status_code >= 400:
                 try:
@@ -736,7 +737,8 @@ class VolcengineProvider(BaseProvider):
         seen_call_ids: set = set()
 
         try:
-            with self.client.stream("POST", url, json=request_data) as response:
+            req_timeout = self._get_request_timeout(request)
+            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk_bytes in response.iter_bytes():

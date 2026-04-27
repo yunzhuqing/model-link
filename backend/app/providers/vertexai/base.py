@@ -361,7 +361,7 @@ class VertexAIProvider(BaseProvider):
         """获取 HTTP 客户端"""
         import httpx
         if self._client is None:
-            self._client = httpx.Client(timeout=self.config.timeout)
+            self._client = httpx.Client(timeout=self.DEFAULT_TIMEOUT)
         return self._client
 
     # ==================== URL 构建 ====================
@@ -1337,7 +1337,8 @@ class VertexAIProvider(BaseProvider):
         logger.debug(f"[VertexAI {publisher}] URL: {url}")
 
         try:
-            response = self.client.post(url, json=request_data, headers=headers)
+            req_timeout = self._get_request_timeout(request)
+            response = self.client.post(url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {}))
 
             if response.status_code >= 400:
                 error_text = response.text
@@ -1435,7 +1436,8 @@ class VertexAIProvider(BaseProvider):
         gemini_saw_tool_calls = False
 
         try:
-            with self.client.stream("POST", url, json=request_data, headers=headers) as response:
+            req_timeout = self._get_request_timeout(request)
+            with self.client.stream("POST", url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk in response.iter_bytes():

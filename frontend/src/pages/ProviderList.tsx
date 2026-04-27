@@ -64,6 +64,7 @@ interface Model {
   rpm: number | null;
   tpm: number | null;
   discount: number;
+  timeout: number | null;
   support_kvcache: boolean;
   support_image: boolean;
   support_audio: boolean;
@@ -197,6 +198,7 @@ const defaultModelState = {
   rpm: null as number | null,
   tpm: null as number | null,
   discount: 1.0,
+  timeout: null as number | null,
   support_kvcache: false,
   support_image: false,
   support_audio: false,
@@ -806,8 +808,8 @@ const ModelForm = ({
         })}
       </div>
 
-      {/* Rate limits & discount */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+      {/* Rate limits, discount & timeout */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">RPM <span className="text-slate-400 font-normal text-xs">(req/min, blank=∞)</span></label>
           <input type="number" min="0" placeholder="unlimited" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.rpm ?? ''} onChange={(e) => setModel({ ...model, rpm: e.target.value ? parseInt(e.target.value) : null })} />
@@ -819,6 +821,10 @@ const ModelForm = ({
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Discount <span className="text-slate-400 font-normal text-xs">(1.0=full)</span></label>
           <input type="number" step="0.01" min="0" max="1" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.discount ?? 1.0} onChange={(e) => setModel({ ...model, discount: parseFloat(e.target.value) || 1.0 })} />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Timeout <span className="text-slate-400 font-normal text-xs">(sec, blank=300s)</span></label>
+          <input type="number" min="1" placeholder="300" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.timeout ?? ''} onChange={(e) => setModel({ ...model, timeout: e.target.value ? parseInt(e.target.value) : null })} />
         </div>
       </div>
 

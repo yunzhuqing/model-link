@@ -521,6 +521,7 @@ def _poll_video_task(
     api_key: str,
     base_url: str,
     task_id: str,
+    poll_timeout: Optional[int] = None,
 ) -> Tuple[str, Dict[str, int]]:
     """
     轮询 GET /contents/generations/tasks/{task_id} 直到任务完成。
@@ -542,7 +543,8 @@ def _poll_video_task(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    deadline = time.time() + _POLL_MAX_WAIT_S
+    max_wait = poll_timeout or _POLL_MAX_WAIT_S
+    deadline = time.time() + max_wait
 
     with httpx.Client(timeout=60) as client:
         while time.time() < deadline:
@@ -730,7 +732,7 @@ def execute_seedance_video_generation(
     )
 
     # ── 轮询结果 ─────────────────────────────────────────────────────────
-    video_url, usage_dict = _poll_video_task(api_key, base_url, task_id)
+    video_url, usage_dict = _poll_video_task(api_key, base_url, task_id, poll_timeout=metadata.get('timeout'))
 
     # Determine whether a reference video was used in the request
     has_reference_video = any(

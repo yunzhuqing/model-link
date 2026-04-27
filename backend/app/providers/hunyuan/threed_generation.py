@@ -411,6 +411,7 @@ def _poll_3d_job(
     job_id: str,
     model: str,
     region: str = HUNYUAN3D_API_REGION,
+    poll_timeout: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Poll the 3D job until it finishes, then extract result files.
@@ -433,7 +434,8 @@ def _poll_3d_job(
     """
     is_pro = _is_pro_model(model)
     action = "QueryHunyuanTo3DProJob" if is_pro else "QueryHunyuanTo3DRapidJob"
-    deadline = time.time() + _POLL_MAX_WAIT_S
+    max_wait = poll_timeout or _POLL_MAX_WAIT_S
+    deadline = time.time() + max_wait
 
     with httpx.Client(timeout=60) as client:
         while time.time() < deadline:
@@ -622,7 +624,7 @@ def execute_hunyuan3d_generation(
         )
 
     # Poll for result
-    result_items = _poll_3d_job(secret_id, secret_key, job_id, model, region=region)
+    result_items = _poll_3d_job(secret_id, secret_key, job_id, model, region=region, poll_timeout=metadata.get("timeout"))
 
     # Wrap in the 3d_generation_call response structure
     output_items = [

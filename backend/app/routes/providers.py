@@ -241,6 +241,7 @@ async def create_model(current_user):
         rpm=data.get('rpm') or None,
         tpm=data.get('tpm') or None,
         discount=data.get('discount') if data.get('discount') is not None else 1.0,
+        timeout=data.get('timeout') or None,
         support_kvcache=data.get('support_kvcache', False),
         support_image=data.get('support_image', False),
         support_audio=data.get('support_audio', False),
@@ -272,7 +273,7 @@ async def update_model(current_user, model_id):
     data = await request.get_json()
     for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
                   'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
-                  'currency', 'rpm', 'tpm', 'discount',
+                  'currency', 'rpm', 'tpm', 'discount', 'timeout',
                    'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',

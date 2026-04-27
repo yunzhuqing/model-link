@@ -224,7 +224,9 @@ def execute_vertexai_veo_generation(
 
     # Collected video info
     raw_videos: List[Dict[str, str]] = []
-    deadline = time.time() + 600  # 10 min
+    poll_timeout = request.metadata.get('timeout')
+    max_wait = poll_timeout or 600  # 10 min
+    deadline = time.time() + max_wait
 
     with _httpx.Client(timeout=60) as client:
         while time.time() < deadline:

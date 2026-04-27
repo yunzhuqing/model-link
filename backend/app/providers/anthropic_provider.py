@@ -122,7 +122,7 @@ class AnthropicProvider(BaseProvider):
         if self._client is None:
             import httpx
             self._client = httpx.Client(
-                timeout=self.config.timeout,
+                timeout=self.DEFAULT_TIMEOUT,
                 headers=self.get_headers()
             )
         return self._client
@@ -489,7 +489,8 @@ class AnthropicProvider(BaseProvider):
         url = f"{self.config.base_url.rstrip('/')}/v1/messages"
 
         try:
-            response = self.client.post(url, json=request_data)
+            req_timeout = self._get_request_timeout(request)
+            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
             if response.status_code >= 400:
                 try:
@@ -526,7 +527,8 @@ class AnthropicProvider(BaseProvider):
         response_id = f"msg_{uuid.uuid4().hex[:12]}"
 
         try:
-            with self.client.stream("POST", url, json=request_data) as response:
+            req_timeout = self._get_request_timeout(request)
+            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 # Check for error status before streaming
                 if response.status_code >= 400:
                     error_text = ""

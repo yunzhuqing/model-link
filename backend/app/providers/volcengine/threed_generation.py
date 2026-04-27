@@ -340,6 +340,7 @@ def _poll_3d_task(
     api_key: str,
     base_url: str,
     task_id: str,
+    poll_timeout: Optional[int] = None,
 ) -> Tuple[str, str, str, Dict[str, int]]:
     """
     轮询 GET /contents/generations/tasks/{task_id} 直到任务完成。
@@ -364,7 +365,8 @@ def _poll_3d_task(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    deadline = time.time() + _POLL_MAX_WAIT_S
+    max_wait = poll_timeout or _POLL_MAX_WAIT_S
+    deadline = time.time() + max_wait
 
     with httpx.Client(timeout=60) as client:
         while time.time() < deadline:
@@ -500,7 +502,7 @@ def execute_seed3d_generation(
 
     # ── 轮询结果 ─────────────────────────────────────────────────────────
     file_url, result_format, result_subdivision, usage_dict = _poll_3d_task(
-        api_key, base_url, task_id
+        api_key, base_url, task_id, poll_timeout=metadata.get('timeout')
     )
 
     # Wrap in the 3d_generation_call response structure

@@ -417,6 +417,7 @@ def _poll_veo_operation(
     api_key: str,
     base_url: str,
     operation_name: str,
+    poll_timeout: Optional[int] = None,
 ) -> Tuple[List[str], Dict[str, int]]:
     """
     轮询 GET /v1beta/{operation_name} 直到视频生成完成。
@@ -447,7 +448,8 @@ def _poll_veo_operation(
         "Content-Type": "application/json",
         "x-goog-api-key": api_key,
     }
-    deadline = time.time() + _POLL_MAX_WAIT_S
+    max_wait = poll_timeout or _POLL_MAX_WAIT_S
+    deadline = time.time() + max_wait
 
     with httpx.Client(timeout=60) as client:
         while time.time() < deadline:
@@ -577,6 +579,7 @@ def execute_veo_video_generation(
         api_key=api_key,
         base_url=base_url,
         operation_name=operation_name,
+        poll_timeout=metadata.get('timeout'),
     )
 
     video_items = [

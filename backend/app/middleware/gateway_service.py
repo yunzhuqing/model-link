@@ -61,7 +61,7 @@ class ProviderError(GatewayServiceError):
 
 # Internal metadata keys set by the gateway service.
 # These are used for internal logic and should NOT be sent to upstream provider APIs.
-INTERNAL_METADATA_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
+INTERNAL_METADATA_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning', 'timeout'})
 
 
 class GatewayService:
@@ -82,6 +82,9 @@ class GatewayService:
         for chunk in service.stream_chat(chat_request, group_id=1):
             yield chunk.to_sse("openai")
     """
+
+    # Default timeout (seconds) when no model-level timeout is configured.
+    DEFAULT_TIMEOUT = 300
 
     def resolve_model(self, model_name: str, group_id: Optional[int] = None) -> ResolvedModel:
         """
@@ -198,6 +201,11 @@ class GatewayService:
         # 2.5. 传递模型特性标志到请求元数据
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
 
+        # 2.5.1. 传递模型级别超时时间到请求元数据，供 Provider 使用
+        model_timeout = getattr(resolved.db_model, 'timeout', None)
+        if model_timeout:
+            request.metadata['timeout'] = model_timeout
+
         # 2.6. Convert image URLs to base64 if provider doesn't support online images
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
         if not support_online_image:
@@ -261,6 +269,11 @@ class GatewayService:
 
         # 2.5. 传递模型特性标志到请求元数据
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
+
+        # 2.5.1. 传递模型级别超时时间到请求元数据，供 Provider 使用
+        model_timeout = getattr(resolved.db_model, 'timeout', None)
+        if model_timeout:
+            request.metadata['timeout'] = model_timeout
 
         # 2.6. Convert image URLs to base64 if provider doesn't support online images
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
@@ -327,6 +340,11 @@ class GatewayService:
 
         # 2.5. 传递模型特性标志到请求元数据
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
+
+        # 2.5.1. 传递模型级别超时时间到请求元数据，供 Provider 使用
+        model_timeout = getattr(resolved.db_model, 'timeout', None)
+        if model_timeout:
+            request.metadata['timeout'] = model_timeout
 
         # 2.6. Convert image URLs to base64 if provider doesn't support online images
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
@@ -409,6 +427,11 @@ class GatewayService:
 
         # 3. Pass model capability flags
         request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
+
+        # 3.1. Pass model-level timeout to request metadata for providers to use
+        model_timeout = getattr(resolved.db_model, 'timeout', None)
+        if model_timeout:
+            request.metadata['timeout'] = model_timeout
 
         # 4. Convert image/video URLs if provider doesn't support them online
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
@@ -520,7 +543,6 @@ class GatewayService:
             name=db_provider.name,
             api_key=db_provider.api_key or "",
             base_url=db_provider.base_url,
-            timeout=600,
             authorization=db_provider.authorization or "Authorization",
             extra_config=db_provider.extra_config or {},
         )

@@ -102,6 +102,7 @@ async def create_model_template(current_user):
         support_online_image=data.get('support_online_image', False),
         support_online_video=data.get('support_online_video', False),
         support_embedding=data.get('support_embedding', False),
+        timeout=data.get('timeout') or None,
     )
     db.session.add(tpl)
     db.session.commit()
@@ -121,7 +122,7 @@ async def update_model_template(current_user, template_id):
     for field in [
         'label', 'provider', 'name', 'alias', 'context_size', 'input_size', 'output_size',
         'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
-        'currency', 'rpm', 'tpm', 'discount',
+        'currency', 'rpm', 'tpm', 'discount', 'timeout',
         'support_kvcache', 'support_image', 'support_audio', 'support_video',
         'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
         'support_online_image', 'support_online_video', 'support_embedding',

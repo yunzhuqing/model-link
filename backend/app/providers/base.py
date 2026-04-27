@@ -38,7 +38,6 @@ class ProviderConfig:
     name: str  # 供应商名称
     api_key: str  # API 密钥
     base_url: Optional[str] = None  # API 基础 URL
-    timeout: int = 60  # 请求超时时间（秒）
     max_retries: int = 3  # 最大重试次数
     authorization: str = "Authorization"  # 认证方式: "Authorization" 使用 Bearer token, "custom" 使用自定义头
     extra_config: Dict[str, Any] = field(default_factory=dict)  # 额外配置
@@ -79,12 +78,16 @@ class BaseProvider(ABC):
         self.config = config
         self._client = None
     
+    # Default HTTP timeout (seconds) used when creating the httpx client.
+    # Individual requests may override this via request.metadata['timeout'].
+    DEFAULT_TIMEOUT: int = 600
+
     @property
     def client(self) -> httpx.Client:
         """获取 HTTP 客户端"""
         if self._client is None:
             self._client = httpx.Client(
-                timeout=self.config.timeout,
+                timeout=self.DEFAULT_TIMEOUT,
                 headers=self.config.get_headers()
             )
         return self._client
@@ -151,6 +154,15 @@ class BaseProvider(ABC):
         """
         return None  # 默认返回 None，子类可以覆盖
     
+    @staticmethod
+    def _get_request_timeout(request: ChatRequest) -> Optional[int]:
+        """Get the per-request timeout (seconds) from request metadata.
+
+        Returns None if no model-level timeout is configured, in which case
+        the httpx client's default timeout (DEFAULT_TIMEOUT) is used.
+        """
+        return request.metadata.get('timeout') if request.metadata else None
+
     def validate_request(self, request: ChatRequest) -> Optional[str]:
         """
         验证请求参数
@@ -335,12 +347,14 @@ class AsyncBaseProvider(ABC):
         self.config = config
         self._async_client = None
     
+    DEFAULT_TIMEOUT: int = 600
+
     @property
     def async_client(self) -> httpx.AsyncClient:
         """获取异步 HTTP 客户端"""
         if self._async_client is None:
             self._async_client = httpx.AsyncClient(
-                timeout=self.config.timeout,
+                timeout=self.DEFAULT_TIMEOUT,
                 headers=self.config.get_headers()
             )
         return self._async_client

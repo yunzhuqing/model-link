@@ -571,6 +571,7 @@ def _poll_task(
     secret_key: str,
     task_id: str,
     sub_app_id: Optional[int],
+    poll_timeout: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Poll DescribeTaskDetail until the task finishes, then extract image URLs.
@@ -590,7 +591,8 @@ def _poll_task(
     Raises:
         RuntimeError: On task failure or timeout
     """
-    deadline = time.time() + _POLL_MAX_WAIT_S
+    max_wait = poll_timeout or _POLL_MAX_WAIT_S
+    deadline = time.time() + max_wait
 
     with httpx.Client(timeout=60) as client:
         while time.time() < deadline:
@@ -769,7 +771,7 @@ def execute_tencentvod_image_generation(
         )
 
     # Poll for result
-    image_items = _poll_task(secret_id, secret_key, task_id, _sub_app)
+    image_items = _poll_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"))
 
     message = Message(
         role=MessageRole.ASSISTANT,

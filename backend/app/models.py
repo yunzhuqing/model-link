@@ -330,6 +330,11 @@ class ModelTemplate(db.Model):
     # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
     discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
 
+    # Request timeout in seconds (None = use system default 300s).
+    # Different model types may need very different timeouts, e.g.
+    # chat models ~60s, image generation ~600s, video ~1200s, 3D ~2400s.
+    timeout = db.Column(db.Integer, nullable=True, default=None)
+
     # Feature flags
     support_kvcache = db.Column(db.Boolean, default=False)
     support_image = db.Column(db.Boolean, default=False)
@@ -376,6 +381,7 @@ class ModelTemplate(db.Model):
             'rpm': self.rpm,
             'tpm': self.tpm,
             'discount': self.discount if self.discount is not None else 1.0,
+            'timeout': self.timeout,
             'support_kvcache': self.support_kvcache,
             'support_image': self.support_image,
             'support_audio': self.support_audio,
@@ -445,6 +451,11 @@ class Model(db.Model):
     # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
     discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
 
+    # Request timeout in seconds (None = use system default 300s).
+    # Different model types may need very different timeouts, e.g.
+    # chat models ~60s, image generation ~600s, video ~1200s, 3D ~2400s.
+    timeout = db.Column(db.Integer, nullable=True, default=None)
+
     # Feature support
     support_kvcache = db.Column(db.Boolean, default=False)
     support_image = db.Column(db.Boolean, default=False)
@@ -493,6 +504,7 @@ class Model(db.Model):
             'rpm': self.rpm,
             'tpm': self.tpm,
             'discount': self.discount if self.discount is not None else 1.0,
+            'timeout': self.timeout,
             'support_kvcache': self.support_kvcache,
             'support_image': self.support_image,
             'support_audio': self.support_audio,

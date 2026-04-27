@@ -250,7 +250,7 @@ class OpenAIProvider(BaseProvider):
         if self._client is None:
             import httpx
             self._client = httpx.Client(
-                timeout=self.config.timeout,
+                timeout=self.DEFAULT_TIMEOUT,
                 headers=self.get_headers()
             )
         return self._client
@@ -615,9 +615,10 @@ class OpenAIProvider(BaseProvider):
         logger.debug("Prepared OpenAI request data: %s", json.dumps(request_data, ensure_ascii=False))
         
         url = f"{self.config.base_url}/chat/completions"
+        req_timeout = self._get_request_timeout(request)
         
         try:
-            response = self.client.post(url, json=request_data)
+            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
             
             if response.status_code >= 400:
                 # Try to parse error response
@@ -653,7 +654,8 @@ class OpenAIProvider(BaseProvider):
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         
         try:
-            with self.client.stream("POST", url, json=request_data) as response:
+            req_timeout = self._get_request_timeout(request)
+            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 # Check for error status before streaming
                 if response.status_code >= 400:
                     # Read the error response and raise with details
