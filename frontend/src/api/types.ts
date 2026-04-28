@@ -1,0 +1,90 @@
+export interface AvailableModel {
+  name: string;
+  alias: string | null;
+  provider_name: string | null;
+  rpm: number | null;
+  tpm: number | null;
+  input_price: number;
+  output_price: number;
+  currency: string;
+}
+
+export interface ModelUsage {
+  model_name: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  estimated_cost: number;
+}
+
+export interface BudgetInfo {
+  unlimited_budget: boolean;
+  budget: number | null;
+  used: number;
+  remaining: number | null;
+}
+
+export interface BudgetRecord {
+  id: number;
+  api_key_id: number;
+  amount: number;
+  remaining: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TimeSeries {
+  period: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_cost: number;
+  total_cost_usd?: number;
+}
+
+export interface TimeSeriesByModel {
+  period: string;
+  model_name: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
+  total_cost: number;
+  total_cost_usd: number;
+}
+
+export interface ApiKeyDetailData {
+  id: number;
+  key: string;
+  name: string;
+  group_id: number;
+  user_id: number | null;
+  user_name: string | null;
+  is_active: boolean;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  request_count: number;
+  token_count: number;
+  allowed_models: string[];
+  budget: number | null;
+  api_key_hash?: string;
+  group: { id: number; name: string; description: string | null; created_at: string | null } | null;
+  usage: {
+    requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    reasoning_tokens: number;
+    estimated_cost: number;
+    total_image_count?: number;
+    total_video_count?: number;
+    total_audio_seconds?: number;
+  };
+  by_model: ModelUsage[];
+  available_models: AvailableModel[];
+  budget_info: BudgetInfo;
+  budgets?: BudgetRecord[];
+  total_budget_remaining?: number;
+}

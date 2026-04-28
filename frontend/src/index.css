@@ -78,3 +78,21 @@ input:focus, select:focus, textarea:focus {
   background-clip: text;
   color: transparent;
 }
+
+/* Shimmer animation for budget progress bars */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+.animate-shimmer-fast {
+  animation: shimmer 1.2s infinite;
+}
