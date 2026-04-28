@@ -13,7 +13,7 @@ interface Props {
   onClose: () => void;
 }
 
-const BudgetEditModal = ({ apiKeyId, isUnlimitedBudget, currentRemaining, budgets, onClose }: Props) => {
+const BudgetEditModal = ({ apiKeyId, isUnlimitedBudget, budgets, onClose }: Props) => {
   const queryClient = useQueryClient();
   const [addAmount, setAddAmount] = useState('');
   const [isUnlimited, setIsUnlimited] = useState(isUnlimitedBudget);
