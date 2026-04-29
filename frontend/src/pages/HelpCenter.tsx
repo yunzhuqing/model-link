@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box } from 'lucide-react';
+import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route } from 'lucide-react';
 
 interface HelpItem {
   path: string;
@@ -193,6 +193,37 @@ export default function HelpCenter() {
               </div>
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Advanced features */}
+      <div>
+        <div className="flex items-center gap-3 mb-3">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest px-2">高级功能</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+        <div className="space-y-3">
+          <button
+            onClick={() => navigate('/help/model-routing')}
+            className="w-full text-left bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-200 overflow-hidden group"
+          >
+            <div className="p-5 flex items-center gap-4">
+              <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-md">
+                <Route className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <h3 className="text-base font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">
+                    模型路由与分发
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">Priority + Ratio</span>
+                </div>
+                <p className="text-sm text-slate-500 leading-relaxed">多供应商智能分发：通过优先级和流量配比，按用户哈希或加权随机将请求分发到不同供应商。</p>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-400 transition-colors flex-shrink-0" />
+            </div>
+          </button>
         </div>
       </div>
     </div>

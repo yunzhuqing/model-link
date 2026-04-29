@@ -50,6 +50,7 @@ const navItems: NavItem[] = [
       { path: '/help/image-generation', labelKey: 'nav.helpImageGeneration' },
       { path: '/help/video-generation', labelKey: 'nav.helpVideoGeneration' },
       { path: '/help/3d-generation', labelKey: 'nav.help3dGeneration' },
+      { path: '/help/model-routing', labelKey: 'nav.helpModelRouting' },
     ],
   },
 ];
