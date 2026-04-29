@@ -297,7 +297,7 @@ async def _handle_request(adapter):
         if chat_request.stream:
             # ── Streaming path ────────────────────────────────────────────────
             # Eagerly extract all identity info from ORM objects BEFORE
-            # stream_chat_ex() removes the DB session.
+            # stream_chat() removes the DB session.
             _user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
             _api_key_raw = api_key.key if api_key else None
             _api_key_name = api_key.name if api_key else None
@@ -311,9 +311,9 @@ async def _handle_request(adapter):
                 except Exception:
                     pass
 
-            # stream_chat_ex returns (generator, model_meta) and releases the DB
+            # stream_chat returns (generator, model_meta) and releases the DB
             # session before any streaming begins.
-            chunks, model_meta = _gateway_service.stream_chat_ex(chat_request, group_id)
+            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id)
 
             # Wrap the chunks to accumulate the final UsageInfo and record it
             # after the stream finishes (fire-and-forget background thread).
@@ -377,8 +377,8 @@ async def _handle_request(adapter):
             return adapter.create_stream_response(_chunks_with_usage_recording(), model_name)
 
         else:
-            # 非流式请求 — use chat_ex() to get resolved model for usage recording
-            response, resolved = _gateway_service.chat_ex(chat_request, group_id)
+            # 非流式请求 — use chat() to get resolved model for usage recording
+            response, resolved = _gateway_service.chat(chat_request, group_id)
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
             # Record usage asynchronously (fire-and-forget)
             try:

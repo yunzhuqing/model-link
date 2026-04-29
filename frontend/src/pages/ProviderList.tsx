@@ -1180,7 +1180,11 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                   onSave={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
                   onCancel={() => { setShowAddModel(null); setNewModel(defaultModelState); }}
                   isLoading={createModelMutation.isPending}
-                  templates={filterTemplatesByProviderType(modelTemplates, provider.type)}
+                  templates={filterTemplatesByProviderType(modelTemplates, provider.type).filter(
+                    (tpl) => !provider.models.some((m) =>
+                      m.name === tpl.name || m.name === tpl.alias || m.alias === tpl.name || (tpl.alias && m.alias === tpl.alias)
+                    )
+                  )}
                 />
               )}
 

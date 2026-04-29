@@ -84,10 +84,19 @@ class MoonshotProvider(OpenAIProvider):
         """
         result = super().prepare_request(request)
 
+        # kimi-k2.5 temperature 限制：
+        #   非思考模式（reasoning_effort == 'none'）→ temperature 固定为 0.6
+        #   思考模式（reasoning_effort != 'none'）→ temperature 固定为 1
+        is_thinking = (
+            request.metadata.get('support_thinking', False)
+            and (request.reasoning_effort or 'none') != 'none'
+        )
+        if request.model in ('kimi-k2.5', 'kimi-k2.6'):
+            result["temperature"] = 1.0 if is_thinking else 0.6
+
         # Moonshot 特有：根据模型是否支持思维和 reasoning_effort 设置 thinking 参数
         if request.metadata.get('support_thinking', False):
-            reasoning_effort = request.reasoning_effort or 'none'
-            if reasoning_effort != 'none':
+            if is_thinking:
                 result["thinking"] = {"type": "enabled"}
             else:
                 result["thinking"] = {"type": "disabled"}

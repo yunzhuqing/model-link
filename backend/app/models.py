@@ -456,6 +456,11 @@ class Model(db.Model):
     # chat models ~60s, image generation ~600s, video ~1200s, 3D ~2400s.
     timeout = db.Column(db.Integer, nullable=True, default=None)
 
+    # Priority for multi-provider routing (higher = more preferred, default 0)
+    priority = db.Column(db.Integer, default=0, nullable=False)
+    # Traffic ratio (0-100) for load distribution among same-priority providers
+    traffic_ratio = db.Column(db.Integer, default=0, nullable=False)
+
     # Feature support
     support_kvcache = db.Column(db.Boolean, default=False)
     support_image = db.Column(db.Boolean, default=False)
@@ -505,6 +510,8 @@ class Model(db.Model):
             'tpm': self.tpm,
             'discount': self.discount if self.discount is not None else 1.0,
             'timeout': self.timeout,
+            'priority': self.priority,
+            'traffic_ratio': self.traffic_ratio,
             'support_kvcache': self.support_kvcache,
             'support_image': self.support_image,
             'support_audio': self.support_audio,

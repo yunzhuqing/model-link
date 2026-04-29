@@ -122,10 +122,10 @@ def _run_background_response(
             chat_request = adapter.parse_request(data)
 
             # ── LLM / video generation call ────────────────────────────────
-            # chat_ex() uses db.session for model resolution; the actual
+            # chat() uses db.session for model resolution; the actual
             # provider API call may be long-running.
             _bg_start_time = time.monotonic()
-            response, resolved = _gateway_service.chat_ex(chat_request, group_id)
+            response, resolved = _gateway_service.chat(chat_request, group_id)
 
             # Eagerly extract all ORM data we need for usage recording,
             # then release the DB session so the connection returns to the
@@ -434,7 +434,7 @@ async def openai_responses():
                 except Exception:
                     pass
 
-            chunks, model_meta = _gateway_service.stream_chat_ex(chat_request, group_id)
+            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id)
             _app = current_app._get_current_object()
 
             def _resp_chunks_with_usage():
@@ -493,7 +493,7 @@ async def openai_responses():
 
             return adapter.create_stream_response(_resp_chunks_with_usage(), model_name)
         else:
-            response, resolved = _gateway_service.chat_ex(chat_request, group_id)
+            response, resolved = _gateway_service.chat(chat_request, group_id)
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
             # Record usage asynchronously (fire-and-forget)
             try:

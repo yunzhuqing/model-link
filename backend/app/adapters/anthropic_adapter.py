@@ -286,6 +286,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             tools=tools,
             tool_choice=data.get('tool_choice', {}).get('type') if isinstance(data.get('tool_choice'), dict) else data.get('tool_choice'),
             stop=data.get('stop_sequences'),
+            user=data.get('user'),
             reasoning_effort=reasoning_effort,
             metadata=metadata
         )

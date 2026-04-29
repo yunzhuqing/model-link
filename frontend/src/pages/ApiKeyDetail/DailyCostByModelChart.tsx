@@ -66,14 +66,25 @@ const DailyCostByModelChart = ({ data }: Props) => {
     <div>
       {/* Chart area with subtle gradient background */}
       <div className="relative">
+        {/* Y-axis labels */}
+        <div className="absolute left-0 top-0 h-44 flex flex-col justify-between pointer-events-none z-20" style={{ width: '65px', paddingBottom: '16px' }}>
+          {[1, 0.75, 0.5, 0.25, 0].map((f, i) => {
+            const val = maxCost * f;
+            return (
+              <span key={i} className="text-[9px] text-slate-400 leading-none text-right pr-2">
+                {fmtCost(val)}
+              </span>
+            );
+          })}
+        </div>
         {/* Background grid lines */}
-        <div className="absolute inset-0 flex flex-col justify-between pointer-events-none" style={{ height: '176px', paddingBottom: '16px' }}>
-          {[0, 1, 2, 3].map(i => (
+        <div className="absolute inset-0 flex flex-col justify-between pointer-events-none" style={{ height: '176px', paddingBottom: '16px', marginLeft: '65px' }}>
+          {[0, 1, 2, 3, 4].map(i => (
             <div key={i} className="border-t border-dashed border-slate-200/60 w-full" />
           ))}
         </div>
         {/* Bars */}
-        <div className="flex items-end space-x-[3px] h-44 relative z-10">
+        <div className="flex items-end space-x-[3px] h-44 relative z-10" style={{ marginLeft: '65px' }}>
           {periods.map((p, i) => {
             const dayModels = periodMap[p];
             const segments = models.filter(m => (dayModels[m] || 0) > 0);
@@ -157,9 +168,12 @@ const DailyCostByModelChart = ({ data }: Props) => {
               {fullPeriodLabel(periods[hovered.bar])}
             </div>
             {hovered.segment ? (
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: PIE_COLORS[models.indexOf(hovered.segment) % PIE_COLORS.length] }} />
-                <span className="truncate">{hovered.segment}: <span className="font-medium text-white">{fmtCost(periodMap[periods[hovered.bar]][hovered.segment] || 0)}</span></span>
+              <div>
+                <div className="flex items-center gap-1.5 opacity-70">
+                  <span className="w-2 h-2 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: PIE_COLORS[models.indexOf(hovered.segment) % PIE_COLORS.length] }} />
+                  <span className="truncate">{hovered.segment}</span>
+                </div>
+                <div className="font-medium text-white mt-0.5">{fmtCost(periodMap[periods[hovered.bar]][hovered.segment] || 0)}</div>
               </div>
             ) : (
               <div className="text-white/80">

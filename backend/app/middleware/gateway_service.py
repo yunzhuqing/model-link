@@ -13,6 +13,7 @@
 """
 from typing import Optional, Generator, Tuple, Callable, List
 from dataclasses import dataclass
+import hashlib
 import random
 import httpx
 
@@ -86,7 +87,7 @@ class GatewayService:
     # Default timeout (seconds) when no model-level timeout is configured.
     DEFAULT_TIMEOUT = 300
 
-    def resolve_model(self, model_name: str, group_id: Optional[int] = None) -> ResolvedModel:
+    def resolve_model(self, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None) -> ResolvedModel:
         """
         解析模型名称/别名，返回供应商实例和模型信息。
 
@@ -157,8 +158,13 @@ class GatewayService:
                     status_code=403
                 )
 
-        # Randomly select one model from the active candidates
-        db_model = random.choice(active_models)
+        # Priority + Traffic-ratio based routing:
+        # 1. Group models by priority (higher = more preferred)
+        # 2. Pick the highest priority group
+        # 3. Within that group, distribute traffic by traffic_ratio
+        #    - If user_id is provided, use hash-based deterministic selection
+        #    - If no user_id, use weighted random selection
+        db_model = self._select_model_by_priority(active_models, user_id=user_id)
 
         db_provider = db.session.query(Provider).filter(
             Provider.id == db_model.provider_id
@@ -182,18 +188,103 @@ class GatewayService:
             real_model_name=db_model.name
         )
 
-    def chat_ex(
+    @staticmethod
+    def _select_model_by_priority(active_models: List[Model], user_id: Optional[str] = None) -> Model:
+        """
+        Select a model from active candidates using priority + traffic_ratio.
+
+        Algorithm:
+        1. Group models by priority (higher number = more preferred).
+        2. Pick the group with the highest priority.
+        3. Within that group:
+           a. If user_id is provided, use hash(user_id) % 100 to determine
+              which provider to use based on cumulative traffic_ratio ranges.
+           b. If no user_id, perform weighted random selection.
+           c. If all traffic_ratios are 0, fall back to uniform random.
+
+        Args:
+            active_models: List of active, non-retired Model ORM instances.
+            user_id: Optional user identifier for deterministic routing.
+
+        Returns:
+            The selected Model instance.
+        """
+        if len(active_models) == 1:
+            return active_models[0]
+
+        # Group by priority
+        priority_groups: dict[int, List[Model]] = {}
+        for m in active_models:
+            prio = max(m.priority or 0, 0)
+            priority_groups.setdefault(prio, []).append(m)
+
+        # Pick the group with the highest priority
+        top_priority = max(priority_groups.keys())
+        candidates = priority_groups[top_priority]
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Collect traffic ratios
+        ratios: List[int] = []
+        for m in candidates:
+            ratio = max(m.traffic_ratio or 0, 0)
+            ratios.append(ratio)
+
+        total_ratio = sum(ratios)
+
+        if total_ratio > 0:
+            if user_id:
+                # Deterministic selection based on user_id hash
+                # hash(user_id) % 100 maps the user into a bucket [0, 99]
+                bucket = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 100
+
+                # Walk cumulative traffic_ratio ranges to find the matching provider
+                # traffic_ratios are scaled to sum to 100 for percentage-based selection
+                cumulative = 0
+                for i, ratio in enumerate(ratios):
+                    # Scale ratio to percentage within the 0-99 range
+                    scaled_ratio = int(round(ratio / total_ratio * 100))
+                    cumulative += scaled_ratio
+                    if bucket < cumulative:
+                        return candidates[i]
+
+                # Fallback: return the last candidate (shouldn't normally reach here)
+                return candidates[-1]
+            else:
+                # No user_id — weighted random selection
+                weights = [float(r) for r in ratios]
+                return random.choices(candidates, weights=weights, k=1)[0]
+        else:
+            # All traffic_ratios are 0 — fall back to uniform random
+            return random.choice(candidates)
+
+    def chat(
         self, request: ChatRequest, group_id: Optional[int] = None
     ) -> Tuple[ChatResponse, ResolvedModel]:
         """
-        Same as chat() but also returns the ResolvedModel so callers can
-        record usage with the exact provider/model metadata.
+        执行非流式对话请求，返回 (ChatResponse, ResolvedModel)。
+
+        这是中间层的核心方法，它：
+        1. 解析模型 → 找到正确的供应商
+        2. 替换模型名称 → 使用供应商 API 需要的真实名称
+        3. 调用供应商 API → 获取响应
+        4. 返回统一格式的 ChatResponse 及 ResolvedModel（用于用量记录）
+
+        Args:
+            request: 统一的对话请求对象（由 Adapter 从任意 API 格式解析而来）
+            group_id: 可选的组 ID（用于访问控制）
 
         Returns:
-            (ChatResponse, ResolvedModel)
+            (ChatResponse, ResolvedModel) 元组
+
+        Raises:
+            ModelNotFoundError: 模型未找到
+            GatewayServiceError: 请求验证失败
+            ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id)
+        resolved = self.resolve_model(request.model, group_id, user_id=request.user)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
@@ -239,81 +330,11 @@ class GatewayService:
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
-    def chat(self, request: ChatRequest, group_id: Optional[int] = None) -> ChatResponse:
+    def stream_chat(
+        self, request: ChatRequest, group_id: Optional[int] = None
+    ) -> Tuple[Generator[StreamChunk, None, None], dict]:
         """
-        执行非流式对话请求。
-
-        这是中间层的核心方法，它：
-        1. 解析模型 → 找到正确的供应商
-        2. 替换模型名称 → 使用供应商 API 需要的真实名称
-        3. 调用供应商 API → 获取响应
-        4. 返回统一格式的 ChatResponse
-
-        Args:
-            request: 统一的对话请求对象（由 Adapter 从任意 API 格式解析而来）
-            group_id: 可选的组 ID（用于访问控制）
-
-        Returns:
-            统一的 ChatResponse 对象（由 Adapter 转换为任意 API 格式）
-
-        Raises:
-            ModelNotFoundError: 模型未找到
-            GatewayServiceError: 请求验证失败
-            ProviderError: 供应商 API 调用失败
-        """
-        # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id)
-
-        # 2. 替换为真实模型名称
-        request.model = resolved.real_model_name
-
-        # 2.5. 传递模型特性标志到请求元数据
-        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
-
-        # 2.5.1. 传递模型级别超时时间到请求元数据，供 Provider 使用
-        model_timeout = getattr(resolved.db_model, 'timeout', None)
-        if model_timeout:
-            request.metadata['timeout'] = model_timeout
-
-        # 2.6. Convert image URLs to base64 if provider doesn't support online images
-        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
-        if not support_online_image:
-            self._convert_image_urls_to_base64(request)
-
-        # 2.7. Convert video URLs to base64 if provider doesn't support online videos
-        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
-        if not support_online_video:
-            self._convert_video_urls_to_base64(request)
-
-        # 3. 调用供应商 API
-        try:
-            response = resolved.provider_instance.chat(request)
-
-            # 4. 根据模型能力和请求参数过滤 reasoning_content
-            # 必须同时清除 choice 和 message 上的 reasoning_content，
-            # 否则 Anthropic 适配器的 format_response() 会通过 message 回退获取到泄漏的推理内容
-            if not self._should_include_reasoning(request):
-                for choice in response.choices:
-                    choice.reasoning_content = None
-                    if choice.message:
-                        choice.message.reasoning_content = None
-
-            return response
-        except ValueError as e:
-            raise GatewayServiceError(str(e), status_code=400)
-        except RuntimeError as e:
-            status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
-            raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
-        except httpx.HTTPError as e:
-            raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
-        except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
-
-    def stream_chat(self, request: ChatRequest, group_id: Optional[int] = None) -> Generator[StreamChunk, None, None]:
-        """
-        执行流式对话请求。
+        执行流式对话请求，返回 (StreamChunk 生成器, model_meta dict)。
 
         与 chat() 方法类似，但返回流式响应块的生成器。
 
@@ -325,102 +346,20 @@ class GatewayService:
             group_id: 可选的组 ID
 
         Returns:
-            StreamChunk 生成器
+            (StreamChunk 生成器, model_meta dict)
+
+            model_meta keys:
+                provider_id, provider_name, model_alias, model_real_name,
+                input_price_unit, output_price_unit,
+                cache_creation_price_unit, cache_5m_creation_price_unit, cache_1h_creation_price_unit, cache_token_price_unit
 
         Raises:
             ModelNotFoundError: 模型未找到
             GatewayServiceError: 请求验证失败
             ProviderError: 供应商 API 调用失败
         """
-        # 1. 立即解析模型（在请求上下文中访问数据库）
-        resolved = self.resolve_model(request.model, group_id)
-
-        # 2. 立即替换为真实模型名称
-        request.model = resolved.real_model_name
-
-        # 2.5. 传递模型特性标志到请求元数据
-        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
-
-        # 2.5.1. 传递模型级别超时时间到请求元数据，供 Provider 使用
-        model_timeout = getattr(resolved.db_model, 'timeout', None)
-        if model_timeout:
-            request.metadata['timeout'] = model_timeout
-
-        # 2.6. Convert image URLs to base64 if provider doesn't support online images
-        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
-        if not support_online_image:
-            self._convert_image_urls_to_base64(request)
-
-        # 2.7. Convert video URLs to base64 if provider doesn't support online videos
-        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
-        if not support_online_video:
-            self._convert_video_urls_to_base64(request)
-
-        # 2.8. 判断是否应包含推理内容（在生成器外部计算，避免惰性求值问题）
-        include_reasoning = self._should_include_reasoning(request)
-
-        # 2.9. Release the DB session now that all model-resolution queries are done.
-        #
-        # During a streaming response the Flask request context (and therefore the
-        # SQLAlchemy scoped session) remains alive for the full duration of the
-        # stream.  When Flask finally tears down the app context it calls
-        # db.session.remove() which triggers a rollback on the still-open
-        # PyMySQL connection.  If the connection's packet-sequence counter has
-        # drifted (which happens with long-lived connections under MySQL's binary
-        # protocol) this raises:
-        #   pymysql.err.InternalError: Packet sequence number wrong
-        #
-        # db.session.remove() closes the session AND removes it from the scoped
-        # registry, returning the underlying connection to the pool in a clean
-        # state.  Flask's subsequent session.remove() at teardown then finds no
-        # registered session and completes without error.
-        try:
-            db.session.remove()
-        except Exception:
-            pass
-
-        # 3. 返回惰性生成器（流式数据传输）
-        def _stream():
-            try:
-                for chunk in resolved.provider_instance.stream_chat(request):
-                    # 根据模型能力和请求参数过滤 reasoning_content
-                    if not include_reasoning:
-                        chunk.delta_reasoning_content = None
-                    yield chunk
-            except ValueError as e:
-                raise GatewayServiceError(str(e), status_code=400)
-            except RuntimeError as e:
-                status_code, error_data = self._parse_provider_error(e)
-                raise ProviderError(str(e), status_code=status_code, error_data=error_data)
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
-                raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
-            except httpx.HTTPError as e:
-                raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
-            except Exception as e:
-                raise ProviderError(f"Provider error: {str(e)}", status_code=500)
-
-        return _stream()
-
-    def stream_chat_ex(
-        self, request: ChatRequest, group_id: Optional[int] = None
-    ) -> Tuple[Generator[StreamChunk, None, None], dict]:
-        """
-        Like stream_chat() but also returns a dict of pre-extracted primitive
-        values from the resolved model/provider for usage recording.
-
-        All ORM-object attribute reads happen *before* db.session.remove() is
-        called, so no cross-session lazy-loads can occur in the caller.
-
-        Returns:
-            (StreamChunk generator, model_meta dict)
-
-            model_meta keys:
-                provider_id, provider_name, model_alias, model_real_name,
-                input_price_unit, output_price_unit,
-                cache_creation_price_unit, cache_5m_creation_price_unit, cache_1h_creation_price_unit, cache_token_price_unit
-        """
         # 1. Resolve model (DB access)
-        resolved = self.resolve_model(request.model, group_id)
+        resolved = self.resolve_model(request.model, group_id, user_id=request.user)
 
         # 2. Replace with real model name
         request.model = resolved.real_model_name
@@ -732,7 +671,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id)
+        resolved = self.resolve_model(request.model, group_id, user_id=None)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
@@ -772,7 +711,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id)
+        resolved = self.resolve_model(request.model, group_id, user_id=None)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
@@ -899,7 +838,7 @@ class GatewayService:
         # Providers that support image generation (Volcengine, Bailian, Gemini,
         # …) will detect the metadata and call their image-gen API.
         try:
-            chat_response, resolved = self.chat_ex(chat_request, group_id)
+            chat_response, resolved = self.chat(chat_request, group_id)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -1035,7 +974,7 @@ class GatewayService:
         # Route through the standard chat pipeline (with resolved model info
         # for usage recording)
         try:
-            chat_response, resolved = self.chat_ex(chat_request, group_id)
+            chat_response, resolved = self.chat(chat_request, group_id)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:

@@ -242,6 +242,8 @@ async def create_model(current_user):
         tpm=data.get('tpm') or None,
         discount=data.get('discount') if data.get('discount') is not None else 1.0,
         timeout=data.get('timeout') or None,
+        priority=data.get('priority', 0),
+        traffic_ratio=data.get('traffic_ratio', 0),
         support_kvcache=data.get('support_kvcache', False),
         support_image=data.get('support_image', False),
         support_audio=data.get('support_audio', False),
@@ -278,7 +280,7 @@ async def update_model(current_user, model_id):
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                   'support_online_image', 'support_online_video', 'support_embedding',
-                  'is_active']:
+                  'is_active', 'priority', 'traffic_ratio']:
         if field in data:
             # Handle alias/nullable strings - convert empty string to None
             if field in ('alias', 'reasoning_effort', 'supported_image_formats') and data[field] == '':

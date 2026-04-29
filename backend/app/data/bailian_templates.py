@@ -161,7 +161,7 @@ BAILIAN_TEMPLATES = [
          support_kvcache=True, support_image=True, support_audio=False, support_video=True,
          support_file=False, support_web_search=False, support_tool_search=False,
          support_thinking=True, support_online_image=True, support_online_video=True, support_embedding=False),
-    dict(label='Kimi K2.6 Thinking (Bailian)', provider='Bailian', name='kimi-k2.6-thinking', alias='kimi-k2.6-thinking',
+    dict(label='Kimi K2.6 Thinking (Bailian)', provider='Bailian', name='kimi-k2.6', alias='kimi-k2.6-thinking',
          context_size=262144, input_size=229376, output_size=16384, pricing_tiers=None,
          input_price=6.5, output_price=27, cache_creation_price=0, cache_hit_price=1.3,
          currency='CNY', rpm=500, tpm=1000000,

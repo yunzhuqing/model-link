@@ -5,7 +5,7 @@
  * 一个模型可能由多个供应商提供。
  */
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
@@ -36,6 +36,10 @@ interface ModelItem {
   support_web_search: boolean;
   support_thinking: boolean;
   support_embedding: boolean;
+  rpm: number | null;
+  tpm: number | null;
+  priority: number;
+  traffic_ratio: number;
 }
 
 interface ProviderData {
@@ -84,18 +88,71 @@ const FeatureBadge = ({ active, icon: Icon, label }: { active: boolean; icon: Re
   );
 };
 
+/* ── InlineEditableCell ─────────────────────────────────────────────────── */
+
+const InlineEditableCell = ({ value, onSave, min = 0, max = 100 }: {
+  value: number;
+  onSave: (v: number) => void;
+  min?: number;
+  max?: number;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+
+  const startEdit = () => { setDraft(String(value)); setEditing(true); };
+  const commit = () => {
+    const n = Number(draft);
+    if (!isNaN(n)) onSave(Math.max(min, Math.min(max, n)));
+    setEditing(false);
+  };
+  const cancel = () => setEditing(false);
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') commit();
+    else if (e.key === 'Escape') cancel();
+  };
+
+  if (editing) {
+    return (
+      <input
+        type="number" min={min} max={max} value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit} onKeyDown={onKeyDown}
+        className="w-16 px-1.5 py-0.5 text-xs font-mono text-center border border-indigo-300 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+        autoFocus
+      />
+    );
+  }
+  return (
+    <button
+      onClick={startEdit}
+      className="text-xs font-mono text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-0.5 rounded cursor-pointer transition-colors"
+      title="点击编辑"
+    >{value}</button>
+  );
+};
+
 /* ── Component ─────────────────────────────────────────────────────────── */
 
 export default function GroupModels({ groupId }: { groupId: number }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
 
+  const queryKey = ['providers', 'group', groupId];
+
   const { data: providers, isLoading } = useQuery<ProviderData[]>({
-    queryKey: ['providers', 'group', groupId],
+    queryKey,
     queryFn: async () => {
       const res = await client.get('/api/providers/', { params: { group_id: groupId } });
       return res.data;
     },
+  });
+
+  const updateModel = useMutation({
+    mutationFn: async ({ id, field, value }: { id: number; field: 'priority' | 'traffic_ratio'; value: number }) => {
+      await client.put(`/api/models/${id}`, { [field]: value });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey }),
   });
 
   // Aggregate models across providers
@@ -183,6 +240,10 @@ export default function GroupModels({ groupId }: { groupId: number }) {
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.context')}</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500">{t('group.groupDetail.inputPrice')}</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500">{t('group.groupDetail.outputPrice')}</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.rpm')}</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.tpm')}</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.priority')}</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.trafficRatio')}</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.capabilities')}</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.status')}</th>
                 </tr>
@@ -216,6 +277,18 @@ export default function GroupModels({ groupId }: { groupId: number }) {
                         </td>
                         <td className="px-4 py-3 text-right text-xs text-slate-600 font-mono">
                           {fmtPrice(m.output_price, m.currency)}/M
+                        </td>
+                        <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">
+                          {m.rpm != null ? m.rpm : '-'}
+                        </td>
+                        <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">
+                          {m.tpm != null ? m.tpm : '-'}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <InlineEditableCell value={m.priority ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'priority', value: v })} />
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <InlineEditableCell value={m.traffic_ratio ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'traffic_ratio', value: v })} />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-center gap-1 flex-wrap">
@@ -271,6 +344,18 @@ export default function GroupModels({ groupId }: { groupId: number }) {
                         </td>
                         <td className="px-4 py-3 text-right text-xs text-slate-600 font-mono">
                           {fmtPrice(m.output_price, m.currency)}/M
+                        </td>
+                        <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">
+                          {m.rpm != null ? m.rpm : '-'}
+                        </td>
+                        <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">
+                          {m.tpm != null ? m.tpm : '-'}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <InlineEditableCell value={m.priority ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'priority', value: v })} />
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <InlineEditableCell value={m.traffic_ratio ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'traffic_ratio', value: v })} />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-center gap-1 flex-wrap">
