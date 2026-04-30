@@ -12,13 +12,15 @@
   "dependencies": {
     "@tanstack/react-query": "^5.90.21",
     "@types/react-router-dom": "^5.3.3",
+    "@types/three": "^0.184.0",
     "axios": "^1.13.6",
     "i18next": "^26.0.6",
     "lucide-react": "^0.577.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-i18next": "^17.0.4",
-    "react-router-dom": "^7.13.1"
+    "react-router-dom": "^7.13.1",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
