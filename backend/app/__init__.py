@@ -2,6 +2,7 @@
 Quart application factory for Model Link AI Gateway.
 """
 import logging
+import logging.handlers
 import os
 
 from quart import Quart, send_from_directory
@@ -24,13 +25,17 @@ class LogFormatter(logging.Formatter):
 
 def _configure_logging() -> None:
     """
-    Configure the root logger based on environment variables.
+    Configure application logging based on environment variables.
 
     Supported environment variables:
-        LOG_LEVEL     (str)  : DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
-        LOG_FORMAT    (str)  : Python log format string
-                               (default: "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        LOG_DATE_FORMAT (str): Date/time format string (default: "%Y-%m-%d %H:%M:%S")
+        LOG_LEVEL       (str)  : DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
+        LOG_NAME        (str)  : Logger name and log file name (without .log extension) (default: "model-link")
+        LOG_DIR         (str)  : Directory to write log files to (e.g. "/var/log/model-link").
+                                 When set, logs are written to both stderr and ``{LOG_DIR}/{LOG_NAME}.log``.
+                                 The directory will be created automatically.
+        LOG_FORMAT      (str)  : Python log format string
+                                 (default: "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        LOG_DATE_FORMAT (str)  : Date/time format string (default: "%Y-%m-%d %H:%M:%S")
 
     The default format includes timestamp, logger name, level, and message — suitable
     for both local development and production log aggregators.
@@ -48,14 +53,48 @@ def _configure_logging() -> None:
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(LogFormatter())
+    log_name = os.getenv("LOG_NAME", "model-link")
+    log_dir = os.getenv("LOG_DIR", "")
+    formatter = LogFormatter()
 
-    logging.basicConfig(
-        level=numeric_level,
-        handlers=[handler],
-        force=True,  # Override any existing root logger config
-    )
+    handlers: list[logging.Handler] = []
+
+    # Always log to stderr
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    handlers.append(stream_handler)
+
+    # Optional file logging — writes to {LOG_DIR}/{LOG_NAME}.log
+    # Example: LOG_DIR=/var/log/model-link, LOG_NAME=gateway
+    #          → /var/log/model-link/gateway.log
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        log_file_path = os.path.join(log_dir, f"{log_name}.log")
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file_path,
+            maxBytes=50 * 1024 * 1024,  # 50 MB
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        handlers.append(file_handler)
+
+    # Configure the root logger with the specified name
+    root_logger = logging.getLogger(log_name)
+    root_logger.setLevel(numeric_level)
+    for h in handlers:
+        root_logger.addHandler(h)
+
+    # Suppress overly verbose third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("botocore").setLevel(logging.WARNING)
+    logging.getLogger("s3transfer").setLevel(logging.WARNING)
+    logging.getLogger("boto3").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("alembic").setLevel(logging.INFO)
+    logging.getLogger("redis").setLevel(logging.WARNING)
 
 
 # Configure logging early — before any module-level getLogger() calls
