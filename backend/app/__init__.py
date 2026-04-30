@@ -79,8 +79,12 @@ def _configure_logging() -> None:
         file_handler.setFormatter(formatter)
         handlers.append(file_handler)
 
-    # Configure the root logger with the specified name
-    root_logger = logging.getLogger(log_name)
+    # Configure the root logger (empty name "").
+    #
+    # All child loggers (e.g. "gateway", "gateway_responses", "uvicorn",
+    # "quart") inherit these handlers via propagation, so every module
+    # that calls ``logging.getLogger("some-name")`` will see output.
+    root_logger = logging.getLogger()
     root_logger.setLevel(numeric_level)
     for h in handlers:
         root_logger.addHandler(h)
