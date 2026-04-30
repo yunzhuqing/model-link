@@ -125,6 +125,15 @@ def create_app(config=None):
     # Allow large request bodies (base64 images can be several MB)
     app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB default
     
+    # Timeout settings for Quart/ASGI request handling.
+    # BODY_TIMEOUT: Maximum time (seconds) to wait for the complete request body.
+    #   Large base64 image uploads may need more time, default 300s.
+    # RESPONSE_TIMEOUT: Maximum time (seconds) to wait for a complete response.
+    #   AI model calls (chat, image/video/3D generation) can take a long time,
+    #   default 2400s (40 min) to accommodate slow generation tasks.
+    app.config['BODY_TIMEOUT'] = int(os.getenv('BODY_TIMEOUT', 300))
+    app.config['RESPONSE_TIMEOUT'] = int(os.getenv('RESPONSE_TIMEOUT', 2400))
+    
     # Database connection pooling settings for long-lived connections.
     # All values can be overridden via environment variables.
     #
