@@ -42,6 +42,7 @@ from app.routes.gateway import (
     get_current_user_or_api_key,
     _check_allowed_models,
     _gateway_service,
+    _log_error,
 )
 
 gateway_responses_bp = Blueprint('gateway_responses', __name__)
@@ -311,10 +312,12 @@ async def openai_responses():
     except UnicodeDecodeError:
         data = None
     if not data:
+        _log_error("responses", 400, "Invalid or empty JSON request body")
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
 
     model_name = data.get('model')
     if not model_name:
+        _log_error("responses", 400, "Model is required")
         return jsonify(adapter.format_error_response('Model is required', 400)), 400
 
     is_background = bool(data.get('background', False))
@@ -328,6 +331,7 @@ async def openai_responses():
     )
     _is_3d_model = is_hunyuan3d_model(model_name) or is_seed3d_model(model_name)
     if (_is_3d_model or _has_3d_tool) and not is_background:
+        _log_error("responses", 400, "3D generation requires background=true")
         return jsonify(adapter.format_error_response(
             '3D generation only supports asynchronous mode. '
             'Please set "background": true in your request and poll '
@@ -338,11 +342,13 @@ async def openai_responses():
     # 2. 认证（只做一次）
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("responses", status, error.get('detail', 'Not authenticated'))
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     # 2.5. 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
+        _log_error("responses", 403, acl_error['detail'])
         return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
 
     # 3. Background 异步路径
@@ -419,6 +425,7 @@ async def openai_responses():
     try:
         chat_request = adapter.parse_request(data)
     except Exception as e:
+        _log_error("responses", 400, f"Invalid request format: {e}")
         return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
 
     logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
@@ -518,10 +525,13 @@ async def openai_responses():
                 logger.warning(f"[usage] Failed to trigger usage recording for responses: {_ue}")
             return jsonify(adapter.format_response(response))
     except ProviderError as e:
+        _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
+        _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
+        _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
 
@@ -542,17 +552,20 @@ async def get_response(response_id: str):
     """
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("get_response", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # Look up by the string response_id field, not the BigInteger pk
     db_url = db.engine.url.render_as_string(hide_password=False)
     bg_record = _bg_dao.get_record(db_url, response_id)
     if bg_record is None:
+        _log_error("get_response", 404, f"Response {response_id!r} not found")
         return jsonify({'detail': f'Response {response_id!r} not found'}), 404
 
     # Authorisation: API-key callers may only retrieve their own responses.
     # JWT-authenticated users (admin) may retrieve any response.
     if api_key and bg_record.get("apikey") and bg_record["apikey"] != api_key.key:
+        _log_error("get_response", 403, f"Unauthorised access to response {response_id!r}")
         return jsonify({'detail': 'Not authorised to access this response'}), 403
 
     record_status = bg_record.get("status", "")

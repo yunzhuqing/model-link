@@ -10,25 +10,50 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 
 
+class LogFormatter(logging.Formatter):
+    """Log formatter that supports customizable output via LOG_FORMAT env variable."""
+
+    def __init__(self):
+        format_string = os.getenv(
+            "LOG_FORMAT",
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+        datefmt = os.getenv("LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S")
+        super().__init__(format_string, datefmt=datefmt)
+
+
 def _configure_logging() -> None:
     """
-    Configure the root logger based on the LOG_LEVEL environment variable.
+    Configure the root logger based on environment variables.
 
-    Supported values (case-insensitive): DEBUG, INFO, WARNING, ERROR, CRITICAL.
-    Defaults to INFO if not set or invalid.
+    Supported environment variables:
+        LOG_LEVEL     (str)  : DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
+        LOG_FORMAT    (str)  : Python log format string
+                               (default: "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        LOG_DATE_FORMAT (str): Date/time format string (default: "%Y-%m-%d %H:%M:%S")
 
-    The format includes timestamp, logger name, level, and message — suitable
+    The default format includes timestamp, logger name, level, and message — suitable
     for both local development and production log aggregators.
+
+    Example LOG_FORMAT values:
+        - JSON for log aggregation:
+          ``LOG_FORMAT={"timestamp":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}``
+        - Minimal:
+          ``LOG_FORMAT=[%(levelname)s] %(message)s``
+        - With file/line info:
+          ``LOG_FORMAT=%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s``
     """
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     numeric_level = getattr(logging, level_name, None)
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
+    handler = logging.StreamHandler()
+    handler.setFormatter(LogFormatter())
+
     logging.basicConfig(
         level=numeric_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[handler],
         force=True,  # Override any existing root logger config
     )
 

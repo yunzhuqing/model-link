@@ -61,6 +61,29 @@ ALGORITHM = "HS256"
 _gateway_service = GatewayService()
 
 
+def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None) -> None:
+    """Log gateway errors with consistent format.
+
+    Args:
+        endpoint: The API endpoint name (e.g. 'chat_completions', 'embeddings')
+        status_code: HTTP status code of the error response
+        detail: Error detail message
+        extra: Optional additional context (e.g. model name, user info)
+    """
+    log_data = {
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "detail": detail,
+    }
+    if extra:
+        log_data.update(extra)
+
+    if 500 <= status_code < 600:
+        logger.error(f"[gateway] {endpoint} error: {detail}", extra=log_data)
+    elif 400 <= status_code < 500:
+        logger.warning(f"[gateway] {endpoint} client error: {detail}", extra=log_data)
+
+
 def _check_allowed_models(api_key, model_name: str) -> Optional[dict]:
     """Check if the API key's allowed_models list permits access to this model.
 
@@ -325,6 +348,7 @@ async def _handle_request(adapter):
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("handle_request", status, error.get('detail', 'Not authenticated'))
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     # 2. 获取请求数据 (force=True to accept any Content-Type)
@@ -334,21 +358,25 @@ async def _handle_request(adapter):
         data = None
 
     if not data:
+        _log_error("handle_request", 400, "Invalid or empty JSON request body")
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
 
     model_name = data.get('model')
     if not model_name:
+        _log_error("handle_request", 400, "Model is required")
         return jsonify(adapter.format_error_response('Model is required', 400)), 400
 
     # 2.5. 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
+        _log_error("handle_request", 403, acl_error['detail'])
         return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
 
     # 3. 使用适配器解析请求
     try:
         chat_request = adapter.parse_request(data)
     except Exception as e:
+        _log_error("handle_request", 400, f"Invalid request format: {e}")
         return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
 
     # 4. 获取组 ID（用于访问控制）
@@ -445,6 +473,7 @@ async def _handle_request(adapter):
                 ws_provider_id=ws_provider_id_val,
             )
             if not result.allowed:
+                _log_error("handle_request", 429, result.detail or 'Rate limit exceeded', {"model": model_name})
                 return jsonify(adapter.format_error_response(
                     result.detail or 'Rate limit exceeded', 429
                 )), 429
@@ -581,10 +610,13 @@ async def _handle_request(adapter):
             return jsonify(adapter.format_response(response))
 
     except ProviderError as e:
+        _log_error("handle_request", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
+        _log_error("handle_request", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
+        _log_error("handle_request", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
 
@@ -770,6 +802,7 @@ async def create_embeddings():
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("embeddings", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
@@ -778,21 +811,25 @@ async def create_embeddings():
     except UnicodeDecodeError:
         data = None
     if not data:
+        _log_error("embeddings", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
     model_name = data.get('model')
     if not model_name:
+        _log_error("embeddings", 400, "Model is required")
         return jsonify({'detail': 'Model is required'}), 400
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
+        _log_error("embeddings", 403, acl_error['detail'])
         return jsonify({'detail': acl_error['detail']}), 403
 
     input_data = data.get('input')
     messages = data.get('messages')
 
     if input_data is None and messages is None:
+        _log_error("embeddings", 400, 'Either "input" or "messages" is required')
         return jsonify({'detail': 'Either "input" or "messages" is required'}), 400
 
     # Normalize multimodal input formats into the messages format for unified downstream handling.
@@ -855,10 +892,13 @@ async def create_embeddings():
         response = _gateway_service.embed(embedding_request, group_id)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
+        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
 
@@ -895,6 +935,7 @@ async def create_images():
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("images_generations", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
@@ -903,19 +944,23 @@ async def create_images():
     except UnicodeDecodeError:
         data = None
     if not data:
+        _log_error("images_generations", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
     model_name = data.get('model')
     if not model_name:
+        _log_error("images_generations", 400, "Model is required")
         return jsonify({'detail': 'Model is required'}), 400
 
     prompt = data.get('prompt')
     if not prompt:
+        _log_error("images_generations", 400, "Prompt is required")
         return jsonify({'detail': 'Prompt is required'}), 400
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
+        _log_error("images_generations", 403, acl_error['detail'])
         return jsonify({'detail': acl_error['detail']}), 403
 
     # 3. 提取参数
@@ -969,10 +1014,13 @@ async def create_images():
             logger.warning(f"[usage] Failed to trigger usage recording for image generation: {_ue}")
         return jsonify(result)
     except ModelNotFoundError as e:
+        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
 
@@ -1015,6 +1063,7 @@ async def edit_images():
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("images_edits", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
@@ -1023,19 +1072,23 @@ async def edit_images():
     except UnicodeDecodeError:
         data = None
     if not data:
+        _log_error("images_edits", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
     model_name = data.get('model')
     if not model_name:
+        _log_error("images_edits", 400, "Model is required")
         return jsonify({'detail': 'Model is required'}), 400
 
     prompt = data.get('prompt')
     if not prompt:
+        _log_error("images_edits", 400, "Prompt is required")
         return jsonify({'detail': 'Prompt is required'}), 400
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
+        _log_error("images_edits", 403, acl_error['detail'])
         return jsonify({'detail': acl_error['detail']}), 403
 
     # 3. 提取参数
@@ -1091,10 +1144,13 @@ async def edit_images():
             logger.warning(f"[usage] Failed to trigger usage recording for image editing: {_ue}")
         return jsonify(result)
     except ModelNotFoundError as e:
+        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
 
@@ -1184,6 +1240,7 @@ async def create_rerank():
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
+        _log_error("rerank", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
@@ -1192,23 +1249,28 @@ async def create_rerank():
     except UnicodeDecodeError:
         data = None
     if not data:
+        _log_error("rerank", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
     model_name = data.get('model')
     if not model_name:
+        _log_error("rerank", 400, "Model is required")
         return jsonify({'detail': 'Model is required'}), 400
 
     query = data.get('query')
     if not query:
+        _log_error("rerank", 400, '"query" is required')
         return jsonify({'detail': '"query" is required'}), 400
 
     documents = data.get('documents')
     if not documents or not isinstance(documents, list):
+        _log_error("rerank", 400, '"documents" must be a non-empty list')
         return jsonify({'detail': '"documents" must be a non-empty list'}), 400
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
+        _log_error("rerank", 403, acl_error['detail'])
         return jsonify({'detail': acl_error['detail']}), 403
 
     # 3. 构建 Rerank 请求
@@ -1229,8 +1291,11 @@ async def create_rerank():
         response = _gateway_service.rerank(rerank_request, group_id)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
+        _log_error("rerank", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        _log_error("rerank", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        _log_error("rerank", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
