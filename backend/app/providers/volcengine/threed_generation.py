@@ -305,20 +305,9 @@ def _create_3d_task(
 
     payload_str = json.dumps(body, ensure_ascii=False)
 
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[Seed3D Create3DTask Request]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(payload_str, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
     with httpx.Client(timeout=60) as client:
         response = client.post(url, content=payload_str, headers=headers)
-
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[Seed3D Create3DTask Response]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(response.text, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
     if response.status_code >= 400:
         raise RuntimeError(
@@ -380,17 +369,7 @@ def _poll_3d_task(
             data = response.json()
             status = data.get("status", "")
 
-            print(
-                f"[Seed3D 3D] Task {task_id} status={status}",
-                file=sys.stderr,
-            )
-
             if status == "succeeded":
-                print(
-                    f"[Seed3D 3D] Task FINISH detail: "
-                    f"{json.dumps(data, ensure_ascii=False)}",
-                    file=sys.stderr,
-                )
                 content = data.get("content") or {}
                 file_url = content.get("file_url", "")
                 if not file_url:

@@ -320,3 +320,346 @@ async def delete_model(current_user, model_id):
     db.session.commit()
     
     return '', 204
+
+
+# ============== Rate Limit Status API ==============
+
+@providers_bp.route('/providers/rate-limits', methods=['GET'])
+@token_required
+async def get_all_rate_limits(current_user):
+    """Get rate limit status for all models across all groups the user has access to."""
+    from app.rate_limiter import get_rate_limiter
+
+    limiter = get_rate_limiter()
+    if limiter is None:
+        return jsonify({'models': [], 'note': 'Rate limiter not initialized (in-memory mode)'})
+
+    models = db.session.query(Model).filter(
+        Model.is_active == True,
+        db.or_(Model.rpm.isnot(None), Model.tpm.isnot(None))
+    ).all()
+
+    result = []
+    for model in models:
+        status = limiter.get_status(model.id, model.provider.group_id)
+        if status is not None:
+            rpm_limit = model.rpm
+            tpm_limit = model.tpm
+            rpm_remaining = status['rpm']['remaining']
+            tpm_remaining = status['tpm']['remaining']
+
+            status['model_id'] = model.id
+            status['model_name'] = model.name
+            status['alias'] = model.alias
+            status['provider_id'] = model.provider_id
+            status['provider_name'] = model.provider.name if model.provider else None
+            status['group_id'] = model.provider.group_id
+            status['rpm_limit'] = rpm_limit
+            status['tpm_limit'] = tpm_limit
+            status['rpm_remaining'] = rpm_remaining
+            status['tpm_remaining'] = tpm_remaining
+            status['rpm_used'] = (rpm_limit - rpm_remaining) if (rpm_limit is not None and rpm_remaining is not None) else 0
+            status['tpm_used'] = (tpm_limit - tpm_remaining) if (tpm_limit is not None and tpm_remaining is not None) else 0
+            status['rpm_pct'] = round(status['rpm_used'] / rpm_limit * 100, 1) if rpm_limit else 0
+            status['tpm_pct'] = round(status['tpm_used'] / tpm_limit * 100, 1) if tpm_limit else 0
+            result.append(status)
+
+    return jsonify({'models': result})
+
+
+@providers_bp.route('/providers/rate-limits/<int:model_id>', methods=['GET'])
+@token_required
+async def get_model_rate_limit(current_user, model_id):
+    """Get rate limit status for a specific model."""
+    from app.rate_limiter import get_rate_limiter
+
+    model = db.session.query(Model).filter(Model.id == model_id).first()
+    if not model:
+        return jsonify({'detail': 'Model not found'}), 404
+
+    limiter = get_rate_limiter()
+    if limiter is None:
+        return jsonify({'model_id': model.id, 'model_name': model.name,
+                       'rpm': model.rpm, 'tpm': model.tpm,
+                       'note': 'Rate limiter not initialized (in-memory mode)'})
+
+    status = limiter.get_status(model.id, model.provider.group_id)
+    if status is None:
+        return jsonify({
+            'model_id': model.id,
+            'model_name': model.name,
+            'rpm': model.rpm,
+            'tpm': model.tpm,
+            'current_rpm_count': 0,
+            'current_tpm_count': 0,
+            'rpm_remaining': model.rpm,
+            'tpm_remaining': model.tpm,
+            'api_keys': [],
+            'note': 'No active rate limiting for this model'
+        })
+
+    return jsonify(status)
+
+
+# ============== Workspace Rate Limit CRUD + Status API ==============
+
+@providers_bp.route('/workspaces', methods=['GET'])
+@token_required
+async def list_workspaces(current_user):
+    """List all workspaces."""
+    from app.models import Workspace
+    workspaces = db.session.query(Workspace).order_by(Workspace.id).all()
+    return jsonify([ws.to_dict() for ws in workspaces])
+
+
+@providers_bp.route('/workspaces/<int:workspace_id>/rate-limits', methods=['GET'])
+@token_required
+async def get_workspace_rate_limits(current_user, workspace_id):
+    """List all workspace-level rate limit configurations and their live status."""
+    from app.rate_limiter import get_rate_limiter
+    from app.models import Workspace, WorkspaceRateLimit, Model, Provider, Group
+
+    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if not ws:
+        return jsonify({'detail': 'Workspace not found'}), 404
+
+    limits = db.session.query(WorkspaceRateLimit).filter(
+        WorkspaceRateLimit.workspace_id == workspace_id
+    ).all()
+
+    limiter = get_rate_limiter()
+
+    # Collect all model names for per-provider lookup
+    model_names = list(set(rl.model_name for rl in limits))
+
+    # Find group-level models matching these model names (alias or name)
+    # to show per-provider breakdown
+    provider_models = {}  # model_name -> [{provider_name, group_name, ...}]
+    if model_names:
+        matching_models = db.session.query(Model).join(Provider).join(Group).filter(
+            Model.is_active == True,
+            Provider.is_active == True,
+            db.or_(
+                Model.name.in_(model_names),
+                Model.alias.in_(model_names),
+            )
+        ).all()
+        for m in matching_models:
+            key = m.alias or m.name
+            if key not in provider_models:
+                provider_models[key] = []
+            # Get group-level status for this specific model
+            grp_status = limiter.get_status(m.id, m.provider.group_id)
+            rpm_limit_g = m.rpm
+            tpm_limit_g = m.tpm
+            rpm_remaining = grp_status['rpm'].get('remaining')
+            tpm_remaining = grp_status['tpm'].get('remaining')
+            rpm_used_g = max(0, rpm_limit_g - int(rpm_remaining)) if rpm_limit_g and rpm_remaining is not None else 0
+            tpm_used_g = max(0, tpm_limit_g - int(tpm_remaining)) if tpm_limit_g and tpm_remaining is not None else 0
+            provider_models[key].append({
+                'provider_name': m.provider.name if m.provider else None,
+                'provider_type': m.provider.type if m.provider else None,
+                'provider_id': m.provider_id,
+                'group_name': m.provider.group.name if m.provider and m.provider.group else None,
+                'model_id': m.id,
+                'rpm_limit': rpm_limit_g,
+                'tpm_limit': tpm_limit_g,
+                'rpm_used': rpm_used_g,
+                'tpm_used': tpm_used_g,
+            })
+
+    # Build API key lookup: preview -> {name, group_name}
+    # API keys belong to this workspace (via workspace_id or group.workspace_id)
+    from app.models import ApiKey
+    ws_api_keys = db.session.query(ApiKey).filter(
+        db.or_(
+            ApiKey.workspace_id == workspace_id,
+            ApiKey.group_id.in_(
+                db.session.query(Group.id).filter(Group.workspace_id == workspace_id)
+            ),
+        )
+    ).all()
+    apikey_info_map = {}  # preview_prefix -> {name, group_name}
+    for ak in ws_api_keys:
+        if ak.key:
+            preview = ak.key[:8] + '...'
+            apikey_info_map[preview] = {
+                'name': ak.name,
+                'group_name': ak.group.name if ak.group else None,
+            }
+
+    result = []
+    for rl in limits:
+        status = limiter.get_ws_status(
+            workspace_id, rl.model_name,
+            ws_rpm_limit=rl.rpm, ws_tpm_limit=rl.tpm,
+            provider_type=rl.provider_type, provider_id=rl.provider_id,
+        )
+        # Add historical usage (1m, 5m, 10m)
+        history = limiter.get_ws_history(
+            workspace_id, rl.model_name,
+            ws_rpm_limit=rl.rpm, ws_tpm_limit=rl.tpm,
+            provider_type=rl.provider_type, provider_id=rl.provider_id,
+        )
+        status['history'] = history
+        status['id'] = rl.id
+        status['workspace_id'] = workspace_id
+        status['workspace_name'] = ws.name
+        status['provider_type'] = rl.provider_type
+        status['provider_id'] = rl.provider_id
+        status['provider_name'] = rl.provider.name if rl.provider else None
+        status['rpm_limit'] = rl.rpm
+        status['tpm_limit'] = rl.tpm
+        # Enrich apikeys with name and group info
+        enriched_apikeys = []
+        for ak_usage in status.get('apikeys', []):
+            preview = ak_usage.get('preview', '')
+            info = apikey_info_map.get(preview, {})
+            enriched_apikeys.append({
+                **ak_usage,
+                'api_key_name': info.get('name'),
+                'group_name': info.get('group_name'),
+            })
+        status['apikeys'] = enriched_apikeys
+        # Add per-provider breakdown (group-level models for this model_name)
+        status['providers'] = provider_models.get(rl.model_name, [])
+        result.append(status)
+
+    return jsonify({'workspace': ws.to_dict(), 'rate_limits': result})
+
+
+@providers_bp.route('/workspaces/<int:workspace_id>/rate-limits', methods=['POST'])
+@token_required
+async def create_workspace_rate_limit(current_user, workspace_id):
+    """Create a new workspace-level rate limit for a model + provider_type (+ optional provider_id)."""
+    from app.models import Workspace, WorkspaceRateLimit
+
+    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if not ws:
+        return jsonify({'detail': 'Workspace not found'}), 404
+
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
+    if not data:
+        return jsonify({'detail': 'Invalid JSON'}), 400
+
+    model_name = data.get('model_name')
+    if not model_name:
+        return jsonify({'detail': 'model_name is required'}), 400
+
+    provider_type = data.get('provider_type')
+    if not provider_type:
+        return jsonify({'detail': 'provider_type is required'}), 400
+
+    provider_id = data.get('provider_id')  # optional — NULL means shared for all accounts of this type
+
+    # Check for duplicate (workspace_id, model_name, provider_type, provider_id)
+    q = db.session.query(WorkspaceRateLimit).filter(
+        WorkspaceRateLimit.workspace_id == workspace_id,
+        WorkspaceRateLimit.model_name == model_name,
+        WorkspaceRateLimit.provider_type == provider_type,
+    )
+    if provider_id is not None:
+        q = q.filter(WorkspaceRateLimit.provider_id == provider_id)
+    else:
+        q = q.filter(WorkspaceRateLimit.provider_id.is_(None))
+    existing = q.first()
+    if existing:
+        label = f'{provider_type}' + (f' (provider #{provider_id})' if provider_id else ' (shared)')
+        return jsonify({'detail': f'Rate limit for model "{model_name}" / {label} already exists'}), 409
+
+    rl = WorkspaceRateLimit(
+        workspace_id=workspace_id,
+        model_name=model_name,
+        provider_type=provider_type,
+        provider_id=provider_id,
+        rpm=data.get('rpm'),
+        tpm=data.get('tpm'),
+    )
+    db.session.add(rl)
+    db.session.commit()
+    return jsonify(rl.to_dict()), 201
+
+
+@providers_bp.route('/workspaces/<int:workspace_id>/rate-limits/<int:rate_limit_id>', methods=['PUT'])
+@token_required
+async def update_workspace_rate_limit(current_user, workspace_id, rate_limit_id):
+    """Update a workspace-level rate limit."""
+    from app.models import WorkspaceRateLimit
+
+    rl = db.session.query(WorkspaceRateLimit).filter(
+        WorkspaceRateLimit.id == rate_limit_id,
+        WorkspaceRateLimit.workspace_id == workspace_id,
+    ).first()
+    if not rl:
+        return jsonify({'detail': 'Rate limit not found'}), 404
+
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
+    if not data:
+        return jsonify({'detail': 'Invalid JSON'}), 400
+
+    if 'rpm' in data:
+        rl.rpm = data['rpm']
+    if 'tpm' in data:
+        rl.tpm = data['tpm']
+    if 'model_name' in data:
+        rl.model_name = data['model_name']
+    if 'provider_type' in data:
+        rl.provider_type = data['provider_type']
+    if 'provider_id' in data:
+        rl.provider_id = data['provider_id']
+
+    db.session.commit()
+    return jsonify(rl.to_dict())
+
+
+@providers_bp.route('/workspaces/<int:workspace_id>/rate-limits/<int:rate_limit_id>', methods=['DELETE'])
+@token_required
+async def delete_workspace_rate_limit(current_user, workspace_id, rate_limit_id):
+    """Delete a workspace-level rate limit."""
+    from app.models import WorkspaceRateLimit
+
+    rl = db.session.query(WorkspaceRateLimit).filter(
+        WorkspaceRateLimit.id == rate_limit_id,
+        WorkspaceRateLimit.workspace_id == workspace_id,
+    ).first()
+    if not rl:
+        return jsonify({'detail': 'Rate limit not found'}), 404
+
+    db.session.delete(rl)
+    db.session.commit()
+    return '', 204
+
+
+@providers_bp.route('/workspaces/<int:workspace_id>/rate-limits/status', methods=['GET'])
+@token_required
+async def get_workspace_rate_limit_status(current_user, workspace_id):
+    """Get live rate limit status for a specific model in a workspace."""
+    from app.rate_limiter import get_rate_limiter
+    from app.models import Workspace, WorkspaceRateLimit
+
+    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if not ws:
+        return jsonify({'detail': 'Workspace not found'}), 404
+
+    model_name = request.args.get('model_name')
+    if not model_name:
+        return jsonify({'detail': 'model_name query parameter is required'}), 400
+
+    rl = db.session.query(WorkspaceRateLimit).filter(
+        WorkspaceRateLimit.workspace_id == workspace_id,
+        WorkspaceRateLimit.model_name == model_name,
+    ).first()
+
+    limiter = get_rate_limiter()
+    ws_rpm = rl.rpm if rl else None
+    ws_tpm = rl.tpm if rl else None
+    status = limiter.get_ws_status(workspace_id, model_name, ws_rpm_limit=ws_rpm, ws_tpm_limit=ws_tpm)
+    status['workspace_id'] = workspace_id
+    status['workspace_name'] = ws.name
+    return jsonify(status)

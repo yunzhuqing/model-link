@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { WorkspaceProvider } from './contexts/WorkspaceContext';
 import { useEffect } from 'react';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -20,6 +21,7 @@ import HelpVideoGeneration from './pages/HelpVideoGeneration';
 import HelpThreed from './pages/HelpThreed';
 import HelpModelRouting from './pages/HelpModelRouting';
 import ApiKeyDetail from './pages/ApiKeyDetail';
+import RateLimits from './pages/RateLimits';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -47,7 +49,9 @@ function App() {
               path="/"
               element={
                 <ProtectedRoute>
-                  <Layout />
+                  <WorkspaceProvider>
+                    <Layout />
+                  </WorkspaceProvider>
                 </ProtectedRoute>
               }
             >
@@ -67,6 +71,7 @@ function App() {
               <Route path="help/video-generation" element={<HelpVideoGeneration />} />
               <Route path="help/3d-generation" element={<HelpThreed />} />
               <Route path="help/model-routing" element={<HelpModelRouting />} />
+              <Route path="rate-limits" element={<RateLimits />} />
             </Route>
           </Routes>
         </BrowserRouter>

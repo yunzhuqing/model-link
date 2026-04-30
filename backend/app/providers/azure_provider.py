@@ -355,7 +355,6 @@ class AzureProvider(OpenAIProvider):
                     "summary": "auto",
                 }
         
-        print(f"[Azure Debug] Prepared Responses API request body: {json.dumps(result, ensure_ascii=False)}")
         return result
 
     def _parse_responses_api_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
@@ -366,13 +365,11 @@ class AzureProvider(OpenAIProvider):
         tool_calls = []
         reasoning_summary_parts = []
 
-        print(f"[Azure Debug] Response output items: {[item.get('type') for item in response_data.get('output', [])]}")
 
         for item in response_data.get("output", []):
             item_type = item.get("type")
             if item_type == "reasoning":
                 # Extract summary_text from reasoning output item
-                print(f"[Azure Debug] Reasoning item found: {json.dumps(item, ensure_ascii=False)}")
                 for summary_item in item.get("summary", []):
                     if summary_item.get("type") == "summary_text":
                         reasoning_summary_parts.append(summary_item.get("text", ""))
@@ -667,19 +664,12 @@ class AzureProvider(OpenAIProvider):
             request_data = self.prepare_request(request)
             request_data["stream"] = False
 
-        # Debug: print request details
-        print(f"[Azure Debug] URL: {url}")
-        print(f"[Azure Debug] Headers: {self.get_headers()}")
-        print(f"[Azure Debug] Request Data: {json.dumps(request_data, ensure_ascii=False, indent=2)}")
-
         try:
             response = self.client.post(url, json=request_data)
-            print(f"[Azure Debug] Response Status: {response.status_code}")
 
             if response.status_code >= 400:
                 try:
                     error_data = response.json()
-                    print(f"[Azure Debug] Error Response: {json.dumps(error_data, ensure_ascii=False, indent=2)}")
                     raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                 except json.JSONDecodeError:
                     raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
@@ -694,7 +684,6 @@ class AzureProvider(OpenAIProvider):
         except RuntimeError:
             raise
         except Exception as e:
-            print(f"[Azure Debug] Error: {str(e)}")
             raise RuntimeError(f"Azure OpenAI API error: {str(e)}")
 
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
@@ -724,7 +713,6 @@ class AzureProvider(OpenAIProvider):
                         for chunk in response.iter_bytes():
                             if chunk:
                                 error_text += chunk.decode('utf-8')
-                        print(f"[Azure Debug] Stream Error Response: {error_text}")
                         try:
                             error_data = json.loads(error_text)
                             raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
@@ -748,7 +736,6 @@ class AzureProvider(OpenAIProvider):
                         for chunk in response.iter_bytes():
                             if chunk:
                                 error_text += chunk.decode('utf-8')
-                        print(f"[Azure Debug] Stream Error Response: {error_text}")
                         try:
                             error_data = json.loads(error_text)
                             raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
@@ -843,8 +830,6 @@ class AzureProvider(OpenAIProvider):
             request_data["user"] = request.user
         
         url = self.get_embedding_url(request.model)
-        
-        print(f"[Azure Debug] Embedding URL: {url}")
         
         try:
             response = self.client.post(url, json=request_data)

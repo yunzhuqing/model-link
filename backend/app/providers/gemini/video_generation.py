@@ -307,21 +307,8 @@ def _create_veo_operation(
 
     payload_str = json.dumps(request_body, ensure_ascii=False)
 
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[Gemini Veo CreateOperation Request]", file=sys.stderr)
-    print(f"URL: {url}", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(payload_str, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
-
     with httpx.Client(timeout=60) as client:
         response = client.post(url, content=payload_str, headers=headers)
-
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[Gemini Veo CreateOperation Response]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(response.text, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
     if response.status_code >= 400:
         raise RuntimeError(
@@ -367,11 +354,6 @@ def _download_and_store_video(uri: str, api_key: str, video_id: str) -> str:
     separator = "&" if "?" in uri else "?"
     download_url = f"{uri}{separator}key={api_key}"
 
-    print(
-        f"[Gemini Veo] Downloading video from {uri} ...",
-        file=sys.stderr,
-    )
-
     with httpx.Client(timeout=300, follow_redirects=True) as client:
         response = client.get(download_url)
 
@@ -392,19 +374,8 @@ def _download_and_store_video(uri: str, api_key: str, video_id: str) -> str:
 
     filename = f"{video_id}.{ext}"
 
-    print(
-        f"[Gemini Veo] Downloaded {len(video_bytes)} bytes ({content_type}), "
-        f"saving as {filename} ...",
-        file=sys.stderr,
-    )
-
     storage = get_storage_backend()
     stored_url = storage.write_binary(filename, video_bytes, content_type)
-
-    print(
-        f"[Gemini Veo] Video saved, accessible at: {stored_url}",
-        file=sys.stderr,
-    )
 
     return stored_url
 
@@ -463,11 +434,6 @@ def _poll_veo_operation(
             data = response.json()
             is_done = data.get("done", False)
 
-            print(
-                f"[Gemini Veo] Operation {operation_name} done={is_done}",
-                file=sys.stderr,
-            )
-
             if is_done:
                 # 检查是否有错误
                 error = data.get("error")
@@ -475,12 +441,6 @@ def _poll_veo_operation(
                     raise RuntimeError(
                         f"Gemini Veo operation failed: {json.dumps(error, ensure_ascii=False)}"
                     )
-
-                print(
-                    f"[Gemini Veo] Operation FINISH detail: "
-                    f"{json.dumps(data, ensure_ascii=False)}",
-                    file=sys.stderr,
-                )
 
                 # 解析生成的视频 URI
                 response_data = data.get("response", {})
@@ -513,11 +473,6 @@ def _poll_veo_operation(
                         stored_url = _download_and_store_video(uri, api_key, video_id)
                         stored_urls.append(stored_url)
                     except Exception as exc:
-                        print(
-                            f"[Gemini Veo] Warning: failed to download/store video {uri}: {exc}. "
-                            f"Falling back to original Gemini URI.",
-                            file=sys.stderr,
-                        )
                         # 下载失败时回退到原始 Gemini URI（加上 API Key 供客户端访问）
                         separator = "&" if "?" in uri else "?"
                         stored_urls.append(f"{uri}{separator}key={api_key}")

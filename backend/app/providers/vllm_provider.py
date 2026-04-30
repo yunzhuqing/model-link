@@ -163,7 +163,6 @@ class VLLMProvider(OpenAIProvider):
                             if chunk:
                                 yield chunk
                         except json.JSONDecodeError as err:
-                            print(f"Failed to parse vLLM stream chunk: {err}. Data: {data_str}")
                             continue
 
         try:

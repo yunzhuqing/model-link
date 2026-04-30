@@ -399,13 +399,6 @@ def execute_qwen_image_generation(
         "parameters": parameters,
     }
 
-    # Debug logging
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[Qwen Image Request Body]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(json.dumps(request_body, ensure_ascii=False, indent=2), file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",

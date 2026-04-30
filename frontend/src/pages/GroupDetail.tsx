@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail, BarChart3, Cpu, List
+  Users, UserPlus, Mail, BarChart3, Cpu, List, Gauge
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';
@@ -34,7 +34,7 @@ export default function GroupDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage'>('statistics');
+  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage' | 'rateLimits'>('statistics');
   const [showInviteMember, setShowInviteMember] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
@@ -151,6 +151,7 @@ export default function GroupDetail() {
             { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
             { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
             { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
+            { key: 'rateLimits', label: t('group.tabRateLimits'), icon: Gauge, color: 'teal' },
           ].map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
             return (
@@ -357,6 +358,134 @@ export default function GroupDetail() {
           <UsageRecordsTable groupId={parseInt(id!)} />
         </div>
       )}
+
+      {/* ── Rate Limits Tab ──────────────────────────────────────────────────── */}
+      {activeTab === 'rateLimits' && (
+        <GroupRateLimits groupId={parseInt(id!)} />
+      )}
+    </div>
+  );
+}
+
+function GroupRateLimits({ groupId }: { groupId: number }) {
+  const { t } = useTranslation();
+
+  interface RateLimitModel {
+    model_id: number; model_name: string; alias: string | null;
+    provider_id: number; provider_name: string | null; group_id: number;
+    rpm_limit: number | null; tpm_limit: number | null;
+    rpm_used: number; tpm_used: number; rpm_pct: number; tpm_pct: number;
+  }
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['rate-limits'],
+    queryFn: async () => {
+      const r = await client.get('/api/providers/rate-limits');
+      return r.data.models as RateLimitModel[];
+    },
+    refetchInterval: 10000,
+  });
+
+  if (isLoading) return <div className="text-center py-8 text-slate-400">{t('common.loading')}</div>;
+
+  const models = (data || []).filter(m => m.group_id === groupId);
+
+  if (models.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div className="flex items-center space-x-3 mb-6">
+          <div className="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center">
+            <Gauge className="w-5 h-5 text-teal-600" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-800">{t('group.tabRateLimits')}</h2>
+            <p className="text-sm text-slate-500">{t('group.rateLimitsDesc')}</p>
+          </div>
+        </div>
+        <div className="text-center py-8 text-slate-400">{t('rateLimits.noActiveLimits')}</div>
+      </div>
+    );
+  }
+
+  const fmtNum = (n: number) => {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+    return n.toLocaleString();
+  };
+
+  const pctColor = (pct: number) => {
+    if (pct >= 90) return 'text-red-600';
+    if (pct >= 75) return 'text-amber-600';
+    if (pct >= 50) return 'text-yellow-600';
+    return 'text-emerald-600';
+  };
+
+  const barColor = (pct: number) => {
+    if (pct >= 90) return 'bg-red-500';
+    if (pct >= 75) return 'bg-amber-500';
+    if (pct >= 50) return 'bg-yellow-500';
+    return 'bg-emerald-500';
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div className="flex items-center space-x-3 mb-6">
+        <div className="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center">
+          <Gauge className="w-5 h-5 text-teal-600" />
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">{t('group.tabRateLimits')}</h2>
+          <p className="text-sm text-slate-500">{t('group.rateLimitsDesc')}</p>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50">
+            <tr className="text-left text-xs text-slate-500 uppercase tracking-wider">
+              <th className="px-4 py-3">{t('rateLimits.modelName')}</th>
+              <th className="px-4 py-3">Provider</th>
+              <th className="px-4 py-3 text-right">RPM</th>
+              <th className="px-4 py-3 text-right">TPM</th>
+              <th className="px-4 py-3 text-center" style={{ minWidth: 200 }}>RPM</th>
+              <th className="px-4 py-3 text-center" style={{ minWidth: 200 }}>TPM</th>
+            </tr>
+          </thead>
+          <tbody>
+            {models.map(m => (
+              <tr key={m.model_id} className="border-t border-slate-100 hover:bg-slate-50">
+                <td className="px-4 py-3 font-medium">{m.alias || m.model_name}</td>
+                <td className="px-4 py-3 text-slate-500">{m.provider_name}</td>
+                <td className="px-4 py-3 text-right font-mono">
+                  <span className={pctColor(m.rpm_pct)}>{m.rpm_limit ? `${m.rpm_used}/${m.rpm_limit}` : '∞'}</span>
+                </td>
+                <td className="px-4 py-3 text-right font-mono">
+                  <span className={pctColor(m.tpm_pct)}>{m.tpm_limit ? `${fmtNum(m.tpm_used)}/${fmtNum(m.tpm_limit)}` : '∞'}</span>
+                </td>
+                <td className="px-4 py-3">
+                  {m.rpm_limit ? (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div className={`${barColor(m.rpm_pct)} h-full rounded-full transition-all`} style={{ width: Math.min(m.rpm_pct, 100) + '%' }} />
+                      </div>
+                      <span className={`text-xs font-mono ${pctColor(m.rpm_pct)}`}>{m.rpm_pct}%</span>
+                    </div>
+                  ) : <span className="text-xs text-slate-400">{t('rateLimits.unlimited')}</span>}
+                </td>
+                <td className="px-4 py-3">
+                  {m.tpm_limit ? (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div className={`${barColor(m.tpm_pct)} h-full rounded-full transition-all`} style={{ width: Math.min(m.tpm_pct, 100) + '%' }} />
+                      </div>
+                      <span className={`text-xs font-mono ${pctColor(m.tpm_pct)}`}>{m.tpm_pct}%</span>
+                    </div>
+                  ) : <span className="text-xs text-slate-400">{t('rateLimits.unlimited')}</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

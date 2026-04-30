@@ -3,6 +3,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import LanguageSwitcher from './LanguageSwitcher';
+import { useWorkspace } from '../contexts/WorkspaceContext';
 import {
   LayoutDashboard,
   Database,
@@ -14,8 +15,10 @@ import {
   BookOpen,
   Layers,
   BarChart3,
+  Gauge,
   PanelLeftClose,
   PanelLeftOpen,
+  Globe,
 } from 'lucide-react';
 
 interface SubNavItem {
@@ -36,6 +39,7 @@ const navItems: NavItem[] = [
   { path: '/groups', labelKey: 'nav.groups', icon: Users, descKey: 'nav.groupsDesc' },
   { path: '/model-templates', labelKey: 'nav.modelTemplates', icon: LayoutTemplate, descKey: 'nav.modelTemplatesDesc' },
   { path: '/usage', labelKey: 'nav.usage', icon: BarChart3, descKey: 'nav.usageDesc' },
+  { path: '/rate-limits', labelKey: 'nav.rateLimits', icon: Gauge, descKey: 'nav.rateLimitsDesc' },
   {
     path: '/help',
     labelKey: 'nav.help',
@@ -54,6 +58,29 @@ const navItems: NavItem[] = [
     ],
   },
 ];
+
+const WorkspaceSelector = () => {
+  const { workspaces, selectedWorkspace, setSelectedWorkspaceId } = useWorkspace();
+  const { t } = useTranslation();
+
+  if (!workspaces || workspaces.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2">
+      <Globe className="w-4 h-4 text-indigo-500" />
+      <select
+        className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors"
+        value={selectedWorkspace?.id ?? ''}
+        onChange={e => setSelectedWorkspaceId(Number(e.target.value))}
+        title={t('nav.workspace')}
+      >
+        {workspaces.map(ws => (
+          <option key={ws.id} value={ws.id}>{ws.name}</option>
+        ))}
+      </select>
+    </div>
+  );
+};
 
 const Layout = () => {
   const { logout } = useAuth();
@@ -247,6 +274,7 @@ const Layout = () => {
             )}
           </div>
           <div className="flex items-center space-x-4">
+            <WorkspaceSelector />
             <LanguageSwitcher />
             <button className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
               <Settings className="w-5 h-5" />

@@ -489,7 +489,6 @@ class GatewayService:
         try:
             return provider_class(config)
         except Exception as e:
-            print(f"Error creating provider instance: {e}")
             return None
 
     @staticmethod

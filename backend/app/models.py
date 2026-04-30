@@ -69,15 +69,82 @@ class UserGroup(db.Model):
     group = db.relationship("Group", back_populates="user_associations")
 
 
-class User(db.Model):
-    __tablename__ = "ml_users"
+class Workspace(db.Model):
+    """Workspace model — top-level tenant/space for global rate limiting."""
+    __tablename__ = "ml_workspaces"
 
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False, index=True)
-    hashed_password = db.Column(db.String(255), nullable=False)
-    email = db.Column(db.String(100), unique=True, index=True)
+    id = db.Column(db.Integer, primary_key=True, index=True)
+    name = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    api_keys = db.relationship("ApiKey", back_populates="workspace")
+    rate_limits = db.relationship("WorkspaceRateLimit", back_populates="workspace", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    def to_dict_simple(self):
+        return self.to_dict()
+
+
+class WorkspaceRateLimit(db.Model):
+    """Workspace-level rate limit configuration for models, differentiated by provider type and account.
+
+    Granularity levels:
+      1. (workspace_id, model_name, provider_type, provider_id) — per-account limit
+      2. (workspace_id, model_name, provider_type, provider_id=NULL) — shared limit for all accounts of a provider type
+    """
+    __tablename__ = "ml_workspace_rate_limits"
+
+    id = db.Column(db.Integer, primary_key=True, index=True)
+    workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    model_name = db.Column(db.String(100), nullable=False, index=True)       # Model name / alias used as key
+    provider_type = db.Column(db.String(50), nullable=False, index=True)     # Provider type (e.g. "openai", "deepseek", "anthropic")
+    provider_id = db.Column(db.Integer, db.ForeignKey("ml_providers.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL = shared for all accounts of this provider_type
+    rpm = db.Column(db.Integer, nullable=True, default=None)                 # Requests per minute (null = unlimited)
+    tpm = db.Column(db.Integer, nullable=True, default=None)                 # Tokens per minute (null = unlimited)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('workspace_id', 'model_name', 'provider_type', 'provider_id',
+                            name='uq_workspace_model_provider_rate_limit'),
+    )
+
+    workspace = db.relationship("Workspace", back_populates="rate_limits")
+    provider = db.relationship("Provider", foreign_keys=[provider_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'model_name': self.model_name,
+            'provider_type': self.provider_type,
+            'provider_id': self.provider_id,
+            'provider_name': self.provider.name if self.provider else None,
+            'rpm': self.rpm,
+            'tpm': self.tpm,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class User(db.Model):
+    """User model for authentication"""
+    __tablename__ = "ml_users"
     
-    # User's groups through association
+    id = db.Column(db.Integer, primary_key=True, index=True)
+    username = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    
+    # Users belong to groups through UserGroup association
     group_associations = db.relationship("UserGroup", back_populates="user", cascade="all, delete-orphan")
     groups = db.relationship("Group", secondary="ml_user_groups", back_populates="users", viewonly=True)
 
@@ -103,8 +170,11 @@ class Group(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True, nullable=False, index=True)
     description = db.Column(db.String(255))
+    workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
+    # Relationships
+    workspace = db.relationship("Workspace", backref="groups")
     # Users in group through association
     user_associations = db.relationship("UserGroup", back_populates="group", cascade="all, delete-orphan")
     users = db.relationship("User", secondary="ml_user_groups", back_populates="groups", viewonly=True)
@@ -127,6 +197,7 @@ class Group(db.Model):
             'id': self.id,
             'name': self.name,
             'description': self.description,
+            'workspace_id': self.workspace_id,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'users': user_list,
             'api_keys': [k.to_dict_simple() for k in self.api_keys],
@@ -138,6 +209,7 @@ class Group(db.Model):
             'id': self.id,
             'name': self.name,
             'description': self.description,
+            'workspace_id': self.workspace_id,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -186,9 +258,13 @@ class ApiKey(db.Model):
     # The API key can spend without limit regardless of the budget field.
     unlimited_budget = db.Column(db.Boolean, default=True, nullable=False)
     
+    # Workspace
+    workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
+    
     # Relationships
     group = db.relationship("Group", back_populates="api_keys")
     user = db.relationship("User", backref="api_keys")
+    workspace = db.relationship("Workspace", back_populates="api_keys")
     budgets = db.relationship("ApiKeyBudget", back_populates="api_key", cascade="all, delete-orphan",
                               order_by="ApiKeyBudget.created_at")
 
@@ -199,6 +275,7 @@ class ApiKey(db.Model):
             'name': self.name,
             'group_id': self.group_id,
             'user_id': self.user_id,
+            'workspace_id': self.workspace_id,
             'user_name': self.user.username if self.user else None,
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None,

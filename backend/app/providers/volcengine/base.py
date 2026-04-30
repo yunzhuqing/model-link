@@ -205,13 +205,6 @@ class VolcengineProvider(BaseProvider):
             if key not in _INTERNAL_KEYS and key not in result:
                 result[key] = value
 
-        # Debug logging
-        print("\n" + "=" * 50, file=sys.stderr)
-        print("[Volcengine Responses API Request]", file=sys.stderr)
-        print("=" * 50, file=sys.stderr)
-        print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
-        print("=" * 50 + "\n", file=sys.stderr)
-
         return result
 
     def _message_to_input_item(self, message: Message) -> Any:

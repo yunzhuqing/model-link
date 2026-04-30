@@ -306,7 +306,10 @@ async def openai_responses():
     adapter = OpenAIResponsesAdapter()
 
     # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
-    data = await request.get_json(force=True, silent=True)
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
     if not data:
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
 

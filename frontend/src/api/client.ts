@@ -201,4 +201,102 @@ export const providersApi = {
     client.delete(`/api/providers/${providerId}/models/${modelId}`),
 };
 
+// Rate limit status endpoints
+export interface RateLimitApiKeyUsage {
+  preview: string;
+  rpm_used: number;
+  tpm_used: number;
+  api_key_name?: string | null;
+  group_name?: string | null;
+}
+
+export interface RateLimitStatus {
+  model_id?: number;
+  model_name?: string;
+  alias?: string;
+  provider_id?: number;
+  provider_name?: string;
+  group_id?: number;
+  rpm_limit?: number | null;
+  tpm_limit?: number | null;
+  rpm_remaining?: number | null;
+  tpm_remaining?: number | null;
+  rpm_used?: number;
+  tpm_used?: number;
+  rpm_pct?: number;
+  tpm_pct?: number;
+  apikeys?: RateLimitApiKeyUsage[];
+}
+
+export interface WorkspaceRateLimitConfig {
+  id: number;
+  workspace_id: number;
+  model_name: string;
+  provider_type: string;
+  provider_id: number | null;
+  provider_name: string | null;
+  rpm: number | null;
+  tpm: number | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface WorkspaceRateLimitHistory {
+  rpm_1m: number;
+  rpm_5m: number;
+  rpm_10m: number;
+  tpm_1m: number;
+  tpm_5m: number;
+  tpm_10m: number;
+}
+
+export interface WorkspaceProviderBreakdown {
+  provider_name: string | null;
+  provider_type: string | null;
+  provider_id: number | null;
+  group_name: string | null;
+  model_id: number;
+  rpm_limit: number | null;
+  tpm_limit: number | null;
+  rpm_used: number;
+  tpm_used: number;
+}
+
+export interface WorkspaceRateLimitStatus {
+  id?: number;
+  workspace_id: number;
+  workspace_name: string;
+  model_name: string;
+  provider_type?: string;
+  provider_id?: number | null;
+  provider_name?: string | null;
+  rpm_limit: number | null;
+  tpm_limit: number | null;
+  rpm: { limit: number | null; remaining: number | null; used: number };
+  tpm: { limit: number | null; remaining: number | null; used: number };
+  apikeys: RateLimitApiKeyUsage[];
+  history?: WorkspaceRateLimitHistory;
+  providers?: WorkspaceProviderBreakdown[];
+}
+
+export const rateLimitsApi = {
+  // Group-level rate limits
+  getAll: () => client.get<{ models: RateLimitStatus[] }>('/api/providers/rate-limits'),
+  getModel: (modelId: number) => client.get<RateLimitStatus>(`/api/providers/rate-limits/${modelId}`),
+
+  // Workspace-level rate limits
+  getWorkspaceLimits: (workspaceId: number) =>
+    client.get<{ workspace: { id: number; name: string }; rate_limits: WorkspaceRateLimitStatus[] }>(
+      `/api/workspaces/${workspaceId}/rate-limits`
+    ),
+  createWorkspaceLimit: (workspaceId: number, data: { model_name: string; provider_type: string; provider_id?: number | null; rpm?: number | null; tpm?: number | null }) =>
+    client.post<WorkspaceRateLimitConfig>(`/api/workspaces/${workspaceId}/rate-limits`, data),
+  updateWorkspaceLimit: (workspaceId: number, limitId: number, data: { rpm?: number | null; tpm?: number | null; model_name?: string; provider_type?: string; provider_id?: number | null }) =>
+    client.put<WorkspaceRateLimitConfig>(`/api/workspaces/${workspaceId}/rate-limits/${limitId}`, data),
+  deleteWorkspaceLimit: (workspaceId: number, limitId: number) =>
+    client.delete(`/api/workspaces/${workspaceId}/rate-limits/${limitId}`),
+  getWorkspaceStatus: (workspaceId: number, modelName: string) =>
+    client.get<WorkspaceRateLimitStatus>(`/api/workspaces/${workspaceId}/rate-limits/status?model_name=${encodeURIComponent(modelName)}`),
+};
+
 export default client;

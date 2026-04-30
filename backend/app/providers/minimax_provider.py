@@ -80,12 +80,6 @@ class MiniMaxProvider(OpenAIProvider):
                 result["thinking"] = {"type": "disabled"}
 
         # 打印请求体到控制台（调试用）
-        print("\n" + "=" * 50, file=sys.stderr)
-        print("[MiniMax Request Body]", file=sys.stderr)
-        print("=" * 50, file=sys.stderr)
-        print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr)
-        print("=" * 50 + "\n", file=sys.stderr)
-
         return result
 
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:

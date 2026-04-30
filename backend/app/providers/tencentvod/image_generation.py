@@ -484,23 +484,11 @@ def _create_aigc_image_task(
 
     payload_str = json.dumps(body, ensure_ascii=False)
 
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[TencentVOD CreateAigcImageTask Request]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(payload_str, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
-
     headers = _build_auth_headers(secret_id, secret_key, "CreateAigcImageTask", payload_str)
 
     response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
     response.raise_for_status()
     data = response.json()
-
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[TencentVOD CreateAigcImageTask Response]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
     resp = data.get("Response", {})
     if "Error" in resp:
@@ -601,11 +589,6 @@ def _poll_task(
             # Extract the AigcImageTask sub-object
             aigc_task = resp.get("AigcImageTask") or {}
             status = resp.get("Status") or aigc_task.get("Status", "")
-
-            print(
-                f"[TencentVOD] Task {task_id} status={status}",
-                file=sys.stderr,
-            )
 
             if status == "FINISH":
                 # Check for task-level error

@@ -115,8 +115,6 @@ def execute_bailian_text_rerank(
         request_data["instruct"] = request.instruct
         request_data["parameters"]["instruct"] = request.instruct
 
-    _log_request("[Bailian Text Rerank Request Body]", request_data)
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -212,8 +210,6 @@ def execute_bailian_multimodal_rerank(
         "parameters": parameters,
     }
 
-    _log_request("[Bailian Multimodal Rerank Request Body]", request_data)
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -307,14 +303,6 @@ def _parse_bailian_rerank_response(
 # =============================================================================
 # 工具函数
 # =============================================================================
-
-def _log_request(title: str, data: Dict[str, Any]) -> None:
-    """打印请求体到 stderr 以便调试。"""
-    print("\n" + "=" * 50, file=sys.stderr)
-    print(title, file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
 
 def _raise_api_error(prefix: str, response: httpx.Response) -> None:

@@ -368,22 +368,10 @@ def _submit_3d_job(
 
     payload_str = json.dumps(body, ensure_ascii=False)
 
-    print("\n" + "=" * 50, file=sys.stderr)
-    print(f"[Hunyuan3D {action} Request]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(payload_str, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
-
     headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
     response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
     response.raise_for_status()
     data = response.json()
-
-    print("\n" + "=" * 50, file=sys.stderr)
-    print(f"[Hunyuan3D {action} Response]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
     resp = data.get("Response", {})
     if "Error" in resp:
@@ -456,10 +444,6 @@ def _poll_3d_job(
                 )
 
             status = resp.get("Status", "")
-            print(
-                f"[Hunyuan3D] Job {job_id} status={status}",
-                file=sys.stderr,
-            )
 
             if status == "DONE":
                 error_code = resp.get("ErrorCode", "")

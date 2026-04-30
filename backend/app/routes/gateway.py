@@ -81,6 +81,69 @@ def _check_allowed_models(api_key, model_name: str) -> Optional[dict]:
     }
 
 
+def _reconcile_tpm(rate_limiter, rate_limit_info, response) -> None:
+    """Reconcile pre-estimated TPM with actual input tokens from the response.
+
+    rate_limit_info = (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview,
+                       workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id)
+    """
+    if rate_limiter is None or rate_limit_info is None:
+        return
+    try:
+        model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, \
+            workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id = rate_limit_info
+        actual_input_tokens = 0
+        if response and response.usage:
+            actual_input_tokens = response.usage.prompt_tokens or 0
+        if actual_input_tokens > 0:
+            rate_limiter.reconcile(
+                model_id=model_id,
+                group_id=group_id,
+                tpm_limit=tpm_limit,
+                pre_estimated_tokens=estimated_tokens,
+                actual_input_tokens=actual_input_tokens,
+                apikey_preview=apikey_preview,
+                workspace_id=workspace_id,
+                model_name=model_name,
+                workspace_tpm=workspace_tpm,
+                ws_provider_type=ws_provider_type,
+                ws_provider_id=ws_provider_id,
+            )
+    except Exception as e:
+        logger.warning(f"[rate_limiter] TPM reconciliation failed: {e}")
+
+
+def _reconcile_tpm_from_usage(rate_limiter, rate_limit_info, usage) -> None:
+    """Reconcile pre-estimated TPM with actual input tokens from a UsageInfo object.
+
+    Used for streaming responses where we get UsageInfo directly (not ChatResponse).
+    rate_limit_info = (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview,
+                       workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id)
+    """
+    if rate_limiter is None or rate_limit_info is None:
+        return
+    try:
+        model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, \
+            workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id = rate_limit_info
+        actual_input_tokens = usage.prompt_tokens if usage else 0
+        if actual_input_tokens > 0:
+            rate_limiter.reconcile(
+                model_id=model_id,
+                group_id=group_id,
+                tpm_limit=tpm_limit,
+                pre_estimated_tokens=estimated_tokens,
+                actual_input_tokens=actual_input_tokens,
+                apikey_preview=apikey_preview,
+                workspace_id=workspace_id,
+                model_name=model_name,
+                workspace_tpm=workspace_tpm,
+                ws_provider_type=ws_provider_type,
+                ws_provider_id=ws_provider_id,
+            )
+    except Exception as e:
+        logger.warning(f"[rate_limiter] TPM reconciliation (stream) failed: {e}")
+
+
 # ============== 认证 ==============
 
 def get_current_user_or_api_key():
@@ -265,7 +328,10 @@ async def _handle_request(adapter):
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     # 2. 获取请求数据 (force=True to accept any Content-Type)
-    data = await request.get_json(force=True, silent=True)
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
 
     if not data:
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
@@ -288,7 +354,115 @@ async def _handle_request(adapter):
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
 
-    # 4.5. 记录原始请求数据
+    # 4.5. 限流检查 — RPM / TPM 预扣 (group-level + workspace-level)
+    rate_limiter = None
+    rate_limit_info = None  # (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, workspace_id, model_name_for_ws, workspace_tpm)
+    try:
+        from app.rate_limiter import get_rate_limiter, estimate_input_tokens
+        from app.models import WorkspaceRateLimit
+        rate_limiter = get_rate_limiter()
+        # Resolve model first to get rpm/tpm limits (DB query)
+        resolved_rl = _gateway_service.resolve_model(model_name, group_id)
+        db_model_rl = resolved_rl.db_model
+        rpm_limit = getattr(db_model_rl, 'rpm', None)
+        tpm_limit = getattr(db_model_rl, 'tpm', None)
+
+        # Resolve workspace-level rate limits
+        # Try api_key.workspace_id first, then fall back to group.workspace_id
+        workspace_id = None
+        workspace_rpm = None
+        workspace_tpm = None
+        ws_provider_type = ""
+        ws_provider_id_val = None
+        model_name_for_ws = model_name  # Use the requested model name for workspace key
+        if api_key:
+            workspace_id = getattr(api_key, 'workspace_id', None)
+            if not workspace_id and api_key.group:
+                workspace_id = getattr(api_key.group, 'workspace_id', None)
+        if workspace_id and db_model_rl and db_model_rl.provider:
+            provider_type_val = db_model_rl.provider.type
+            provider_id_val = db_model_rl.provider_id
+
+            # Determine the model name for workspace lookup (try alias first)
+            alt_name = db_model_rl.alias or db_model_rl.name
+            # Try each model name variant
+            for try_name in ([model_name] + ([alt_name] if alt_name != model_name else [])):
+                # Priority 1: exact provider_id match
+                ws_rl = db.session.query(WorkspaceRateLimit).filter(
+                    WorkspaceRateLimit.workspace_id == workspace_id,
+                    WorkspaceRateLimit.model_name == try_name,
+                    WorkspaceRateLimit.provider_type == provider_type_val,
+                    WorkspaceRateLimit.provider_id == provider_id_val,
+                ).first()
+                if ws_rl:
+                    model_name_for_ws = try_name
+                    break
+                # Priority 2: shared provider_type (provider_id=NULL)
+                ws_rl = db.session.query(WorkspaceRateLimit).filter(
+                    WorkspaceRateLimit.workspace_id == workspace_id,
+                    WorkspaceRateLimit.model_name == try_name,
+                    WorkspaceRateLimit.provider_type == provider_type_val,
+                    WorkspaceRateLimit.provider_id.is_(None),
+                ).first()
+                if ws_rl:
+                    model_name_for_ws = try_name
+                    break
+
+            if ws_rl:
+                workspace_rpm = ws_rl.rpm
+                workspace_tpm = ws_rl.tpm
+                ws_provider_type = ws_rl.provider_type
+                ws_provider_id_val = ws_rl.provider_id
+
+        has_any_limit = rpm_limit or tpm_limit or workspace_rpm or workspace_tpm
+        if has_any_limit:
+            # Estimate input tokens
+            messages_list = data.get('messages', [])
+            system_prompt = None
+            for msg in messages_list:
+                if isinstance(msg, dict) and msg.get('role') == 'system':
+                    system_prompt = msg.get('content', '')
+                    break
+            if not system_prompt:
+                system_prompt = data.get('system')  # Anthropic format
+            tools = data.get('tools')
+            estimated_tokens = estimate_input_tokens(messages_list, system_prompt, tools)
+
+            apikey_preview = (api_key.key[:8] + '...') if api_key and api_key.key else ''
+
+            result = rate_limiter.check_and_reserve(
+                model_id=db_model_rl.id,
+                group_id=group_id or 0,
+                rpm_limit=rpm_limit,
+                tpm_limit=tpm_limit,
+                estimated_input_tokens=estimated_tokens,
+                apikey_preview=apikey_preview,
+                workspace_id=workspace_id,
+                model_name=model_name_for_ws,
+                workspace_rpm=workspace_rpm,
+                workspace_tpm=workspace_tpm,
+                ws_provider_type=ws_provider_type,
+                ws_provider_id=ws_provider_id_val,
+            )
+            if not result.allowed:
+                return jsonify(adapter.format_error_response(
+                    result.detail or 'Rate limit exceeded', 429
+                )), 429
+
+            rate_limit_info = (
+                db_model_rl.id, group_id or 0, rpm_limit, tpm_limit,
+                estimated_tokens, apikey_preview,
+                workspace_id, model_name_for_ws, workspace_tpm,
+                ws_provider_type, ws_provider_id_val,
+            )
+    except ModelNotFoundError:
+        # Model not resolved for rate-limiting — skip rate limiting and let
+        # the actual request flow produce the proper ModelNotFoundError.
+        pass
+    except Exception as e:
+        logger.warning(f"[rate_limiter] Pre-check failed, skipping: {e}")
+
+    # 4.6. 记录原始请求数据
     logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
 
     # 5. 调用中间层
@@ -345,6 +519,11 @@ async def _handle_request(adapter):
                 finally:
                     if last_usage is not None:
                         try:
+                            # TPM reconciliation for streaming
+                            _reconcile_tpm_from_usage(rate_limiter, rate_limit_info, last_usage)
+                        except Exception as _e:
+                            logger.warning(f"[rate_limiter] Stream TPM reconciliation failed: {_e}")
+                        try:
                             from app.usage_service import record_stream_usage
                             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
                             record_stream_usage(
@@ -380,6 +559,10 @@ async def _handle_request(adapter):
             # 非流式请求 — use chat() to get resolved model for usage recording
             response, resolved = _gateway_service.chat(chat_request, group_id)
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
+
+            # TPM reconciliation: adjust pre-estimated tokens vs actual input tokens
+            _reconcile_tpm(rate_limiter, rate_limit_info, response)
+
             # Record usage asynchronously (fire-and-forget)
             try:
                 from app.usage_service import record_usage
@@ -590,7 +773,10 @@ async def create_embeddings():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = await request.get_json(force=True, silent=True)
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
@@ -712,7 +898,10 @@ async def create_images():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = await request.get_json(force=True, silent=True)
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
@@ -829,7 +1018,10 @@ async def edit_images():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = await request.get_json(force=True, silent=True)
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 
@@ -995,7 +1187,10 @@ async def create_rerank():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    data = await request.get_json(force=True, silent=True)
+    try:
+        data = await request.get_json(force=True, silent=True)
+    except UnicodeDecodeError:
+        data = None
     if not data:
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
 

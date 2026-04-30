@@ -350,22 +350,10 @@ def _create_aigc_video_task(
 
     payload_str = json.dumps(body, ensure_ascii=False)
 
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[TencentVOD CreateAigcVideoTask Request]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(payload_str, file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
-
     headers = _build_auth_headers(secret_id, secret_key, "CreateAigcVideoTask", payload_str)
     response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
     response.raise_for_status()
     data = response.json()
-
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[TencentVOD CreateAigcVideoTask Response]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
 
     resp = data.get("Response", {})
     if "Error" in resp:
@@ -423,12 +411,6 @@ def _poll_video_task(
             aigc_task = resp.get("AigcVideoTask") or {}
             status = resp.get("Status") or aigc_task.get("Status", "")
 
-            print(
-                f"[TencentVOD Video] Task {task_id} status={status}  "
-                f"progress={aigc_task.get('Progress', '')}",
-                file=sys.stderr,
-            )
-
             if status == "FINISH":
                 # Check for task-level error
                 err_code = aigc_task.get("ErrCode", 0)
@@ -439,13 +421,6 @@ def _poll_video_task(
                         f"(ErrCode={err_code}, ErrCodeExt={err_code_ext}): "
                         f"{aigc_task.get('Message', '')}"
                     )
-
-                # Log full task detail on FINISH for debugging
-                print(
-                    f"[TencentVOD Video] Task FINISH detail: "
-                    f"{json.dumps({'resp': resp, 'aigc_task': aigc_task}, ensure_ascii=False)}",
-                    file=sys.stderr,
-                )
 
                 output = aigc_task.get("Output") or {}
                 video_items: List[Dict[str, Any]] = []

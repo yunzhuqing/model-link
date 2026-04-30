@@ -45,7 +45,6 @@ class AnthropicMessagesAdapter(BaseAdapter):
         }
         """
         messages = []
-        print(f"Parsing Anthropic Messages request: {json.dumps(data, ensure_ascii=False)}")  # Debug log
 
         # 处理 system 消息
         # Anthropic system can be a string or an array of content blocks (with optional cache_control)

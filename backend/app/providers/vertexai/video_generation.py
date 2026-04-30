@@ -199,13 +199,10 @@ def execute_vertexai_veo_generation(
     create_url = f"{veo_base_url}/publishers/google/models/{model}:predictLongRunning"
 
     payload_str = json.dumps(request_body, ensure_ascii=False)
-    print(f"\n[VertexAI Veo] POST {create_url}", file=sys.stderr)
-    print(payload_str, file=sys.stderr)
 
     with _httpx.Client(timeout=60) as client:
         resp = client.post(create_url, content=payload_str, headers=headers)
 
-    print(f"[VertexAI Veo] Create response: {resp.text}", file=sys.stderr)
     if resp.status_code >= 400:
         raise RuntimeError(
             f"Vertex AI Veo CreateOperation error ({resp.status_code}): {resp.text}"
@@ -243,10 +240,6 @@ def execute_vertexai_veo_generation(
                 )
             poll_data = poll_resp.json()
             is_done = poll_data.get("done", False)
-            print(
-                f"[VertexAI Veo] fetchPredictOperation {operation_name} done={is_done}",
-                file=sys.stderr,
-            )
 
             if is_done:
                 error = poll_data.get("error")
@@ -255,11 +248,6 @@ def execute_vertexai_veo_generation(
                         f"Vertex AI Veo operation failed: "
                         f"{json.dumps(error, ensure_ascii=False)}"
                     )
-                print(
-                    f"[VertexAI Veo] Operation FINISH: "
-                    f"{json.dumps(poll_data, ensure_ascii=False)[:500]}",
-                    file=sys.stderr,
-                )
                 response_data = poll_data.get("response", {})
                 for video_entry in response_data.get("videos", []):
                     raw_videos.append({
@@ -375,10 +363,6 @@ def _download_and_store_videos(
             if b64_data:
                 # Video bytes returned inline as base64
                 video_bytes = _base64.b64decode(b64_data)
-                print(
-                    f"[VertexAI Veo] Decoded inline video ({len(video_bytes)} bytes)",
-                    file=sys.stderr,
-                )
             elif gcs_uri:
                 # Video stored in GCS — download using Bearer token
                 if gcs_uri.startswith("gs://"):
@@ -388,10 +372,6 @@ def _download_and_store_videos(
                     download_url = gcs_uri
 
                 dl_headers = get_headers_fn()
-                print(
-                    f"[VertexAI Veo] Downloading video from {gcs_uri} ...",
-                    file=sys.stderr,
-                )
                 with _httpx.Client(timeout=300, follow_redirects=True) as dl_client:
                     dl_resp = dl_client.get(download_url, headers=dl_headers)
 
@@ -401,10 +381,6 @@ def _download_and_store_videos(
                         f"{dl_resp.text[:200]}"
                     )
                 video_bytes = dl_resp.content
-                print(
-                    f"[VertexAI Veo] Downloaded {len(video_bytes)} bytes",
-                    file=sys.stderr,
-                )
             else:
                 raise RuntimeError(
                     f"Video entry has neither gcsUri nor bytesBase64Encoded: {video_info}"
@@ -412,14 +388,7 @@ def _download_and_store_videos(
 
             stored_url = storage.write_binary(filename, video_bytes, mime_type)
             stored_urls.append(stored_url)
-            print(f"[VertexAI Veo] Video saved: {stored_url}", file=sys.stderr)
-
         except Exception as exc:
-            print(
-                f"[VertexAI Veo] Warning: failed to process video {idx}: {exc}. "
-                f"Falling back to GCS URI.",
-                file=sys.stderr,
-            )
             # Fall back to GCS URI if download/decode fails
             fallback = video_info.get("gcsUri", "")
             stored_urls.append(fallback if fallback else f"error:{exc}")

@@ -195,12 +195,6 @@ def execute_bailian_multimodal_embed(
         "parameters": parameters,
     }
 
-    print("\n" + "=" * 50, file=sys.stderr)
-    print("[Bailian Multimodal Embedding Request Body]", file=sys.stderr)
-    print("=" * 50, file=sys.stderr)
-    print(json.dumps(request_data, ensure_ascii=False, indent=2), file=sys.stderr)
-    print("=" * 50 + "\n", file=sys.stderr)
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",

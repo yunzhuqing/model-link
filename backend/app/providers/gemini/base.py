@@ -291,13 +291,6 @@ class GeminiProvider(BaseProvider):
                 mode = mode_map.get(request.tool_choice, "AUTO")
                 result["toolConfig"] = {"functionCallingConfig": {"mode": mode}}
 
-        # Debug logging
-        print("\n" + "=" * 50, file=sys.stderr)
-        print("[Gemini Request Body]", file=sys.stderr)
-        print("=" * 50, file=sys.stderr)
-        print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr)
-        print("=" * 50 + "\n", file=sys.stderr)
-
         return result
 
     def _message_to_gemini(self, message: Message, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
