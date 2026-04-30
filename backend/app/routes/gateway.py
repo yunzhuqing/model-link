@@ -407,7 +407,7 @@ async def _handle_request(adapter):
 
 # ============== API 端点 ==============
 
-@gateway_bp.route('/v1/chat/completions', methods=['POST'])
+@gateway_bp.route('/v1/chat/completions', methods=['POST', 'HEAD', 'OPTIONS'])
 async def chat_completions():
     """
     OpenAI-compatible chat completions endpoint.
@@ -415,10 +415,12 @@ async def chat_completions():
     支持任意供应商（OpenAI、Claude、Gemini 等），
     中间层自动根据模型名称路由到正确的供应商。
     """
+    if request.method == 'HEAD' or request.method == 'OPTIONS':
+        return '', 200
     return await _handle_request(OpenAIChatAdapter())
 
 
-@gateway_bp.route('/v1/messages', methods=['POST'])
+@gateway_bp.route('/v1/messages', methods=['POST', 'HEAD', 'OPTIONS'])
 async def anthropic_messages():
     """
     Anthropic-compatible messages endpoint.
@@ -426,6 +428,8 @@ async def anthropic_messages():
     支持任意供应商（OpenAI、Claude、Gemini 等），
     中间层自动根据模型名称路由到正确的供应商。
     """
+    if request.method == 'HEAD' or request.method == 'OPTIONS':
+        return '', 200
     return await _handle_request(AnthropicMessagesAdapter())
 
 

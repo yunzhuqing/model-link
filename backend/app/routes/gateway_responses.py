@@ -284,7 +284,7 @@ def _run_background_response(
 
 # ============== Responses API 端点 ==============
 
-@gateway_responses_bp.route('/v1/responses', methods=['POST'])
+@gateway_responses_bp.route('/v1/responses', methods=['POST', 'HEAD', 'OPTIONS'])
 async def openai_responses():
     """
     OpenAI Responses API endpoint.
@@ -300,6 +300,9 @@ async def openai_responses():
     3. The client can later retrieve the result via
        ``GET /v1/responses/{response_id}``.
     """
+    if request.method == 'HEAD' or request.method == 'OPTIONS':
+        return '', 200
+
     adapter = OpenAIResponsesAdapter()
 
     # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
