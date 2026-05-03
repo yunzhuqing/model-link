@@ -22,6 +22,7 @@ interface ApiKeyItem {
   key: string;
   name: string;
   group_id: number | null;
+  user_id: number | null;
   is_active: boolean;
   created_at: string;
   group?: { id: number; name: string; description: string | null };
@@ -206,6 +207,12 @@ const Dashboard = () => {
 
 
   // ── Derived data ──────────────────────────────────────────────────────────
+  // Filter API keys to show only the current user's keys
+  const myApiKeys = useMemo(() => {
+    if (!apiKeys || !userInfo) return [];
+    return apiKeys.filter(k => k.user_id === userInfo.id);
+  }, [apiKeys, userInfo]);
+
   const totalTokens = (totals?.input_tokens || 0) + (totals?.output_tokens || 0);
 
   const modelCostSlices: DonutSlice[] = (byModel || [])
@@ -353,9 +360,9 @@ const Dashboard = () => {
                 <div className="flex items-center justify-center py-10">
                   <div className="w-5 h-5 border-2 border-emerald-200 border-t-emerald-500 rounded-full animate-spin" />
                 </div>
-              ) : !apiKeys?.length ? (
+              ) : !myApiKeys?.length ? (
                 <div className="text-center py-8 text-slate-400 text-sm">{t('dashboard.noApiKeys')}</div>
-              ) : apiKeys.map((k) => (
+              ) : myApiKeys.map((k) => (
                 <div key={k.id}
                   onClick={() => navigate(`/apikeys/${k.id}`)}
                   className="px-5 py-3 hover:bg-emerald-50/50 cursor-pointer group"

@@ -44,6 +44,8 @@
     "helpModelRouting": "Model Routing",
     "rateLimits": "Rate Limits",
     "rateLimitsDesc": "Monitor model RPM/TPM usage",
+    "permissions": "Permissions",
+    "permissionsDesc": "Manage permission points for roles",
     "workspace": "Workspace",
     "logout": "Logout",
     "collapseSidebar": "Collapse sidebar",
@@ -263,6 +265,7 @@
     "tabProviders": "Providers",
     "tabUsage": "Usage Records",
     "tabRateLimits": "Rate Limits",
+    "tabPermissions": "Permissions",
     "rateLimitsDesc": "Real-time RPM/TPM usage for models in this group",
     "usageDesc": "View usage records for models in this group",
     "groupDetail": {
@@ -588,5 +591,28 @@
     "switch": "Language",
     "zh": "中文",
     "en": "English"
+  },
+  "permissions": {
+    "pageTitle": "Permission Management",
+    "pageSubtitle": "System-level permission points for role-based access control",
+    "loadFailed": "Failed to load permissions",
+    "globalControl": "Global Control",
+    "rootOnlySection": "Root-Only Permissions",
+    "rootOnlySectionDesc": "Permissions reserved exclusively for the root user",
+    "adminSection": "Admin Permissions",
+    "adminSectionDesc": "Permissions that control what admins can do across all groups",
+    "memberSection": "Member Permissions",
+    "memberSectionDesc": "Permissions that optionally grant extra capabilities to members",
+    "manageDesc": "Enable or disable permission points for different roles",
+    "noPermissions": "No permissions configured",
+    "rootOnly": "Root Access Required",
+    "rootOnlyDesc": "Only root users can manage permission points. Contact your system administrator if you need root access.",
+    "points": "permission points",
+    "enableAll": "Enable All",
+    "disableAll": "Disable All",
+    "enable": "Enable",
+    "disable": "Disable",
+    "allRoles": "Roles",
+    "permissionsHint": "Permissions are system-global, shared across all groups. Root users are never restricted by permission toggles. When a permission is disabled, no user in that role can perform the corresponding action."
   }
 }

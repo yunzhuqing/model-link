@@ -151,6 +151,7 @@ export default function UsageRecordsTable({ groupId, apiKeyHash }: Props) {
                     { label: '输入', align: 'text-center' },
                     { label: '输出', align: 'text-center' },
                     { label: '推理', align: 'text-center' },
+                    { label: '缓存命中', align: 'text-center' },
                     { label: '图片', align: 'text-center' },
                     { label: '视频', align: 'text-center' },
                     { label: '金额', align: 'text-right' },
@@ -177,6 +178,9 @@ export default function UsageRecordsTable({ groupId, apiKeyHash }: Props) {
                     <td className="px-3 py-2.5 text-violet-700 font-mono text-center whitespace-nowrap">
                       {r.reasoning_tokens > 0 ? fmtNum(r.reasoning_tokens) : '—'}
                     </td>
+                    <td className="px-3 py-2.5 text-cyan-700 font-mono text-center whitespace-nowrap">
+                      {r.cache_tokens > 0 ? fmtNum(r.cache_tokens) : '—'}
+                    </td>
                     <td className="px-3 py-2.5 text-amber-700 text-center whitespace-nowrap">
                       {r.output_image_number > 0 ? r.output_image_number : '—'}
                     </td>
@@ -200,7 +204,7 @@ export default function UsageRecordsTable({ groupId, apiKeyHash }: Props) {
                 ))}
                 {(data?.records ?? []).length === 0 && (
                   <tr>
-                    <td colSpan={11} className="text-center py-12 text-slate-400">
+                    <td colSpan={12} className="text-center py-12 text-slate-400">
                       <Cpu className="w-10 h-10 mx-auto mb-2 text-slate-200" />
                       暂无消耗记录
                     </td>

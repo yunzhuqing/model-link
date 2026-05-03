@@ -7,6 +7,7 @@ from quart import Blueprint, request, jsonify
 from app import db
 from app.models import ModelTemplate
 from app.routes.users import token_required
+from app.routes.permissions import require_template_manage
 from app.data import BUILTIN_TEMPLATES
 
 model_templates_bp = Blueprint('model_templates', __name__)
@@ -54,9 +55,11 @@ async def list_model_templates(current_user):
 
 @model_templates_bp.route('/model-templates/', methods=['POST'])
 @token_required
+@require_template_manage()
 async def create_model_template(current_user):
-    """Create a custom model template."""
+    """Create a custom model template. Root only."""
     data = await request.get_json()
+    
     if not data.get('label') or not data.get('name') or not data.get('provider'):
         return jsonify({'detail': 'label, name and provider are required'}), 400
 
@@ -112,8 +115,9 @@ async def create_model_template(current_user):
 
 @model_templates_bp.route('/model-templates/<int:template_id>', methods=['PUT'])
 @token_required
+@require_template_manage()
 async def update_model_template(current_user, template_id):
-    """Update a model template."""
+    """Update a model template. Root only."""
     tpl = db.session.query(ModelTemplate).filter(ModelTemplate.id == template_id).first()
     if not tpl:
         return jsonify({'detail': 'Template not found'}), 404
@@ -157,8 +161,9 @@ async def update_model_template(current_user, template_id):
 
 @model_templates_bp.route('/model-templates/<int:template_id>', methods=['DELETE'])
 @token_required
+@require_template_manage()
 async def delete_model_template(current_user, template_id):
-    """Delete a model template."""
+    """Delete a model template. Root only."""
     tpl = db.session.query(ModelTemplate).filter(ModelTemplate.id == template_id).first()
     if not tpl:
         return jsonify({'detail': 'Template not found'}), 404
@@ -170,11 +175,13 @@ async def delete_model_template(current_user, template_id):
 
 @model_templates_bp.route('/model-templates/seed', methods=['POST'])
 @token_required
+@require_template_manage()
 async def reseed_model_templates(current_user):
     """
-    Re-seed built-in templates.
+    Re-seed built-in templates. Root only.
     Inserts missing built-ins and updates existing ones with latest data.
     """
+
     existing = {
         (row.provider, row.label): row
         for row in db.session.query(ModelTemplate).all()

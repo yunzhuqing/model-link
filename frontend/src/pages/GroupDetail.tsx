@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail, BarChart3, Cpu, List, Gauge
+  Users, UserPlus, Mail, BarChart3, Cpu, List, Gauge,
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';
@@ -41,6 +41,26 @@ export default function GroupDetail() {
   const [editingMemberRole, setEditingMemberRole] = useState<number | null>(null);
 
   // ── Queries ─────────────────────────────────────────────────────────────────
+
+  // Fetch current user's role and permissions in this group
+  const { data: myRoleData } = useQuery({
+    queryKey: ['my-role', id],
+    queryFn: async () => {
+      try {
+        const r = await client.get(`/api/permissions/groups/${id}/my-role`);
+        return r.data as { role: string; permissions: Record<string, boolean> };
+      } catch {
+        return null;
+      }
+    },
+    enabled: !!id,
+  });
+
+  const currentRole = myRoleData?.role || 'member';
+  const myPermissions = myRoleData?.permissions || {};
+  const isRoot = currentRole === 'root';
+  const isAtLeastAdmin = isRoot || currentRole === 'admin';
+  const canInvite = isAtLeastAdmin && myPermissions['member.invite'] !== false;
 
   const { data: group, isLoading: groupLoading } = useQuery({
     queryKey: ['group', id],
@@ -144,15 +164,26 @@ export default function GroupDetail() {
       {/* Tabs */}
       <div className="border-b border-slate-200">
         <nav className="flex space-x-8">
-          {[
-            { key: 'statistics', label: t('group.tabStatistics'), icon: BarChart3, color: 'amber' },
-            { key: 'models', label: t('group.tabModels'), icon: Cpu, color: 'indigo' },
-            { key: 'apikeys', label: t('group.tabApiKeys'), icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
-            { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
-            { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
-            { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
-            { key: 'rateLimits', label: t('group.tabRateLimits'), icon: Gauge, color: 'teal' },
-          ].map(({ key, label, icon: Icon, color, count }) => {
+          {(isRoot
+            ? [
+                { key: 'statistics', label: t('group.tabStatistics'), icon: BarChart3, color: 'amber' },
+                { key: 'models', label: t('group.tabModels'), icon: Cpu, color: 'indigo' },
+                { key: 'apikeys', label: t('group.tabApiKeys'), icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
+                { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
+                { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
+                { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
+                { key: 'rateLimits', label: t('group.tabRateLimits'), icon: Gauge, color: 'teal' },
+              ]
+            : [
+                { key: 'statistics', label: t('group.tabStatistics'), icon: BarChart3, color: 'amber' },
+                { key: 'models', label: t('group.tabModels'), icon: Cpu, color: 'indigo' },
+                { key: 'apikeys', label: t('group.tabApiKeys'), icon: Key, color: 'emerald', count: apiKeys?.length || 0 },
+                { key: 'members', label: t('group.tabMembers'), icon: Users, color: 'violet', count: group?.users?.length || 0 },
+                { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
+                { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
+                { key: 'rateLimits', label: t('group.tabRateLimits'), icon: Gauge, color: 'teal' },
+              ]
+          ).map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
             return (
               <button
@@ -190,12 +221,14 @@ export default function GroupDetail() {
                 <p className="text-sm text-slate-500">{t('group.memberCount', { count: group?.users?.length || 0 })}</p>
               </div>
             </div>
-            <button
-              onClick={() => setShowInviteMember(true)}
-              className="bg-violet-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-violet-600 transition-colors shadow-sm"
-            >
-              <UserPlus className="w-4 h-4 mr-2" /> {t('group.inviteMember')}
-            </button>
+            {canInvite && (
+              <button
+                onClick={() => setShowInviteMember(true)}
+                className="bg-violet-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-violet-600 transition-colors shadow-sm"
+              >
+                <UserPlus className="w-4 h-4 mr-2" /> {t('group.inviteMember')}
+              </button>
+            )}
           </div>
 
           {showInviteMember && (
@@ -268,33 +301,37 @@ export default function GroupDetail() {
                   </div>
                 </div>
                 <div className="flex items-center space-x-2">
-                  {editingMemberRole === member.id ? (
-                    <select
-                      className="p-2 bg-white border border-slate-200 rounded-lg text-sm"
-                      value={member.role}
-                      onChange={(e) => updateRoleMutation.mutate({ userId: member.id, role: e.target.value })}
-                      onBlur={() => setEditingMemberRole(null)}
-                    >
-                      <option value="member">{t('group.roleMember')}</option>
-                      <option value="admin">{t('group.roleAdmin')}</option>
-                      <option value="root">{t('group.roleRoot')}</option>
-                    </select>
-                  ) : (
-                    <button
-                      onClick={() => setEditingMemberRole(member.id)}
-                      className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
-                      title={t('group.changeRole')}
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
+                  {isRoot && (
+                    <>
+                      {editingMemberRole === member.id ? (
+                        <select
+                          className="p-2 bg-white border border-slate-200 rounded-lg text-sm"
+                          value={member.role}
+                          onChange={(e) => updateRoleMutation.mutate({ userId: member.id, role: e.target.value })}
+                          onBlur={() => setEditingMemberRole(null)}
+                        >
+                          <option value="member">{t('group.roleMember')}</option>
+                          <option value="admin">{t('group.roleAdmin')}</option>
+                          <option value="root">{t('group.roleRoot')}</option>
+                        </select>
+                      ) : (
+                        <button
+                          onClick={() => setEditingMemberRole(member.id)}
+                          className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors"
+                          title={t('group.changeRole')}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { if (confirm(t('group.removeMemberConfirm', { name: member.username || member.email }))) removeMemberMutation.mutate(member.id); }}
+                        className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
+                        title={t('group.removeMember')}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </>
                   )}
-                  <button
-                    onClick={() => { if (confirm(t('group.removeMemberConfirm', { name: member.username || member.email }))) removeMemberMutation.mutate(member.id); }}
-                    className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
-                    title={t('group.removeMember')}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
                 </div>
               </div>
             ))}
@@ -311,8 +348,7 @@ export default function GroupDetail() {
       {/* ── API Keys Tab ─────────────────────────────────────────────────────── */}
       {activeTab === 'apikeys' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          {/* ApiKeyList handles all API key CRUD internally */}
-          <ApiKeyList groupId={parseInt(id!)} />
+          <ApiKeyList groupId={parseInt(id!)} currentRole={currentRole} permissions={myPermissions} />
         </div>
       )}
 
@@ -340,7 +376,7 @@ export default function GroupDetail() {
 
       {/* ── Models Tab ───────────────────────────────────────────────────────── */}
       {activeTab === 'models' && (
-        <GroupModels groupId={parseInt(id!)} />
+        <GroupModels groupId={parseInt(id!)} currentRole={currentRole} myPermissions={myPermissions} />
       )}
 
       {/* ── Usage Records Tab ────────────────────────────────────────────────── */}

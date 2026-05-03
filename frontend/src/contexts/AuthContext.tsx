@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 
 interface AuthContextType {
   token: string | null;
+  userId: number | null;
   login: (token: string) => void;
   logout: () => void;
   isAuthenticated: boolean;
@@ -14,7 +15,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
  * Decode a JWT token payload without verification (just base64 decode).
  * Returns null if the token is invalid.
  */
-function decodeToken(token: string): { exp?: number; sub?: string } | null {
+function decodeToken(token: string): { exp?: number; sub?: string; user_id?: number } | null {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
@@ -48,6 +49,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return stored;
   });
 
+  const getUserId = (): number | null => {
+    if (!token) return null;
+    const decoded = decodeToken(token);
+    return decoded?.user_id || null;
+  };
+
   const login = (newToken: string) => {
     localStorage.setItem('token', newToken);
     setToken(newToken);
@@ -68,7 +75,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, [logout]);
 
   return (
-    <AuthContext.Provider value={{ token, login, logout, isAuthenticated: !!token, validateToken }}>
+    <AuthContext.Provider value={{ token, userId: getUserId(), login, logout, isAuthenticated: !!token, validateToken }}>
       {children}
     </AuthContext.Provider>
   );

@@ -90,14 +90,19 @@ const FeatureBadge = ({ active, icon: Icon, label }: { active: boolean; icon: Re
 
 /* ── InlineEditableCell ─────────────────────────────────────────────────── */
 
-const InlineEditableCell = ({ value, onSave, min = 0, max = 100 }: {
+const InlineEditableCell = ({ value, onSave, readonly, min = 0, max = 100 }: {
   value: number;
   onSave: (v: number) => void;
+  readonly?: boolean;
   min?: number;
   max?: number;
 }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(value));
+
+  if (readonly) {
+    return <span className="text-xs font-mono text-slate-500 px-2 py-0.5">{value}</span>;
+  }
 
   const startEdit = () => { setDraft(String(value)); setEditing(true); };
   const commit = () => {
@@ -133,10 +138,15 @@ const InlineEditableCell = ({ value, onSave, min = 0, max = 100 }: {
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
-export default function GroupModels({ groupId }: { groupId: number }) {
+export default function GroupModels({ groupId, currentRole, myPermissions }: { groupId: number; currentRole?: string; myPermissions?: Record<string, boolean> }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+
+  // admins and root can edit priority/traffic_ratio when permission is enabled
+  const isAtLeastAdmin = currentRole === 'root' || currentRole === 'admin';
+  const canEditPriority = isAtLeastAdmin && (myPermissions?.['model.priority'] !== false);
+  const canEditTrafficRatio = isAtLeastAdmin && (myPermissions?.['model.priority'] !== false);
 
   const queryKey = ['providers', 'group', groupId];
 
@@ -285,10 +295,10 @@ export default function GroupModels({ groupId }: { groupId: number }) {
                           {m.tpm != null ? m.tpm : '-'}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <InlineEditableCell value={m.priority ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'priority', value: v })} />
+                          <InlineEditableCell readonly={!canEditPriority} value={m.priority ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'priority', value: v })} />
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <InlineEditableCell value={m.traffic_ratio ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'traffic_ratio', value: v })} />
+                          <InlineEditableCell readonly={!canEditTrafficRatio} value={m.traffic_ratio ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'traffic_ratio', value: v })} />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-center gap-1 flex-wrap">
@@ -352,10 +362,10 @@ export default function GroupModels({ groupId }: { groupId: number }) {
                           {m.tpm != null ? m.tpm : '-'}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <InlineEditableCell value={m.priority ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'priority', value: v })} />
+                          <InlineEditableCell readonly={!canEditPriority} value={m.priority ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'priority', value: v })} />
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <InlineEditableCell value={m.traffic_ratio ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'traffic_ratio', value: v })} />
+                          <InlineEditableCell readonly={!canEditTrafficRatio} value={m.traffic_ratio ?? 0} onSave={(v) => updateModel.mutate({ id: m.id, field: 'traffic_ratio', value: v })} />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-center gap-1 flex-wrap">

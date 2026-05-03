@@ -22,6 +22,7 @@ import HelpThreed from './pages/HelpThreed';
 import HelpModelRouting from './pages/HelpModelRouting';
 import ApiKeyDetail from './pages/ApiKeyDetail';
 import RateLimits from './pages/RateLimits';
+import PermissionManager from './pages/PermissionManager';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -72,6 +73,7 @@ function App() {
               <Route path="help/3d-generation" element={<HelpThreed />} />
               <Route path="help/model-routing" element={<HelpModelRouting />} />
               <Route path="rate-limits" element={<RateLimits />} />
+              <Route path="permissions" element={<PermissionManager />} />
             </Route>
           </Routes>
         </BrowserRouter>

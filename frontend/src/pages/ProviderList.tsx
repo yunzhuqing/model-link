@@ -950,6 +950,9 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       closeModal();
       resetNewProvider();
     },
+    onError: (error: any) => {
+      alert(error?.response?.data?.detail || t('provider.createFailed'));
+    },
   });
 
   const updateProviderMutation = useMutation({
@@ -958,11 +961,17 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       queryClient.invalidateQueries({ queryKey: providersQueryKey });
       closeModal();
     },
+    onError: (error: any) => {
+      alert(error?.response?.data?.detail || t('provider.updateFailed'));
+    },
   });
 
   const deleteProviderMutation = useMutation({
     mutationFn: (id: number) => client.delete(`/api/providers/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
+    onError: (error: any) => {
+      alert(error?.response?.data?.detail || t('provider.deleteFailed'));
+    },
   });
 
   const createModelMutation = useMutation({
@@ -972,6 +981,9 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       setShowAddModel(null);
       setNewModel(defaultModelState);
     },
+    onError: (error: any) => {
+      alert(error?.response?.data?.detail || t('provider.createModelFailed'));
+    },
   });
 
   const updateModelMutation = useMutation({
@@ -980,11 +992,17 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       queryClient.invalidateQueries({ queryKey: providersQueryKey });
       setEditingModel(null);
     },
+    onError: (error: any) => {
+      alert(error?.response?.data?.detail || t('provider.updateModelFailed'));
+    },
   });
 
   const deleteModelMutation = useMutation({
     mutationFn: (id: number) => client.delete(`/api/models/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
+    onError: (error: any) => {
+      alert(error?.response?.data?.detail || t('provider.deleteModelFailed'));
+    },
   });
 
   const toggleProviderMutation = useMutation({
@@ -998,8 +1016,9 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       );
       return { previous };
     },
-    onError: (_err, _vars, context) => {
+    onError: (error: any, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(providersQueryKey, context.previous);
+      alert(error?.response?.data?.detail || t('provider.toggleFailed'));
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
   });
@@ -1018,8 +1037,9 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
       );
       return { previous };
     },
-    onError: (_err, _vars, context) => {
+    onError: (error: any, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(providersQueryKey, context.previous);
+      alert(error?.response?.data?.detail || t('provider.toggleFailed'));
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: providersQueryKey }),
   });

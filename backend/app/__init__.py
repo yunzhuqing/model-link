@@ -69,7 +69,7 @@ def _configure_logging() -> None:
     #          → /var/log/model-link/gateway.log
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
-        log_file_path = os.path.join(log_dir, f"{log_name}.log")
+        log_file_path = os.path.join(log_dir, f"{log_name}")
         file_handler = logging.handlers.RotatingFileHandler(
             log_file_path,
             maxBytes=50 * 1024 * 1024,  # 50 MB
@@ -260,6 +260,7 @@ def create_app(config=None):
     from app.routes.apikeys import apikeys_bp
     from app.routes.model_templates import model_templates_bp
     from app.routes.usage import usage_bp
+    from app.routes.permissions import permissions_bp
 
     app.register_blueprint(users_bp)
     app.register_blueprint(providers_bp, url_prefix='/api')
@@ -268,6 +269,7 @@ def create_app(config=None):
     app.register_blueprint(apikeys_bp, url_prefix='/api')
     app.register_blueprint(model_templates_bp, url_prefix='/api')
     app.register_blueprint(usage_bp)
+    app.register_blueprint(permissions_bp, url_prefix='/api')
     
     # Serve React frontend if static folder exists, otherwise API-only mode
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'static')

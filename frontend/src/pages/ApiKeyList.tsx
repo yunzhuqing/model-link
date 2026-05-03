@@ -5,10 +5,13 @@ import { apiKeysApi, groupsApi } from '../api/client';
 import client from '../api/client';
 import type { ApiKey } from '../api/client';
 import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Users, User, Eye, EyeOff, Tag, Search } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all API keys. */
-const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
+const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; currentRole?: string; permissions?: Record<string, boolean> } = {}) => {
+  const { userId } = useAuth();
+  const isMember = currentRole === 'member';
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -312,6 +315,12 @@ const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
 
   // ── Embedded mode (inside GroupDetail) ──────────────────────────────────────
   if (groupId !== undefined) {
+    // Check if member can create keys (permission may be disabled by root)
+    // permissions is undefined → no restrictions (loading or standalone)
+    const memberCanCreate = !isMember || permissions?.['apikey.manage'] === true;
+    const memberCanCopyOthers = !isMember || permissions?.['apikey.copy_others'] === true;
+    const memberCanEditOwn = !isMember || permissions?.['apikey.edit_own'] === true;
+
     return (
       <>
         {/* Header */}
@@ -325,12 +334,14 @@ const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
               <p className="text-sm text-slate-500">{apiKeys?.length || 0} keys</p>
             </div>
           </div>
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-emerald-600 transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4 mr-2" /> New Key
-          </button>
+          {memberCanCreate && (
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-emerald-600 transition-colors shadow-sm"
+            >
+              <Plus className="w-4 h-4 mr-2" /> New Key
+            </button>
+          )}
         </div>
 
         {/* API Key List */}
@@ -360,25 +371,31 @@ const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
                       <button onClick={() => toggleKeyVisibility(apiKey.id)} className="text-slate-400 hover:text-slate-600">
                         {visibleKeys.has(apiKey.id) ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
-                      <button onClick={() => handleCopyKey(apiKey.key)} className="text-slate-400 hover:text-slate-600">
-                        {copiedKey === apiKey.key ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
+                  {/* Copy: for members, only allow copying own keys unless copy_others is enabled */}
+                  {((!isMember && memberCanCopyOthers) || apiKey.user_id === userId || (isMember && memberCanCopyOthers)) && (
+                    <button onClick={() => handleCopyKey(apiKey.key)} className="text-slate-400 hover:text-slate-600">
+                      {copiedKey === apiKey.key ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                  )}
                 </div>
-                <div className="flex items-center space-x-3 text-sm text-slate-500 flex-shrink-0">
-                  <span className="flex items-center">
-                    <Hash className="w-3 h-3 mr-1" />
-                    {apiKey.request_count}
-                  </span>
-                  <span className="hidden lg:inline">Last: {formatDate(apiKey.last_used_at)}</span>
-                  <button
-                    onClick={() => handleViewModels(apiKey)}
-                    className="text-slate-400 hover:text-purple-600 p-1.5 hover:bg-purple-50 rounded-lg transition-colors"
-                    title="查看模型"
-                  >
-                    <Eye className="w-4 h-4" />
-                  </button>
+              </div>
+            </div>
+            <div className="flex items-center space-x-3 text-sm text-slate-500 flex-shrink-0">
+              <span className="flex items-center">
+                <Hash className="w-3 h-3 mr-1" />
+                {apiKey.request_count}
+              </span>
+              <span className="hidden lg:inline">Last: {formatDate(apiKey.last_used_at)}</span>
+              <button
+                onClick={() => handleViewModels(apiKey)}
+                className="text-slate-400 hover:text-purple-600 p-1.5 hover:bg-purple-50 rounded-lg transition-colors"
+                title="查看模型"
+              >
+                <Eye className="w-4 h-4" />
+              </button>
+              {/* Edit/Delete: for members, only allow editing/deleting own keys if edit_own is enabled */}
+              {(!isMember || (apiKey.user_id === userId && memberCanEditOwn)) && (
+                <>
                   <button
                     onClick={() => handleEdit(apiKey)}
                     className="text-slate-400 hover:text-blue-600 p-1.5 hover:bg-blue-50 rounded-lg transition-colors"
@@ -393,6 +410,8 @@ const ApiKeyList = ({ groupId }: { groupId?: number } = {}) => {
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
+                </>
+              )}
                 </div>
               </div>
 

@@ -19,6 +19,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Globe,
+  Shield,
 } from 'lucide-react';
 
 interface SubNavItem {
@@ -40,6 +41,7 @@ const navItems: NavItem[] = [
   { path: '/model-templates', labelKey: 'nav.modelTemplates', icon: LayoutTemplate, descKey: 'nav.modelTemplatesDesc' },
   { path: '/usage', labelKey: 'nav.usage', icon: BarChart3, descKey: 'nav.usageDesc' },
   { path: '/rate-limits', labelKey: 'nav.rateLimits', icon: Gauge, descKey: 'nav.rateLimitsDesc' },
+  { path: '/permissions', labelKey: 'nav.permissions', icon: Shield, descKey: 'nav.permissionsDesc' },
   {
     path: '/help',
     labelKey: 'nav.help',

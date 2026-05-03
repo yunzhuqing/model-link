@@ -1,0 +1,427 @@
+"""
+System-level permission management routes.
+
+Root users can create, edit, delete and toggle system-level permission points.
+Each permission point defines:
+  - key:           globally unique identifier (e.g. "provider.manage")
+  - label:         human-readable display name
+  - description:   optional explanation
+  - allowed_roles: JSON list of roles that are permitted
+  - is_enabled:    master toggle
+
+Permissions are system-global — they apply uniformly across all groups.
+"""
+
+import functools
+from quart import Blueprint, request, jsonify
+
+from app import db
+from app.models import (
+    Group,
+    UserGroup,
+    Permission,
+    seed_default_permissions,
+    check_permission,
+    ApiKey,
+    Provider,
+)
+from app.routes.users import token_required
+
+permissions_bp = Blueprint("permissions", __name__)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+def _get_role(group_id: int, user_id: int) -> str | None:
+    ug = db.session.query(UserGroup).filter(
+        UserGroup.group_id == group_id,
+        UserGroup.user_id == user_id,
+    ).first()
+    return ug.role if ug else None
+
+
+def _is_root_in_any_group(user_id: int) -> bool:
+    """Check if the user is 'root' in at least one group."""
+    count = db.session.query(UserGroup).filter(
+        UserGroup.user_id == user_id,
+        UserGroup.role == "root",
+    ).count()
+    return count > 0
+
+
+def _is_member(group_id: int, user_id: int) -> bool:
+    return _get_role(group_id, user_id) is not None
+
+
+def _is_root(group_id: int, user_id: int) -> bool:
+    """Check if user is root in a specific group. (Used by providers.py)"""
+    return _get_role(group_id, user_id) == "root"
+
+
+def _is_admin_or_above_inner(group_id: int, user_id: int) -> bool:
+    """Check if user is admin or root in a specific group. (Used by providers.py)"""
+    role = _get_role(group_id, user_id)
+    return role in ("admin", "root")
+
+
+# ── Root check helper ──────────────────────────────────────────────────
+
+def _require_root(current_user):
+    if not _is_root_in_any_group(current_user.id):
+        return jsonify({"detail": "Only root members can manage system permissions"}), 403
+    return None
+
+
+# ── Backward-compatible wrappers for existing route modules ────────────
+# Old signatures accepted (current_user, group_id); new helpers are global.
+# These wrappers bridge the gap so existing route code continues to compile.
+
+def _get_user_role_in_group(current_user, group_id: int) -> str | None:
+    return _get_role(group_id, current_user.id)
+
+
+def _is_root_in_group(current_user, group_id: int) -> bool:
+    return _get_role(group_id, current_user.id) == "root"
+
+
+def _is_member_of_group(current_user, group_id: int) -> bool:
+    return _is_member(group_id, current_user.id)
+
+
+def _is_admin_or_above(current_user, group_id: int) -> bool:
+    """Return True if user is admin or root in the group."""
+    role = _get_role(group_id, current_user.id)
+    return role in ("admin", "root")
+
+
+# ── Bridge for old 2-arg check_permission calls ────────────────────────
+def check_group_permission(current_user, group_id: int, permission_key: str) -> bool:
+    """Backward-compatible wrapper: derive role from current_user + group_id,
+    then call check_permission(role, permission_key)."""
+    role = _get_role(group_id, current_user.id)
+    if role is None:
+        return False
+    return check_permission(role, permission_key)
+
+
+# ── Permission Decorators ──────────────────────────────────────────────
+# These decorators encapsulate the common pattern:
+#   1. Look up group_id (from URL param, API key, or provider)
+#   2. Verify the user is a member of that group
+#   3. Check if the user has the required system-level permission
+#   4. Return 403 JSON if any check fails
+
+def require_permission(permission_key: str):
+    """Decorator for routes that have a ``group_id`` URL parameter.
+
+    Verifies the current user is a member of the group, resolves their role,
+    and checks whether the given system-level permission is enabled for that role.
+
+    Usage::
+
+        @apikeys_bp.route('/groups/<int:group_id>', methods=['PUT'])
+        @token_required
+        @require_permission('group.manage')
+        async def update_group(current_user, group_id):
+            ...
+    """
+    def decorator(f):
+        @functools.wraps(f)
+        async def wrapper(current_user, group_id, *args, **kwargs):
+            # Verify group exists and user is a member
+            if not _is_member(group_id, current_user.id):
+                return jsonify({"detail": "You are not a member of this group"}), 403
+
+            # Resolve role and check system-level permission
+            role = _get_role(group_id, current_user.id)
+            if not check_permission(role, permission_key):
+                return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
+
+            return await f(current_user, group_id, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def require_apikey_permission(permission_key: str):
+    """Decorator for routes that have an ``api_key_id`` URL parameter.
+
+    Auto-resolves the group via the API key, verifies membership, and checks
+    the given system-level permission.
+
+    Usage::
+
+        @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['DELETE'])
+        @token_required
+        @require_apikey_permission('apikey.manage')
+        async def delete_api_key(current_user, api_key_id):
+            ...
+    """
+    def decorator(f):
+        @functools.wraps(f)
+        async def wrapper(current_user, api_key_id, *args, **kwargs):
+            api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+            if not api_key:
+                return jsonify({"detail": "API key not found"}), 404
+
+            group_id = api_key.group_id
+
+            # Verify membership
+            if not _is_member(group_id, current_user.id):
+                return jsonify({"detail": "You do not have access to this API key"}), 403
+
+            # Check system-level permission
+            role = _get_role(group_id, current_user.id)
+            if not check_permission(role, permission_key):
+                return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
+
+            return await f(current_user, api_key_id, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def require_provider_permission(permission_key: str):
+    """Decorator for routes that have a ``provider_id`` URL parameter.
+
+    Auto-resolves the group via the provider, verifies membership, and checks
+    the given system-level permission.
+
+    Usage::
+
+        @providers_bp.route('/providers/<int:provider_id>', methods=['PUT'])
+        @token_required
+        @require_provider_permission('provider.manage')
+        async def update_provider(current_user, provider_id):
+            ...
+    """
+    def decorator(f):
+        @functools.wraps(f)
+        async def wrapper(current_user, provider_id, *args, **kwargs):
+            provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+            if not provider:
+                return jsonify({"detail": "Provider not found"}), 404
+
+            group_id = provider.group_id
+
+            # Verify membership
+            if not _is_member(group_id, current_user.id):
+                return jsonify({"detail": "You do not have access to this provider"}), 403
+
+            # Check system-level permission
+            role = _get_role(group_id, current_user.id)
+            if not check_permission(role, permission_key):
+                return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
+
+            return await f(current_user, provider_id, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def require_template_manage():
+    """Decorator for model-template routes that are not group-scoped.
+
+    Verifies the user is root in at least one group AND that the
+    system-level ``template.manage`` permission is enabled.
+
+    Usage::
+
+        @model_templates_bp.route('/model-templates/', methods=['POST'])
+        @token_required
+        @require_template_manage()
+        async def create_model_template(current_user):
+            ...
+    """
+    def decorator(f):
+        @functools.wraps(f)
+        async def wrapper(current_user, *args, **kwargs):
+            if not _is_root_in_any_group(current_user.id):
+                return jsonify({"detail": "Only root members can manage templates"}), 403
+
+            if not check_permission("root", "template.manage"):
+                return jsonify({"detail": "Template management is disabled"}), 403
+
+            return await f(current_user, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ── List all permissions (system-level) ────────────────────────────────
+
+@permissions_bp.route("/permissions", methods=["GET"])
+@token_required
+async def list_permissions(current_user):
+    """List all system-level permission points."""
+    # Auto-seed defaults if none exist
+    seed_default_permissions()
+    db.session.commit()
+
+    perms = db.session.query(Permission).order_by(Permission.key).all()
+    is_root = _is_root_in_any_group(current_user.id)
+
+    return jsonify({
+        "permissions": [p.to_dict() for p in perms],
+        "is_root": is_root,
+    })
+
+
+# ── Create a new permission ────────────────────────────────────────────
+
+@permissions_bp.route("/permissions", methods=["POST"])
+@token_required
+async def create_permission(current_user):
+    """Create a new system-level permission point. Only root."""
+    err = _require_root(current_user)
+    if err:
+        return err
+
+    data = await request.get_json()
+    key = (data.get("key") or "").strip()
+    label = (data.get("label") or "").strip()
+    if not key or not label:
+        return jsonify({"detail": "key and label are required"}), 400
+
+    # Check uniqueness
+    existing = db.session.query(Permission).filter(
+        Permission.key == key,
+    ).first()
+    if existing:
+        return jsonify({"detail": f"Permission key '{key}' already exists"}), 409
+
+    perm = Permission(
+        key=key,
+        label=label,
+        description=data.get("description", ""),
+        allowed_roles=data.get("allowed_roles", ["root"]),
+        is_enabled=data.get("is_enabled", True),
+    )
+    db.session.add(perm)
+    db.session.commit()
+    db.session.refresh(perm)
+
+    return jsonify(perm.to_dict()), 201
+
+
+# ── Update a permission ────────────────────────────────────────────────
+
+@permissions_bp.route(
+    "/permissions/<permission_key>", methods=["PUT"]
+)
+@token_required
+async def update_permission(current_user, permission_key):
+    """Update a permission point (label, description, allowed_roles, is_enabled). Only root."""
+    err = _require_root(current_user)
+    if err:
+        return err
+
+    perm = db.session.query(Permission).filter(
+        Permission.key == permission_key,
+    ).first()
+    if not perm:
+        return jsonify({"detail": "Permission not found"}), 404
+
+    data = await request.get_json()
+
+    if "label" in data:
+        label = (data["label"] or "").strip()
+        if not label:
+            return jsonify({"detail": "label cannot be empty"}), 400
+        perm.label = label
+    if "description" in data:
+        perm.description = data["description"]
+    if "allowed_roles" in data:
+        roles = data["allowed_roles"]
+        if not isinstance(roles, list):
+            return jsonify({"detail": "allowed_roles must be a list"}), 400
+        perm.allowed_roles = roles
+    if "is_enabled" in data:
+        if not isinstance(data["is_enabled"], bool):
+            return jsonify({"detail": "is_enabled must be a boolean"}), 400
+        perm.is_enabled = data["is_enabled"]
+
+    db.session.commit()
+    db.session.refresh(perm)
+
+    return jsonify(perm.to_dict())
+
+
+# ── Toggle a permission ────────────────────────────────────────────────
+
+@permissions_bp.route(
+    "/permissions/<permission_key>/toggle", methods=["PUT"]
+)
+@token_required
+async def toggle_permission(current_user, permission_key):
+    """Toggle a permission on or off. Only root.
+
+    Request body: {"is_enabled": true} or {"is_enabled": false}
+    """
+    err = _require_root(current_user)
+    if err:
+        return err
+
+    perm = db.session.query(Permission).filter(
+        Permission.key == permission_key,
+    ).first()
+    if not perm:
+        return jsonify({"detail": "Permission not found"}), 404
+
+    data = await request.get_json()
+    if "is_enabled" not in data or not isinstance(data["is_enabled"], bool):
+        return jsonify({"detail": "is_enabled (boolean) is required"}), 400
+
+    perm.is_enabled = data["is_enabled"]
+    db.session.commit()
+    db.session.refresh(perm)
+
+    return jsonify(perm.to_dict())
+
+
+# ── Delete a permission ────────────────────────────────────────────────
+
+@permissions_bp.route(
+    "/permissions/<permission_key>", methods=["DELETE"]
+)
+@token_required
+async def delete_permission(current_user, permission_key):
+    """Delete a system-level permission point. Only root."""
+    err = _require_root(current_user)
+    if err:
+        return err
+
+    perm = db.session.query(Permission).filter(
+        Permission.key == permission_key,
+    ).first()
+    if not perm:
+        return jsonify({"detail": "Permission not found"}), 404
+
+    db.session.delete(perm)
+    db.session.commit()
+
+    return jsonify({"detail": f"Permission '{permission_key}' deleted"})
+
+
+# ── Get my role in a group (returns permissions for a specific group context) ──
+
+@permissions_bp.route("/permissions/groups/<int:group_id>/my-role", methods=["GET"])
+@token_required
+async def get_my_role(current_user, group_id):
+    """Return the current user's role and effective system-level permissions in the group."""
+    group = db.session.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        return jsonify({"detail": "Group not found"}), 404
+
+    role = _get_role(group_id, current_user.id)
+    if role is None:
+        return jsonify({"detail": "You are not a member of this group"}), 403
+
+    # Build permissions map: key → True/False
+    perms = db.session.query(Permission).all()
+    perm_map = {}
+    for p in perms:
+        perm_map[p.key] = check_permission(role, p.key)
+
+    return jsonify({
+        "group_id": group_id,
+        "user_id": current_user.id,
+        "role": role,
+        "permissions": perm_map,
+    })

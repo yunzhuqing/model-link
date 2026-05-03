@@ -13,6 +13,14 @@ import secrets
 from app import db
 from app.models import Group, ApiKey, ApiKeyBudget
 from app.routes.users import token_required
+from app.models import check_permission
+from app.routes.permissions import (
+    _get_role,
+    _is_admin_or_above_inner,
+    check_group_permission,
+    require_permission,
+    require_apikey_permission,
+)
 
 apikeys_bp = Blueprint('apikeys', __name__)
 
@@ -27,8 +35,21 @@ def generate_api_key():
 @apikeys_bp.route('/groups/', methods=['GET'])
 @token_required
 async def list_groups(current_user):
-    """List all groups the current user belongs to."""
-    return jsonify([g.to_dict() for g in current_user.groups])
+    """List all groups the current user belongs to, including the user's role."""
+    from app.models import UserGroup
+
+    result = []
+    for g in current_user.groups:
+        group_dict = g.to_dict()
+        # Include the current user's role in this group
+        ug = db.session.query(UserGroup).filter(
+            UserGroup.group_id == g.id,
+            UserGroup.user_id == current_user.id,
+        ).first()
+        group_dict['my_role'] = ug.role if ug else None
+        result.append(group_dict)
+
+    return jsonify(result)
 
 
 @apikeys_bp.route('/groups/', methods=['POST'])
@@ -80,14 +101,12 @@ async def get_group(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['PUT'])
 @token_required
+@require_permission('group.manage')
 async def update_group(current_user, group_id):
-    """Update a group."""
+    """Update a group. Root only (controlled by group.manage permission)."""
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
-    if current_user not in group.users:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
     
     data = await request.get_json()
     if 'name' in data:
@@ -111,14 +130,12 @@ async def update_group(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['DELETE'])
 @token_required
+@require_permission('group.manage')
 async def delete_group(current_user, group_id):
-    """Delete a group."""
+    """Delete a group. Root only (controlled by group.manage permission)."""
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
-    if current_user not in group.users:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
     
     db.session.delete(group)
     db.session.commit()
@@ -128,16 +145,14 @@ async def delete_group(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>', methods=['POST'])
 @token_required
+@require_permission('member.manage')
 async def add_user_to_group(current_user, group_id, user_id):
-    """Add a user to a group."""
+    """Add a user to a group. Admin or above only (controlled by member.manage permission)."""
     from app.models import User
     
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
-    if current_user not in group.users:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
     
     user = db.session.query(User).filter(User.id == user_id).first()
     if not user:
@@ -155,16 +170,14 @@ async def add_user_to_group(current_user, group_id, user_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>', methods=['DELETE'])
 @token_required
+@require_permission('member.manage')
 async def remove_user_from_group(current_user, group_id, user_id):
-    """Remove a user from a group."""
+    """Remove a user from a group. Admin or above only (controlled by member.manage permission)."""
     from app.models import User
     
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
-    if current_user not in group.users:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
     
     user = db.session.query(User).filter(User.id == user_id).first()
     if not user:
@@ -182,16 +195,14 @@ async def remove_user_from_group(current_user, group_id, user_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/invite', methods=['POST'])
 @token_required
+@require_permission('member.invite')
 async def invite_member(current_user, group_id):
-    """Invite a member to a group by email."""
+    """Invite a member to a group by email. Admin or above only (controlled by member.invite permission)."""
     from app.models import User, UserGroup
     
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
-    if current_user not in group.users:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
     
     data = await request.get_json()
     email = data.get('email')
@@ -227,26 +238,14 @@ async def invite_member(current_user, group_id):
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>/role', methods=['PUT'])
 @token_required
+@require_permission('member.manage')
 async def update_member_role(current_user, group_id, user_id):
-    """Update a member's role in a group."""
+    """Update a member's role in a group. Root and admin (with permission) can change roles."""
     from app.models import User, UserGroup
     
     group = db.session.query(Group).filter(Group.id == group_id).first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
-    # Check if current user is in group
-    current_user_group = db.session.query(UserGroup).filter(
-        UserGroup.group_id == group_id,
-        UserGroup.user_id == current_user.id
-    ).first()
-    
-    if not current_user_group:
-        return jsonify({'detail': 'You are not a member of this group'}), 403
-    
-    # Only root or admin can change roles
-    if current_user_group.role not in ['root', 'admin']:
-        return jsonify({'detail': 'Only root or admin can change member roles'}), 403
     
     data = await request.get_json()
     new_role = data.get('role')
@@ -264,9 +263,15 @@ async def update_member_role(current_user, group_id, user_id):
     if not user_group:
         return jsonify({'detail': 'User is not a member of this group'}), 400
     
+    current_role = _get_role(group_id, current_user.id)
+    
     # Only root can change another root's role
-    if user_group.role == 'root' and current_user_group.role != 'root':
+    if user_group.role == 'root' and current_role != 'root':
         return jsonify({'detail': 'Only root can change another root\'s role'}), 403
+    
+    # Admin cannot promote a member to root (only root can)
+    if new_role == 'root' and current_role != 'root':
+        return jsonify({'detail': 'Only root can promote members to root'}), 403
     
     user_group.role = new_role
     db.session.commit()
@@ -280,10 +285,10 @@ async def update_member_role(current_user, group_id, user_id):
 @apikeys_bp.route('/apikeys/', methods=['GET'])
 @token_required
 async def list_api_keys(current_user):
-    """List all API keys for groups the user belongs to."""
+    """List the current user's own API keys only."""
     api_keys = []
     for group in current_user.groups:
-        api_keys.extend([k.to_dict_with_group() for k in group.api_keys])
+        api_keys.extend([k.to_dict_with_group() for k in group.api_keys if k.user_id == current_user.id])
     return jsonify(api_keys)
 
 
@@ -298,7 +303,11 @@ async def list_api_keys_by_group(current_user, group_id):
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
     
-    return jsonify([k.to_dict() for k in group.api_keys])
+    # Members can only see their own API keys; admins/root see all
+    if _is_admin_or_above_inner(group_id, current_user.id):
+        return jsonify([k.to_dict() for k in group.api_keys])
+    else:
+        return jsonify([k.to_dict() for k in group.api_keys if k.user_id == current_user.id])
 
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['GET'])
@@ -332,7 +341,7 @@ async def get_api_key(current_user, api_key_id):
 @apikeys_bp.route('/apikeys/', methods=['POST'])
 @token_required
 async def create_api_key(current_user):
-    """Create a new API key."""
+    """Create a new API key. Members can only create if member.apikey.create is enabled."""
     data = await request.get_json()
     
     # Check if the group exists and user is a member
@@ -342,6 +351,13 @@ async def create_api_key(current_user):
     
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
+    
+    # Permission: members cannot create API keys unless member.apikey.create is enabled
+    group_id = group.id
+    if not _is_admin_or_above_inner(group_id, current_user.id):
+        user_role = _get_role(group_id, current_user.id)
+        if not check_permission(user_role, 'apikey.create'):
+            return jsonify({'detail': 'Creating API keys is disabled for members in this group'}), 403
     
     # Convert empty string to None for expires_at (empty string is not valid for timestamp)
     expires_at = data.get('expires_at')
@@ -366,13 +382,25 @@ async def create_api_key(current_user):
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['PUT'])
 @token_required
 async def update_api_key(current_user, api_key_id):
-    """Update an API key. Invalidates cache after update."""
+    """Update an API key. Invalidates cache after update.
+    Members can only edit their own keys if member.apikey.edit_own is enabled.
+    Admins/root can edit any key in the group."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
     
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
+    
+    # Permission: admin/root can edit any; member can only edit own key with permission
+    group_id = api_key.group_id
+    is_owner = api_key.user_id == current_user.id
+    if not is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
+        return jsonify({'detail': 'You can only edit your own API keys'}), 403
+    if is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
+        user_role = _get_role(group_id, current_user.id)
+        if not check_permission(user_role, 'apikey.edit_own'):
+            return jsonify({'detail': 'Editing own API keys is disabled for this group'}), 403
     
     data = await request.get_json()
     if 'name' in data:
@@ -726,13 +754,25 @@ async def get_api_key_detail(current_user, api_key_id):
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['DELETE'])
 @token_required
 async def delete_api_key(current_user, api_key_id):
-    """Delete an API key. Invalidates cache."""
+    """Delete an API key. Invalidates cache.
+    Members can only delete their own keys if member.apikey.edit_own is enabled.
+    Admins/root can delete any key in the group."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
     
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
+    
+    # Permission: admin/root can delete any; member can only delete own key with permission
+    group_id = api_key.group_id
+    is_owner = api_key.user_id == current_user.id
+    if not is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
+        return jsonify({'detail': 'You can only delete your own API keys'}), 403
+    if is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
+        user_role = _get_role(group_id, current_user.id)
+        if not check_permission(user_role, 'apikey.edit_own'):
+            return jsonify({'detail': 'Deleting own API keys is disabled for this group'}), 403
     
     # Invalidate cache before deleting (need the raw key for cache lookup)
     try:
@@ -752,13 +792,25 @@ async def delete_api_key(current_user, api_key_id):
 @apikeys_bp.route('/apikeys/<int:api_key_id>/regenerate', methods=['POST'])
 @token_required
 async def regenerate_api_key(current_user, api_key_id):
-    """Regenerate an API key (revokes the old one). Invalidates cache for old key."""
+    """Regenerate an API key (revokes the old one). Invalidates cache for old key.
+    Members can only regenerate their own keys if member.apikey.edit_own is enabled.
+    Admins/root can regenerate any key in the group."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
     
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
+    
+    # Permission: admin/root can regenerate any; member can only regenerate own with permission
+    group_id = api_key.group_id
+    is_owner = api_key.user_id == current_user.id
+    if not is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
+        return jsonify({'detail': 'You can only regenerate your own API keys'}), 403
+    if is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
+        user_role = _get_role(group_id, current_user.id)
+        if not check_permission(user_role, 'apikey.edit_own'):
+            return jsonify({'detail': 'Regenerating own API keys is disabled for this group'}), 403
     
     # Invalidate cache for the old key before regenerating
     old_key = api_key.key
@@ -802,9 +854,10 @@ async def list_budgets(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/budgets', methods=['POST'])
 @token_required
+@require_apikey_permission('apikey.manage')
 async def add_budget(current_user, api_key_id):
     """
-    Add a new budget entry to an API key.
+    Add a new budget entry to an API key. Root only.
 
     Request body: { "amount": 100.0 }
 
@@ -814,9 +867,7 @@ async def add_budget(current_user, api_key_id):
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    if current_user not in api_key.group.users:
-        return jsonify({'detail': 'You do not have access to this API key'}), 403
-
+    
     data = await request.get_json()
     amount = data.get('amount')
     if amount is None or amount == '':
@@ -864,14 +915,13 @@ async def add_budget(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/budgets/<int:budget_id>', methods=['DELETE'])
 @token_required
+@require_apikey_permission('apikey.manage')
 async def delete_budget(current_user, api_key_id, budget_id):
-    """Delete a budget entry. Only allowed if budget has remaining > 0 (refund scenario)."""
+    """Delete a budget entry. Root only. Only allowed if budget has remaining > 0 (refund scenario)."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    if current_user not in api_key.group.users:
-        return jsonify({'detail': 'You do not have access to this API key'}), 403
-
+    
     budget_entry = db.session.query(ApiKeyBudget).filter(
         ApiKeyBudget.id == budget_id,
         ApiKeyBudget.api_key_id == api_key_id,

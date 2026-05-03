@@ -142,6 +142,7 @@ class User(db.Model):
     
     id = db.Column(db.Integer, primary_key=True, index=True)
     username = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    hashed_password = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(100), unique=True, nullable=False, index=True)
     
     # Users belong to groups through UserGroup association
@@ -645,6 +646,177 @@ class ApiKeyBudget(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class Permission(db.Model):
+    """
+    System-level permission model — global permission points apply to all groups.
+
+    Root users can create, edit, delete, and toggle permission points.
+    Each permission point defines which roles (root / admin / member) are
+    allowed and whether the point is currently enabled.
+    Permissions are system-global: they apply uniformly across all groups.
+
+    Fields:
+        key           - Globally unique permission key (e.g. "provider.manage").
+        label         - Human-readable display name shown in the UI.
+        description   - Optional longer description.
+        allowed_roles - JSON list of roles that are permitted, e.g. ["root", "admin"].
+        is_enabled    - Master toggle. When False the permission is denied to EVERYONE
+                        (including root).
+    """
+    __tablename__ = "ml_permissions"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    key = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    label = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.String(500), nullable=True, default="")
+    allowed_roles = db.Column(db.JSON, nullable=False, default=lambda: ["root"])
+    is_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "key": self.key,
+            "label": self.label,
+            "description": self.description or "",
+            "allowed_roles": self.allowed_roles or [],
+            "is_enabled": self.is_enabled,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# ── Default permission seeds ─────────────────────────────────────────────
+
+DEFAULT_PERMISSIONS = [
+    {
+        "key": "provider.manage",
+        "label": "供应商管理",
+        "description": "添加、编辑、删除分组内的供应商配置",
+        "allowed_roles": ["root"],
+    },
+    {
+        "key": "apikey.manage",
+        "label": "API Key 管理",
+        "description": "创建、管理和预算分组下的 API Key",
+        "allowed_roles": ["root"],
+    },
+    {
+        "key": "template.manage",
+        "label": "模型模板管理",
+        "description": "创建、编辑和同步模型模板",
+        "allowed_roles": ["root"],
+    },
+    {
+        "key": "group.manage",
+        "label": "分组管理",
+        "description": "编辑分组信息和删除分组",
+        "allowed_roles": ["root"],
+    },
+    {
+        "key": "member.manage",
+        "label": "成员管理",
+        "description": "邀请和移除分组成员、修改成员角色",
+        "allowed_roles": ["root", "admin"],
+    },
+    {
+        "key": "apikey.create",
+        "label": "创建 API Key",
+        "description": "允许成员创建自己的 API Key",
+        "allowed_roles": ["root", "admin", "member"],
+    },
+    {
+        "key": "model.priority",
+        "label": "模型优先级",
+        "description": "设置模型的优先级实现负载均衡",
+        "allowed_roles": ["root", "admin"],
+    },
+    {
+        "key": "model.traffic_ratio",
+        "label": "模型流量配比",
+        "description": "设置模型的流量配比实现负载均衡",
+        "allowed_roles": ["root", "admin"],
+    },
+    {
+        "key": "member.invite",
+        "label": "邀请成员",
+        "description": "邀请新成员加入分组",
+        "allowed_roles": ["root", "admin"],
+    },
+    {
+        "key": "permission.manage",
+        "label": "权限管理",
+        "description": "创建、编辑、删除和开关权限点",
+        "allowed_roles": ["root"],
+    },
+    {
+        "key": "apikey.copy_others",
+        "label": "复制他人 API Key",
+        "description": "复制或查看其他用户创建的 API Key 的完整内容",
+        "allowed_roles": ["root"],
+        "is_enabled": False,
+    },
+    {
+        "key": "apikey.edit_own",
+        "label": "编辑自己的 API Key",
+        "description": "允许用户编辑和重新生成自己的 API Key",
+        "allowed_roles": ["root", "admin", "member"],
+        "is_enabled": True,
+    },
+]
+
+
+def seed_default_permissions() -> list[Permission]:
+    """Create default system-level permission points if none exist yet."""
+    from app import db
+    existing = db.session.query(Permission).count()
+    if existing > 0:
+        return []
+
+    created = []
+    for perm_def in DEFAULT_PERMISSIONS:
+        perm = Permission(
+            key=perm_def["key"],
+            label=perm_def["label"],
+            description=perm_def.get("description", ""),
+            allowed_roles=perm_def["allowed_roles"],
+            is_enabled=perm_def.get("is_enabled", True),
+        )
+        db.session.add(perm)
+        created.append(perm)
+    db.session.flush()
+    return created
+
+
+def check_permission(user_role: str, permission_key: str) -> bool:
+    """
+    Check if a user with *user_role* is allowed to perform
+    the action guarded by *permission_key*.
+
+    Permissions are system-global — they apply uniformly across all groups.
+
+    Logic:
+      1. Permission point not found → deny (fail closed)
+      2. Permission is disabled → deny (even root)
+      3. Root role → always allow (root is excluded from role-based check)
+      4. user_role in allowed_roles → allow
+      5. Otherwise → deny
+    """
+    from app import db
+    perm = db.session.query(Permission).filter(
+        Permission.key == permission_key,
+    ).first()
+
+    if perm is None:
+        return False
+    if not perm.is_enabled:
+        return False
+    if user_role == "root":
+        return True
+    return user_role in (perm.allowed_roles or [])
 
 
 class UsageRecord(db.Model):

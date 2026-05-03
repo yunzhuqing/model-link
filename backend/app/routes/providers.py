@@ -9,6 +9,14 @@ import os
 from app import db
 from app.models import Provider, Model, Group
 from app.routes.users import token_required
+from app.routes.permissions import (
+    _get_role,
+    _is_root,
+    _is_member,
+    _is_admin_or_above_inner,
+    check_permission,
+    require_provider_permission,
+)
 
 
 def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
@@ -71,12 +79,17 @@ async def list_providers(current_user):
 @providers_bp.route('/providers/', methods=['POST'])
 @token_required
 async def create_provider(current_user):
-    """Create a new provider in a group."""
+    """Create a new provider in a group. Root only."""
     data = await request.get_json()
     
     group_id = data.get('group_id')
     if not group_id:
         return jsonify({'detail': 'group_id is required'}), 400
+    
+    # Permission: requires provider.manage (default: root only)
+    user_role = _get_role(group_id, current_user.id)
+    if not check_permission(user_role, 'provider.manage'):
+        return jsonify({'detail': 'Provider management is disabled for this group'}), 403
     
     # Verify group exists
     group = db.session.query(Group).filter(Group.id == group_id).first()
@@ -128,8 +141,9 @@ async def get_provider(current_user, provider_id):
 
 @providers_bp.route('/providers/<int:provider_id>', methods=['PUT'])
 @token_required
+@require_provider_permission('provider.manage')
 async def update_provider(current_user, provider_id):
-    """Update a provider."""
+    """Update a provider. Root only (controlled by provider.manage permission)."""
     provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
@@ -181,8 +195,9 @@ async def update_provider(current_user, provider_id):
 
 @providers_bp.route('/providers/<int:provider_id>', methods=['DELETE'])
 @token_required
+@require_provider_permission('provider.manage')
 async def delete_provider(current_user, provider_id):
-    """Delete a provider."""
+    """Delete a provider. Root only (controlled by provider.manage permission)."""
     provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
@@ -208,8 +223,18 @@ async def list_models(current_user):
 @providers_bp.route('/models/', methods=['POST'])
 @token_required
 async def create_model(current_user):
-    """Create a new model."""
+    """Create a new model. Root only."""
     data = await request.get_json()
+    
+    # Resolve group_id from provider_id for permission check
+    provider_id = data.get('provider_id')
+    if provider_id:
+        provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+        if provider:
+            group_id = provider.group_id
+            user_role = _get_role(group_id, current_user.id)
+            if not check_permission(user_role, 'provider.manage'):
+                return jsonify({'detail': 'Model management is disabled for this group'}), 403
     
     # Parse retirement_time if provided as ISO string
     retirement_time = None
@@ -267,20 +292,61 @@ async def create_model(current_user):
 @providers_bp.route('/models/<int:model_id>', methods=['PUT'])
 @token_required
 async def update_model(current_user, model_id):
-    """Update a model."""
+    """Update a model.
+    
+    Root can update all fields (requires root.provider.manage).
+    Admin can only update priority and traffic_ratio.
+    Member cannot update anything.
+    """
     model = db.session.query(Model).filter(Model.id == model_id).first()
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
     
+    # Resolve group_id from model's provider
+    group_id = model.provider.group_id if model.provider else None
+    if not group_id or not _is_member(group_id, current_user.id):
+        return jsonify({'detail': 'You do not have access to this model'}), 403
+    
     data = await request.get_json()
-    for field in ['name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
+    
+    # Determine allowed fields based on role
+    admin_fields = {'priority', 'traffic_ratio'}
+    all_fields = {'name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
                   'input_price', 'output_price', 'cache_creation_price', 'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price',
                   'currency', 'rpm', 'tpm', 'discount', 'timeout',
-                   'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
+                  'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                   'support_online_image', 'support_online_video', 'support_embedding',
-                  'is_active', 'priority', 'traffic_ratio']:
+                  'is_active', 'priority', 'traffic_ratio'}
+    
+    is_root = _is_root(group_id, current_user.id)
+    is_admin = _is_admin_or_above_inner(group_id, current_user.id)
+    
+    if is_root:
+        user_role = _get_role(group_id, current_user.id)
+        if not check_permission(user_role, 'provider.manage'):
+            return jsonify({'detail': 'Model management is disabled for this group'}), 403
+        allowed_fields = all_fields
+    elif is_admin:
+        user_role = _get_role(group_id, current_user.id)
+        if not check_permission(user_role, 'model.priority') and not check_permission(user_role, 'model.traffic_ratio'):
+            return jsonify({'detail': 'Model priority and traffic ratio management is disabled for this group'}), 403
+        allowed_fields = set()
+        if check_permission(user_role, 'model.priority'):
+            allowed_fields.add('priority')
+        if check_permission(user_role, 'model.traffic_ratio'):
+            allowed_fields.add('traffic_ratio')
+    else:
+        return jsonify({'detail': 'Only admins and root can update models'}), 403
+    
+    # Reject if any non-allowed field is in the request
+    requested_fields = set(data.keys())
+    if not requested_fields.issubset(allowed_fields):
+        forbidden = requested_fields - allowed_fields
+        return jsonify({'detail': f'You cannot modify these fields: {", ".join(sorted(forbidden))}'}), 403
+    
+    for field in allowed_fields:
         if field in data:
             # Handle alias/nullable strings - convert empty string to None
             if field in ('alias', 'reasoning_effort', 'supported_image_formats') and data[field] == '':
@@ -311,10 +377,19 @@ async def update_model(current_user, model_id):
 @providers_bp.route('/models/<int:model_id>', methods=['DELETE'])
 @token_required
 async def delete_model(current_user, model_id):
-    """Delete a model."""
+    """Delete a model. Root only (requires root.provider.manage)."""
     model = db.session.query(Model).filter(Model.id == model_id).first()
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
+    
+    # Resolve group_id from model's provider
+    group_id = model.provider.group_id if model.provider else None
+    if not group_id or not _is_member(group_id, current_user.id):
+        return jsonify({'detail': 'You do not have access to this model'}), 403
+    
+    user_role = _get_role(group_id, current_user.id)
+    if not check_permission(user_role, 'provider.manage'):
+        return jsonify({'detail': 'Model management is disabled for this group'}), 403
     
     db.session.delete(model)
     db.session.commit()

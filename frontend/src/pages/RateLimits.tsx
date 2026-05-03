@@ -139,16 +139,16 @@ function ComboInput({ value, onChange, options, placeholder, disabled, className
         <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
       {open && !disabled && filtered.length > 0 && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+        <div className="absolute z-50 mt-1 min-w-full w-max max-w-[400px] bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
           {filtered.map(o => (
             <button
               key={o.value}
               type="button"
-              className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 flex items-center justify-between ${o.value === value ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 flex items-center justify-between gap-2 ${o.value === value ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
               onClick={() => { onChange(o.value); setSearch(''); setOpen(false); }}
             >
-              <span className="truncate">{o.label}</span>
-              {o.sub && <span className="text-xs text-slate-400 ml-2 flex-shrink-0">{o.sub}</span>}
+              <span className="whitespace-nowrap">{o.label}</span>
+              {o.sub && <span className="text-xs text-slate-400 flex-shrink-0 whitespace-nowrap">{o.sub}</span>}
             </button>
           ))}
         </div>

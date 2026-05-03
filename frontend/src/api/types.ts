@@ -25,6 +25,13 @@ export interface BudgetInfo {
   remaining: number | null;
 }
 
+export interface MyRoleResponse {
+  group_id: number;
+  user_id: number;
+  role: string;
+  permissions: Record<string, boolean>;
+}
+
 export interface BudgetRecord {
   id: number;
   api_key_id: number;
