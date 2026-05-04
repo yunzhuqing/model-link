@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, ImageIcon } from 'lucide-react';
-
-const BASE_URL = 'http://localhost:8000';
+import { useBaseUrl } from '../components/help/HelpShared';
 
 interface TocItem { id: string; label: string }
 const TOC_ITEMS: TocItem[] = [
@@ -96,8 +95,9 @@ function SectionCard({ id, title, description, badge, badgeColor, children }: {
 }
 
 function CurlSection({ body }: { body: string }) {
+  const baseUrl = useBaseUrl();
   const [show, setShow] = useState(false);
-  const curl = `curl -X POST ${BASE_URL}/v1/images/generations \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+  const curl = `curl -X POST ${baseUrl}/v1/images/generations \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -175,6 +175,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpImagesGenerations() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
 
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
@@ -203,7 +204,7 @@ export default function HelpImagesGenerations() {
         <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-orange-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-orange-900 mt-0.5">{BASE_URL}/v1/images/generations</p>
+            <p className="font-mono text-sm text-orange-900 mt-0.5">{baseUrl}/v1/images/generations</p>
           </div>
           <div className="h-8 w-px bg-orange-200 hidden sm:block" />
           <div>

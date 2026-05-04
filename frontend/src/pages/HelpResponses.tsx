@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, Zap } from 'lucide-react';
 
-const BASE_URL = 'http://localhost:8000';
+import { useBaseUrl } from '../components/help/HelpShared';
+
 
 // ---------- TOC ----------
 
@@ -89,8 +90,8 @@ const BACKGROUND_RESPONSE = `{
   "background": true
 }`;
 
-const GET_RESPONSE = `GET ${BASE_URL}/v1/responses/{response_id}
-Authorization: Bearer <YOUR_API_KEY>`;
+function getGetResponse(baseUrl: string) { return `GET ${baseUrl}/v1/responses/{response_id}
+Authorization: Bearer <YOUR_API_KEY>`; }
 
 const BASIC_RESPONSE = `{
   "id": "resp_abc123...",
@@ -181,10 +182,11 @@ function SectionCard({ id, title, description, badge, badgeColor, children }: Se
 }
 
 function CurlSection({ method = 'POST', body }: { method?: string; body: string }) {
+  const baseUrl = useBaseUrl();
   const [show, setShow] = useState(false);
   const curl = method === 'GET'
-    ? `curl -X GET "${BASE_URL}/v1/responses/{response_id}" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`
-    : `curl -X POST ${BASE_URL}/v1/responses \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+    ? `curl -X GET "${baseUrl}/v1/responses/{response_id}" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`
+    : `curl -X POST ${baseUrl}/v1/responses \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
 
   return (
     <div>
@@ -267,6 +269,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpResponses() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
 
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
@@ -296,7 +299,7 @@ export default function HelpResponses() {
         <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-emerald-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-emerald-900 mt-0.5">{BASE_URL}/v1/responses</p>
+            <p className="font-mono text-sm text-emerald-900 mt-0.5">{baseUrl}/v1/responses</p>
           </div>
           <div className="h-8 w-px bg-emerald-200 hidden sm:block" />
           <div>
@@ -447,7 +450,7 @@ export default function HelpResponses() {
         >
           <div>
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">请求</span>
-            <CodeBlock code={GET_RESPONSE} lang="bash" />
+            <CodeBlock code={getGetResponse(baseUrl)} lang="bash" />
           </div>
           <div className="overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">

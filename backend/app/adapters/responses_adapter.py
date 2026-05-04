@@ -99,6 +99,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     if block_type in ('input_text', 'text'):
                         blocks.append(ContentBlock.from_text(block.get('text', '')))
                     elif block_type in ('input_image', 'image'):
+                        image_role = block.get('role')
                         if 'image_url' in block:
                             # image_url can be a string or a dict with 'url' key
                             image_url_val = block['image_url']
@@ -107,24 +108,30 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                 parts = url.split(',')
                                 media_type = parts[0].replace('data:', '').replace(';base64', '')
                                 data_str = parts[1] if len(parts) > 1 else ''
-                                blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                                cb = ContentBlock.from_image_base64(data_str, media_type)
                             else:
-                                blocks.append(ContentBlock.from_image_url(url))
+                                cb = ContentBlock.from_image_url(url)
+                            cb.role = image_role or cb.role
+                            blocks.append(cb)
                         elif 'source' in block:
                             source = block['source']
                             if source.get('type') == 'base64':
-                                blocks.append(ContentBlock.from_image_base64(
+                                cb = ContentBlock.from_image_base64(
                                     source.get('data', ''),
                                     source.get('media_type', 'image/jpeg')
-                                ))
+                                )
                             elif source.get('type') == 'url':
-                                blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                                cb = ContentBlock.from_image_url(source.get('url', ''))
+                            cb.role = image_role or cb.role
+                            blocks.append(cb)
                     elif block_type in ('input_video', 'video'):
                         video_url_val = block.get('video_url', '')
                         if isinstance(video_url_val, dict):
                             video_url_val = video_url_val.get('url', '')
                         if video_url_val:
-                            blocks.append(ContentBlock.from_video_url(video_url_val))
+                            cb = ContentBlock.from_video_url(video_url_val)
+                            cb.role = block.get('role') or cb.role
+                            blocks.append(cb)
 
                 if blocks:
                     messages.append(Message(
@@ -263,6 +270,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                         blocks.append(ContentBlock.from_text(block.get('text', '')))
                                     elif block_type in ('input_image', 'image'):
                                         # Handle image content
+                                        image_role = block.get('role')
                                         if 'image_url' in block:
                                             # image_url can be a string or a dict with 'url' key
                                             image_url_val = block['image_url']
@@ -271,24 +279,30 @@ class OpenAIResponsesAdapter(BaseAdapter):
                                                 parts = url.split(',')
                                                 media_type = parts[0].replace('data:', '').replace(';base64', '')
                                                 data_str = parts[1] if len(parts) > 1 else ''
-                                                blocks.append(ContentBlock.from_image_base64(data_str, media_type))
+                                                cb = ContentBlock.from_image_base64(data_str, media_type)
                                             else:
-                                                blocks.append(ContentBlock.from_image_url(url))
+                                                cb = ContentBlock.from_image_url(url)
+                                            cb.role = image_role or cb.role
+                                            blocks.append(cb)
                                         elif 'source' in block:
                                             source = block['source']
                                             if source.get('type') == 'base64':
-                                                blocks.append(ContentBlock.from_image_base64(
+                                                cb = ContentBlock.from_image_base64(
                                                     source.get('data', ''),
                                                     source.get('media_type', 'image/jpeg')
-                                                ))
+                                                )
                                             elif source.get('type') == 'url':
-                                                blocks.append(ContentBlock.from_image_url(source.get('url', '')))
+                                                cb = ContentBlock.from_image_url(source.get('url', ''))
+                                            cb.role = image_role or cb.role
+                                            blocks.append(cb)
                                     elif block_type in ('input_video', 'video'):
                                         video_url_val = block.get('video_url', '')
                                         if isinstance(video_url_val, dict):
                                             video_url_val = video_url_val.get('url', '')
                                         if video_url_val:
-                                            blocks.append(ContentBlock.from_video_url(video_url_val))
+                                            cb = ContentBlock.from_video_url(video_url_val)
+                                            cb.role = block.get('role') or cb.role
+                                            blocks.append(cb)
                                     elif block_type == 'input_audio':
                                         if 'input_audio' in block:
                                             audio_data = block['input_audio']
@@ -418,115 +432,60 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
             elif tool_type == 'video_generation':
                 # Video generation tool — extract generation parameters into metadata.
-                # These are picked up by TencentVOD provider when routing to
-                # CreateAigcVideoTask.
+                # These are picked up by providers that support native video generation
+                # (TencentVOD, Happyhorse, Seedance, Gemini Veo, etc.).
                 #
                 # Supported fields:
-                #   size / video_size – output video dimensions (WxH), used to derive AspectRatio
+                #   size              – output video dimensions (WxH), used to derive AspectRatio
                 #   aspect_ratio      – explicit AspectRatio ("16:9", "9:16", etc.)
-                #   seconds           – video duration in seconds
                 #   resolution        – resolution tier ("720p", "1080p", etc.)
-                #   n / number        – number of videos (currently 1)
-                #   audio_generation  – "Enabled" | "Disabled"
+                #   seconds           – video duration in seconds
+                #   n                 – number of videos (currently 1)
+                #   generate_audio    – bool, whether audio track is generated
+                #   watermark         – bool, whether to add a watermark
                 #   person_generation – "AllowAdult" | "Disallow"
-                #   enhance_prompt    – "Enabled"
-                #   negative_prompt   – negative prompt string
-                #   reference_images  – list of image URLs for reference (image-to-video)
-                #   reference_videos  – list of video URLs for reference (video-to-video)
-                #   last_frame_url    – URL of last frame image (tail frame)
-                #   last_frame_file_id – FileId of last frame image
+                #
+                # Media references (images, videos, audio) are NOT passed as tool
+                # fields.  They are collected from ``input_image`` / ``input_video`` /
+                # ``input_audio`` content blocks in the ``input`` array and passed
+                # through ``file_id_media_map`` in the metadata.
                 vid_metadata: dict = {'_video_generation': True}
 
-                size = tool_data.get('size') or tool_data.get('video_size')
+                size = tool_data.get('size')
                 if size:
                     vid_metadata['size'] = size
-                    vid_metadata['video_size'] = size
 
-                # Accept both 'aspect_ratio' (TencentVOD) and 'ratio' (Seedance) field names.
-                aspect_ratio = tool_data.get('aspect_ratio') or tool_data.get('ratio')
+                aspect_ratio = tool_data.get('aspect_ratio')
                 if aspect_ratio:
                     vid_metadata['aspect_ratio'] = aspect_ratio
-                    vid_metadata['ratio'] = aspect_ratio  # also store under Seedance key
-
-                seconds = tool_data.get('seconds') or tool_data.get('video_seconds') or tool_data.get('duration')
-                if seconds is not None:
-                    vid_metadata['seconds'] = str(seconds)
-                    vid_metadata['duration'] = seconds  # also store under Seedance key
 
                 resolution = tool_data.get('resolution')
                 if resolution:
                     vid_metadata['resolution'] = resolution
 
-                n = tool_data.get('n') or tool_data.get('number') or tool_data.get('count')
+                seconds = tool_data.get('seconds')
+                if seconds is not None:
+                    vid_metadata['seconds'] = seconds
+
+                n = tool_data.get('n')
                 if n is not None:
-                    vid_metadata['number'] = int(n)
+                    vid_metadata['n'] = int(n)
 
-                # generate_audio: bool, default True.
-                # - For Seedance API: stored as generate_audio (bool)
-                # - For TencentVOD API: mapped to OutputConfig.AudioGeneration ("Enabled" | "Disabled")
-                # Accept both generate_audio (new) and audio_generation (legacy).
                 generate_audio = tool_data.get('generate_audio')
-                if generate_audio is None:
-                    generate_audio = True  # default: audio enabled
-                audio_generation = tool_data.get('audio_generation')
-                if audio_generation:
-                    # Legacy explicit string value takes precedence for TencentVOD
-                    vid_metadata['audio_generation'] = audio_generation
-                    # Also derive bool for Seedance
-                    vid_metadata['generate_audio'] = (audio_generation == "Enabled")
-                else:
-                    vid_metadata['audio_generation'] = "Enabled" if generate_audio else "Disabled"
+                if generate_audio is not None:
                     vid_metadata['generate_audio'] = bool(generate_audio)
-
-                person_generation = tool_data.get('person_generation')
-                if person_generation:
-                    vid_metadata['person_generation'] = person_generation
-
-                enhance_prompt = tool_data.get('enhance_prompt')
-                if enhance_prompt:
-                    vid_metadata['enhance_prompt'] = enhance_prompt
-
-                negative_prompt = tool_data.get('negative_prompt')
-                if negative_prompt:
-                    vid_metadata['negative_prompt'] = negative_prompt
-
-                reference_images = tool_data.get('reference_images')
-                if reference_images:
-                    if isinstance(reference_images, str):
-                        reference_images = [reference_images]
-                    vid_metadata['reference_images'] = reference_images
-
-                reference_videos = tool_data.get('reference_videos')
-                if reference_videos:
-                    if isinstance(reference_videos, str):
-                        reference_videos = [reference_videos]
-                    vid_metadata['reference_videos'] = reference_videos
-
-                last_frame_url = tool_data.get('last_frame_url')
-                if last_frame_url:
-                    vid_metadata['last_frame_url'] = last_frame_url
-
-                last_frame_file_id = tool_data.get('last_frame_file_id')
-                if last_frame_file_id:
-                    vid_metadata['last_frame_file_id'] = last_frame_file_id
-
-                reference_audios = tool_data.get('reference_audios')
-                if reference_audios:
-                    if isinstance(reference_audios, str):
-                        reference_audios = [reference_audios]
-                    vid_metadata['reference_audios'] = reference_audios
-
-                seed = tool_data.get('seed')
-                if seed is not None:
-                    vid_metadata['seed'] = seed
 
                 watermark = tool_data.get('watermark')
                 if watermark is not None:
                     vid_metadata['watermark'] = bool(watermark)
 
+                person_generation = tool_data.get('person_generation')
+                if person_generation:
+                    vid_metadata['person_generation'] = person_generation
+
                 # Accept a 'parameters' dict that is forwarded verbatim to the
                 # upstream provider API (e.g. Gemini Veo predictLongRunning).
-                # Individual top-level fields (aspect_ratio, seconds, …) take
+                # Individual top-level fields (aspect_ratio, …) take
                 # precedence over keys inside 'parameters' when both are set.
                 raw_parameters = tool_data.get('parameters')
                 if isinstance(raw_parameters, dict):

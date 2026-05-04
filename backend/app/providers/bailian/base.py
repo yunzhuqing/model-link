@@ -27,6 +27,12 @@ from .image_generation import (
     execute_qwen_image_generation,
     stream_image_generation,
 )
+from .video_generation import (
+    is_happyhorse_video_model,
+    has_video_generation_tool,
+    execute_happyhorse_video_generation,
+    stream_video_generation,
+)
 from .embedding import execute_bailian_multimodal_embed
 from .rerank import execute_bailian_text_rerank, execute_bailian_multimodal_rerank
 from app.abstraction.rerank import RerankRequest, RerankResponse
@@ -124,6 +130,27 @@ class BailianProvider(OpenAIProvider):
             "context_size": 0,
             "supports_vision": False,
         },
+        # Happyhorse 视频生成系列
+        "happyhorse-1.0-t2v": {
+            "description": "文生视频模型，根据文本描述生成视频",
+            "context_size": 0,
+            "supports_vision": False,
+        },
+        "happyhorse-1.0-i2v": {
+            "description": "图生视频模型，根据首帧图片和文本描述生成视频",
+            "context_size": 0,
+            "supports_vision": True,
+        },
+        "happyhorse-1.0-r2v": {
+            "description": "参考对象生视频模型，根据参考图片和文本描述生成视频",
+            "context_size": 0,
+            "supports_vision": True,
+        },
+        "happyhorse-1.0-video-edit": {
+            "description": "视频编辑模型，根据文本描述对视频进行编辑",
+            "context_size": 0,
+            "supports_vision": True,
+        },
         # DeepSeek 系列
         "deepseek-v3": {
             "description": "DeepSeek V3 模型",
@@ -170,7 +197,7 @@ class BailianProvider(OpenAIProvider):
             )
         super().__init__(config)
 
-    # ==================== 图像生成检测 ====================
+    # ==================== 图像/视频生成检测 ====================
 
     def is_image_generation_model(self, model: str) -> bool:
         """Check if the model is a Qwen image generation/editing model."""
@@ -179,6 +206,24 @@ class BailianProvider(OpenAIProvider):
     def _has_image_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request contains an image_generation tool."""
         return has_image_generation_tool(request)
+
+    def is_video_generation_model(self, model: str) -> bool:
+        """Check if the model is a Happyhorse video generation model."""
+        return is_happyhorse_video_model(model)
+
+    def _has_video_generation_tool(self, request: ChatRequest) -> bool:
+        """Check if the request contains a video_generation tool."""
+        return has_video_generation_tool(request)
+
+    def _get_dashscope_domain(self) -> Optional[str]:
+        """Extract the Dashscope domain from base_url for video generation API calls."""
+        base_url = getattr(self.config, 'base_url', '') or ''
+        if 'dashscope.aliyuncs.com' in base_url:
+            if '://' in base_url:
+                protocol, rest = base_url.split('://', 1)
+                host = rest.split('/', 1)[0]
+                return f"{protocol}://{host}"
+        return None
 
     # ==================== 请求准备 ====================
 
@@ -234,6 +279,15 @@ class BailianProvider(OpenAIProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
+            return execute_happyhorse_video_generation(
+                api_key=self.config.api_key,
+                model=request.model,
+                messages=request.messages,
+                metadata=request.metadata,
+                domain=self._get_dashscope_domain(),
+            )
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
             return execute_qwen_image_generation(
@@ -339,6 +393,13 @@ class BailianProvider(OpenAIProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
+            # Inject api_key and domain into metadata for the streaming function
+            request.metadata["_api_key"] = self.config.api_key
+            request.metadata["_domain"] = self._get_dashscope_domain()
+            yield from stream_video_generation(self.chat, request)
+            return
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
             yield from stream_image_generation(self.chat, request)

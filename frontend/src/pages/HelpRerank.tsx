@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, AlignLeft, Image } from 'lucide-react';
 
-const BASE_URL = 'http://localhost:8000';
+import { useBaseUrl } from '../components/help/HelpShared';
 
 // ---------- TOC ----------
 
@@ -54,12 +54,12 @@ const MULTIMODAL_IMAGE_QUERY = `{
   "return_documents": true
 }`;
 
-const CURL_TEXT = `curl -X POST ${BASE_URL}/v1/rerank \\
+const CURL_TEXT = (baseUrl: string) => `curl -X POST ${baseUrl}/v1/rerank \\
   -H "Authorization: Bearer <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '${TEXT_RERANK}'`;
 
-const CURL_MULTIMODAL = `curl -X POST ${BASE_URL}/v1/rerank \\
+const CURL_MULTIMODAL = (baseUrl: string) => `curl -X POST ${baseUrl}/v1/rerank \\
   -H "Authorization: Bearer <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '${MULTIMODAL_TEXT_QUERY}'`;
@@ -248,6 +248,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpRerank() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
   const [showCurl1, setShowCurl1] = useState(false);
   const [showCurl2, setShowCurl2] = useState(false);
   const [showCurl3, setShowCurl3] = useState(false);
@@ -280,7 +281,7 @@ export default function HelpRerank() {
         <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-orange-400 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-orange-900 mt-0.5">{BASE_URL}/v1/rerank</p>
+            <p className="font-mono text-sm text-orange-900 mt-0.5">{baseUrl}/v1/rerank</p>
           </div>
           <div className="h-8 w-px bg-orange-200 hidden sm:block" />
           <div>
@@ -324,7 +325,7 @@ export default function HelpRerank() {
           {showCurl1 && (
             <div>
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
-              <CodeBlock code={CURL_TEXT} lang="bash" />
+              <CodeBlock code={CURL_TEXT(baseUrl)} lang="bash" />
             </div>
           )}
         </Card>
@@ -363,7 +364,7 @@ export default function HelpRerank() {
               {showCurl2 && (
                 <div className="mt-3">
                   <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
-                  <CodeBlock code={CURL_MULTIMODAL} lang="bash" />
+                  <CodeBlock code={CURL_MULTIMODAL(baseUrl)} lang="bash" />
                 </div>
               )}
             </div>
@@ -380,7 +381,7 @@ export default function HelpRerank() {
               {showCurl3 && (
                 <div className="mt-3">
                   <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
-                  <CodeBlock code={`curl -X POST ${BASE_URL}/v1/rerank \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${MULTIMODAL_IMAGE_QUERY}'`} lang="bash" />
+                  <CodeBlock code={`curl -X POST ${baseUrl}/v1/rerank \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${MULTIMODAL_IMAGE_QUERY}'`} lang="bash" />
                 </div>
               )}
             </div>

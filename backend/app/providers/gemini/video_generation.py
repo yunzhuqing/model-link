@@ -139,19 +139,6 @@ def _build_veo_request(
                         last_frame_b64 = block.data
                         last_frame_mime = block.media_type or "image/png"
 
-    # 从 metadata 中读取帧图像（优先级高于消息中的图片）
-    meta_first_frame = metadata.get("first_frame") or metadata.get("start_frame")
-    meta_last_frame = metadata.get("last_frame") or metadata.get("end_frame")
-    meta_first_frame_mime = metadata.get("first_frame_mime", "image/png")
-    meta_last_frame_mime = metadata.get("last_frame_mime", "image/png")
-
-    if meta_first_frame:
-        first_frame_b64 = meta_first_frame
-        first_frame_mime = meta_first_frame_mime
-    if meta_last_frame:
-        last_frame_b64 = meta_last_frame
-        last_frame_mime = meta_last_frame_mime
-
     # 构建 instance
     instance: Dict[str, Any] = {"prompt": prompt}
     if first_frame_b64:
@@ -179,17 +166,17 @@ def _build_veo_request(
     parameters: Dict[str, Any] = dict(raw_parameters)
 
     # 宽高比 — top-level field overrides parameters.aspectRatio
-    aspect_ratio = metadata.get("aspect_ratio") or metadata.get("ratio") or metadata.get("aspectRatio")
+    aspect_ratio = metadata.get("aspect_ratio") or metadata.get("aspectRatio")
     if not aspect_ratio:
-        # 尝试从 video_size / size 解析
-        video_size = str(metadata.get("video_size") or metadata.get("size") or "")
-        if video_size:
-            aspect_ratio = _derive_aspect_ratio_from_size(video_size)
+        # 尝试从 size 解析
+        size = str(metadata.get("size") or "")
+        if size:
+            aspect_ratio = _derive_aspect_ratio_from_size(size)
     if aspect_ratio:
         parameters["aspectRatio"] = aspect_ratio
 
     # 视频时长（秒）— top-level field overrides parameters.durationSeconds
-    seconds_raw = metadata.get("seconds") or metadata.get("video_seconds") or metadata.get("duration") or metadata.get("durationSeconds")
+    seconds_raw = metadata.get("seconds") or metadata.get("durationSeconds")
     if seconds_raw is not None:
         try:
             parameters["durationSeconds"] = int(float(seconds_raw))
@@ -197,27 +184,12 @@ def _build_veo_request(
             pass
 
     # 生成数量 — top-level field overrides parameters.sampleCount
-    n_raw = metadata.get("n") or metadata.get("number") or metadata.get("sampleCount")
+    n_raw = metadata.get("sampleCount")
     if n_raw is not None:
         try:
             parameters["sampleCount"] = int(n_raw)
         except (ValueError, TypeError):
             pass
-
-    # 负面提示词 — top-level field overrides parameters.negativePrompt
-    negative_prompt = metadata.get("negative_prompt") or metadata.get("negativePrompt")
-    if negative_prompt:
-        parameters["negativePrompt"] = negative_prompt
-
-    # 增强 prompt（默认关闭，由用户决定）— top-level field overrides parameters.enhancePrompt
-    enhance_prompt = metadata.get("enhance_prompt") or metadata.get("enhancePrompt")
-    if enhance_prompt is not None:
-        parameters["enhancePrompt"] = bool(enhance_prompt)
-
-    # 视频质量 — top-level field overrides parameters.videoFidelity
-    video_fidelity = metadata.get("video_fidelity") or metadata.get("videoFidelity")
-    if video_fidelity:
-        parameters["videoFidelity"] = video_fidelity
 
     # personGeneration — top-level field overrides parameters.personGeneration
     person_generation = metadata.get("person_generation") or metadata.get("personGeneration")

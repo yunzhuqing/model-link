@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, Layers, MessageSquare, FileText, Image, ArrowLeft } from 'lucide-react';
 
-const BASE_URL = 'http://localhost:8000';
+import { useBaseUrl } from '../components/help/HelpShared';
+
 
 // ---------- TOC definition ----------
 
@@ -121,8 +122,8 @@ const MULTIMODAL_MESSAGES = `{
   ]
 }`;
 
-const CURL_PREFIX = (body: string) =>
-  `curl -X POST ${BASE_URL}/v1/embeddings \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+const curlPrefix = (baseUrl: string, body: string) =>
+  `curl -X POST ${baseUrl}/v1/embeddings \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
 
 // ---------- Supported models ----------
 
@@ -203,6 +204,7 @@ interface SectionProps {
 }
 
 function Section({ id, icon, title, badge, badgeColor, description, jsonBody, children }: SectionProps) {
+  const baseUrl = useBaseUrl();
   const [showCurl, setShowCurl] = useState(false);
   return (
     <div id={id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
@@ -231,7 +233,7 @@ function Section({ id, icon, title, badge, badgeColor, description, jsonBody, ch
         {showCurl && (
           <div>
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
-            <CodeBlock code={CURL_PREFIX(jsonBody)} lang="bash" />
+            <CodeBlock code={curlPrefix(baseUrl, jsonBody)} lang="bash" />
           </div>
         )}
       </div>
@@ -308,6 +310,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpEmbedding() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
 
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
@@ -337,7 +340,7 @@ export default function HelpEmbedding() {
         <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-blue-400 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-blue-900 mt-0.5">{BASE_URL}/v1/embeddings</p>
+            <p className="font-mono text-sm text-blue-900 mt-0.5">{baseUrl}/v1/embeddings</p>
           </div>
           <div className="h-8 w-px bg-blue-200 hidden sm:block" />
           <div>

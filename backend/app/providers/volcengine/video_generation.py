@@ -609,13 +609,13 @@ def execute_seedance_video_generation(
     # ── 参数提取 ──────────────────────────────────────────────────────────
     # AspectRatio / Resolution
     # Priority: explicit fields > derived from size string
-    video_size = str(metadata.get("video_size") or metadata.get("size") or "")
-    ratio = str(metadata.get("aspect_ratio") or metadata.get("ratio") or "")
+    size = str(metadata.get("size") or "")
+    ratio = str(metadata.get("aspect_ratio") or "")
     resolution = str(metadata.get("resolution") or "")
 
-    if video_size and (not ratio or not resolution):
+    if size and (not ratio or not resolution):
         # Use Seedance-specific size table (per-model pixel dimension mapping)
-        derived_ratio, derived_res, _pixel = resolve_seedance_size(video_size, model)
+        derived_ratio, derived_res, _pixel = resolve_seedance_size(size, model)
         if not ratio:
             ratio = derived_ratio
         if not resolution:
@@ -628,7 +628,7 @@ def execute_seedance_video_generation(
         resolution = "720p"
 
     # Duration (seconds, int)
-    seconds_raw = metadata.get("seconds") or metadata.get("video_seconds") or metadata.get("duration")
+    seconds_raw = metadata.get("seconds")
     duration: Optional[int] = int(float(seconds_raw)) if seconds_raw is not None else None
 
     # Audio / watermark / seed
@@ -647,40 +647,19 @@ def execute_seedance_video_generation(
     seed_raw = metadata.get("seed")
     seed: Optional[int] = int(seed_raw) if seed_raw is not None else None
 
-    # Reference media from metadata
-    reference_images: List[str] = list(metadata.get("reference_images") or [])
-    reference_videos: List[str] = list(metadata.get("reference_videos") or [])
-    reference_audios: List[str] = list(metadata.get("reference_audios") or [])
-
     # Build file_id → Seedance variable alias map (图片1, 视频1, 音频1, …)
-    # and extend reference media lists from file_id_media_map entries.
+    # Media references come exclusively from file_id_media_map (input content blocks),
+    # NOT from video_generation tool fields.
     file_id_media_map: Dict[str, Any] = metadata.get("file_id_media_map") or {}
     file_id_sub_map: Dict[str, str] = {}
     special_frames: List[Dict[str, str]] = []
     if file_id_media_map:
-        file_id_sub_map, extra_imgs, extra_vids, extra_auds, special_frames = \
+        file_id_sub_map, reference_images, reference_videos, reference_audios, special_frames = \
             _build_seedance_file_id_aliases(file_id_media_map)
-        # Prepend file_id-sourced media before explicitly listed references
-        # (de-duplicate while preserving order)
-        seen_extra: set = set()
-        merged_imgs: List[str] = []
-        for u in extra_imgs + reference_images:
-            if u not in seen_extra:
-                seen_extra.add(u)
-                merged_imgs.append(u)
-        merged_vids: List[str] = []
-        for u in extra_vids + reference_videos:
-            if u not in seen_extra:
-                seen_extra.add(u)
-                merged_vids.append(u)
-        merged_auds: List[str] = []
-        for u in extra_auds + reference_audios:
-            if u not in seen_extra:
-                seen_extra.add(u)
-                merged_auds.append(u)
-        reference_images = merged_imgs
-        reference_videos = merged_vids
-        reference_audios = merged_auds
+    else:
+        reference_images: List[str] = []
+        reference_videos: List[str] = []
+        reference_audios: List[str] = []
 
     # ── 构建 content 数组 ────────────────────────────────────────────────
     prompt_text, content = _build_content(

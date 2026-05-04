@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, Box } from 'lucide-react';
+import { useBaseUrl } from '../components/help/HelpShared';
 
-const BASE_URL = 'http://localhost:8000';
-
-interface TocItem { id: string; label: string }
+interface TocItem { id: string; label: string; indent?: boolean }
 const TOC_ITEMS: TocItem[] = [
   { id: 'overview', label: '功能说明' },
   { id: 'models', label: '支持的模型' },
-  { id: 'single-image', label: '单图生成（Rapid/Pro）' },
-  { id: 'multi-view', label: '多视角图生成（Pro）' },
-  { id: 'text-to-3d', label: '文本生成 3D（Pro）' },
+  { id: 'hunyuan3d', label: '混元 3D' },
+  { id: 'single-image', label: '　└ 单图生成', indent: true },
+  { id: 'multi-view', label: '　└ 多视角图生成', indent: true },
+  { id: 'text-to-3d', label: '　└ 文本生成 3D', indent: true },
+  { id: 'seed3d', label: 'Doubao Seed3D' },
+  { id: 'seed3d-usage', label: '　└ 请求示例', indent: true },
   { id: 'params', label: '工具参数' },
   { id: 'response-format', label: '响应格式' },
 ];
@@ -73,6 +75,29 @@ const THREED_MULTI_VIEW = `{
       "pbr": true,
       "face_count": 500000,
       "generate_type": "Normal"
+    }
+  ]
+}`;
+
+const SEED3D_REQUEST = `{
+  "model": "doubao-seed3d-2.0",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_image",
+          "image_url": "https://ark-project.tos-cn-beijing.volces.com/doc_image/seed3d_imageTo3d.png"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "3d_generation",
+      "face_count": 100000
     }
   ]
 }`;
@@ -164,8 +189,9 @@ function SectionCard({ id, title, description, badge, badgeColor, children }: {
 }
 
 function CurlSection({ body }: { body: string }) {
+  const baseUrl = useBaseUrl();
   const [show, setShow] = useState(false);
-  const curl = `curl -X POST ${BASE_URL}/v1/responses \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+  const curl = `curl -X POST ${baseUrl}/v1/responses \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -243,6 +269,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpThreed() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
 
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
@@ -262,7 +289,7 @@ export default function HelpThreed() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-slate-900">3D 生成</h1>
-              <p className="text-slate-500 text-sm mt-0.5">通过 Responses API 的 3d_generation 工具生成 3D 模型（混元 3D）</p>
+              <p className="text-slate-500 text-sm mt-0.5">通过 Responses API 的 3d_generation 工具生成 3D 模型（混元 3D / Doubao Seed3D）</p>
             </div>
           </div>
         </div>
@@ -271,7 +298,7 @@ export default function HelpThreed() {
         <div className="bg-purple-50 border border-purple-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-purple-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-purple-900 mt-0.5">{BASE_URL}/v1/responses</p>
+            <p className="font-mono text-sm text-purple-900 mt-0.5">{baseUrl}/v1/responses</p>
           </div>
           <div className="h-8 w-px bg-purple-200 hidden sm:block" />
           <div>
@@ -290,7 +317,7 @@ export default function HelpThreed() {
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800 mb-1">功能说明</h3>
             <p className="text-sm text-slate-500">
-              通过在 tools 中指定 3d_generation 类型，触发混元 3D 模型生成功能。支持从单张图片、多视角图片或文本描述生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
+              通过在 tools 中指定 3d_generation 类型，触发 3D 模型生成功能。支持混元 3D（单图、多视角、文本）和 Doubao Seed3D（单图）模型，生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
             </p>
           </div>
           <div className="p-6 space-y-3">
@@ -299,7 +326,7 @@ export default function HelpThreed() {
               提交后立即返回 <code>response_id</code>，通过 <code>GET /v1/responses/{'{response_id}'}</code> 轮询结果。
             </div>
             <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm text-purple-800">
-              <strong>Provider 配置：</strong>在供应商管理页面选择类型 <code>Hunyuan 3D (Tencent)</code>，填写腾讯云 Secret ID（AK）、Secret Key（SK）及可选的 Region（默认 ap-guangzhou）。
+              <strong>Provider 配置：</strong>混元 3D 选择类型 <code>Hunyuan 3D (Tencent)</code>，填写腾讯云 Secret ID（AK）、Secret Key（SK）及 Region。Doubao Seed3D 选择类型 <code>Volcengine ARK</code>，配置对应的 API Key 和 Base URL。
             </div>
           </div>
         </div>
@@ -308,36 +335,37 @@ export default function HelpThreed() {
         <SectionCard
           id="models"
           title="支持的模型"
-          description="混元 3D 包含 Rapid（快速）和 Pro（高质量）两个系列。"
+          description="支持混元 3D（Rapid / Pro 系列）和 Doubao Seed3D 模型。"
         >
           <div className="overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-left">
                 <tr>
                   <th className="px-4 py-2.5 font-semibold text-slate-600">模型名称</th>
-                  <th className="px-4 py-2.5 font-semibold text-slate-600">API Action</th>
-                  <th className="px-4 py-2.5 font-semibold text-slate-600">API Model 字段</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">供应商</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">输入方式</th>
                   <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {[
-                  { name: 'hunyuan-3d-rapid',   action: 'Rapid', model: '—', desc: 'Rapid 系列（快速生成）' },
-                  { name: 'hy-3d-express',       action: 'Rapid', model: '—', desc: 'Rapid 系列（快速生成）' },
-                  { name: 'hunyuan-3d-pro',      action: 'Pro',   model: '不传', desc: 'Pro 系列（兼容旧版）' },
-                  { name: 'hunyuan-3d-3.0-pro',  action: 'Pro',   model: '3.0', desc: 'Pro 3.0 版本' },
-                  { name: 'hunyuan-3d-3.1-pro',  action: 'Pro',   model: '3.1', desc: 'Pro 3.1 版本（推荐）' },
-                  { name: 'hy-3d-3.0',           action: 'Pro',   model: '3.1', desc: '注意：模型名与 API Model 字段有差异' },
-                  { name: 'hy-3d-3.1',           action: 'Pro',   model: '3.0', desc: '注意：模型名与 API Model 字段有差异' },
+                  { name: 'hunyuan-3d-rapid',   vendor: '混元', input: '单图', desc: 'Rapid 系列（快速生成）' },
+                  { name: 'hy-3d-express',       vendor: '混元', input: '单图', desc: 'Rapid 系列（快速生成）' },
+                  { name: 'hunyuan-3d-pro',      vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（兼容旧版）' },
+                  { name: 'hunyuan-3d-3.0-pro',  vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 3.0 版本' },
+                  { name: 'hunyuan-3d-3.1-pro',  vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 3.1 版本（推荐）' },
+                  { name: 'hy-3d-3.0',           vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（别名映射差异）' },
+                  { name: 'hy-3d-3.1',           vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（别名映射差异）' },
+                  { name: 'doubao-seed3d-2.0',   vendor: 'Doubao', input: '单图（必填）', desc: 'Doubao Seed3D 2.0，仅支持图生 3D' },
                 ].map((r) => (
                   <tr key={r.name} className="hover:bg-slate-50">
                     <td className="px-4 py-2.5"><code className="text-purple-600 font-semibold text-xs">{r.name}</code></td>
                     <td className="px-4 py-2.5">
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${r.action === 'Rapid' ? 'bg-orange-100 text-orange-700' : 'bg-purple-100 text-purple-700'}`}>
-                        {r.action}
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${r.vendor === '混元' ? 'bg-purple-100 text-purple-700' : 'bg-cyan-100 text-cyan-700'}`}>
+                        {r.vendor}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-slate-500 text-xs">{r.model}</td>
+                    <td className="px-4 py-2.5 text-slate-600 text-xs">{r.input}</td>
                     <td className="px-4 py-2.5 text-slate-600 text-xs">{r.desc}</td>
                   </tr>
                 ))}
@@ -346,7 +374,17 @@ export default function HelpThreed() {
           </div>
         </SectionCard>
 
-        {/* Single image */}
+        {/* ======== Hunyuan 3D ======== */}
+        <div id="hunyuan3d" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
+          <div className="p-6 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <h3 className="text-lg font-semibold text-slate-800">混元 3D 模型</h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">Hunyuan</span>
+            </div>
+            <p className="text-sm text-slate-500">腾讯混元 3D 模型，支持单图、多视角图片和文本描述三种输入方式生成 3D 模型。</p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* Single image */}
         <SectionCard
           id="single-image"
           title="单图生成 3D（Rapid / Pro）"
@@ -386,6 +424,30 @@ export default function HelpThreed() {
         >
           <CurlSection body={THREED_TEXT} />
         </SectionCard>
+          </div>
+        </div>
+
+        {/* ======== Doubao Seed3D ======== */}
+        <SectionCard
+          id="seed3d"
+          title="Doubao Seed3D 模型"
+          badge="Seed3D"
+          badgeColor="bg-cyan-100 text-cyan-700"
+          description="Doubao Seed3D 2.0 是火山引擎提供的图生 3D 模型，仅需一张图片即可生成高质量 3D 模型。"
+        >
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>约束：</strong>
+            <ul className="list-disc list-inside mt-1.5 space-y-1">
+              <li>输入 <code>input_image</code> <strong>必填</strong>，支持 <code>image_url</code>（URL）和 <code>image_base64</code>（base64 编码）两种输入方式</li>
+              <li>支持 <code>face_count</code> 参数控制生成面数</li>
+              <li>支持 <code>output_format</code> 指定输出格式</li>
+              <li>需设置 <code>"background": true</code> 进行异步任务</li>
+            </ul>
+          </div>
+          <div id="seed3d-usage" className="scroll-mt-4">
+            <CurlSection body={SEED3D_REQUEST} />
+          </div>
+        </SectionCard>
 
         {/* Params */}
         <SectionCard
@@ -409,7 +471,7 @@ export default function HelpThreed() {
                   { name: 'output_format',    type: 'string',  scope: '通用',     desc: 'OBJ | GLB | STL | USDZ | FBX | MP4；别名：result_format' },
                   { name: 'pbr',              type: 'boolean', scope: '通用',     desc: '是否开启 PBR 材质生成；别名：enable_pbr' },
                   { name: 'enable_geometry',  type: 'boolean', scope: '通用',     desc: '开启白模（无纹理几何）生成，开启后不支持 OBJ 格式；别名：geometry' },
-                  { name: 'face_count',       type: 'number',  scope: 'Pro-only', desc: '生成面数（3000–1500000，LowPoly 模式下无效）' },
+                  { name: 'face_count',       type: 'number',  scope: 'Pro/Seed3D', desc: '生成面数（混元 Pro: 3000–1500000；Seed3D 也支持）' },
                   { name: 'generate_type',    type: 'string',  scope: 'Pro-only', desc: 'Normal | LowPoly | Geometry | Sketch' },
                   { name: 'polygon_type',     type: 'string',  scope: 'Pro-only', desc: 'triangle | quadrilateral（仅 LowPoly 模式有效）' },
                 ].map((r) => (

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, MessageCircle } from 'lucide-react';
+import { useBaseUrl } from '../components/help/HelpShared';
 
-const BASE_URL = 'http://localhost:8000';
 
 // ---------- TOC ----------
 
@@ -182,8 +182,9 @@ function SectionCard({ id, title, description, badge, badgeColor, children }: Se
 }
 
 function CurlSection({ body }: { body: string }) {
+  const baseUrl = useBaseUrl();
   const [show, setShow] = useState(false);
-  const curl = `curl -X POST ${BASE_URL}/v1/chat/completions \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+  const curl = `curl -X POST ${baseUrl}/v1/chat/completions \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -247,6 +248,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpChat() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
       <div className="flex-1 min-w-0 space-y-8">
@@ -268,7 +270,7 @@ export default function HelpChat() {
         {/* Endpoint info */}
         <div className="bg-sky-50 border border-sky-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div><span className="text-xs font-semibold text-sky-400 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-sky-900 mt-0.5">{BASE_URL}/v1/chat/completions</p></div>
+            <p className="font-mono text-sm text-sky-900 mt-0.5">{baseUrl}/v1/chat/completions</p></div>
           <div className="h-8 w-px bg-sky-200 hidden sm:block" />
           <div><span className="text-xs font-semibold text-sky-400 uppercase tracking-wide">Method</span>
             <p className="text-sm font-medium text-sky-900 mt-0.5">POST</p></div>

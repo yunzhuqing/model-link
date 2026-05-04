@@ -308,7 +308,12 @@ async def update_model(current_user, model_id):
         return jsonify({'detail': 'You do not have access to this model'}), 403
     
     data = await request.get_json()
-    
+
+    # Strip read-only / computed fields that the frontend may accidentally send
+    # id is the primary key; is_retired is a computed property from retirement_time
+    for ro_field in ('id', 'is_retired'):
+        data.pop(ro_field, None)
+
     # Determine allowed fields based on role
     admin_fields = {'priority', 'traffic_ratio'}
     all_fields = {'name', 'alias', 'provider_id', 'context_size', 'input_size', 'output_size',
@@ -318,7 +323,7 @@ async def update_model(current_user, model_id):
                   'support_kvcache', 'support_image', 'support_audio', 'support_video',
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                   'support_online_image', 'support_online_video', 'support_embedding',
-                  'is_active', 'priority', 'traffic_ratio'}
+                  'is_active', 'priority', 'traffic_ratio', 'retirement_time'}
     
     is_root = _is_root(group_id, current_user.id)
     is_admin = _is_admin_or_above_inner(group_id, current_user.id)

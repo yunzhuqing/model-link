@@ -624,18 +624,18 @@ def execute_tencentvod_video_generation(
     # ── Video-specific parameters ──────────────────────────────────────────
     # Size → AspectRatio + Resolution
     # Priority: explicit metadata fields > derived from size string
-    video_size = str(metadata.get("video_size") or metadata.get("size") or "")
+    size = str(metadata.get("size") or "")
     aspect_ratio = str(metadata.get("aspect_ratio") or "")
     resolution = str(metadata.get("resolution") or "")
 
-    if video_size and (not aspect_ratio or not resolution):
-        derived_ar, derived_res = resolve_video_size(video_size)
+    if size and (not aspect_ratio or not resolution):
+        derived_ar, derived_res = resolve_video_size(size)
         if not aspect_ratio:
             aspect_ratio = derived_ar
         if not resolution:
             resolution = derived_res
 
-    seconds = str(metadata.get("seconds") or metadata.get("video_seconds") or "")
+    seconds = str(metadata.get("seconds") or "")
     audio_generation = str(metadata.get("audio_generation") or "")
     person_generation = str(metadata.get("person_generation") or "")
     enhance_prompt = str(metadata.get("enhance_prompt") or "")

@@ -19,6 +19,12 @@ from .image_generation import (
     execute_qwen_image_generation,
     stream_image_generation,
 )
+from .video_generation import (
+    is_happyhorse_video_model,
+    has_video_generation_tool,
+    execute_happyhorse_video_generation,
+    stream_video_generation,
+)
 
 __all__ = [
     # Main provider
@@ -31,4 +37,9 @@ __all__ = [
     'has_image_generation_tool',
     'execute_qwen_image_generation',
     'stream_image_generation',
+    # Video generation utilities
+    'is_happyhorse_video_model',
+    'has_video_generation_tool',
+    'execute_happyhorse_video_generation',
+    'stream_video_generation',
 ]

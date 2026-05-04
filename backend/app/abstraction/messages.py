@@ -54,6 +54,7 @@ class ContentBlock:
     url: Optional[str] = None
     media_type: Optional[str] = None  # MIME type: image/jpeg, audio/mp3, etc.
     data: Optional[str] = None  # Base64 data
+    role: Optional[str] = None  # Media role: first_frame, last_frame, reference_image, reference_video, reference_audio
     tool_call_id: Optional[str] = None
     tool_name: Optional[str] = None
     tool_arguments: Optional[Dict[str, Any]] = None
@@ -204,6 +205,7 @@ class Message:
                 url=url,
                 media_type=item.get('media_type'),
                 data=item.get('data'),
+                role=item.get('role'),
                 tool_call_id=tool_call_id,
                 tool_name=item.get('tool_name') or item.get('name') or item.get('function', {}).get('name'),
                 tool_arguments=item.get('tool_arguments') or item.get('function', {}).get('arguments'),

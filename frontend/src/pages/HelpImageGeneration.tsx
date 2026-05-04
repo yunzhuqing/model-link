@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, ImageIcon } from 'lucide-react';
-
-const BASE_URL = 'http://localhost:8000';
+import { useBaseUrl } from '../components/help/HelpShared';
 
 interface TocItem { id: string; label: string }
 const TOC_ITEMS: TocItem[] = [
@@ -167,8 +166,9 @@ function SectionCard({ id, title, description, badge, badgeColor, children }: {
 }
 
 function CurlSection({ body, endpoint }: { body: string; endpoint?: string }) {
+  const baseUrl = useBaseUrl();
   const [show, setShow] = useState(false);
-  const url = endpoint || `${BASE_URL}/v1/responses`;
+  const url = endpoint || `${baseUrl}/v1/responses`;
   const curl = `curl -X POST ${url} \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
   return (
     <div>
@@ -247,6 +247,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpImageGeneration() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
 
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
@@ -336,7 +337,7 @@ export default function HelpImageGeneration() {
         <div className="bg-pink-50 border border-pink-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-pink-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-pink-900 mt-0.5">{BASE_URL}/v1/responses</p>
+            <p className="font-mono text-sm text-pink-900 mt-0.5">{baseUrl}/v1/responses</p>
           </div>
           <div className="h-8 w-px bg-pink-200 hidden sm:block" />
           <div>
@@ -421,7 +422,7 @@ export default function HelpImageGeneration() {
         <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-orange-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-orange-900 mt-0.5">{BASE_URL}/v1/images/generations</p>
+            <p className="font-mono text-sm text-orange-900 mt-0.5">{baseUrl}/v1/images/generations</p>
           </div>
           <div className="h-8 w-px bg-orange-200 hidden sm:block" />
           <div>
@@ -443,7 +444,7 @@ export default function HelpImageGeneration() {
           badgeColor="bg-orange-100 text-orange-700"
           description="兼容 OpenAI /v1/images/generations 接口，直接传入 prompt 生成图片，参数更简洁。"
         >
-          <CurlSection body={IMAGES_REQUEST} endpoint={`${BASE_URL}/v1/images/generations`} />
+          <CurlSection body={IMAGES_REQUEST} endpoint={`${baseUrl}/v1/images/generations`} />
         </SectionCard>
 
         {/* Images API params */}
@@ -541,7 +542,7 @@ export default function HelpImageGeneration() {
         <div className="bg-violet-50 border border-violet-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div>
             <span className="text-xs font-semibold text-violet-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-violet-900 mt-0.5">{BASE_URL}/v1/images/edits</p>
+            <p className="font-mono text-sm text-violet-900 mt-0.5">{baseUrl}/v1/images/edits</p>
           </div>
           <div className="h-8 w-px bg-violet-200 hidden sm:block" />
           <div>
@@ -563,7 +564,7 @@ export default function HelpImageGeneration() {
           badgeColor="bg-violet-100 text-violet-700"
           description="兼容 OpenAI /v1/images/edits 接口，传入原始图片和编辑指令，对图片进行修改。支持蒙版（mask）、背景控制等高级参数。"
         >
-          <CurlSection body={EDITS_REQUEST} endpoint={`${BASE_URL}/v1/images/edits`} />
+          <CurlSection body={EDITS_REQUEST} endpoint={`${baseUrl}/v1/images/edits`} />
         </SectionCard>
 
         {/* Edits API params */}

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Copy, Check, ArrowLeft, MessagesSquare } from 'lucide-react';
 
-const BASE_URL = 'http://localhost:8000';
+import { useBaseUrl } from '../components/help/HelpShared';
 
 // ---------- TOC ----------
 
@@ -182,8 +182,9 @@ function SectionCard({ id, title, description, badge, badgeColor, children }: Se
 }
 
 function CurlSection({ body }: { body: string }) {
+  const baseUrl = useBaseUrl();
   const [show, setShow] = useState(false);
-  const curl = `curl -X POST ${BASE_URL}/v1/messages \\\n  -H "x-api-key: <YOUR_API_KEY>" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
+  const curl = `curl -X POST ${baseUrl}/v1/messages \\\n  -H "x-api-key: <YOUR_API_KEY>" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -247,6 +248,7 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 export default function HelpMessages() {
   const navigate = useNavigate();
+  const baseUrl = useBaseUrl();
   return (
     <div className="flex gap-8 max-w-6xl mx-auto">
       <div className="flex-1 min-w-0 space-y-8">
@@ -268,7 +270,7 @@ export default function HelpMessages() {
         {/* Endpoint info */}
         <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex flex-wrap gap-4 items-center">
           <div><span className="text-xs font-semibold text-amber-500 uppercase tracking-wide">Endpoint</span>
-            <p className="font-mono text-sm text-amber-900 mt-0.5">{BASE_URL}/v1/messages</p></div>
+            <p className="font-mono text-sm text-amber-900 mt-0.5">{baseUrl}/v1/messages</p></div>
           <div className="h-8 w-px bg-amber-200 hidden sm:block" />
           <div><span className="text-xs font-semibold text-amber-500 uppercase tracking-wide">Method</span>
             <p className="text-sm font-medium text-amber-900 mt-0.5">POST</p></div>
