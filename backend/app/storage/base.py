@@ -89,3 +89,26 @@ class StorageBackend(ABC):
             f"{type(self).__name__} does not support write_binary(). "
             "Configure a storage backend that supports binary writes."
         )
+
+    def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        """
+        Retrieve binary data stored via write_binary().
+
+        The *key_or_url* parameter accepts both the short key (as passed to
+        write_binary) and the full URL / path that write_binary returned.
+
+        The default implementation raises NotImplementedError so that
+        subclasses can opt-in to binary storage support.
+
+        Args:
+            key_or_url: The key or URL/path returned by write_binary().
+
+        Returns:
+            The raw binary data, or ``None`` if not found.
+
+        Raises:
+            NotImplementedError: If the backend does not support binary reads.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support read_binary(). "
+        )

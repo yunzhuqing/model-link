@@ -29,7 +29,7 @@ from app.middleware.gateway_service import (
 )
 
 # 导入适配器
-from app.adapters.responses_adapter import OpenAIResponsesAdapter, _apply_b64_json_to_image_output
+from app.adapters.responses_adapter import OpenAIResponsesAdapter, _apply_b64_json_to_image_output, _save_image_data_uris_to_storage, _strip_internal_fields
 
 # 导入供应商相关
 from app.providers.hunyuan.threed_generation import is_hunyuan3d_model
@@ -226,6 +226,10 @@ def _run_background_response(
                     )
 
             formatted = adapter.format_response(response)
+            # Save any data URIs from image generation to storage,
+            # replacing them with storage URLs in the stored output.
+            _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
+            _strip_internal_fields(formatted.get('output', []))
             formatted_output = json.dumps(formatted, ensure_ascii=False)
 
             # Record usage for background response.
@@ -524,10 +528,14 @@ async def openai_responses():
             except Exception as _ue:
                 logger.warning(f"[usage] Failed to trigger usage recording for responses: {_ue}")
             formatted = adapter.format_response(response)
+            # Save any data URIs from image generation to storage,
+            # replacing them with storage URLs in the response.
+            _save_image_data_uris_to_storage(formatted.get('output', []), get_storage_backend(), formatted.get('id', ''))
             # If the user requested b64_json for image generation, convert
             # image URLs to base64 data URIs at the final return point.
             if formatted.get('response_format') == 'b64_json':
-                _apply_b64_json_to_image_output(formatted.get('output', []))
+                _apply_b64_json_to_image_output(formatted.get('output', []), storage=get_storage_backend())
+            _strip_internal_fields(formatted.get('output', []))
             return jsonify(formatted)
     except ProviderError as e:
         _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
@@ -589,7 +597,8 @@ async def get_response(response_id: str):
         # If the user originally requested b64_json for image generation,
         # convert stored image URLs to base64 data URIs at poll time.
         if isinstance(result, dict) and result.get('response_format') == 'b64_json':
-            _apply_b64_json_to_image_output(result.get('output', []))
+            _apply_b64_json_to_image_output(result.get('output', []), storage=storage)
+        _strip_internal_fields(result.get('output', []) if isinstance(result, dict) else [])
         return jsonify(result), 200
 
     if record_status == "failed":

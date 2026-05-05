@@ -155,6 +155,7 @@ def build_image_chat_response(
     usage: UsageInfo,
     finish_reason: FinishReason,
     provider_type: str,
+    response_format: str = "b64_json",
 ) -> ChatResponse:
     """
     Build a ChatResponse for image generation results.
@@ -169,6 +170,7 @@ def build_image_chat_response(
         usage: Token usage info
         finish_reason: Finish reason from the response
         provider_type: Provider type string
+        response_format: The requested response format ("url" or "b64_json")
 
     Returns:
         ChatResponse with image generation results
@@ -177,6 +179,13 @@ def build_image_chat_response(
         role=MessageRole.ASSISTANT,
         content=json.dumps(inline_images, ensure_ascii=False)
     )
+
+    # Propagate the requested response_format so the Responses API adapter
+    # can decide between url / b64_json output.
+    if not usage.extra:
+        usage.extra = {}
+    usage.extra['output_image_number'] = len(inline_images)
+    usage.extra['_response_format'] = response_format
 
     return ChatResponse(
         id=gen_id("img"),

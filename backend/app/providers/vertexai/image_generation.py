@@ -88,6 +88,7 @@ def handle_image_generation_response(
     response_data: Dict[str, Any],
     model: str,
     provider_type: str,
+    response_format: str = "b64_json",
 ) -> Optional[ChatResponse]:
     """
     Handle Gemini image generation response on Vertex AI.
@@ -139,6 +140,7 @@ def handle_image_generation_response(
         return build_image_chat_response(
             inline_images, message_blocks, model,
             usage, finish_reason, provider_type,
+            response_format=response_format,
         )
     return None
 

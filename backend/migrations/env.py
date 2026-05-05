@@ -1,7 +1,15 @@
 import logging
 from logging.config import fileConfig
 
-from quart import current_app
+# Try Flask's current_app first (compatible with Quart >= 0.20 which
+# inherits from Flask).  When running under Flask CLI (e.g. `flask db
+# migrate` via manage.py), Flask sets Werkzeug's _cv_app ContextVar,
+# which is what both flask.current_app and quart.current_app proxy.
+# Using flask.current_app ensures compatibility in both contexts.
+try:
+    from flask import current_app
+except ImportError:  # pragma: no cover – older setups
+    from quart import current_app  # type: ignore[assignment]
 
 from alembic import context
 

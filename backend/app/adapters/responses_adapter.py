@@ -11,6 +11,7 @@ OpenAI Responses API 是 OpenAI 的新一代 API 格式，
 - 流式事件使用更细粒度的事件类型
 """
 import json
+import logging
 import os
 import time
 import uuid
@@ -18,6 +19,8 @@ from typing import Optional
 
 from .base import BaseAdapter
 from app.utils import gen_id as _gen_id, REASONING_EFFORT_DEFAULT_FOR_THINKING
+
+logger = logging.getLogger("gateway")
 
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
@@ -323,8 +326,20 @@ def _convert_image_url_to_b64(url: str, fallback_mime: str = "image/png") -> Opt
         return None
 
 
-def _apply_b64_json_to_image_output(output: list) -> None:
-    """Convert ``image_generation_call`` result URLs to base64 data URIs in-place."""
+def _apply_b64_json_to_image_output(output: list, storage=None) -> None:
+    """Convert ``image_generation_call`` result URLs to base64 data URIs in-place.
+
+    Resolution order:
+      1. Use ``_b64_data`` / ``_mime_type`` stored on the item by
+         ``_save_image_data_uris_to_storage()`` — zero-download, fast path.
+      2. For local file paths (e.g. ``/v1/files/...``), read via ``storage.read_binary()``.
+      3. For HTTP(S) URLs, download and convert via ``_convert_image_url_to_b64()``.
+
+    When *storage* is provided (a ``StorageBackend`` instance), local file paths
+    are resolved via ``storage.read_binary()``.
+    """
+    import base64 as _base64
+
     for item in output:
         if not isinstance(item, dict):
             continue
@@ -333,9 +348,106 @@ def _apply_b64_json_to_image_output(output: list) -> None:
         url = item.get('result', '')
         if not url or not isinstance(url, str) or url.startswith('data:'):
             continue
-        b64 = _convert_image_url_to_b64(url)
-        if b64:
-            item['result'] = b64
+
+        # Priority 1: use preserved base64 data from _save_image_data_uris_to_storage
+        _b64 = item.get('_b64_data')
+        _mime = item.get('_mime_type')
+        if _b64 and _mime:
+            item['result'] = f"data:{_mime};base64,{_b64}"
+            continue
+
+        b64_data = None
+        content_type = "image/png"
+
+        # Priority 2: try storage backend for local file paths
+        if storage is not None and url.startswith('/'):
+            try:
+                raw = storage.read_binary(url)
+                if raw:
+                    content_type = "image/png"  # best guess for local files
+                    b64_data = _base64.b64encode(raw).decode("ascii")
+            except Exception:
+                pass
+
+        # Priority 3: HTTP download fallback
+        if b64_data is None:
+            b64_result = _convert_image_url_to_b64(url)
+            if b64_result:
+                item['result'] = b64_result
+            continue
+
+        item['result'] = f"data:{content_type};base64,{b64_data}"
+
+
+def _save_image_data_uris_to_storage(output: list, storage, response_id: str) -> None:
+    """Save image data URIs to binary storage and replace with storage URLs.
+
+    Scans *output* for ``image_generation_call`` items whose ``result`` is a
+    data URI (``data:<mime>;base64,<data>``), decodes the base64 payload, saves
+    it to the configured storage backend via ``write_binary()``, and replaces the
+    data URI with the returned storage URL.
+
+    The original base64 data is preserved as ``_b64_data`` and ``_mime_type``
+    on the item so that ``_apply_b64_json_to_image_output()`` can use it directly
+    without needing to re-download the image from the storage URL.
+
+    Does nothing for items whose result is already a URL (not a data URI).
+
+    Args:
+        output:     List of output items (modified in-place).
+        storage:    ``StorageBackend`` instance.
+        response_id: Unique response identifier for generating file keys.
+    """
+    import base64 as _base64
+
+    for i, item in enumerate(output):
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') != 'image_generation_call':
+            continue
+        result = item.get('result', '')
+        if not result or not isinstance(result, str) or not result.startswith('data:'):
+            continue
+
+        try:
+            # Parse data URI: data:<mime>;base64,<data>
+            header, b64_data = result.split(',', 1)
+            mime_type = header.replace('data:', '').split(';')[0]
+
+            # Map MIME type to file extension
+            _MIME_EXT = {
+                'image/png': '.png',
+                'image/jpeg': '.jpg',
+                'image/webp': '.webp',
+                'image/gif': '.gif',
+            }
+            ext = _MIME_EXT.get(mime_type, '.png')
+
+            # Decode base64 to binary
+            image_bytes = _base64.b64decode(b64_data)
+
+            # Save to storage
+            image_key = f"{response_id}_{i}{ext}"
+            url = storage.write_binary(image_key, image_bytes, mime_type)
+
+            # Replace data URI with storage URL
+            item['result'] = url
+            # Preserve original base64 data and MIME type so that
+            # _apply_b64_json_to_image_output can reconstruct the
+            # data URI without re-downloading from the storage URL.
+            item['_b64_data'] = b64_data
+            item['_mime_type'] = mime_type
+        except Exception:
+            logger.warning(f"Failed to save image {i} data URI to storage", exc_info=True)
+
+
+def _strip_internal_fields(output: list) -> None:
+    """Remove internal-use-only fields from output items before returning."""
+    _INTERNAL_FIELDS = frozenset({'_b64_data', '_mime_type'})
+    for item in output:
+        if isinstance(item, dict):
+            for f in _INTERNAL_FIELDS:
+                item.pop(f, None)
 
 
 def _extract_3d_gen_metadata(tool_data: dict, data: dict) -> dict:
@@ -865,7 +977,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             'usage': usage_dict,
         }
         if is_image_generation:
-            result['response_format'] = response.usage.extra.get('_response_format', 'url')
+            result['response_format'] = response.usage.extra.get('_response_format', 'b64_json')
         return result
 
     def format_stream_chunk(self, chunk: StreamChunk) -> str:

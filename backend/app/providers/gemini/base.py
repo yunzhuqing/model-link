@@ -619,6 +619,11 @@ class GeminiProvider(BaseProvider):
                     chat_response.usage.extra['output_image_resolution'] = resolved_tier
                 if resolved_aspect:
                     chat_response.usage.extra['output_image_aspect'] = resolved_aspect
+                # Propagate the requested response_format so the Responses API
+                # adapter can decide between url / b64_json output.
+                chat_response.usage.extra['_response_format'] = (
+                    meta.get('response_format', 'b64_json')
+                )
 
             return chat_response
 

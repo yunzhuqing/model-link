@@ -1359,7 +1359,8 @@ class VertexAIProvider(BaseProvider):
                 or self._has_image_generation_tool(request)
             ):
                 img_response = handle_image_generation_response(
-                    response_data, request.model, self.PROVIDER_TYPE
+                    response_data, request.model, self.PROVIDER_TYPE,
+                    response_format=request.metadata.get('response_format', 'b64_json'),
                 )
                 if img_response:
                     # Enrich image generation usage with resolution/aspect from request metadata
@@ -1377,6 +1378,11 @@ class VertexAIProvider(BaseProvider):
                             img_response.usage.extra['output_image_resolution'] = resolved_tier
                         if resolved_aspect:
                             img_response.usage.extra['output_image_aspect'] = resolved_aspect
+                        # Propagate the requested response_format so the Responses API
+                        # adapter can decide between url / b64_json output.
+                        img_response.usage.extra['_response_format'] = (
+                            meta.get('response_format', 'b64_json')
+                        )
                     return img_response
 
             return self.parse_response(response_data, request.model)

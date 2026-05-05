@@ -72,4 +72,29 @@ class LocalStorageBackend(StorageBackend):
         file_path = os.path.join(files_dir, key)
         with open(file_path, "wb") as fh:
             fh.write(data)
+        self._files_dir = files_dir
         return f"/v1/files/{key}"
+
+    def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        """
+        Retrieve binary data stored via write_binary().
+
+        Accepts both the short key (e.g. ``"resp_xxx_0.png"``) and the full
+        URL path (e.g. ``"/v1/files/resp_xxx_0.png"``) returned by write_binary().
+
+        Returns:
+            The raw binary data, or ``None`` if not found.
+        """
+        # Strip the /v1/files/ prefix if present
+        if key_or_url.startswith("/v1/files/"):
+            key = key_or_url[len("/v1/files/"):]
+        else:
+            key = key_or_url
+
+        files_dir = getattr(self, '_files_dir', None) or os.path.join(self.base_dir, "files")
+        file_path = os.path.join(files_dir, key)
+        try:
+            with open(file_path, "rb") as fh:
+                return fh.read()
+        except (FileNotFoundError, OSError):
+            return None

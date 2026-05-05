@@ -156,3 +156,22 @@ class S3StorageBackend(StorageBackend):
             ExpiresIn=7 * 24 * 3600,  # 7 days
         )
         return presigned_url
+
+    def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        """Retrieve binary data stored via write_binary() by S3 key."""
+        import os as _os
+        # If the value looks like an S3 key (starts with our prefix), use it directly
+        if key_or_url.startswith(f"{self.prefix}/files/"):
+            s3_key = key_or_url
+        else:
+            # Assume it's a short key and prepend the prefix
+            s3_key = f"{self.prefix}/files/{key_or_url}"
+
+        client = self._get_client()
+        try:
+            response = client.get_object(Bucket=self.bucket, Key=s3_key)
+            return response["Body"].read()
+        except client.exceptions.NoSuchKey:
+            return None
+        except Exception:
+            return None
