@@ -21,6 +21,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const [modelsKeyId, setModelsKeyId] = useState<number | null>(null);
   const [modelsKeyName, setModelsKeyName] = useState('');
   const [newKeyName, setNewKeyName] = useState('');
+  const [newKeyDescription, setNewKeyDescription] = useState('');
   const [newKeyGroupId, setNewKeyGroupId] = useState<number | undefined>(groupId);
   const [newKeyExpires, setNewKeyExpires] = useState('');
   const [newKeyAllowedModels, setNewKeyAllowedModels] = useState<string[]>([]);
@@ -33,6 +34,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
 
   // Edit key state (for embedded mode)
   const [editKeyName, setEditKeyName] = useState('');
+  const [editKeyDescription, setEditKeyDescription] = useState('');
   const [editKeyExpires, setEditKeyExpires] = useState('');
 
   const apiKeysQueryKey = groupId ? ['api-keys', 'group', String(groupId)] : ['apiKeys'];
@@ -161,6 +163,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     if (!newKeyName.trim()) return;
     createMutation.mutate({
       name: newKeyName,
+      description: newKeyDescription,
       group_id: groupId || newKeyGroupId,
       expires_at: newKeyExpires || undefined,
       allowed_models: newKeyAllowedModels.length > 0 ? newKeyAllowedModels : undefined,
@@ -190,6 +193,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const handleEdit = (apiKey: ApiKey) => {
     setSelectedKey(apiKey);
     setEditKeyName(apiKey.name);
+    setEditKeyDescription(apiKey.description || '');
     setEditKeyExpires(apiKey.expires_at ? apiKey.expires_at.slice(0, 16) : '');
     setEditAllowedModels(apiKey.allowed_models || []);
     setEditModelSearchInput('');
@@ -364,6 +368,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                         <span className="text-xs text-slate-400">by {(apiKey as any).user_name}</span>
                       )}
                     </div>
+                    {apiKey.description && (
+                      <p className="text-sm text-slate-500 mt-0.5 truncate">{apiKey.description}</p>
+                    )}
                     <div className="flex items-center space-x-2 mt-1">
                       <code className="text-sm text-slate-600 bg-white px-2 py-0.5 rounded">
                         {visibleKeys.has(apiKey.id) ? apiKey.key : `${apiKey.key.slice(0, 8)}...${apiKey.key.slice(-4)}`}
@@ -454,7 +461,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-800">创建 API Key</h2>
                   <button
-                    onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setModelSearchInput(''); }}
+                    onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setModelSearchInput(''); }}
                     className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
                   >
                     <X className="w-5 h-5" />
@@ -470,6 +477,16 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                     onChange={(e) => setNewKeyName(e.target.value)}
                     className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
                     placeholder="例如：生产环境 Key"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">描述 *</label>
+                  <input
+                    type="text"
+                    value={newKeyDescription}
+                    onChange={(e) => setNewKeyDescription(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    placeholder="例如：用于生产环境调用 GPT-4"
                   />
                 </div>
                 <div>
@@ -491,7 +508,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
               </div>
               <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
                 <button
-                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setModelSearchInput(''); }}
+                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setModelSearchInput(''); }}
                   className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
                 >
                   取消
@@ -534,6 +551,16 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">描述</label>
+                  <input
+                    type="text"
+                    value={editKeyDescription}
+                    onChange={(e) => setEditKeyDescription(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    placeholder="例如：用于生产环境调用 GPT-4"
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">过期时间</label>
                   <input
                     type="datetime-local"
@@ -563,6 +590,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                       id: selectedKey.id,
                       data: {
                         name: editKeyName,
+                        description: editKeyDescription || undefined,
                         expires_at: editKeyExpires || undefined,
                         allowed_models: editAllowedModels,
                       },
@@ -621,6 +649,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   >
                     {apiKey.name}
                   </h3>
+                  {apiKey.description && (
+                    <p className="text-sm text-slate-500 mt-0.5">{apiKey.description}</p>
+                  )}
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                     apiKey.is_active 
                       ? 'bg-emerald-100 text-emerald-700' 
@@ -794,6 +825,16 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">描述 *</label>
+                <input
+                  type="text"
+                  value={newKeyDescription}
+                  onChange={(e) => setNewKeyDescription(e.target.value)}
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                  placeholder="例如：用于生产环境调用 GPT-4"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">分组（可选）</label>
                 <select
                   value={newKeyGroupId || ''}
@@ -830,6 +871,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 onClick={() => {
                   setIsCreateModalOpen(false);
                   setNewKeyName('');
+                  setNewKeyDescription('');
                   setNewKeyGroupId(groupId);
                   setNewKeyExpires('');
                   setNewKeyAllowedModels([]);
@@ -877,6 +919,16 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">描述</label>
+                <input
+                  type="text"
+                  value={editKeyDescription}
+                  onChange={(e) => setEditKeyDescription(e.target.value)}
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                  placeholder="例如：用于生产环境调用 GPT-4"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">过期时间</label>
                 <input
                   type="datetime-local"
@@ -906,6 +958,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                     id: selectedKey.id,
                     data: {
                       name: editKeyName,
+                      description: editKeyDescription || undefined,
                       expires_at: editKeyExpires || undefined,
                       allowed_models: editAllowedModels,
                     },

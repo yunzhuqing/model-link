@@ -463,6 +463,7 @@ class CacheService:
             'id': api_key_obj.id,
             'key': api_key_obj.key,
             'name': api_key_obj.name,
+            'description': getattr(api_key_obj, 'description', None),
             'group_id': api_key_obj.group_id,
             'user_id': api_key_obj.user_id,
             'is_active': api_key_obj.is_active,

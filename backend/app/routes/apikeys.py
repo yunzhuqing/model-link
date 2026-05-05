@@ -367,6 +367,7 @@ async def create_api_key(current_user):
     api_key = ApiKey(
         key=generate_api_key(),
         name=data.get('name'),
+        description=data.get('description'),
         group_id=data.get('group_id'),
         user_id=current_user.id,
         expires_at=expires_at,
@@ -405,6 +406,8 @@ async def update_api_key(current_user, api_key_id):
     data = await request.get_json()
     if 'name' in data:
         api_key.name = data['name']
+    if 'description' in data:
+        api_key.description = data['description'] if data['description'] else None
     if 'is_active' in data:
         api_key.is_active = data['is_active']
     if 'allowed_models' in data:

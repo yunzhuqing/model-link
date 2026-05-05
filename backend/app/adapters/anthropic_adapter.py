@@ -4,6 +4,7 @@ Anthropic Messages 适配器
 """
 import itertools
 import json
+import re
 import time
 from typing import Optional, Generator
 
@@ -48,13 +49,19 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
         # 处理 system 消息
         # Anthropic system can be a string or an array of content blocks (with optional cache_control)
+        model_name = data.get('model', '')
+        is_claude_model = model_name.startswith('claude-')
+
         if 'system' in data:
             system_val = data['system']
             if isinstance(system_val, list):
                 # Array of content blocks: [{"type": "text", "text": "...", "cache_control": {"type": "ephemeral"}}]
                 system_blocks = []
                 for item in system_val:
-                    block = ContentBlock.from_text(item.get('text', ''))
+                    text = item.get('text', '')
+                    if not is_claude_model:
+                        text = re.sub(r'cch=[a-zA-Z0-9]+;\s*', '', text)
+                    block = ContentBlock.from_text(text)
                     if 'cache_control' in item:
                         block.cache_control = item['cache_control']
                     system_blocks.append(block)
@@ -63,6 +70,8 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     content=system_blocks
                 ))
             else:
+                if not is_claude_model:
+                    system_val = re.sub(r'cch=[a-zA-Z0-9]+;\s*', '', system_val)
                 messages.append(Message(
                     role=MessageRole.SYSTEM,
                     content=system_val
@@ -242,7 +251,6 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
         # 如果模型名包含 "thinking" 但没有设置任何 reasoning_effort/thinking 参数，
         # 将 reasoning_effort 设置为默认值 "medium"
-        model_name = data.get('model', '')
         if 'thinking' in model_name.lower() and reasoning_effort is None:
             reasoning_effort = REASONING_EFFORT_DEFAULT_FOR_THINKING
 

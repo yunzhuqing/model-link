@@ -222,6 +222,7 @@ class ApiKey(db.Model):
     id = db.Column(db.Integer, primary_key=True, index=True)
     key = db.Column(db.String(64), unique=True, nullable=False, index=True)
     name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
     group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("ml_users.id"), nullable=True, index=True)
     
@@ -274,6 +275,7 @@ class ApiKey(db.Model):
             'id': self.id,
             'key': self.key,
             'name': self.name,
+            'description': self.description,
             'group_id': self.group_id,
             'user_id': self.user_id,
             'workspace_id': self.workspace_id,
@@ -293,6 +295,7 @@ class ApiKey(db.Model):
         return {
             'id': self.id,
             'name': self.name,
+            'description': self.description,
             'is_active': self.is_active,
             'user_name': self.user.username if self.user else None,
         }

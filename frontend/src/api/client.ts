@@ -36,6 +36,7 @@ export interface ApiKey {
   id: number;
   key: string;
   name: string;
+  description: string | null;
   group_id: number | null;
   group_name?: string;
   user_id?: number | null;
@@ -52,6 +53,7 @@ export interface ApiKey {
 
 export interface ApiKeyCreate {
   name: string;
+  description: string;
   group_id?: number;
   expires_at?: string;
   allowed_models?: string[];
@@ -59,6 +61,7 @@ export interface ApiKeyCreate {
 
 export interface ApiKeyUpdate {
   name?: string;
+  description?: string;
   is_active?: boolean;
   expires_at?: string;
   allowed_models?: string[];
