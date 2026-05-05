@@ -60,6 +60,9 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Generator
 import json
 import time
+import base64
+import logging
+from urllib.request import urlopen
 
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
@@ -328,6 +331,26 @@ def _convert_messages_to_dashscope(messages: List[Message]) -> List[Dict[str, An
 # API 调用与响应解析
 # =============================================================================
 
+def _download_image_as_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
+    """Download an image URL and return it as a base64 data URI.
+
+    Returns ``None`` if the download fails, so the caller can fall back
+    to the raw URL.
+    """
+    try:
+        with urlopen(url, timeout=30) as resp:  # noqa: S310 – URL is provider-generated
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.read()
+            mime = content_type.split(";")[0].strip() or fallback_mime
+            b64 = base64.b64encode(data).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+    except Exception as exc:
+        logging.getLogger("model_link.bailian").warning(
+            "Failed to convert image URL to base64: %s – %s", url, exc
+        )
+        return None
+
+
 def execute_qwen_image_generation(
     api_key: str,
     model: str,
@@ -427,7 +450,7 @@ def execute_qwen_image_generation(
                 f"{json.dumps(response_data, ensure_ascii=False)}"
             )
 
-        return _parse_qwen_image_response(response_data, model)
+        return _parse_qwen_image_response(response_data, model, metadata)
 
     except RuntimeError:
         raise
@@ -465,7 +488,7 @@ def _resolution_tier(width: int, height: int) -> str:
         return "4K"
 
 
-def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse:
+def _parse_qwen_image_response(data: Dict[str, Any], model: str, metadata: Optional[dict] = None) -> ChatResponse:
     """
     Parse Dashscope multimodal generation response into ChatResponse.
 
@@ -476,6 +499,7 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse
     Args:
         data: Dashscope API response data
         model: Model name
+        metadata: Request metadata (carries response_format for b64_json signal)
 
     Returns:
         ChatResponse with image_generation_call items
@@ -529,6 +553,7 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str) -> ChatResponse
                 'output_image_number': image_count,
                 'output_image_resolution': img_resolution,
                 'output_image_aspect': img_aspect,
+                '_response_format': (metadata or {}).get('response_format', 'url'),
             },
         ),
         created=int(time.time()),
@@ -587,6 +612,19 @@ def stream_image_generation(
         delta_role="assistant",
         event_type=StreamEventType.CONTENT_DELTA,
     )
+
+    # b64_json conversion for streaming: convert image URLs to base64
+    # data URIs before constructing SSE events. This mirrors what
+    # _apply_b64_json_to_image_output() does for the non-streaming sync
+    # and async GET paths in gateway_responses.py.
+    convert_to_b64 = response.usage.extra.get('_response_format') == 'b64_json'
+    if convert_to_b64:
+        for img in images:
+            url = img.get("result", "")
+            if url and not url.startswith("data:"):
+                b64_data_uri = _download_image_as_b64(url)
+                if b64_data_uri:
+                    img["result"] = b64_data_uri
 
     # Emit one image_generation_call item per image via raw SSE passthrough
     for i, img in enumerate(images):

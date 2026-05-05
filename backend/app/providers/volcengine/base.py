@@ -15,6 +15,9 @@ import json
 import time
 import uuid
 import sys
+import base64
+import logging
+from urllib.request import urlopen
 
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
@@ -541,7 +544,7 @@ class VolcengineProvider(BaseProvider):
         # Metadata keys mirror the real API fields for easy pass-through
         size = request.metadata.get('size', '1024x1024')
         number = request.metadata.get('number', 1)
-        response_format = request.metadata.get('response_format', 'b64_json')
+        response_format = request.metadata.get('response_format', 'url')
         image_format = request.metadata.get('image_format', 'png')
         seed = request.metadata.get('seed')
         watermark = request.metadata.get('watermark', False)
@@ -557,6 +560,26 @@ class VolcengineProvider(BaseProvider):
             watermark=watermark,
             reference_images=reference_images if reference_images else None,
         )
+
+    @staticmethod
+    def _download_image_as_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
+        """Download an image URL and return it as a base64 data URI.
+
+        Returns ``None`` if the download fails, so the caller can fall back
+        to the raw URL.
+        """
+        try:
+            with urlopen(url, timeout=30) as resp:  # noqa: S310 – URL is provider-generated
+                content_type = resp.headers.get("Content-Type", "")
+                data = resp.read()
+                mime = content_type.split(";")[0].strip() or fallback_mime
+                b64 = base64.b64encode(data).decode("ascii")
+                return f"data:{mime};base64,{b64}"
+        except Exception as exc:
+            logging.getLogger("model_link.volcengine").warning(
+                "Failed to convert image URL to base64: %s – %s", url, exc
+            )
+            return None
 
     def _stream_image_generation(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """
@@ -586,6 +609,21 @@ class VolcengineProvider(BaseProvider):
             except (json.JSONDecodeError, TypeError):
                 images = []
 
+        # b64_json conversion for streaming: convert image URLs to base64
+        # data URIs before constructing SSE events. This mirrors what
+        # _apply_b64_json_to_image_output() does for the non-streaming sync
+        # and async GET paths in gateway_responses.py.
+        # images are parsed from image_call_items JSON, so each item has
+        # keys: type, status, result (not url).
+        convert_to_b64 = response.usage.extra.get('_response_format') == 'b64_json'
+        if convert_to_b64:
+            for img in images:
+                url = img.get("result", "")
+                if url and not url.startswith("data:"):
+                    b64_data_uri = self._download_image_as_b64(url)
+                    if b64_data_uri:
+                        img["result"] = b64_data_uri
+
         # Emit the stream start events (response.created + response.in_progress) with the
         # real response ID via raw_sse_passthrough on the role-marker chunk.
         # The role marker (delta_role="assistant") is consumed by create_stream_response to
@@ -612,7 +650,7 @@ class VolcengineProvider(BaseProvider):
 
         # Emit one image_generation_call item per image via raw SSE passthrough
         for i, img in enumerate(images):
-            result = img.get("url") or img.get("base64") or ""
+            result = img.get("result") or img.get("url") or img.get("base64") or ""
             call_id = f"{response_id}-{i}" if i > 0 else response_id
             output_index = i
 
@@ -661,7 +699,7 @@ class VolcengineProvider(BaseProvider):
                 "type": "image_generation_call",
                 "id": (f"{response_id}-{i}" if i > 0 else response_id),
                 "status": "completed",
-                "result": (img.get("url") or img.get("base64") or ""),
+                "result": (img.get("result") or img.get("url") or img.get("base64") or ""),
             }
             for i, img in enumerate(images)
         ]
@@ -1031,7 +1069,7 @@ class VolcengineProvider(BaseProvider):
         prompt: str,
         size: str = "1024x1024",
         number: int = 1,
-        response_format: str = "b64_json",
+        response_format: str = "url",
         image_format: str = "png",
         seed: Optional[int] = None,
         watermark: bool = False,
@@ -1063,12 +1101,16 @@ class VolcengineProvider(BaseProvider):
         )
 
         try:
+            # Volcengine image generation API always returns URLs.
+            # We pass "url" explicitly and return URLs to the upper layer.
+            # If the caller requested b64_json, the conversion happens at the
+            # final return point (format_response for sync, GET /v1/responses for async).
             response_data = image_provider.generate_image(
                 model_name=model,
                 prompt=prompt,
                 size=size,
                 number=number,
-                response_format=response_format,  # passed for logging/metadata, API always uses url
+                response_format="url",
                 image_format=image_format,
                 seed=seed,
                 watermark=watermark,
@@ -1078,45 +1120,13 @@ class VolcengineProvider(BaseProvider):
             
             images = image_provider.parse_image_response(response_data)
 
-            # If the caller requested b64_json, download each URL and convert to a
-            # data URI that includes the content-type, e.g.:
-            #   data:image/png;base64,<base64data>
-            # The Doubao API always returns URLs; the conversion happens here.
-            if response_format == "b64_json":
-                import httpx
-                import base64 as _base64
-                # Derive a fallback content-type from image_format (png → image/png, etc.)
-                fallback_mime = f"image/{image_format.lower()}" if image_format else "image/png"
-                converted = []
-                for img in images:
-                    url = img.get("url")
-                    if url:
-                        try:
-                            resp = httpx.get(url, timeout=60)
-                            resp.raise_for_status()
-                            content_type = (
-                                resp.headers.get("content-type", "").split(";")[0].strip()
-                                or fallback_mime
-                            )
-                            b64 = _base64.b64encode(resp.content).decode("utf-8")
-                            data_uri = f"data:{content_type};base64,{b64}"
-                            converted.append({"base64": data_uri, "revised_prompt": img.get("revised_prompt")})
-                        except Exception:
-                            # Fall back to returning the URL if download fails
-                            converted.append(img)
-                    else:
-                        converted.append(img)
-                images = converted
-
             # Build image_generation_call items — one per generated image.
-            # The message content stores these as JSON so that format_response()
-            # (in OpenAIResponsesAdapter) can parse and emit them as
-            # image_generation_call output items in the Responses API format.
+            # Always store URLs; b64_json conversion is done downstream.
             image_call_items = [
                 {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": img.get("url") or img.get("base64") or "",
+                    "result": img.get("url", ""),
                 }
                 for img in images
             ]
@@ -1133,13 +1143,18 @@ class VolcengineProvider(BaseProvider):
                 tool_calls=[],
             )
             
-            image_count = len(image_call_items) if image_call_items else 1
+            # Extract token usage from the API response
+            api_usage = response_data.get("usage", {})
+            output_tokens = api_usage.get("output_tokens", 0)
+            total_tokens = api_usage.get("total_tokens", 0)
+            generated_images = api_usage.get("generated_images", len(image_call_items) if image_call_items else 1)
 
             # Derive aspect ratio and resolution tier from size string
             img_aspect, img_tier = resolve_seedream_size(size)
             img_extra: Dict[str, Any] = {
-                'output_image_number': image_count,
+                'output_image_number': generated_images,
                 'output_image_resolution': img_tier or size,
+                '_response_format': response_format,
             }
             if img_aspect:
                 img_extra['output_image_aspect'] = img_aspect
@@ -1153,8 +1168,8 @@ class VolcengineProvider(BaseProvider):
                 choices=[choice],
                 usage=UsageInfo(
                     prompt_tokens=0,
-                    completion_tokens=0,
-                    total_tokens=0,
+                    completion_tokens=output_tokens,
+                    total_tokens=total_tokens,
                     extra=img_extra,
                 ),
                 created=response_data.get("created", int(time.time())),

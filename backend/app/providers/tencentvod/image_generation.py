@@ -762,6 +762,8 @@ def execute_tencentvod_image_generation(
     )
 
     image_count = max(len(image_items), 1)
+    # Extract user-requested response_format for b64_json conversion at the return point
+    response_format = metadata.get("response_format", "url")
 
     return ChatResponse(
         id=gen_id("img"),
@@ -780,6 +782,7 @@ def execute_tencentvod_image_generation(
                 'output_image_resolution': resolution or None,
                 'output_image_aspect': aspect_ratio or None,
                 'output_image_quality': quality or None,
+                '_response_format': response_format,
             },
         ),
         created=int(time.time()),

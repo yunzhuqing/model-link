@@ -1,5 +1,8 @@
 """TencentVOD model templates — chat (GPT, Gemini), image (Gemini), video (Kling)."""
 
+from enum import Flag
+
+
 TENCENTVOD_TEMPLATES = [
     # ── TencentVOD Chat Models (CNY pricing) ────────────────────────────────
     # GPT-5.4 — tiered by context size
@@ -178,9 +181,9 @@ TENCENTVOD_TEMPLATES = [
         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
         currency='CNY',
         timeout=600,
-        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
-        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+        support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # GG 3.1 — four tiers: 512 / 1K / 2K / 4K (14 aspect ratios)
     dict(
@@ -221,9 +224,9 @@ TENCENTVOD_TEMPLATES = [
         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
         currency='CNY',
         timeout=600,
-        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
-        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+        support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # ── TencentVOD GPT Image 2 (OG) ─────────────────────────────────────────
     # GPT Image 2 — quality-dependent pricing (low/medium/high).
@@ -274,9 +277,9 @@ TENCENTVOD_TEMPLATES = [
         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
         currency='CNY',
         timeout=600,
-        support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
-        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+        support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # ── TencentVOD Kling Video Models ───────────────────────────────────────
     # Kling v3 Omni — video generation with per-second pricing.
@@ -322,6 +325,6 @@ TENCENTVOD_TEMPLATES = [
         timeout=900,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
-        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+        support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
 ]

@@ -57,7 +57,7 @@ class DoubaoImageProvider:
         prompt: str,
         size: str = "1024x1024",
         number: int = 1,
-        response_format: str = "b64_json",
+        response_format: str = "url",
         image_format: str = "png",
         seed: Optional[int] = None,
         reference_images: Optional[List[str]] = None,

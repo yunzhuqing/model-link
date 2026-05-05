@@ -24,6 +24,358 @@ from app.abstraction.streaming import StreamChunk
 from app.abstraction.messages import Message, MessageRole, ContentBlock
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 
+# ═══════════════════════════════════════════════════════════════════════
+# Module-level content / tool parsing helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+def _extract_str(block: dict, key: str) -> str:
+    """Extract a string value from a block dict, auto-unwrapping {'url': ...} dicts."""
+    val = block.get(key, '')
+    if isinstance(val, dict):
+        val = val.get('url', '')
+    return val
+
+
+def _safe_list(val) -> list:
+    """Return val as a list if it is a list, otherwise an empty list."""
+    return val if isinstance(val, list) else []
+
+
+def _register_fid_media(file_map: dict, block: dict):
+    """Register a file_id → media mapping from a content block."""
+    fid = block.get('file_id', '')
+    if not fid:
+        return
+    blk_type = block.get('type', '')
+    role = block.get('role', '')
+    if blk_type in ('input_image', 'image'):
+        url = _extract_str(block, 'image_url')
+        if url:
+            file_map[fid] = {'type': 'image', 'url': url, 'role': role}
+    elif blk_type in ('input_video', 'video'):
+        url = _extract_str(block, 'video_url')
+        if url:
+            file_map[fid] = {'type': 'video', 'url': url, 'role': role}
+    elif blk_type in ('input_audio', 'audio'):
+        url = _extract_str(block, 'audio_url') or _extract_str(block, 'url')
+        if url:
+            file_map[fid] = {'type': 'audio', 'url': url, 'role': role}
+
+
+def _parse_image_block(block: dict) -> ContentBlock:
+    """Parse a single image content block (input_image / image type)."""
+    image_role = block.get('role')
+    if 'image_url' in block:
+        url = _extract_str(block, 'image_url')
+        if url.startswith('data:'):
+            parts = url.split(',')
+            media_type = parts[0].replace('data:', '').replace(';base64', '')
+            data_str = parts[1] if len(parts) > 1 else ''
+            cb = ContentBlock.from_image_base64(data_str, media_type)
+        else:
+            cb = ContentBlock.from_image_url(url)
+    elif 'source' in block:
+        source = block['source']
+        if source.get('type') == 'base64':
+            cb = ContentBlock.from_image_base64(
+                source.get('data', ''),
+                source.get('media_type', 'image/jpeg')
+            )
+        else:
+            cb = ContentBlock.from_image_url(source.get('url', ''))
+    else:
+        cb = ContentBlock.from_text('')
+    cb.role = image_role or cb.role
+    return cb
+
+
+def _parse_content_blocks(blocks: list) -> list:
+    """Parse a list of content block dicts → ContentBlock objects.
+
+    Handles: input_text, input_image, input_video, input_audio, input_file.
+    Shared by both pure-content-block messages and content arrays inside
+    role-based messages — this is the single source of truth for block parsing.
+    """
+    result = []
+    for block in blocks:
+        block_type = block.get('type', 'input_text')
+        if block_type in ('input_text', 'text'):
+            result.append(ContentBlock.from_text(block.get('text', '')))
+        elif block_type in ('input_image', 'image'):
+            result.append(_parse_image_block(block))
+        elif block_type in ('input_video', 'video'):
+            url = _extract_str(block, 'video_url')
+            if url:
+                cb = ContentBlock.from_video_url(url)
+                cb.role = block.get('role') or cb.role
+                result.append(cb)
+        elif block_type == 'input_audio':
+            if 'input_audio' in block:
+                a = block['input_audio']
+                result.append(ContentBlock.from_audio_base64(
+                    a.get('data', ''),
+                    f"audio/{a.get('format', 'wav')}"
+                ))
+        elif block_type == 'input_file':
+            if 'file_url' in block:
+                result.append(ContentBlock.from_file_url(
+                    block['file_url'].get('url', '')
+                ))
+    return result
+
+
+# ── Input item handlers (used by _dispatch_input_item) ──────────────────
+
+def _handle_function_call_item(item: dict, messages: list):
+    """Convert a function_call input item → assistant Message with tool_call block."""
+    args_str = item.get('arguments', '{}')
+    try:
+        args = json.loads(args_str) if isinstance(args_str, str) else args_str
+    except (json.JSONDecodeError, TypeError):
+        args = {}
+    call_id = item.get('call_id') or item.get('id', '')
+    block = ContentBlock.from_tool_call(call_id, item.get('name', ''), args)
+    messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
+
+
+def _handle_generation_call_item(item: dict, messages: list, item_type: str):
+    """Convert a generation_call item → assistant Message with tool_call block."""
+    call_id = item.get('id', '')
+    tool_name = item_type.replace('_call', '')  # e.g. 'image_generation'
+    if item_type == '3d_generation_call':
+        payload = {'status': item.get('status', 'completed'),
+                   'content': item.get('content', [])}
+    else:
+        payload = {'status': item.get('status', 'completed'),
+                   'result': item.get('result', '')}
+    block = ContentBlock.from_tool_call(call_id, tool_name, payload)
+    messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
+
+
+def _handle_function_call_output_item(item: dict, messages: list):
+    """Convert a function_call_output item → tool Message."""
+    call_id = item.get('call_id', '')
+    block = ContentBlock.from_tool_result(call_id, str(item.get('output', '')))
+    messages.append(Message(role=MessageRole.TOOL, content=[block], tool_call_id=call_id))
+
+
+def _handle_role_message_item(item: dict, messages: list):
+    """Convert a role-based message item → Message."""
+    role = MessageRole(item.get('role', 'user'))
+    content = item.get('content', '')
+
+    if isinstance(content, list):
+        blocks = _parse_content_blocks(content)
+        content = blocks if blocks else content
+
+    messages.append(Message(
+        role=role,
+        content=content,
+        name=item.get('name'),
+        tool_call_id=item.get('call_id') or item.get('tool_call_id'),
+    ))
+
+
+# ── Tool definition parsers ─────────────────────────────────────────────
+
+def _parse_function_tool_def(tool_data: dict) -> ToolDefinition:
+    """Parse a function tool definition dict → ToolDefinition."""
+    func = tool_data.get('function', tool_data)
+    name = func.get('name', '')
+    description = func.get('description', '')
+    params_schema = func.get('parameters', {})
+
+    parameters = []
+    properties = params_schema.get('properties', {})
+    required = params_schema.get('required', [])
+
+    for param_name, param_schema in properties.items():
+        parameters.append(ToolParameter(
+            name=param_name,
+            type=param_schema.get('type', 'string'),
+            description=param_schema.get('description'),
+            required=param_name in required,
+            enum=param_schema.get('enum'),
+            default=param_schema.get('default'),
+            items=param_schema.get('items'),
+        ))
+
+    return ToolDefinition(
+        name=name,
+        description=description,
+        parameters=parameters,
+        tool_type=ToolType.FUNCTION,
+    )
+
+
+def _extract_video_gen_metadata(tool_data: dict, file_id_media_map: dict) -> dict:
+    """Extract video_generation tool params → metadata dict."""
+    meta = {'_video_generation': True}
+
+    size = tool_data.get('size')
+    if size:
+        meta['size'] = size
+    aspect_ratio = tool_data.get('aspect_ratio')
+    if aspect_ratio:
+        meta['aspect_ratio'] = aspect_ratio
+    resolution = tool_data.get('resolution')
+    if resolution:
+        meta['resolution'] = resolution
+    seconds = tool_data.get('seconds')
+    if seconds is not None:
+        meta['seconds'] = seconds
+    n = tool_data.get('n')
+    if n is not None:
+        meta['n'] = int(n)
+    generate_audio = tool_data.get('generate_audio')
+    if generate_audio is not None:
+        meta['generate_audio'] = bool(generate_audio)
+    watermark = tool_data.get('watermark')
+    if watermark is not None:
+        meta['watermark'] = bool(watermark)
+    person_generation = tool_data.get('person_generation')
+    if person_generation:
+        meta['person_generation'] = person_generation
+
+    raw_parameters = tool_data.get('parameters')
+    if isinstance(raw_parameters, dict):
+        meta['parameters'] = raw_parameters
+
+    if file_id_media_map:
+        meta['file_id_media_map'] = file_id_media_map
+
+    return meta
+
+
+def _extract_image_gen_metadata(tool_data: dict) -> dict:
+    """Extract image_generation tool params → metadata dict."""
+    meta = {}
+
+    size = tool_data.get('size')
+    if size:
+        meta['size'] = size
+    n = tool_data.get('n') or tool_data.get('number') or tool_data.get('count')
+    if n is not None:
+        meta['number'] = int(n)
+    response_format = tool_data.get('response_format')
+    if response_format:
+        meta['response_format'] = response_format
+    image_format = tool_data.get('image_format') or tool_data.get('output_format')
+    if image_format:
+        meta['image_format'] = image_format
+    seed = tool_data.get('seed')
+    if seed is not None:
+        meta['seed'] = seed
+    watermark = tool_data.get('watermark')
+    if watermark is not None:
+        meta['watermark'] = bool(watermark)
+    aspect_ratio = tool_data.get('aspect_ratio')
+    if aspect_ratio:
+        meta['aspect_ratio'] = aspect_ratio
+    resolution = tool_data.get('resolution')
+    if resolution:
+        meta['resolution'] = resolution
+    quality = tool_data.get('quality')
+    if quality:
+        meta['quality'] = quality
+
+    return meta
+
+
+def _collect_multi_view_images(data: dict) -> list:
+    """Collect multi-view images from input blocks for 3D generation tools."""
+    images = []
+    for item in _safe_list(data.get('input')):
+        if not isinstance(item, dict):
+            continue
+        for blk in _safe_list(item.get('content')):
+            if not isinstance(blk, dict):
+                continue
+            if blk.get('type') not in ('input_image', 'image'):
+                continue
+            view = blk.get('view', '')
+            if not view:
+                continue
+            url = _extract_str(blk, 'image_url')
+            b64 = blk.get('image_base64', '')
+            if url or b64:
+                images.append({'url': url, 'image_base64': b64, 'view': view})
+    return images
+
+
+def _convert_image_url_to_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
+    """Download an image URL and return it as a base64 data URI.
+
+    Returns ``data:<mime>;base64,<b64data>`` on success, or ``None`` on failure.
+    """
+    import httpx
+    import base64 as _base64
+    try:
+        resp = httpx.get(url, timeout=60)
+        resp.raise_for_status()
+        content_type = (
+            resp.headers.get("content-type", "").split(";")[0].strip()
+            or fallback_mime
+        )
+        b64 = _base64.b64encode(resp.content).decode("ascii")
+        return f"data:{content_type};base64,{b64}"
+    except Exception:
+        return None
+
+
+def _apply_b64_json_to_image_output(output: list) -> None:
+    """Convert ``image_generation_call`` result URLs to base64 data URIs in-place."""
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') != 'image_generation_call':
+            continue
+        url = item.get('result', '')
+        if not url or not isinstance(url, str) or url.startswith('data:'):
+            continue
+        b64 = _convert_image_url_to_b64(url)
+        if b64:
+            item['result'] = b64
+
+
+def _extract_3d_gen_metadata(tool_data: dict, data: dict) -> dict:
+    """Extract 3d_generation tool params → metadata dict."""
+    meta = {'_3d_generation': True}
+
+    pbr = tool_data.get('pbr')
+    if pbr is None:
+        pbr = tool_data.get('enable_pbr')
+    if pbr is not None:
+        meta['enable_pbr'] = bool(pbr)
+        meta['pbr'] = bool(pbr)
+
+    output_format = tool_data.get('output_format') or tool_data.get('result_format')
+    if output_format:
+        meta['output_format'] = output_format
+        meta['result_format'] = output_format
+
+    enable_geometry = tool_data.get('enable_geometry')
+    if enable_geometry is None:
+        enable_geometry = tool_data.get('geometry')
+    if enable_geometry is not None:
+        meta['enable_geometry'] = bool(enable_geometry)
+
+    face_count = tool_data.get('face_count')
+    if face_count is not None:
+        meta['face_count'] = int(face_count)
+    generate_type = tool_data.get('generate_type')
+    if generate_type:
+        meta['generate_type'] = generate_type
+    polygon_type = tool_data.get('polygon_type')
+    if polygon_type:
+        meta['polygon_type'] = polygon_type
+
+    multi_view = _collect_multi_view_images(data)
+    if multi_view:
+        meta['multi_view_images'] = multi_view
+
+    return meta
+
 
 class OpenAIResponsesAdapter(BaseAdapter):
     """
@@ -35,661 +387,212 @@ class OpenAIResponsesAdapter(BaseAdapter):
     - 处理 OpenAI Responses 格式的流式响应
     """
 
-    def parse_request(self, data: dict) -> ChatRequest:
+    # ── Item dispatcher for mixed-format input arrays ──────────────────
+    # Value: (handler, needs_item_type) — generation_call handlers need
+    # the item_type string to derive the correct tool name.
+    _INPUT_DISPATCH = {
+        'function_call':          (_handle_function_call_item, False),
+        'image_generation_call':  (_handle_generation_call_item, True),
+        'video_generation_call':  (_handle_generation_call_item, True),
+        '3d_generation_call':     (_handle_generation_call_item, True),
+        'function_call_output':   (_handle_function_call_output_item, False),
+    }
+
+    # Set of item types that are dispatched via _INPUT_DISPATCH (not plain content blocks)
+    _SPECIAL_INPUT_TYPES = frozenset(_INPUT_DISPATCH.keys())
+
+    def _build_file_id_media_map(self, data: dict) -> dict:
+        """Scan all media input blocks and collect file_id → {type, url, role} mappings.
+
+        Supports image/video/audio blocks inside role-based messages' content arrays,
+        plus top-level plain blocks with media roles (first_frame, reference_image, …).
         """
-        解析 OpenAI Responses 格式的请求。
+        file_map: dict = {}
+        _MEDIA_ROLES = {'first_frame', 'last_frame', 'reference_image',
+                        'reference_video', 'reference_audio', ''}
+
+        for item in _safe_list(data.get('input')):
+            if not isinstance(item, dict):
+                continue
+
+            # 1. Content blocks nested inside role-based messages
+            for blk in _safe_list(item.get('content')):
+                if isinstance(blk, dict):
+                    _register_fid_media(file_map, blk)
+
+            # 2. Top-level plain media blocks (role is a media role or absent)
+            top_type = item.get('type', '')
+            top_fid = item.get('file_id', '')
+            top_role = item.get('role', '')
+            if top_fid and top_role in _MEDIA_ROLES and top_type:
+                _register_fid_media(file_map, {**item, 'type': top_type, 'file_id': top_fid, 'role': top_role})
+
+        return file_map
+
+    def _parse_tools(self, data: dict, file_id_media_map: dict):
+        """Parse the 'tools' array → (ToolDefinition list, accumulated metadata dict)."""
+        tools = []
+        img_meta: dict = {}
+        vid_meta: dict = {}
+
+        for tool_data in _safe_list(data.get('tools')):
+            ttype = tool_data.get('type', 'function')
+
+            if ttype == 'function':
+                tools.append(_parse_function_tool_def(tool_data))
+            elif ttype == 'web_search_preview':
+                pass  # pass through as metadata
+            elif ttype == 'video_generation':
+                vid_meta.update(_extract_video_gen_metadata(tool_data, file_id_media_map))
+            elif ttype == 'image_generation':
+                img_meta.update(_extract_image_gen_metadata(tool_data))
+            elif ttype == '3d_generation':
+                vid_meta.update(_extract_3d_gen_metadata(tool_data, data))
+
+        return tools, img_meta, vid_meta
+
+    @staticmethod
+    def _resolve_reasoning_effort(data: dict) -> Optional[str]:
+        """Parse the 'reasoning' field → Optional[str] reasoning_effort."""
+        reasoning = data.get('reasoning')
+        if not reasoning:
+            return None
+        if isinstance(reasoning, dict):
+            effort = reasoning.get('effort')
+        elif isinstance(reasoning, str):
+            effort = reasoning
+        else:
+            return None
+
+        # Auto-enable if model name contains "thinking" and no explicit effort set
+        if not effort:
+            model_name = data.get('model', '')
+            if 'thinking' in model_name.lower():
+                effort = REASONING_EFFORT_DEFAULT_FOR_THINKING
+
+        return effort
+
+    @staticmethod
+    def _collect_metadata(data: dict, reasoning: Optional[dict],
+                          img_meta: dict, vid_meta: dict) -> dict:
+        """Collect extra parameters and merge tool metadata into ChatRequest.metadata."""
+        _KNOWN = {
+            'model', 'input', 'instructions', 'temperature', 'top_p',
+            'max_output_tokens', 'stream', 'tools', 'tool_choice',
+            'stop', 'presence_penalty', 'frequency_penalty', 'user',
+            'metadata', 'store', 'truncation', 'reasoning',
+        }
+        metadata = {k: v for k, v in data.items() if k not in _KNOWN}
+
+        if reasoning and isinstance(reasoning, dict):
+            metadata['reasoning'] = reasoning
+        if img_meta:
+            metadata.update(img_meta)
+        if vid_meta:
+            metadata.update(vid_meta)
+
+        raw_tools = data.get('tools', [])
+        if raw_tools:
+            metadata['_raw_tools'] = raw_tools
+
+        return metadata
+
+    # ───────────────────────────────────────────────────────────────────
+    #  Input message building  (used by parse_request)
+    # ───────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _all_content_blocks(cls, items: list) -> bool:
+        """Return True if every item is a plain content block (no role, no dispatch type)."""
+        return all(isinstance(it, dict) and 'role' not in it and 'type' in it
+                   and it.get('type') not in cls._SPECIAL_INPUT_TYPES
+                   for it in items)
+
+    def _dispatch_input_item(self, item: dict, messages: list):
+        """Route a single input dict to the correct handler via _INPUT_DISPATCH."""
+        item_type = item.get('type', '')
+        handler_info = self._INPUT_DISPATCH.get(item_type)
+        if handler_info:
+            handler, pass_type = handler_info
+            if pass_type:
+                handler(item, messages, item_type)
+            else:
+                handler(item, messages)
+        elif 'role' in item:
+            _handle_role_message_item(item, messages)
+
+    def _build_messages_from_input(self, data: dict) -> list:
+        """Convert the Responses-API 'instructions' + 'input' fields → Message list.
+
+        Handles three input shapes:
+          - string               → single user message
+          - list of content blocks → single user message with parsed blocks
+          - mixed list           → individual messages / tool calls dispatched by type
+        """
+        messages = []
+
+        # System message from instructions
+        if 'instructions' in data:
+            messages.append(Message(role=MessageRole.SYSTEM,
+                                    content=data['instructions']))
+
+        input_data = data.get('input', '')
+        if isinstance(input_data, str):
+            messages.append(Message(role=MessageRole.USER, content=input_data))
+            return messages
+
+        if not isinstance(input_data, list):
+            return messages
+
+        if self._all_content_blocks(input_data):
+            blocks = _parse_content_blocks(input_data)
+            if blocks:
+                messages.append(Message(role=MessageRole.USER, content=blocks))
+            return messages
+
+        # Mixed format: messages, function_calls, generation_calls, tool results
+        for item in input_data:
+            if isinstance(item, str):
+                messages.append(Message(role=MessageRole.USER, content=item))
+            elif isinstance(item, dict):
+                self._dispatch_input_item(item, messages)
+
+        return messages
+
+    # ───────────────────────────────────────────────────────────────────
+    #  parse_request  —  6-step orchestration
+    # ───────────────────────────────────────────────────────────────────
+
+    def parse_request(self, data: dict) -> ChatRequest:
+        """Parse an OpenAI Responses-API request → ChatRequest.
 
         请求格式:
         {
             "model": "gpt-4o",
             "input": "Tell me a joke",
-            // 或者数组格式:
-            "input": [
-                {"role": "user", "content": "Tell me a joke"}
-            ],
+            "input": [{"role": "user", "content": "..."}],
             "instructions": "You are a helpful assistant.",
-            "temperature": 0.7,
-            "max_output_tokens": 1000,
-            "stream": false,
-            "tools": [...]
+            "temperature": 0.7, "max_output_tokens": 1000,
+            "stream": false, "tools": [...]
         }
         """
-        messages = []
+        # 1. Build messages from instructions + input
+        messages = self._build_messages_from_input(data)
 
-        # 处理 instructions（系统提示）
-        if 'instructions' in data:
-            messages.append(Message(
-                role=MessageRole.SYSTEM,
-                content=data['instructions']
-            ))
+        # 2. Build file_id → media map
+        file_id_media_map = self._build_file_id_media_map(data)
 
-        # 处理 input
-        input_data = data.get('input', '')
+        # 3. Parse tools
+        tools, img_meta, vid_meta = self._parse_tools(data, file_id_media_map)
 
-        if isinstance(input_data, str):
-            # 简单字符串输入
-            messages.append(Message(
-                role=MessageRole.USER,
-                content=input_data
-            ))
-        elif isinstance(input_data, list):
-            # 数组格式输入
-            # Items can be:
-            # 1. Message objects with 'role' field
-            # 2. function_call items (assistant tool calls)
-            # 3. function_call_output items (tool results)
-            # 4. Plain content blocks (no 'role', has 'type' like input_text/input_image)
+        # 4. Resolve reasoning effort
+        reasoning_effort = self._resolve_reasoning_effort(data)
 
-            # Check if ALL items are plain content blocks (no role, no special types)
-            SPECIAL_TYPES = {'function_call', 'function_call_output', 'image_generation_call', 'video_generation_call', '3d_generation_call'}
-            is_pure_content_blocks = all(
-                isinstance(item, dict)
-                and 'role' not in item
-                and 'type' in item
-                and item.get('type') not in SPECIAL_TYPES
-                for item in input_data
-            )
+        # 5. Collect metadata (extra params + tool metadata)
+        metadata = self._collect_metadata(
+            data, data.get('reasoning'), img_meta, vid_meta)
 
-            if is_pure_content_blocks:
-                # Treat as a single user message with multiple content blocks
-                blocks = []
-                for block in input_data:
-                    block_type = block.get('type', 'input_text')
-
-                    if block_type in ('input_text', 'text'):
-                        blocks.append(ContentBlock.from_text(block.get('text', '')))
-                    elif block_type in ('input_image', 'image'):
-                        image_role = block.get('role')
-                        if 'image_url' in block:
-                            # image_url can be a string or a dict with 'url' key
-                            image_url_val = block['image_url']
-                            url = image_url_val if isinstance(image_url_val, str) else image_url_val.get('url', '')
-                            if url.startswith('data:'):
-                                parts = url.split(',')
-                                media_type = parts[0].replace('data:', '').replace(';base64', '')
-                                data_str = parts[1] if len(parts) > 1 else ''
-                                cb = ContentBlock.from_image_base64(data_str, media_type)
-                            else:
-                                cb = ContentBlock.from_image_url(url)
-                            cb.role = image_role or cb.role
-                            blocks.append(cb)
-                        elif 'source' in block:
-                            source = block['source']
-                            if source.get('type') == 'base64':
-                                cb = ContentBlock.from_image_base64(
-                                    source.get('data', ''),
-                                    source.get('media_type', 'image/jpeg')
-                                )
-                            elif source.get('type') == 'url':
-                                cb = ContentBlock.from_image_url(source.get('url', ''))
-                            cb.role = image_role or cb.role
-                            blocks.append(cb)
-                    elif block_type in ('input_video', 'video'):
-                        video_url_val = block.get('video_url', '')
-                        if isinstance(video_url_val, dict):
-                            video_url_val = video_url_val.get('url', '')
-                        if video_url_val:
-                            cb = ContentBlock.from_video_url(video_url_val)
-                            cb.role = block.get('role') or cb.role
-                            blocks.append(cb)
-
-                if blocks:
-                    messages.append(Message(
-                        role=MessageRole.USER,
-                        content=blocks
-                    ))
-            else:
-                # Mixed format: messages, function_call, function_call_output items
-                for item in input_data:
-                    if isinstance(item, str):
-                        messages.append(Message(
-                            role=MessageRole.USER,
-                            content=item
-                        ))
-                    elif isinstance(item, dict):
-                        item_type = item.get('type', '')
-
-                        if item_type == 'function_call':
-                            # Assistant tool call item — convert to assistant message with tool_call block
-                            args_str = item.get('arguments', '{}')
-                            try:
-                                args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                            except (json.JSONDecodeError, TypeError):
-                                args = {}
-                            call_id = item.get('call_id') or item.get('id', '')
-                            tool_name = item.get('name', '')
-                            block = ContentBlock.from_tool_call(call_id, tool_name, args)
-                            messages.append(Message(
-                                role=MessageRole.ASSISTANT,
-                                content=[block]
-                            ))
-
-                        elif item_type == 'image_generation_call':
-                            # Image generation call item — represents a previously executed
-                            # image generation operation in the conversation history.
-                            #
-                            # Format:
-                            # {
-                            #   "type": "image_generation_call",
-                            #   "id": "<call_id>",
-                            #   "status": "in_progress|completed|generating|failed",
-                            #   "result": "<image data or description>"
-                            # }
-                            #
-                            # We store this as a tool_call content block on an ASSISTANT message
-                            # so that multi-turn conversations that include prior image generation
-                            # results are preserved in the message history passed to the provider.
-                            call_id = item.get('id', '')
-                            status = item.get('status', 'completed')
-                            result = item.get('result', '')
-
-                            # Represent as a tool call from the assistant (the generation request)
-                            block = ContentBlock.from_tool_call(
-                                call_id,
-                                'image_generation',
-                                {'status': status, 'result': result}
-                            )
-                            messages.append(Message(
-                                role=MessageRole.ASSISTANT,
-                                content=[block]
-                            ))
-
-                        elif item_type == 'video_generation_call':
-                            # Video generation call item — represents a previously executed
-                            # video generation operation in the conversation history.
-                            #
-                            # Format:
-                            # {
-                            #   "type": "video_generation_call",
-                            #   "id": "<call_id>",
-                            #   "status": "in_progress|completed|generating|failed",
-                            #   "result": "<video_url>"
-                            # }
-                            call_id = item.get('id', '')
-                            status = item.get('status', 'completed')
-                            result = item.get('result', '')
-
-                            block = ContentBlock.from_tool_call(
-                                call_id,
-                                'video_generation',
-                                {'status': status, 'result': result}
-                            )
-                            messages.append(Message(
-                                role=MessageRole.ASSISTANT,
-                                content=[block]
-                            ))
-
-                        elif item_type == '3d_generation_call':
-                            # 3D generation call item — represents a previously executed
-                            # 3D generation operation in the conversation history.
-                            #
-                            # Format:
-                            # {
-                            #   "type": "3d_generation_call",
-                            #   "id": "<call_id>",
-                            #   "status": "in_progress|completed|generating|failed",
-                            #   "content": [{"type": "OBJ", "url": "...", "preview_url": "..."}]
-                            # }
-                            call_id = item.get('id', '')
-                            status = item.get('status', 'completed')
-                            content = item.get('content', [])
-
-                            block = ContentBlock.from_tool_call(
-                                call_id,
-                                '3d_generation',
-                                {'status': status, 'content': content}
-                            )
-                            messages.append(Message(
-                                role=MessageRole.ASSISTANT,
-                                content=[block]
-                            ))
-
-                        elif item_type == 'function_call_output':
-                            # Tool result item — convert to tool message
-                            call_id = item.get('call_id', '')
-                            output = item.get('output', '')
-                            block = ContentBlock.from_tool_result(call_id, str(output))
-                            messages.append(Message(
-                                role=MessageRole.TOOL,
-                                content=[block],
-                                tool_call_id=call_id
-                            ))
-
-                        elif 'role' in item:
-                            # Standard message object with role
-                            role_str = item.get('role', 'user')
-                            role = MessageRole(role_str)
-                            content = item.get('content', '')
-
-                            if isinstance(content, list):
-                                blocks = []
-                                for block in content:
-                                    block_type = block.get('type', 'input_text')
-
-                                    if block_type in ('input_text', 'text'):
-                                        blocks.append(ContentBlock.from_text(block.get('text', '')))
-                                    elif block_type in ('input_image', 'image'):
-                                        # Handle image content
-                                        image_role = block.get('role')
-                                        if 'image_url' in block:
-                                            # image_url can be a string or a dict with 'url' key
-                                            image_url_val = block['image_url']
-                                            url = image_url_val if isinstance(image_url_val, str) else image_url_val.get('url', '')
-                                            if url.startswith('data:'):
-                                                parts = url.split(',')
-                                                media_type = parts[0].replace('data:', '').replace(';base64', '')
-                                                data_str = parts[1] if len(parts) > 1 else ''
-                                                cb = ContentBlock.from_image_base64(data_str, media_type)
-                                            else:
-                                                cb = ContentBlock.from_image_url(url)
-                                            cb.role = image_role or cb.role
-                                            blocks.append(cb)
-                                        elif 'source' in block:
-                                            source = block['source']
-                                            if source.get('type') == 'base64':
-                                                cb = ContentBlock.from_image_base64(
-                                                    source.get('data', ''),
-                                                    source.get('media_type', 'image/jpeg')
-                                                )
-                                            elif source.get('type') == 'url':
-                                                cb = ContentBlock.from_image_url(source.get('url', ''))
-                                            cb.role = image_role or cb.role
-                                            blocks.append(cb)
-                                    elif block_type in ('input_video', 'video'):
-                                        video_url_val = block.get('video_url', '')
-                                        if isinstance(video_url_val, dict):
-                                            video_url_val = video_url_val.get('url', '')
-                                        if video_url_val:
-                                            cb = ContentBlock.from_video_url(video_url_val)
-                                            cb.role = block.get('role') or cb.role
-                                            blocks.append(cb)
-                                    elif block_type == 'input_audio':
-                                        if 'input_audio' in block:
-                                            audio_data = block['input_audio']
-                                            blocks.append(ContentBlock.from_audio_base64(
-                                                audio_data.get('data', ''),
-                                                f"audio/{audio_data.get('format', 'wav')}"
-                                            ))
-                                    elif block_type == 'input_file':
-                                        if 'file_url' in block:
-                                            blocks.append(ContentBlock.from_file_url(block['file_url'].get('url', '')))
-
-                                content = blocks if blocks else content
-
-                            tool_call_id = item.get('call_id') or item.get('tool_call_id')
-                            name = item.get('name')
-
-                            messages.append(Message(
-                                role=role,
-                                content=content,
-                                name=name,
-                                tool_call_id=tool_call_id
-                            ))
-
-        # Collect file_id → {type, url} mappings from all media input blocks.
-        # Supports input_image, input_video, input_audio blocks that carry a file_id field.
-        # Insertion order is preserved so that Seedance variable numbering (图片1, 视频1, …)
-        # matches the order the media blocks appear in the input array.
-        #
-        # Shape: { file_id: {'type': 'image'|'video'|'audio', 'url': str} }
-        _file_id_media_map: dict = {}
-        for _top_item in data.get('input', []) if isinstance(data.get('input'), list) else []:
-            if not isinstance(_top_item, dict):
-                continue
-            # Scan content blocks inside role-based messages
-            _content = _top_item.get('content', [])
-            if isinstance(_content, list):
-                for _blk in _content:
-                    if not isinstance(_blk, dict):
-                        continue
-                    _blk_type = _blk.get('type', '')
-                    _fid = _blk.get('file_id', '')
-                    if not _fid:
-                        continue
-                    _blk_role = _blk.get('role', '')
-                    if _blk_type in ('input_image', 'image'):
-                        _url = _blk.get('image_url', '')
-                        if isinstance(_url, dict):
-                            _url = _url.get('url', '')
-                        if _url:
-                            _file_id_media_map[_fid] = {'type': 'image', 'url': _url, 'role': _blk_role}
-                    elif _blk_type in ('input_video', 'video'):
-                        _url = _blk.get('video_url', '')
-                        if isinstance(_url, dict):
-                            _url = _url.get('url', '')
-                        if _url:
-                            _file_id_media_map[_fid] = {'type': 'video', 'url': _url, 'role': _blk_role}
-                    elif _blk_type in ('input_audio', 'audio'):
-                        _url = _blk.get('audio_url', '') or _blk.get('url', '')
-                        if isinstance(_url, dict):
-                            _url = _url.get('url', '')
-                        if _url:
-                            _file_id_media_map[_fid] = {'type': 'audio', 'url': _url, 'role': _blk_role}
-            # Also scan top-level plain blocks (no 'role' used as message-role,
-            # but the block itself may carry a media role like 'first_frame')
-            _top_type = _top_item.get('type', '')
-            _top_fid = _top_item.get('file_id', '')
-            _top_role = _top_item.get('role', '')
-            # Only treat as a plain media block when the role is a media role or absent
-            _MEDIA_ROLES = {'first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio', ''}
-            if _top_fid and _top_role in _MEDIA_ROLES:
-                if _top_type in ('input_image', 'image'):
-                    _url = _top_item.get('image_url', '')
-                    if isinstance(_url, dict):
-                        _url = _url.get('url', '')
-                    if _url:
-                        _file_id_media_map[_top_fid] = {'type': 'image', 'url': _url, 'role': _top_role}
-                elif _top_type in ('input_video', 'video'):
-                    _url = _top_item.get('video_url', '')
-                    if isinstance(_url, dict):
-                        _url = _url.get('url', '')
-                    if _url:
-                        _file_id_media_map[_top_fid] = {'type': 'video', 'url': _url, 'role': _top_role}
-                elif _top_type in ('input_audio', 'audio'):
-                    _url = _top_item.get('audio_url', '') or _top_item.get('url', '')
-                    if isinstance(_url, dict):
-                        _url = _url.get('url', '')
-                    if _url:
-                        _file_id_media_map[_top_fid] = {'type': 'audio', 'url': _url, 'role': _top_role}
-
-        # 处理工具定义
-        tools = []
-        accumulated_img_metadata: dict = {}  # collects image_generation tool parameters
-        accumulated_vid_metadata: dict = {}  # collects video_generation tool parameters
-        for tool_data in data.get('tools', []):
-            tool_type = tool_data.get('type', 'function')
-
-            if tool_type == 'function':
-                func = tool_data.get('function', tool_data)
-                name = func.get('name', '')
-                description = func.get('description', '')
-                params_schema = func.get('parameters', {})
-
-                parameters = []
-                properties = params_schema.get('properties', {})
-                required = params_schema.get('required', [])
-
-                for param_name, param_schema in properties.items():
-                    parameters.append(ToolParameter(
-                        name=param_name,
-                        type=param_schema.get('type', 'string'),
-                        description=param_schema.get('description'),
-                        required=param_name in required,
-                        enum=param_schema.get('enum'),
-                        default=param_schema.get('default'),
-                        items=param_schema.get('items')
-                    ))
-
-                tools.append(ToolDefinition(
-                    name=name,
-                    description=description,
-                    parameters=parameters,
-                    tool_type=ToolType.FUNCTION
-                ))
-            elif tool_type == 'web_search_preview':
-                # Web search tool - pass through as metadata
-                pass
-
-            elif tool_type == 'video_generation':
-                # Video generation tool — extract generation parameters into metadata.
-                # These are picked up by providers that support native video generation
-                # (TencentVOD, Happyhorse, Seedance, Gemini Veo, etc.).
-                #
-                # Supported fields:
-                #   size              – output video dimensions (WxH), used to derive AspectRatio
-                #   aspect_ratio      – explicit AspectRatio ("16:9", "9:16", etc.)
-                #   resolution        – resolution tier ("720p", "1080p", etc.)
-                #   seconds           – video duration in seconds
-                #   n                 – number of videos (currently 1)
-                #   generate_audio    – bool, whether audio track is generated
-                #   watermark         – bool, whether to add a watermark
-                #   person_generation – "AllowAdult" | "Disallow"
-                #
-                # Media references (images, videos, audio) are NOT passed as tool
-                # fields.  They are collected from ``input_image`` / ``input_video`` /
-                # ``input_audio`` content blocks in the ``input`` array and passed
-                # through ``file_id_media_map`` in the metadata.
-                vid_metadata: dict = {'_video_generation': True}
-
-                size = tool_data.get('size')
-                if size:
-                    vid_metadata['size'] = size
-
-                aspect_ratio = tool_data.get('aspect_ratio')
-                if aspect_ratio:
-                    vid_metadata['aspect_ratio'] = aspect_ratio
-
-                resolution = tool_data.get('resolution')
-                if resolution:
-                    vid_metadata['resolution'] = resolution
-
-                seconds = tool_data.get('seconds')
-                if seconds is not None:
-                    vid_metadata['seconds'] = seconds
-
-                n = tool_data.get('n')
-                if n is not None:
-                    vid_metadata['n'] = int(n)
-
-                generate_audio = tool_data.get('generate_audio')
-                if generate_audio is not None:
-                    vid_metadata['generate_audio'] = bool(generate_audio)
-
-                watermark = tool_data.get('watermark')
-                if watermark is not None:
-                    vid_metadata['watermark'] = bool(watermark)
-
-                person_generation = tool_data.get('person_generation')
-                if person_generation:
-                    vid_metadata['person_generation'] = person_generation
-
-                # Accept a 'parameters' dict that is forwarded verbatim to the
-                # upstream provider API (e.g. Gemini Veo predictLongRunning).
-                # Individual top-level fields (aspect_ratio, …) take
-                # precedence over keys inside 'parameters' when both are set.
-                raw_parameters = tool_data.get('parameters')
-                if isinstance(raw_parameters, dict):
-                    vid_metadata['parameters'] = raw_parameters
-
-                # Pass file_id → media info map so the provider can:
-                #   1. Substitute {{file_id}} → 图片n / 视频n / 音频n in prompts
-                #   2. Build reference_images / reference_videos / reference_audios lists
-                if _file_id_media_map:
-                    vid_metadata['file_id_media_map'] = _file_id_media_map
-
-                accumulated_vid_metadata.update(vid_metadata)
-
-            elif tool_type == 'image_generation':
-                # Image generation tool — extract generation parameters into metadata.
-                # These are picked up by providers that support native image generation:
-                #   - Volcengine: _execute_image_generation_direct() → /v3/images/generations
-                #   - Gemini: prepare_request() → responseModalities: ["TEXT", "IMAGE"]
-                #
-                # Supported fields:
-                #   size             – output image dimensions, e.g. "1024x1024" or "2K"
-                #   n                – number of images to generate (aliases: number, count)
-                #   response_format  – return format: "b64_json" (default) or "url"
-                #   image_format     – image file format: "png" (default) or "jpg"
-                #   seed             – random seed for reproducibility
-                #   watermark        – bool, whether to add a watermark
-                img_metadata = {}
-
-                size = tool_data.get('size')
-                if size:
-                    img_metadata['size'] = size
-
-                # Accept `n`, `number`, or `count` for image quantity
-                n = tool_data.get('n') or tool_data.get('number') or tool_data.get('count')
-                if n is not None:
-                    img_metadata['number'] = int(n)
-
-                response_format = tool_data.get('response_format')
-                if response_format:
-                    img_metadata['response_format'] = response_format
-
-                image_format = tool_data.get('image_format') or tool_data.get('output_format')
-                if image_format:
-                    img_metadata['image_format'] = image_format
-
-                seed = tool_data.get('seed')
-                if seed is not None:
-                    img_metadata['seed'] = seed
-
-                watermark = tool_data.get('watermark')
-                if watermark is not None:
-                    img_metadata['watermark'] = bool(watermark)
-
-                aspect_ratio = tool_data.get('aspect_ratio')
-                if aspect_ratio:
-                    img_metadata['aspect_ratio'] = aspect_ratio
-
-                resolution = tool_data.get('resolution')
-                if resolution:
-                    img_metadata['resolution'] = resolution
-
-                quality = tool_data.get('quality')
-                if quality:
-                    img_metadata['quality'] = quality
-
-                # Accumulate image generation params; we'll merge into metadata below.
-                accumulated_img_metadata.update(img_metadata)
-
-            elif tool_type == '3d_generation':
-                # 3D generation tool — extract generation parameters into metadata.
-                # These are picked up by HunyuanProvider or VolcengineProvider
-                # when routing to the appropriate 3D generation API.
-                #
-                # Tool fields:
-                #   pbr             – bool, enable PBR material generation
-                #   output_format   – "OBJ"|"GLB"|"STL"|"USDZ"|"FBX"|"MP4" (alias: result_format)
-                #   enable_geometry – bool, geometry-only (白模) generation (alias: geometry)
-                #   face_count      – int: 3000–1500000
-                #                     Hunyuan: passed as FaceCount
-                #                     Seed3D:  mapped to subdivisionlevel (0-100k→low, 100k-500k→medium, >500k→high)
-                #   generate_type   – "Normal"|"LowPoly"|"Geometry"|"Sketch" (Pro only)
-                #   polygon_type    – "triangle"|"quadrilateral" (Pro+LowPoly only)
-                #
-                # Multi-view images are NOT passed in the tool definition.
-                # They are collected from the input content blocks where each
-                # input_image block carries a "view" field:
-                #   {"type": "input_image", "image_url": "...", "view": "back"|"left"|"right"}
-                threed_metadata: dict = {'_3d_generation': True}
-
-                # pbr (accept both 'pbr' and 'enable_pbr')
-                pbr = tool_data.get('pbr')
-                if pbr is None:
-                    pbr = tool_data.get('enable_pbr')
-                if pbr is not None:
-                    threed_metadata['enable_pbr'] = bool(pbr)
-                    threed_metadata['pbr'] = bool(pbr)
-
-                # output_format (accept both 'output_format' and 'result_format')
-                output_format = tool_data.get('output_format') or tool_data.get('result_format')
-                if output_format:
-                    threed_metadata['output_format'] = output_format
-                    threed_metadata['result_format'] = output_format
-
-                # enable_geometry (accept both 'enable_geometry' and 'geometry')
-                enable_geometry = tool_data.get('enable_geometry')
-                if enable_geometry is None:
-                    enable_geometry = tool_data.get('geometry')
-                if enable_geometry is not None:
-                    threed_metadata['enable_geometry'] = bool(enable_geometry)
-
-                # face_count (Pro only)
-                face_count = tool_data.get('face_count')
-                if face_count is not None:
-                    threed_metadata['face_count'] = int(face_count)
-
-                # generate_type (Pro only): Normal | LowPoly | Geometry | Sketch
-                generate_type = tool_data.get('generate_type')
-                if generate_type:
-                    threed_metadata['generate_type'] = generate_type
-
-                # polygon_type (Pro+LowPoly only): triangle | quadrilateral
-                polygon_type = tool_data.get('polygon_type')
-                if polygon_type:
-                    threed_metadata['polygon_type'] = polygon_type
-
-                # Collect multi-view images from the input content blocks.
-                # Each input_image block that has a "view" field contributes one
-                # multi-view entry. Supported view values:
-                #   front, back, left, right, up, down, left_front, right_front
-                # These are used by hunyuan-3d-pro as MultiViewImages.
-                _multi_view_images = []
-                for _top_item in data.get('input', []) if isinstance(data.get('input'), list) else []:
-                    if not isinstance(_top_item, dict):
-                        continue
-                    _item_content = _top_item.get('content', [])
-                    if isinstance(_item_content, list):
-                        for _blk in _item_content:
-                            if not isinstance(_blk, dict):
-                                continue
-                            if _blk.get('type') in ('input_image', 'image'):
-                                _view = _blk.get('view', '')
-                                if not _view:
-                                    continue  # skip images without a view angle
-                                _img_url = _blk.get('image_url', '')
-                                if isinstance(_img_url, dict):
-                                    _img_url = _img_url.get('url', '')
-                                _img_b64 = _blk.get('image_base64', '')
-                                if _img_url or _img_b64:
-                                    _multi_view_images.append({
-                                        'url': _img_url,
-                                        'image_base64': _img_b64,
-                                        'view': _view,
-                                    })
-
-                if _multi_view_images:
-                    threed_metadata['multi_view_images'] = _multi_view_images
-
-                accumulated_vid_metadata.update(threed_metadata)
-
-        # Parse reasoning parameter
-        reasoning_effort = None
-        reasoning = data.get('reasoning')
-        if reasoning:
-            if isinstance(reasoning, dict):
-                reasoning_effort = reasoning.get('effort')
-            elif isinstance(reasoning, str):
-                reasoning_effort = reasoning
-
-        # 如果模型名包含 "thinking" 但没有设置任何 reasoning_effort 参数，
-        # 将 reasoning_effort 设置为默认值
-        model_name = data.get('model', '')
-        if 'thinking' in model_name.lower() and not reasoning_effort:
-            reasoning_effort = REASONING_EFFORT_DEFAULT_FOR_THINKING
-
-        # 收集额外参数
-        known_keys = {
-            'model', 'input', 'instructions', 'temperature', 'top_p',
-            'max_output_tokens', 'stream', 'tools', 'tool_choice',
-            'stop', 'presence_penalty', 'frequency_penalty', 'user',
-            'metadata', 'store', 'truncation', 'reasoning'
-        }
-        metadata = {k: v for k, v in data.items() if k not in known_keys}
-
-        # Store full reasoning config in metadata so providers can use all fields (e.g. summary)
-        if reasoning and isinstance(reasoning, dict):
-            metadata['reasoning'] = reasoning
-
-        # Merge image_generation tool parameters into metadata so the Volcengine
-        # provider can forward them to /v3/images/generations
-        if accumulated_img_metadata:
-            metadata.update(accumulated_img_metadata)
-
-        # Merge video_generation tool parameters into metadata so the TencentVOD
-        # provider can forward them to CreateAigcVideoTask
-        if accumulated_vid_metadata:
-            metadata.update(accumulated_vid_metadata)
-
-        # Preserve the raw tools array so that Responses-API-compatible providers
-        # (openai_responses_compt) can pass it directly to the upstream without
-        # reconstructing it from ToolDefinition objects.
-        raw_tools = data.get('tools', [])
-        if raw_tools:
-            metadata['_raw_tools'] = raw_tools
-
+        # 6. Assemble ChatRequest
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),
@@ -704,7 +607,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             frequency_penalty=data.get('frequency_penalty'),
             user=data.get('user'),
             reasoning_effort=reasoning_effort,
-            metadata=metadata
+            metadata=metadata,
         )
 
     def format_response(self, response: ChatResponse) -> dict:
@@ -949,15 +852,21 @@ class OpenAIResponsesAdapter(BaseAdapter):
         if output_details:
             usage_dict['output_tokens_details'] = output_details
 
-        return {
+        # Always include the requested format in the response so that upper
+        # layers (sync return / async GET polling) can decide whether to
+        # convert image URLs to base64 data URIs.
+        result = {
             'id': response.id.replace('chatcmpl-', 'resp_') if response.id.startswith('chatcmpl-') else response.id,
             'object': 'response',
             'created_at': response.created,
             'model': response.model,
             'status': status,
             'output': output,
-            'usage': usage_dict
+            'usage': usage_dict,
         }
+        if is_image_generation:
+            result['response_format'] = response.usage.extra.get('_response_format', 'url')
+        return result
 
     def format_stream_chunk(self, chunk: StreamChunk) -> str:
         """
