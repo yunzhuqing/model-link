@@ -246,15 +246,15 @@ class BailianProvider(OpenAIProvider):
         if "enable_search" in request.metadata:
             data["enable_search"] = request.metadata["enable_search"]
 
-        # 百炼特有：根据模型是否支持思维和 reasoning_effort 设置 enable_thinking
-        # deepseek-v4-flash / deepseek-v4-pro 原生支持 reasoning_effort 参数，
-        # 不需要转换为 enable_thinking。
-        if not request.model.startswith('deepseek-v4-'):
-            reasoning_effort = request.reasoning_effort or 'none'
-            if request.metadata.get('support_thinking', False):
-                data["enable_thinking"] = reasoning_effort != 'none'
-            elif reasoning_effort != 'none':
-                data["enable_thinking"] = True
+        model_has_thinking = 'thinking' in request.model.lower()
+        has_reasoning_effort = bool(request.reasoning_effort)
+
+        if model_has_thinking or has_reasoning_effort:
+            data["enable_thinking"] = True
+            if not has_reasoning_effort:
+                data["reasoning_effort"] = "medium"
+        else:
+            data["enable_thinking"] = False
 
         # 打印请求体到控制台
         logging.debug("Prepared Bailian request data: %s", json.dumps(data, ensure_ascii=False))

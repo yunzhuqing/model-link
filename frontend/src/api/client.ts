@@ -80,10 +80,18 @@ export interface ApiKeyModelsResponse {
   }>;
 }
 
+export interface MonitoringConfig {
+  type: string;
+  endpoint?: string;
+  public_key?: string;
+  secret_key?: string;
+}
+
 export interface Group {
   id: number;
   name: string;
   description: string | null;
+  monitoring_config?: MonitoringConfig | null;
   created_at: string;
   user_count?: number;
   api_key_count?: number;
@@ -100,6 +108,7 @@ export interface GroupCreate {
 export interface GroupUpdate {
   name?: string;
   description?: string;
+  monitoring_config?: MonitoringConfig | null;
 }
 
 export interface Provider {

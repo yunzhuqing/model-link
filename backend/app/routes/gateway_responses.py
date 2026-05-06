@@ -19,6 +19,8 @@ logger = logging.getLogger("gateway")
 
 from app import db
 import app.background_response_dao as _bg_dao
+from app.monitoring import create_tracer
+from app.group_service import get_group_monitoring_config
 
 # 导入中间层
 from app.middleware.gateway_service import (
@@ -434,10 +436,12 @@ async def openai_responses():
 
     logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
 
+    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    tracer = create_tracer(monitoring_config)
+
     _resp_start_time = time.monotonic()
     try:
         if chat_request.stream:
-            # Eagerly extract identity primitives before session is released
             _user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
             _api_key_raw = api_key.key if api_key else None
             _api_key_name = api_key.name if api_key else None
@@ -451,24 +455,26 @@ async def openai_responses():
                 except Exception:
                     pass
 
+            if tracer:
+                tracer.start(model_name, input_data=data)
+                tracer.log_input(data)
+
             chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id)
             _app = current_app._get_current_object()
 
             def _resp_chunks_with_usage():
                 last_usage = None
-                # Preserve extra data (e.g. cache_creation with ephemeral_5m/1h tokens)
-                # from earlier usage chunks, since the final usage chunk (message_delta)
-                # may not carry them.
                 _accumulated_extra = {}
+                _content_parts: list[str] = []
                 try:
                     for chunk in chunks:
                         if chunk.usage is not None:
-                            # Accumulate extra from all usage-bearing chunks
                             if hasattr(chunk.usage, 'extra') and chunk.usage.extra:
                                 _accumulated_extra.update(chunk.usage.extra)
                             last_usage = chunk.usage
+                        if chunk.delta_content:
+                            _content_parts.append(chunk.delta_content)
                         yield chunk
-                    # Merge accumulated extra into the final usage
                     if last_usage is not None and _accumulated_extra:
                         if hasattr(last_usage, 'extra'):
                             for k, v in _accumulated_extra.items():
@@ -476,6 +482,15 @@ async def openai_responses():
                                     last_usage.extra[k] = v
                         else:
                             last_usage.extra = _accumulated_extra
+                    if tracer:
+                        tracer.log_output({
+                            "content": "".join(_content_parts) if _content_parts else None,
+                            "usage": last_usage.to_dict() if last_usage else None,
+                        })
+                except Exception:
+                    if tracer:
+                        tracer.end(error=Exception("stream error"))
+                    raise
                 finally:
                     if last_usage is not None:
                         try:
@@ -507,12 +522,33 @@ async def openai_responses():
                             )
                         except Exception as _ue:
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
+                    if tracer:
+                        tracer.set_metadata({
+                            "group_id": group_id,
+                            "user": _user_name,
+                            "provider": model_meta.get('provider_name'),
+                        })
+                        tracer.end()
 
             return adapter.create_stream_response(_resp_chunks_with_usage(), model_name)
         else:
+            if tracer:
+                tracer.start(model_name, input_data=data)
+                tracer.log_input(data)
+
             response, resolved = _gateway_service.chat(chat_request, group_id)
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
-            # Record usage asynchronously (fire-and-forget)
+
+            if tracer:
+                tracer.log_output(adapter.format_response(response))
+                tracer.set_metadata({
+                    "group_id": group_id,
+                    "user": user.username if user else None,
+                    "provider": resolved.db_provider.name,
+                    "duration_ms": _resp_duration_ms,
+                })
+                tracer.end()
+
             try:
                 from app.usage_service import record_usage
                 record_usage(
@@ -528,22 +564,24 @@ async def openai_responses():
             except Exception as _ue:
                 logger.warning(f"[usage] Failed to trigger usage recording for responses: {_ue}")
             formatted = adapter.format_response(response)
-            # Save any data URIs from image generation to storage,
-            # replacing them with storage URLs in the response.
             _save_image_data_uris_to_storage(formatted.get('output', []), get_storage_backend(), formatted.get('id', ''))
-            # If the user requested b64_json for image generation, convert
-            # image URLs to base64 data URIs at the final return point.
             if formatted.get('response_format') == 'b64_json':
                 _apply_b64_json_to_image_output(formatted.get('output', []), storage=get_storage_backend())
             _strip_internal_fields(formatted.get('output', []))
             return jsonify(formatted)
     except ProviderError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 

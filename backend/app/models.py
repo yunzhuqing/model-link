@@ -172,6 +172,7 @@ class Group(db.Model):
     name = db.Column(db.String(100), unique=True, nullable=False, index=True)
     description = db.Column(db.String(255))
     workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
+    monitoring_config = db.Column(db.JSON, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -199,6 +200,7 @@ class Group(db.Model):
             'name': self.name,
             'description': self.description,
             'workspace_id': self.workspace_id,
+            'monitoring_config': self.monitoring_config,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'users': user_list,
             'api_keys': [k.to_dict_simple() for k in self.api_keys],
@@ -211,6 +213,7 @@ class Group(db.Model):
             'name': self.name,
             'description': self.description,
             'workspace_id': self.workspace_id,
+            'monitoring_config': self.monitoring_config,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 

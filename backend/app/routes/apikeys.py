@@ -11,7 +11,7 @@ from datetime import datetime
 import secrets
 
 from app import db
-from app.models import Group, ApiKey, ApiKeyBudget
+from app.models import ApiKey, ApiKeyBudget
 from app.routes.users import token_required
 from app.models import check_permission
 from app.routes.permissions import (
@@ -20,6 +20,12 @@ from app.routes.permissions import (
     check_group_permission,
     require_permission,
     require_apikey_permission,
+)
+from app.group_service import (
+    get_group_by_id,
+    create_group as _svc_create_group,
+    update_group as _svc_update_group,
+    delete_group as _svc_delete_group,
 )
 
 apikeys_bp = Blueprint('apikeys', __name__)
@@ -57,31 +63,26 @@ async def list_groups(current_user):
 async def create_group(current_user):
     """Create a new group."""
     from app.models import UserGroup
-    
+
     data = await request.get_json()
-    
-    # Check if group name already exists
-    existing = db.session.query(Group).filter(Group.name == data.get('name')).first()
-    if existing:
-        return jsonify({'detail': 'Group with this name already exists'}), 400
-    
-    group = Group(
+
+    group, err = _svc_create_group(
         name=data.get('name'),
-        description=data.get('description')
+        description=data.get('description'),
     )
-    db.session.add(group)
-    db.session.flush()  # Get the group ID
-    
+    if err:
+        return jsonify({'detail': err}), 400
+
     # Creator is automatically a root member
     user_group = UserGroup(
         user_id=current_user.id,
         group_id=group.id,
-        role='root'
+        role='root',
     )
     db.session.add(user_group)
     db.session.commit()
     db.session.refresh(group)
-    
+
     return jsonify(group.to_dict()), 201
 
 
@@ -89,13 +90,13 @@ async def create_group(current_user):
 @token_required
 async def get_group(current_user, group_id):
     """Get a specific group."""
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+    group = get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
-    
+
     return jsonify(group.to_dict())
 
 
@@ -104,27 +105,21 @@ async def get_group(current_user, group_id):
 @require_permission('group.manage')
 async def update_group(current_user, group_id):
     """Update a group. Root only (controlled by group.manage permission)."""
-    group = db.session.query(Group).filter(Group.id == group_id).first()
-    if not group:
-        return jsonify({'detail': 'Group not found'}), 404
-    
     data = await request.get_json()
+    kwargs = {}
     if 'name' in data:
-        # Check if new name already exists
-        existing = db.session.query(Group).filter(
-            Group.name == data['name'],
-            Group.id != group_id
-        ).first()
-        if existing:
-            return jsonify({'detail': 'Group with this name already exists'}), 400
-        group.name = data['name']
-    
+        kwargs['name'] = data['name']
     if 'description' in data:
-        group.description = data['description']
-    
+        kwargs['description'] = data['description']
+    if 'monitoring_config' in data:
+        kwargs['monitoring_config'] = data['monitoring_config']
+
+    group, err = _svc_update_group(group_id, **kwargs)
+    if err:
+        return jsonify({'detail': err}), 404 if err == 'Group not found' else 400
+
     db.session.commit()
     db.session.refresh(group)
-    
     return jsonify(group.to_dict())
 
 
@@ -133,13 +128,11 @@ async def update_group(current_user, group_id):
 @require_permission('group.manage')
 async def delete_group(current_user, group_id):
     """Delete a group. Root only (controlled by group.manage permission)."""
-    group = db.session.query(Group).filter(Group.id == group_id).first()
-    if not group:
-        return jsonify({'detail': 'Group not found'}), 404
-    
-    db.session.delete(group)
+    ok, err = _svc_delete_group(group_id)
+    if err:
+        return jsonify({'detail': err}), 404
+
     db.session.commit()
-    
     return '', 204
 
 
@@ -149,22 +142,22 @@ async def delete_group(current_user, group_id):
 async def add_user_to_group(current_user, group_id, user_id):
     """Add a user to a group. Admin or above only (controlled by member.manage permission)."""
     from app.models import User
-    
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+
+    group = get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     user = db.session.query(User).filter(User.id == user_id).first()
     if not user:
         return jsonify({'detail': 'User not found'}), 404
-    
+
     if user in group.users:
         return jsonify({'detail': 'User is already a member of this group'}), 400
-    
+
     group.users.append(user)
     db.session.commit()
     db.session.refresh(group)
-    
+
     return jsonify(group.to_dict())
 
 
@@ -174,22 +167,22 @@ async def add_user_to_group(current_user, group_id, user_id):
 async def remove_user_from_group(current_user, group_id, user_id):
     """Remove a user from a group. Admin or above only (controlled by member.manage permission)."""
     from app.models import User
-    
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+
+    group = get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     user = db.session.query(User).filter(User.id == user_id).first()
     if not user:
         return jsonify({'detail': 'User not found'}), 404
-    
+
     if user not in group.users:
         return jsonify({'detail': 'User is not a member of this group'}), 400
-    
+
     group.users.remove(user)
     db.session.commit()
     db.session.refresh(group)
-    
+
     return jsonify(group.to_dict())
 
 
@@ -199,8 +192,8 @@ async def remove_user_from_group(current_user, group_id, user_id):
 async def invite_member(current_user, group_id):
     """Invite a member to a group by email. Admin or above only (controlled by member.invite permission)."""
     from app.models import User, UserGroup
-    
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+
+    group = get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
     
@@ -243,7 +236,7 @@ async def update_member_role(current_user, group_id, user_id):
     """Update a member's role in a group. Root and admin (with permission) can change roles."""
     from app.models import User, UserGroup
     
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+    group = get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
     
@@ -296,7 +289,7 @@ async def list_api_keys(current_user):
 @token_required
 async def list_api_keys_by_group(current_user, group_id):
     """List all API keys for a specific group."""
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+    group = get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
     
@@ -345,7 +338,7 @@ async def create_api_key(current_user):
     data = await request.get_json()
     
     # Check if the group exists and user is a member
-    group = db.session.query(Group).filter(Group.id == data.get('group_id')).first()
+    group = get_group_by_id(data.get('group_id'))
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
     

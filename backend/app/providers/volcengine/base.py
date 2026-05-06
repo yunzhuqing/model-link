@@ -203,11 +203,6 @@ class VolcengineProvider(BaseProvider):
             # User explicitly requested reasoning
             result["reasoning"] = {"effort": request.reasoning_effort}
 
-        # Pass through extra metadata (excluding internal keys)
-        for key, value in request.metadata.items():
-            if key not in _INTERNAL_KEYS and key not in result:
-                result[key] = value
-
         return result
 
     def _message_to_input_item(self, message: Message) -> Any:

@@ -5,18 +5,21 @@ import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail, BarChart3, Cpu, List, Gauge,
+  Users, UserPlus, Mail, BarChart3, Cpu, List, Gauge, Activity,
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';
 import GroupStatistics from './GroupStatistics';
 import GroupModels from './GroupModels';
 import UsageRecordsTable from '../components/UsageRecordsTable';
+import MonitoringConfig from '../components/MonitoringConfig';
+import type { MonitoringConfig as MonitoringConfigType } from '../api/client';
 
 interface Group {
   id: number;
   name: string;
   description: string;
+  monitoring_config?: MonitoringConfigType | null;
   created_at: string;
   users?: Member[];
 }
@@ -34,7 +37,7 @@ export default function GroupDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage' | 'rateLimits'>('statistics');
+  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage' | 'rateLimits' | 'monitoring'>('statistics');
   const [showInviteMember, setShowInviteMember] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
@@ -173,6 +176,7 @@ export default function GroupDetail() {
                 { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
                 { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
                 { key: 'rateLimits', label: t('group.tabRateLimits'), icon: Gauge, color: 'teal' },
+                { key: 'monitoring', label: t('group.tabMonitoring'), icon: Activity, color: 'cyan' },
               ]
             : [
                 { key: 'statistics', label: t('group.tabStatistics'), icon: BarChart3, color: 'amber' },
@@ -182,6 +186,7 @@ export default function GroupDetail() {
                 { key: 'providers', label: t('group.tabProviders'), icon: Database, color: 'blue', count: providers?.length || 0 },
                 { key: 'usage', label: t('group.tabUsage'), icon: List, color: 'rose' },
                 { key: 'rateLimits', label: t('group.tabRateLimits'), icon: Gauge, color: 'teal' },
+                { key: 'monitoring', label: t('group.tabMonitoring'), icon: Activity, color: 'cyan' },
               ]
           ).map(({ key, label, icon: Icon, color, count }) => {
             const active = activeTab === key;
@@ -398,6 +403,14 @@ export default function GroupDetail() {
       {/* ── Rate Limits Tab ──────────────────────────────────────────────────── */}
       {activeTab === 'rateLimits' && (
         <GroupRateLimits groupId={parseInt(id!)} />
+      )}
+
+      {/* ── Monitoring Tab ───────────────────────────────────────────────────── */}
+      {activeTab === 'monitoring' && (
+        <MonitoringConfig
+          groupId={parseInt(id!)}
+          monitoringConfig={group?.monitoring_config}
+        />
       )}
     </div>
   );

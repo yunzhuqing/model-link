@@ -29,6 +29,8 @@ logger = logging.getLogger("gateway")
 from app import db
 from app.models import Provider, Model, ApiKey, User
 from jose import JWTError, jwt
+from app.monitoring import create_tracer
+from app.group_service import get_group_monitoring_config
 
 # 导入中间层
 from app.middleware.gateway_service import (
@@ -491,8 +493,9 @@ async def _handle_request(adapter):
     except Exception as e:
         logger.warning(f"[rate_limiter] Pre-check failed, skipping: {e}")
 
-    # 4.6. 记录原始请求数据
-    logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
+    # 4.6. Get monitoring config from group (cache-first)
+    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    tracer = create_tracer(monitoring_config)
 
     # 5. 调用中间层
     _request_start_time = time.monotonic()
@@ -514,41 +517,46 @@ async def _handle_request(adapter):
                 except Exception:
                     pass
 
-            # stream_chat returns (generator, model_meta) and releases the DB
-            # session before any streaming begins.
+            if tracer:
+                tracer.start(model_name, input_data=data)
+                tracer.log_input(data)
+
             chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id)
 
-            # Wrap the chunks to accumulate the final UsageInfo and record it
-            # after the stream finishes (fire-and-forget background thread).
             _app = current_app._get_current_object()
 
             def _chunks_with_usage_recording():
                 last_usage = None
-                # Preserve extra data (e.g. cache_creation with ephemeral_5m/1h tokens)
-                # from earlier usage chunks, since the final usage chunk (message_delta)
-                # may not carry them.
                 _accumulated_extra = {}
+                _content_parts: list[str] = []
                 try:
                     for chunk in chunks:
                         if chunk.usage is not None:
-                            # Accumulate extra from all usage-bearing chunks
                             if hasattr(chunk.usage, 'extra') and chunk.usage.extra:
                                 _accumulated_extra.update(chunk.usage.extra)
                             last_usage = chunk.usage
+                        if chunk.delta_content:
+                            _content_parts.append(chunk.delta_content)
                         yield chunk
-                    # Merge accumulated extra into the final usage
                     if last_usage is not None and _accumulated_extra:
                         if hasattr(last_usage, 'extra'):
-                            # Only add keys not already present in last_usage.extra
                             for k, v in _accumulated_extra.items():
                                 if k not in last_usage.extra:
                                     last_usage.extra[k] = v
                         else:
                             last_usage.extra = _accumulated_extra
+                    if tracer:
+                        tracer.log_output({
+                            "content": "".join(_content_parts) if _content_parts else None,
+                            "usage": last_usage.to_dict() if last_usage else None,
+                        })
+                except Exception:
+                    if tracer:
+                        tracer.end(error=Exception("stream error"))
+                    raise
                 finally:
                     if last_usage is not None:
                         try:
-                            # TPM reconciliation for streaming
                             _reconcile_tpm_from_usage(rate_limiter, rate_limit_info, last_usage)
                         except Exception as _e:
                             logger.warning(f"[rate_limiter] Stream TPM reconciliation failed: {_e}")
@@ -581,18 +589,36 @@ async def _handle_request(adapter):
                             )
                         except Exception as _ue:
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
+                    if tracer:
+                        tracer.set_metadata({
+                            "group_id": group_id,
+                            "user": _user_name,
+                            "provider": model_meta.get('provider_name'),
+                        })
+                        tracer.end()
 
             return adapter.create_stream_response(_chunks_with_usage_recording(), model_name)
 
         else:
-            # 非流式请求 — use chat() to get resolved model for usage recording
+            if tracer:
+                tracer.start(model_name, input_data=data)
+                tracer.log_input(data)
+
             response, resolved = _gateway_service.chat(chat_request, group_id)
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
 
-            # TPM reconciliation: adjust pre-estimated tokens vs actual input tokens
+            if tracer:
+                tracer.log_output(adapter.format_response(response))
+                tracer.set_metadata({
+                    "group_id": group_id,
+                    "user": user.username if user else None,
+                    "provider": resolved.db_provider.name,
+                    "duration_ms": _duration_ms,
+                })
+                tracer.end()
+
             _reconcile_tpm(rate_limiter, rate_limit_info, response)
 
-            # Record usage asynchronously (fire-and-forget)
             try:
                 from app.usage_service import record_usage
                 record_usage(
@@ -610,12 +636,18 @@ async def _handle_request(adapter):
             return jsonify(adapter.format_response(response))
 
     except ProviderError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
