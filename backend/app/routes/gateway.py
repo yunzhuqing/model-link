@@ -356,7 +356,12 @@ async def _handle_request(adapter):
     # 2. 获取请求数据 (force=True to accept any Content-Type)
     try:
         data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
+        raw = await request.get_data()
+        logger.warning(
+            "handle_request UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
+            e, request.content_type, raw[:200],
+        )
         data = None
 
     if not data:
@@ -840,7 +845,12 @@ async def create_embeddings():
     # 2. 获取请求数据
     try:
         data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
+        raw = await request.get_data()
+        logger.warning(
+            "embeddings UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
+            e, request.content_type, raw[:200],
+        )
         data = None
     if not data:
         _log_error("embeddings", 400, "Invalid or empty JSON request body")
@@ -973,7 +983,12 @@ async def create_images():
     # 2. 获取请求数据
     try:
         data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
+        raw = await request.get_data()
+        logger.warning(
+            "images_generations UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
+            e, request.content_type, raw[:200],
+        )
         data = None
     if not data:
         _log_error("images_generations", 400, "Invalid or empty JSON request body")
@@ -1101,7 +1116,12 @@ async def edit_images():
     # 2. 获取请求数据
     try:
         data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
+        raw = await request.get_data()
+        logger.warning(
+            "images_edits UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
+            e, request.content_type, raw[:200],
+        )
         data = None
     if not data:
         _log_error("images_edits", 400, "Invalid or empty JSON request body")
@@ -1278,7 +1298,12 @@ async def create_rerank():
     # 2. 获取请求数据
     try:
         data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
+        raw = await request.get_data()
+        logger.warning(
+            "rerank UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
+            e, request.content_type, raw[:200],
+        )
         data = None
     if not data:
         _log_error("rerank", 400, "Invalid or empty JSON request body")

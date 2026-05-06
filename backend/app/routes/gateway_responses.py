@@ -315,7 +315,12 @@ async def openai_responses():
     # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
     try:
         data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
+        raw = await request.get_data()
+        logger.warning(
+            "responses UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
+            e, request.content_type, raw[:200],
+        )
         data = None
     if not data:
         _log_error("responses", 400, "Invalid or empty JSON request body")
