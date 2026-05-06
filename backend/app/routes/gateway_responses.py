@@ -318,10 +318,15 @@ async def openai_responses():
     except UnicodeDecodeError as e:
         raw = await request.get_data()
         logger.warning(
-            "responses UnicodeDecodeError: %s | Content-Type: %s | raw bytes (first 200): %r",
-            e, request.content_type, raw[:200],
+            "responses UnicodeDecodeError: %s | Content-Type: %s | "
+            "error at pos %d, context: %r",
+            e, request.content_type, e.start,
+            raw[max(0, e.start - 50):e.start + 50],
         )
-        data = None
+        try:
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, Exception):
+            data = None
     if not data:
         _log_error("responses", 400, "Invalid or empty JSON request body")
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
