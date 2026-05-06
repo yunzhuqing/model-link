@@ -490,22 +490,25 @@ class AnthropicProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(
-                        f"Anthropic API error ({response.status_code}): "
-                        f"{json.dumps(error_data, ensure_ascii=False)}"
-                    )
-                except json.JSONDecodeError:
-                    raise RuntimeError(
-                        f"Anthropic API error ({response.status_code}): {response.text}"
-                    )
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(
+                            f"Anthropic API error ({response.status_code}): "
+                            f"{json.dumps(error_data, ensure_ascii=False)}"
+                        )
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"Anthropic API error ({response.status_code}): {response.text}"
+                        )
 
-            response_data = response.json()
-            return self.parse_response(response_data, request.model)
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
+                return self.parse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -528,7 +531,8 @@ class AnthropicProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 # Check for error status before streaming
                 if response.status_code >= 400:
                     error_text = ""

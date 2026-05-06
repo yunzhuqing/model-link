@@ -126,7 +126,8 @@ class VLLMProvider(OpenAIProvider):
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
         def _do_stream(req_data: Dict[str, Any]) -> Generator[StreamChunk, None, None]:
-            with self.client.stream("POST", url, json=req_data) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=req_data) as response:
                 if response.status_code in (400, 422):
                     error_text = ""
                     for chunk in response.iter_bytes():

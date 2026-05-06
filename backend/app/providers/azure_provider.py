@@ -665,21 +665,24 @@ class AzureProvider(OpenAIProvider):
             request_data["stream"] = False
 
         try:
-            response = self.client.post(url, json=request_data)
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data)
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                    except json.JSONDecodeError:
+                        raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
 
-            response.raise_for_status()
-            response_data = response.json()
+                response.raise_for_status()
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
 
-            if self._uses_responses_api(deployment_name):
-                return self._parse_responses_api_response(response_data, request.model)
-            return self.parse_response(response_data, request.model)
+                if self._uses_responses_api(deployment_name):
+                    return self._parse_responses_api_response(response_data, request.model)
+                return self.parse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -707,7 +710,8 @@ class AzureProvider(OpenAIProvider):
             request_data["stream"] = True
 
             try:
-                with self.client.stream("POST", url, json=request_data) as response:
+                with self._trace_call(request.model, input_data=request_data), \
+                     self.client.stream("POST", url, json=request_data) as response:
                     if response.status_code >= 400:
                         error_text = ""
                         for chunk in response.iter_bytes():
@@ -730,7 +734,8 @@ class AzureProvider(OpenAIProvider):
             request_data["stream"] = True
 
             try:
-                with self.client.stream("POST", url, json=request_data) as response:
+                with self._trace_call(request.model, input_data=request_data), \
+                     self.client.stream("POST", url, json=request_data) as response:
                     if response.status_code >= 400:
                         error_text = ""
                         for chunk in response.iter_bytes():

@@ -586,46 +586,49 @@ class GeminiProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(
-                        f"Gemini API error ({response.status_code}): "
-                        f"{json.dumps(error_data, ensure_ascii=False)}"
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(
+                            f"Gemini API error ({response.status_code}): "
+                            f"{json.dumps(error_data, ensure_ascii=False)}"
+                        )
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"Gemini API error ({response.status_code}): {response.text}"
+                        )
+
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
+                chat_response = self.parse_response(response_data, request.model)
+
+                # Enrich image generation usage with resolution/aspect from request metadata
+                if (chat_response.usage and chat_response.usage.extra
+                        and chat_response.usage.extra.get('output_image_number')):
+                    meta = request.metadata
+                    size = str(meta.get('size', ''))
+                    ar = str(meta.get('aspect_ratio', ''))
+                    res = str(meta.get('resolution', ''))
+                    from app.providers.image_size_utils import resolve_image_size
+                    resolved_aspect, resolved_tier = resolve_image_size(
+                        model=request.model, size=size, aspect_ratio=ar,
+                        resolution=res,
                     )
-                except json.JSONDecodeError:
-                    raise RuntimeError(
-                        f"Gemini API error ({response.status_code}): {response.text}"
+                    if resolved_tier:
+                        chat_response.usage.extra['output_image_resolution'] = resolved_tier
+                    if resolved_aspect:
+                        chat_response.usage.extra['output_image_aspect'] = resolved_aspect
+                    # Propagate the requested response_format so the Responses API
+                    # adapter can decide between url / b64_json output.
+                    chat_response.usage.extra['_response_format'] = (
+                        meta.get('response_format', 'b64_json')
                     )
 
-            response_data = response.json()
-            chat_response = self.parse_response(response_data, request.model)
-
-            # Enrich image generation usage with resolution/aspect from request metadata
-            if (chat_response.usage and chat_response.usage.extra
-                    and chat_response.usage.extra.get('output_image_number')):
-                meta = request.metadata
-                size = str(meta.get('size', ''))
-                ar = str(meta.get('aspect_ratio', ''))
-                res = str(meta.get('resolution', ''))
-                from app.providers.image_size_utils import resolve_image_size
-                resolved_aspect, resolved_tier = resolve_image_size(
-                    model=request.model, size=size, aspect_ratio=ar,
-                    resolution=res,
-                )
-                if resolved_tier:
-                    chat_response.usage.extra['output_image_resolution'] = resolved_tier
-                if resolved_aspect:
-                    chat_response.usage.extra['output_image_aspect'] = resolved_aspect
-                # Propagate the requested response_format so the Responses API
-                # adapter can decide between url / b64_json output.
-                chat_response.usage.extra['_response_format'] = (
-                    meta.get('response_format', 'b64_json')
-                )
-
-            return chat_response
+                return chat_response
 
         except RuntimeError:
             raise
@@ -666,7 +669,8 @@ class GeminiProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk_bytes in response.iter_bytes():

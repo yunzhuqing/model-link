@@ -304,22 +304,25 @@ class BailianProvider(OpenAIProvider):
         url = f"{self.config.base_url}/chat/completions"
 
         try:
-            response = self.client.post(url, json=request_data)
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data)
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(
-                        f"Bailian API error ({response.status_code}): "
-                        f"{json.dumps(error_data, ensure_ascii=False)}"
-                    )
-                except json.JSONDecodeError:
-                    raise RuntimeError(
-                        f"Bailian API error ({response.status_code}): {response.text}"
-                    )
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(
+                            f"Bailian API error ({response.status_code}): "
+                            f"{json.dumps(error_data, ensure_ascii=False)}"
+                        )
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"Bailian API error ({response.status_code}): {response.text}"
+                        )
 
-            response_data = response.json()
-            return self.parse_response(response_data, request.model)
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
+                return self.parse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -418,7 +421,8 @@ class BailianProvider(OpenAIProvider):
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
         try:
-            with self.client.stream("POST", url, json=request_data) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk in response.iter_bytes():

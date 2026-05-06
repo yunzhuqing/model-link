@@ -1338,54 +1338,58 @@ class VertexAIProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            response = self.client.post(url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {}))
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {}))
 
-            if response.status_code >= 400:
-                error_text = response.text
+                if response.status_code >= 400:
+                    error_text = response.text
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                    except json.JSONDecodeError:
+                        raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text[:500]}")
+
                 try:
-                    error_data = response.json()
-                    raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text[:500]}")
+                    response_data = response.json()
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {response.text[:500]}")
 
-            try:
-                response_data = response.json()
-            except json.JSONDecodeError as e:
-                raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {response.text[:500]}")
+                if child_span:
+                    child_span.log_output(response_data)
 
-            # ── Intercept Gemini image generation responses ────────────────
-            if publisher == ModelPublisher.GOOGLE and (
-                self.is_image_generation_model(request.model)
-                or self._has_image_generation_tool(request)
-            ):
-                img_response = handle_image_generation_response(
-                    response_data, request.model, self.PROVIDER_TYPE,
-                    response_format=request.metadata.get('response_format', 'b64_json'),
-                )
-                if img_response:
-                    # Enrich image generation usage with resolution/aspect from request metadata
-                    if img_response.usage and img_response.usage.extra:
-                        meta = request.metadata
-                        size = str(meta.get('size', ''))
-                        ar = str(meta.get('aspect_ratio', ''))
-                        res = str(meta.get('resolution', ''))
-                        from app.providers.image_size_utils import resolve_image_size
-                        resolved_aspect, resolved_tier = resolve_image_size(
-                            model=request.model, size=size, aspect_ratio=ar,
-                            resolution=res,
-                        )
-                        if resolved_tier:
-                            img_response.usage.extra['output_image_resolution'] = resolved_tier
-                        if resolved_aspect:
-                            img_response.usage.extra['output_image_aspect'] = resolved_aspect
-                        # Propagate the requested response_format so the Responses API
-                        # adapter can decide between url / b64_json output.
-                        img_response.usage.extra['_response_format'] = (
-                            meta.get('response_format', 'b64_json')
-                        )
-                    return img_response
+                # ── Intercept Gemini image generation responses ────────────────
+                if publisher == ModelPublisher.GOOGLE and (
+                    self.is_image_generation_model(request.model)
+                    or self._has_image_generation_tool(request)
+                ):
+                    img_response = handle_image_generation_response(
+                        response_data, request.model, self.PROVIDER_TYPE,
+                        response_format=request.metadata.get('response_format', 'b64_json'),
+                    )
+                    if img_response:
+                        # Enrich image generation usage with resolution/aspect from request metadata
+                        if img_response.usage and img_response.usage.extra:
+                            meta = request.metadata
+                            size = str(meta.get('size', ''))
+                            ar = str(meta.get('aspect_ratio', ''))
+                            res = str(meta.get('resolution', ''))
+                            from app.providers.image_size_utils import resolve_image_size
+                            resolved_aspect, resolved_tier = resolve_image_size(
+                                model=request.model, size=size, aspect_ratio=ar,
+                                resolution=res,
+                            )
+                            if resolved_tier:
+                                img_response.usage.extra['output_image_resolution'] = resolved_tier
+                            if resolved_aspect:
+                                img_response.usage.extra['output_image_aspect'] = resolved_aspect
+                            # Propagate the requested response_format so the Responses API
+                            # adapter can decide between url / b64_json output.
+                            img_response.usage.extra['_response_format'] = (
+                                meta.get('response_format', 'b64_json')
+                            )
+                        return img_response
 
-            return self.parse_response(response_data, request.model)
+                return self.parse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -1443,7 +1447,8 @@ class VertexAIProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self.client.stream("POST", url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {})) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk in response.iter_bytes():

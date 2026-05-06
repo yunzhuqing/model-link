@@ -333,22 +333,26 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         url = f"{self.config.base_url}/responses"
 
         try:
-            response = self.client.post(url, json=request_data)
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data)
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(
-                        f"OpenAI Responses API error ({response.status_code}): "
-                        f"{json.dumps(error_data, ensure_ascii=False)}"
-                    )
-                except json.JSONDecodeError:
-                    raise RuntimeError(
-                        f"OpenAI Responses API error ({response.status_code}): {response.text}"
-                    )
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(
+                            f"OpenAI Responses API error ({response.status_code}): "
+                            f"{json.dumps(error_data, ensure_ascii=False)}"
+                        )
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"OpenAI Responses API error ({response.status_code}): {response.text}"
+                        )
 
-            response.raise_for_status()
-            return self.parse_response(response.json(), request.model)
+                response.raise_for_status()
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
+                return self.parse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -615,7 +619,8 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         _tc_accum: Dict[str, Dict[str, Any]] = {}  # call_id → {name, args}
 
         try:
-            with self.client.stream("POST", url, json=request_data) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk in response.iter_bytes():

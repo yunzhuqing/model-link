@@ -54,3 +54,12 @@ class BaseTracer(ABC):
         Must call ``flush()`` to ensure data is sent.
         """
         ...
+
+    @abstractmethod
+    def start_child(self, name: str, model: str | None = None, provider_type: str = "", input_data: dict | None = None) -> Any:
+        """Create a child observation nested under the current span.
+
+        Returns a child-span handle (implementation-specific) or None if
+        the parent span was never started.
+        """
+        ...

@@ -109,7 +109,8 @@ def _parse_content_blocks(blocks: list) -> list:
         elif block_type in ('input_video', 'video'):
             url = _extract_str(block, 'video_url')
             if url:
-                cb = ContentBlock.from_video_url(url)
+                fps = block.get('fps')
+                cb = ContentBlock.from_video_url(url, fps=str(fps) if fps is not None else None)
                 cb.role = block.get('role') or cb.role
                 result.append(cb)
         elif block_type == 'input_audio':

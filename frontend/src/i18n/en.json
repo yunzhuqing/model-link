@@ -266,6 +266,7 @@
     "tabUsage": "Usage Records",
     "tabRateLimits": "Rate Limits",
     "tabPermissions": "Permissions",
+    "tabMonitoring": "Monitoring",
     "rateLimitsDesc": "Real-time RPM/TPM usage for models in this group",
     "usageDesc": "View usage records for models in this group",
     "groupDetail": {

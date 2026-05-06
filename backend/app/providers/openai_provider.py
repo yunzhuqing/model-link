@@ -74,7 +74,8 @@ def parse_openai_request(data: dict) -> ChatRequest:
                 elif item_type == 'video_url':
                     video_url = item.get('video_url', {})
                     url = video_url.get('url', '')
-                    blocks.append(ContentBlock.from_video_url(url))
+                    fps = video_url.get('fps')
+                    blocks.append(ContentBlock.from_video_url(url, fps=str(fps) if fps is not None else None))
                 elif item_type == 'audio_url':
                     audio_url = item.get('audio_url', {})
                     url = audio_url.get('url', '')
@@ -436,7 +437,10 @@ class OpenAIProvider(BaseProvider):
                 "image_url": {"url": f"data:{block.media_type or 'image/jpeg'};base64,{block.data}"}
             }
         elif block.type == ContentType.VIDEO_URL:
-            return {"type": "video_url", "video_url": {"url": block.url}}
+            video_url_dict: dict = {"url": block.url}
+            if block.video_fps is not None:
+                video_url_dict["fps"] = block.video_fps
+            return {"type": "video_url", "video_url": video_url_dict}
         elif block.type == ContentType.VIDEO_BASE64:
             return {
                 "type": "video_url",
@@ -616,27 +620,29 @@ class OpenAIProvider(BaseProvider):
         
         url = f"{self.config.base_url}/chat/completions"
         req_timeout = self._get_request_timeout(request)
-        
-        try:
-            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
-            
-            if response.status_code >= 400:
-                # Try to parse error response
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"OpenAI API error ({response.status_code}): {response.text}")
-            
-            response.raise_for_status()
-            
-            response_data = response.json()
-            return self.parse_response(response_data, request.model)
-        
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"OpenAI API error: {str(e)}")
+
+        with self._trace_call(request.model, input_data=request_data) as child_span:
+            try:
+                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                    except json.JSONDecodeError:
+                        raise RuntimeError(f"OpenAI API error ({response.status_code}): {response.text}")
+
+                response.raise_for_status()
+
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
+                return self.parse_response(response_data, request.model)
+
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"OpenAI API error: {str(e)}")
     
     def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
         """执行流式对话请求"""
@@ -655,7 +661,8 @@ class OpenAIProvider(BaseProvider):
         
         try:
             req_timeout = self._get_request_timeout(request)
-            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 # Check for error status before streaming
                 if response.status_code >= 400:
                     # Read the error response and raise with details

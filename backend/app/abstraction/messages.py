@@ -61,6 +61,7 @@ class ContentBlock:
     tool_result: Optional[str] = None
     is_error: bool = False
     cache_control: Optional[Dict[str, Any]] = None  # Anthropic prompt caching: e.g. {"type": "ephemeral"}
+    video_fps: Optional[str] = None  # FPS for video_url inputs (doubao, etc.)
     
     @classmethod
     def from_text(cls, text: str) -> 'ContentBlock':
@@ -78,9 +79,9 @@ class ContentBlock:
         return cls(type=ContentType.IMAGE_BASE64, data=data, media_type=media_type)
     
     @classmethod
-    def from_video_url(cls, url: str) -> 'ContentBlock':
+    def from_video_url(cls, url: str, fps: str | None = None) -> 'ContentBlock':
         """从视频 URL 创建内容块"""
-        return cls(type=ContentType.VIDEO_URL, url=url)
+        return cls(type=ContentType.VIDEO_URL, url=url, video_fps=fps)
     
     @classmethod
     def from_video_base64(cls, data: str, media_type: str = "video/mp4") -> 'ContentBlock':
@@ -212,6 +213,7 @@ class Message:
                 tool_result=tool_result_val,
                 is_error=item.get('is_error', False),
                 cache_control=item.get('cache_control'),
+                video_fps=item.get('video_fps'),
             )
         else:
             # Unknown type, return empty text block

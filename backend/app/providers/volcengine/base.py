@@ -314,7 +314,10 @@ class VolcengineProvider(BaseProvider):
                     data_uri = f"data:{block.media_type or 'image/jpeg'};base64,{block.data}"
                     parts.append({"type": "input_image", "image_url": data_uri})
                 elif block.type == ContentType.VIDEO_URL:
-                    parts.append({"type": "input_video", "video_url": block.url})
+                    item = {"type": "input_video", "video_url": block.url}
+                    if block.video_fps is not None:
+                        item["fps"] = int(block.video_fps)
+                    parts.append(item)
                 elif block.type == ContentType.AUDIO_URL:
                     parts.append({"type": "input_audio", "audio_url": block.url})
                 elif block.type == ContentType.FILE_URL:
@@ -400,22 +403,25 @@ class VolcengineProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+            with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    raise RuntimeError(
-                        f"Volcengine API error ({response.status_code}): "
-                        f"{json.dumps(error_data, ensure_ascii=False)}"
-                    )
-                except json.JSONDecodeError:
-                    raise RuntimeError(
-                        f"Volcengine API error ({response.status_code}): {response.text}"
-                    )
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        raise RuntimeError(
+                            f"Volcengine API error ({response.status_code}): "
+                            f"{json.dumps(error_data, ensure_ascii=False)}"
+                        )
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"Volcengine API error ({response.status_code}): {response.text}"
+                        )
 
-            response_data = response.json()
-            return self._parse_responses_response(response_data, request.model)
+                response_data = response.json()
+                if child_span:
+                    child_span.log_output(response_data)
+                return self._parse_responses_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -764,7 +770,8 @@ class VolcengineProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+            with self._trace_call(request.model, input_data=request_data), \
+                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk_bytes in response.iter_bytes():

@@ -3,6 +3,7 @@
 定义所有供应商必须实现的基础接口。
 """
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from enum import Enum
 from typing import Optional, List, Dict, Any, Generator, AsyncGenerator
 from dataclasses import dataclass, field
@@ -71,16 +72,48 @@ class BaseProvider(ABC):
     def __init__(self, config: ProviderConfig):
         """
         初始化供应商
-        
+
         Args:
             config: 供应商配置
         """
         self.config = config
         self._client = None
-    
+        self.tracer: Any = None  # Set by GatewayService before calling chat/stream_chat
+
     # Default HTTP timeout (seconds) used when creating the httpx client.
     # Individual requests may override this via request.metadata['timeout'].
     DEFAULT_TIMEOUT: int = 600
+
+    @contextmanager
+    def _trace_call(self, model_name: str, input_data: dict | None = None):
+        """Context manager that wraps a provider API call in a child span.
+
+        Usage inside a provider's ``chat()``::
+
+            with self._trace_call(request.model, input_data=request_data) as span:
+                response = self.client.post(url, json=request_data)
+                response_data = response.json()
+                if span:
+                    span.log_output(response_data)
+
+        The child span is automatically ended when the context exits.
+        Exceptions are recorded on the span before re-raising.
+        """
+        if self.tracer is None:
+            yield None
+            return
+        child_span = self.tracer.start_child(model_name, model=model_name, provider_type=self.PROVIDER_TYPE, input_data=input_data)
+        if child_span is not None and input_data is not None:
+            child_span.log_input(input_data)
+        _error: Optional[Exception] = None
+        try:
+            yield child_span
+        except Exception as e:
+            _error = e
+            raise
+        finally:
+            if child_span is not None:
+                child_span.end(error=_error)
 
     @property
     def client(self) -> httpx.Client:

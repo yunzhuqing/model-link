@@ -266,6 +266,7 @@
     "tabUsage": "使用记录",
     "tabRateLimits": "速率限制",
     "tabPermissions": "权限管理",
+    "tabMonitoring": "监控设置",
     "rateLimitsDesc": "此分组中模型的实时 RPM/TPM 用量",
     "usageDesc": "查看此分组中模型的使用记录",
     "groupDetail": {

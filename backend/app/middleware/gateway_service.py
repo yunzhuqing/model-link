@@ -11,7 +11,7 @@
   3. 请求执行 - 调用供应商 API 并返回统一格式的响应
   4. 错误处理 - 统一处理供应商层的错误
 """
-from typing import Optional, Generator, Tuple, Callable, List
+from typing import Any, Optional, Generator, Tuple, Callable, List
 from dataclasses import dataclass
 import hashlib
 import random
@@ -260,7 +260,7 @@ class GatewayService:
             return random.choice(candidates)
 
     def chat(
-        self, request: ChatRequest, group_id: Optional[int] = None
+        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None
     ) -> Tuple[ChatResponse, ResolvedModel]:
         """
         执行非流式对话请求，返回 (ChatResponse, ResolvedModel)。
@@ -308,6 +308,7 @@ class GatewayService:
             self._convert_video_urls_to_base64(request)
 
         # 3. 调用供应商 API
+        resolved.provider_instance.tracer = tracer
         try:
             response = resolved.provider_instance.chat(request)
 
@@ -331,7 +332,7 @@ class GatewayService:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
     def stream_chat(
-        self, request: ChatRequest, group_id: Optional[int] = None
+        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None
     ) -> Tuple[Generator[StreamChunk, None, None], dict]:
         """
         执行流式对话请求，返回 (StreamChunk 生成器, model_meta dict)。
@@ -411,7 +412,16 @@ class GatewayService:
         except Exception:
             pass
 
-        # 8. Return lazy generator + metadata
+        # 7. Attach tracer to provider so it can create child spans internally.
+        resolved.provider_instance.tracer = tracer
+
+        # 8. Release the DB session
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+
+        # 9. Return lazy generator + metadata
         def _stream():
             try:
                 for chunk in resolved.provider_instance.stream_chat(request):

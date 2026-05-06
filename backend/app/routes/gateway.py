@@ -358,7 +358,7 @@ async def _handle_request(adapter):
         data = await request.get_json(force=True, silent=True)
     except UnicodeDecodeError as e:
         raw = await request.get_data()
-        logger.warning(
+        logger.error(
             "handle_request UnicodeDecodeError: %s | Content-Type: %s | "
             "error at pos %d, context: %r",
             e, request.content_type, e.start,
@@ -531,7 +531,7 @@ async def _handle_request(adapter):
                 tracer.start(model_name, input_data=data)
                 tracer.log_input(data)
 
-            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id)
+            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer)
 
             _app = current_app._get_current_object()
 
@@ -614,7 +614,7 @@ async def _handle_request(adapter):
                 tracer.start(model_name, input_data=data)
                 tracer.log_input(data)
 
-            response, resolved = _gateway_service.chat(chat_request, group_id)
+            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
 
             if tracer:
