@@ -74,22 +74,46 @@ const WITH_TOOLS = `{
 }`;
 
 const VISION_REQUEST = `{
-  "model": "claude-3-5-sonnet-20241022",
-  "max_tokens": 1024,
+  "model": "doubao-seed-2.0-lite",
+  "stream": false,
   "messages": [
     {
       "role": "user",
       "content": [
         {
+          "type": "text",
+          "text": "图片里面是啥?"
+        },
+        {
           "type": "image",
           "source": {
             "type": "url",
-            "url": "https://example.com/image.jpg"
+            "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20250212/earbrt/vcg_VCG211286867973_RF.jpg"
           }
-        },
+        }
+      ]
+    }
+  ]
+}`;
+
+const VISION_BASE64_REQUEST = `{
+  "model": "doubao-seed-2.0-lite",
+  "stream": false,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
         {
           "type": "text",
-          "text": "这张图片里有什么？"
+          "text": "图片里面是啥?"
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/4QBiRXhpZgAATU0AKgAAAAgABQESAAMAAAABAAEAAAEaAAUAAAABAAAASgEbAAUAAAABAAAAUgEoAAMAAAABAAEAAAITAAMAAAABAAEAAAAAAAAAAAABAAAAAQAAAAEAAAAB"
+          }
         }
       ]
     }
@@ -363,10 +387,17 @@ export default function HelpMessages() {
         {/* Vision */}
         <SectionCard id="vision" title="图片理解（Vision）" badge="Vision" badgeColor="bg-pink-100 text-pink-700"
           description="content 支持数组格式，图片通过 type: image + source 传入（支持 url 和 base64 两种来源）。">
-          <CurlSection body={VISION_REQUEST} />
+          <div>
+            <p className="text-sm font-medium text-slate-700 mb-2">URL 方式</p>
+            <CurlSection body={VISION_REQUEST} />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-700 mb-2">Base64 方式</p>
+            <CurlSection body={VISION_BASE64_REQUEST} />
+          </div>
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
             <strong>与 OpenAI 格式的差异：</strong>图片使用 <code>{"{'type': 'image', 'source': {...}}"}</code> 格式，而非 <code>image_url</code>。
-            source 的 type 可为 <code>url</code>（图片链接）或 <code>base64</code>（base64 数据）。
+            source 的 type 可为 <code>url</code>（图片链接）或 <code>base64</code>（base64 数据，需指定 <code>media_type</code>）。
           </div>
         </SectionCard>
 

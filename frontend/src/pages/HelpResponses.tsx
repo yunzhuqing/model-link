@@ -13,6 +13,8 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'basic-request', label: '基础对话请求' },
   { id: 'streaming', label: '流式响应' },
   { id: 'with-tools', label: '工具调用' },
+  { id: 'vision', label: '图片理解' },
+  { id: 'video-understanding', label: '视频理解' },
   { id: 'generation-tools', label: '生成功能工具' },
   { id: 'background', label: '后台异步请求' },
   { id: 'get-response', label: '查询异步结果' },
@@ -69,6 +71,55 @@ const WITH_TOOLS = `{
       }
     }
   ]
+}`;
+
+const VISION_REQUEST = `{
+  "model": "qwen3.6-plus",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "视频里面是啥?"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241022/emyrja/dog_and_girl.jpeg"
+        }
+      ]
+    }
+  ],
+  "stream": true,
+  "reasoning": {
+    "effort": "low",
+    "summary": "detailed"
+  }
+}`;
+
+const VIDEO_UNDERSTANDING_REQUEST = `{
+  "model": "qwen3.6-plus",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "视频里面是啥?"
+        },
+        {
+          "type": "input_video",
+          "video_url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241115/cqqkru/1.mp4",
+          "fps": "4"
+        }
+      ]
+    }
+  ],
+  "stream": true,
+  "reasoning": {
+    "effort": "low",
+    "summary": "detailed"
+  }
 }`;
 
 const BACKGROUND_REQUEST = `{
@@ -385,6 +436,34 @@ export default function HelpResponses() {
           description="通过 tools 字段定义可调用函数，模型在需要时会返回 function_call 输出项。"
         >
           <CurlSection body={WITH_TOOLS} />
+        </SectionCard>
+
+        {/* Vision */}
+        <SectionCard
+          id="vision"
+          title="图片理解（Vision）"
+          badge="Vision"
+          badgeColor="bg-pink-100 text-pink-700"
+          description="content 支持数组格式，可同时传入文本和图片（input_image），适用于支持视觉能力的多模态模型。"
+        >
+          <CurlSection body={VISION_REQUEST} />
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>注意：</strong>图片理解需要使用支持视觉的模型，如 <code>qwen3.6-plus</code> 等。<code>reasoning</code> 字段可控制模型的推理 effort 和总结详细程度。
+          </div>
+        </SectionCard>
+
+        {/* Video Understanding */}
+        <SectionCard
+          id="video-understanding"
+          title="视频理解（Video Understanding）"
+          badge="Video"
+          badgeColor="bg-green-100 text-green-700"
+          description="content 支持数组格式，可同时传入文本和视频（input_video）。通过 fps 参数控制视频采样帧率，适用于支持视频理解的多模态模型。"
+        >
+          <CurlSection body={VIDEO_UNDERSTANDING_REQUEST} />
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>注意：</strong>视频理解需要使用支持视频输入的模型，如 <code>qwen3.6-plus</code> 等。<code>video_url</code> 为纯字符串格式，<code>fps</code> 作为顶层字段控制视频采样帧率。
+          </div>
         </SectionCard>
 
         {/* Generation tools redirect */}

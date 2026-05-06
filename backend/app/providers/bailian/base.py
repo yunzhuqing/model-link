@@ -261,6 +261,15 @@ class BailianProvider(OpenAIProvider):
 
         return data
 
+    def _content_block_to_openai(self, block) -> Dict[str, Any]:
+        from app.abstraction.messages import ContentType
+
+        if block.type == ContentType.VIDEO_URL and block.video_fps is not None:
+            item = {"type": "video_url", "video_url": {"url": block.url}}
+            item["fps"] = int(block.video_fps)
+            return item
+        return super()._content_block_to_openai(block)
+
     # ==================== 非流式接口 ====================
 
     def chat(self, request: ChatRequest) -> ChatResponse:

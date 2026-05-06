@@ -13,6 +13,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'streaming', label: '流式响应' },
   { id: 'with-tools', label: '工具调用' },
   { id: 'vision', label: '图片理解' },
+  { id: 'video-understanding', label: '视频理解' },
   { id: 'response-format', label: '响应格式' },
 ];
 
@@ -82,21 +83,55 @@ const VISION_REQUEST = `{
   "model": "qwen-vl-max",
   "messages": [
     {
+      "content": "You are a helpful assistant",
+      "role": "system"
+    },
+    {
       "role": "user",
       "content": [
         {
-          "type": "image_url",
-          "image_url": {
-            "url": "https://example.com/image.jpg"
-          }
+          "type": "text",
+          "text": "图片里面是什么?"
         },
         {
-          "type": "text",
-          "text": "这张图片里有什么？"
+          "type": "image_url",
+          "image_url": {
+            "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20250212/earbrt/vcg_VCG211286867973_RF.jpg"
+          }
         }
       ]
     }
-  ]
+  ],
+  "stream": true,
+  "temperature": 0.7
+}`;
+
+const VIDEO_UNDERSTANDING_REQUEST = `{
+  "model": "qwen3.6-plus",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "视频里面是什么?"
+        },
+        {
+          "type": "video_url",
+          "video_url": {
+            "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241115/cqqkru/1.mp4",
+            "fps": "2"
+          }
+        }
+      ]
+    }
+  ],
+  "stream": true,
+  "temperature": 0.7
 }`;
 
 const BASIC_RESPONSE = `{
@@ -344,6 +379,15 @@ export default function HelpChat() {
           <CurlSection body={VISION_REQUEST} />
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
             <strong>注意：</strong>图片理解需要使用支持视觉的模型，如 <code>qwen-vl-max</code>、<code>qwen-vl-plus</code> 等，请确保模型配置中已勾选 <code>support_image</code>。
+          </div>
+        </SectionCard>
+
+        {/* Video Understanding */}
+        <SectionCard id="video-understanding" title="视频理解（Video Understanding）" badge="Video" badgeColor="bg-green-100 text-green-700"
+          description="content 支持数组格式，可同时传入文本和视频（video_url）。通过 fps 参数控制视频采样帧率，适用于支持视频理解的多模态模型。">
+          <CurlSection body={VIDEO_UNDERSTANDING_REQUEST} />
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>注意：</strong>视频理解需要使用支持视频输入的模型，如 <code>qwen3.6-plus</code> 等。<code>video_url</code> 中的 <code>fps</code> 参数用于控制视频采样帧率，可按需调整。
           </div>
         </SectionCard>
 
