@@ -17,7 +17,6 @@ from app.abstraction.messages import ContentBlock
 from app.abstraction.streaming import StreamChunk
 from app.providers.gemini.image_generation import (
     is_gemini_image_model,
-    has_image_generation_tool,
     parse_inline_images,
     build_image_chat_response,
     stream_image_generation,
@@ -44,18 +43,9 @@ def is_vertexai_image_model(model: str) -> bool:
 
 
 def has_vertexai_image_generation_tool(request: ChatRequest) -> bool:
-    """
-    Check if the request contains an image_generation tool.
-
-    Delegates to the shared Gemini image generation tool detection.
-
-    Args:
-        request: The chat request to check
-
-    Returns:
-        True if the request was sent with an image_generation tool.
-    """
-    return has_image_generation_tool(request)
+    """Check if the request contains an image_generation tool."""
+    from app.abstraction.tools import has_image_generation_tool as _check
+    return _check(request.tools)
 
 
 # =============================================================================

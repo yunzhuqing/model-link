@@ -95,3 +95,8 @@ class ToolResult:
     content: str
     is_error: bool = False
     name: Optional[str] = None
+
+
+def has_image_generation_tool(tools: List[ToolDefinition]) -> bool:
+    """Return True if any tool in *tools* has tool_type IMAGE_GENERATION."""
+    return any(t.tool_type == ToolType.IMAGE_GENERATION for t in tools)

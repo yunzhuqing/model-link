@@ -88,25 +88,9 @@ def is_gemini_image_model(model: str) -> bool:
 
 
 def has_image_generation_tool(request: ChatRequest) -> bool:
-    """
-    Check if the request contains an ``image_generation`` tool.
-
-    When the Responses API adapter parses an ``image_generation`` tool entry,
-    it stores the parameters in ``request.metadata`` and does NOT create a
-    ``ToolDefinition`` (the tool type is not ``function``).  The presence of
-    image-generation metadata keys (set by the adapter) is the reliable signal.
-
-    Args:
-        request: The chat request to check
-
-    Returns:
-        True if the request was sent with an ``image_generation`` tool.
-    """
-    meta = request.metadata
-    return any(k in meta for k in (
-        'size', 'number', 'image_format', 'response_format',
-        'seed', 'watermark', 'reference_images',
-    ))
+    """Check if the request contains an ``image_generation`` tool."""
+    from app.abstraction.tools import has_image_generation_tool as _check
+    return _check(request.tools)
 
 
 # =============================================================================
