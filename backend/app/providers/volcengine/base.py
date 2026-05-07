@@ -24,7 +24,7 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 from .image_generation import (
     DoubaoImageProvider,
     get_support_output_format,
@@ -379,6 +379,7 @@ class VolcengineProvider(BaseProvider):
                 model=request.model,
                 messages=request.messages,
                 metadata=request.metadata,
+                tracer=self.tracer,
             )
 
         # Seedance video generation models → dedicated video generation path
@@ -389,6 +390,7 @@ class VolcengineProvider(BaseProvider):
                 model=request.model,
                 messages=request.messages,
                 metadata=request.metadata,
+                tracer=self.tracer,
             )
 
         # For image generation models (e.g. Seedream), bypass the Responses API
@@ -420,7 +422,11 @@ class VolcengineProvider(BaseProvider):
 
                 response_data = response.json()
                 if child_span:
-                    child_span.log_output(response_data)
+                    _x_req_id = response.headers.get("x-request-id", "")
+                    _output = dict(response_data)
+                    if _x_req_id:
+                        _output["x-request-id"] = _x_req_id
+                    child_span.log_output(_output)
                 return self._parse_responses_response(response_data, request.model)
 
         except RuntimeError:
@@ -454,7 +460,7 @@ class VolcengineProvider(BaseProvider):
                 tc = ToolCall(
                     id=item.get("call_id", item.get("id", "")),
                     name=item.get("name", ""),
-                    arguments=json.loads(item.get("arguments", "{}")) if isinstance(item.get("arguments"), str) else item.get("arguments", {}),
+                    arguments=json_loads(item.get("arguments", "{}")) if isinstance(item.get("arguments"), str) else item.get("arguments", {}),
                     call_type="function"
                 )
                 tool_calls.append(tc)
@@ -606,7 +612,7 @@ class VolcengineProvider(BaseProvider):
         if response.choices and response.choices[0].message:
             raw = response.choices[0].message.content or "[]"
             try:
-                images = json.loads(raw) if isinstance(raw, str) else raw
+                images = json_loads(raw) if isinstance(raw, str) else raw
             except (json.JSONDecodeError, TypeError):
                 images = []
 
@@ -770,8 +776,13 @@ class VolcengineProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data), \
+            with self._trace_call(request.model, input_data=request_data) as child_span, \
                  self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                if child_span:
+                    _x_req_id = response.headers.get("x-request-id", "")
+                    if _x_req_id:
+                        child_span.log_output({"x-request-id": _x_req_id})
+
                 if response.status_code >= 400:
                     error_text = ""
                     for chunk_bytes in response.iter_bytes():
@@ -1099,7 +1110,8 @@ class VolcengineProvider(BaseProvider):
         """
         image_provider = DoubaoImageProvider(
             api_key=self.config.api_key,
-            base_url=self.config.base_url
+            base_url=self.config.base_url,
+            tracer=self.tracer,
         )
 
         try:

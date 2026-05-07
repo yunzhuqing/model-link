@@ -9,6 +9,7 @@ import uuid
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider, parse_openai_request
+from app.utils import json_loads
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -381,7 +382,7 @@ class AzureProvider(OpenAIProvider):
                 from app.abstraction.tools import ToolCall as TC
                 args_str = item.get("arguments", "{}")
                 try:
-                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    args = json_loads(args_str) if isinstance(args_str, str) else args_str
                 except json.JSONDecodeError:
                     args = {}
                 tool_calls.append(ToolCall(

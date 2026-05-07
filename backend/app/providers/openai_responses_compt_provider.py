@@ -38,6 +38,7 @@ from typing import Dict, Any, List, Optional, Generator
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider
+from app.utils import json_loads
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -503,7 +504,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
                 name = item.get("name", "")
                 args_str = item.get("arguments", "{}")
                 try:
-                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    args = json_loads(args_str) if isinstance(args_str, str) else args_str
                 except (json.JSONDecodeError, TypeError):
                     args = {}
 

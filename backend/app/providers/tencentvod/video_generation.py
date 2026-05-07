@@ -49,7 +49,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import Message, MessageRole, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 from app.providers.video_size_utils import resolve_video_size, derive_aspect_ratio
 
@@ -276,6 +276,7 @@ def _create_aigc_video_task(
     last_frame_url: str = "",
     last_frame_file_id: str = "",
     session_id: str = "",
+    tracer: Any = None,
 ) -> str:
     """
     Call CreateAigcVideoTask and return the TaskId.
@@ -351,24 +352,46 @@ def _create_aigc_video_task(
     payload_str = json.dumps(body, ensure_ascii=False)
 
     headers = _build_auth_headers(secret_id, secret_key, "CreateAigcVideoTask", payload_str)
-    response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
-    response.raise_for_status()
-    data = response.json()
 
-    resp = data.get("Response", {})
-    if "Error" in resp:
-        err = resp["Error"]
-        raise RuntimeError(
-            f"TencentVOD CreateAigcVideoTask error "
-            f"(code={err.get('Code')}): {err.get('Message')}"
-        )
+    _span = None
+    if tracer:
+        _span = tracer.start_child(model_name, model=model_name, provider_type="tencentvod", input_data=body, obs_type="span")
+        if _span:
+            _span.log_input(body)
+    _error: Optional[Exception] = None
 
-    task_id = resp.get("TaskId")
-    if not task_id:
-        raise RuntimeError(
-            f"TencentVOD CreateAigcVideoTask returned no TaskId: {data}"
-        )
-    return task_id
+    try:
+        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        resp = data.get("Response", {})
+        if "Error" in resp:
+            err = resp["Error"]
+            raise RuntimeError(
+                f"TencentVOD CreateAigcVideoTask error "
+                f"(code={err.get('Code')}): {err.get('Message')}"
+            )
+
+        task_id = resp.get("TaskId")
+        if not task_id:
+            raise RuntimeError(
+                f"TencentVOD CreateAigcVideoTask returned no TaskId: {data}"
+            )
+
+        if _span:
+            _output: Dict[str, Any] = {"task_id": task_id}
+            _req_id = resp.get("RequestId", "")
+            if _req_id:
+                _output["x-request-id"] = _req_id
+            _span.log_output(_output)
+        return task_id
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -381,6 +404,7 @@ def _poll_video_task(
     task_id: str,
     sub_app_id: Optional[int],
     poll_timeout: Optional[int] = None,
+    tracer: Any = None,
 ) -> List[Dict[str, Any]]:
     """
     Poll DescribeTaskDetail until the video task finishes, then extract the video URL.
@@ -755,7 +779,7 @@ def stream_video_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            videos = json.loads(raw) if isinstance(raw, str) else []
+            videos = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             videos = []
 

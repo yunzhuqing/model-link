@@ -18,6 +18,7 @@ import random
 import httpx
 
 from app import db
+from app.utils import json_loads
 from app.models import Provider, Model
 from app.providers import get_provider_class
 from app.providers.base import BaseProvider, ProviderConfig
@@ -864,7 +865,7 @@ class GatewayService:
             text_content = msg.get_text_content()
             if text_content:
                 try:
-                    items = _json.loads(text_content)
+                    items = json_loads(text_content)
                     if not isinstance(items, list):
                         items = [items]
                     for item in items:
@@ -997,7 +998,7 @@ class GatewayService:
             text_content = msg.get_text_content()
             if text_content:
                 try:
-                    items = _json.loads(text_content)
+                    items = json_loads(text_content)
                     if not isinstance(items, list):
                         items = [items]
                     for item in items:
@@ -1053,7 +1054,7 @@ class GatewayService:
                 json_start = error_msg.find('): ') + 3
                 if json_start > 2:
                     json_str = error_msg[json_start:]
-                    error_data = json.loads(json_str)
+                    error_data = json_loads(json_str)
                     return status_code, error_data
             except (json.JSONDecodeError, ValueError):
                 pass

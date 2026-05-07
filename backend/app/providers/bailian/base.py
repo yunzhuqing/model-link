@@ -296,6 +296,7 @@ class BailianProvider(OpenAIProvider):
                 messages=request.messages,
                 metadata=request.metadata,
                 domain=self._get_dashscope_domain(),
+                tracer=self.tracer,
             )
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
@@ -304,6 +305,7 @@ class BailianProvider(OpenAIProvider):
                 model=request.model,
                 messages=request.messages,
                 metadata=request.metadata,
+                tracer=self.tracer,
             )
 
         # 标准对话路径

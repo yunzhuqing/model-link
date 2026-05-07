@@ -41,7 +41,7 @@ from app.abstraction.chat import (
 from app.abstraction.messages import ContentType, Message, MessageRole
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.providers.video_size_utils import resolve_seedance_size, resolve_video_size
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 
 # =============================================================================
@@ -437,6 +437,7 @@ def _create_video_task(
     generate_audio: Optional[bool] = True,
     watermark: bool = False,
     seed: Optional[int] = None,
+    tracer: Any = None,
 ) -> str:
     """
     调用 POST /contents/generations/tasks 创建视频生成任务，返回 task_id。
@@ -452,6 +453,7 @@ def _create_video_task(
         generate_audio: 是否生成音频（默认 True；None 表示不发送该参数）
         watermark:      是否添加水印（默认 False）
         seed:           随机种子
+        tracer:         可选的 tracer 实例
 
     Returns:
         task_id 字符串
@@ -484,21 +486,41 @@ def _create_video_task(
         "Authorization": f"Bearer {api_key}",
     }
 
-    payload_str = json.dumps(body, ensure_ascii=False)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(model_id, model=model_id, provider_type="volcengine", input_data=body, obs_type="span")
+        if _span:
+            _span.log_input(body)
+    _error: Optional[Exception] = None
 
-    with httpx.Client(timeout=60) as client:
-        response = client.post(url, content=payload_str, headers=headers)
+    try:
+        payload_str = json.dumps(body, ensure_ascii=False)
+        with httpx.Client(timeout=60) as client:
+            response = client.post(url, content=payload_str, headers=headers)
 
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Seedance CreateVideoTask error ({response.status_code}): {response.text}"
-        )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Seedance CreateVideoTask error ({response.status_code}): {response.text}"
+            )
 
-    data = response.json()
-    task_id = data.get("id", "")
-    if not task_id:
-        raise RuntimeError(f"Seedance CreateVideoTask returned no task id: {data}")
-    return task_id
+        data = response.json()
+        task_id = data.get("id", "")
+        if not task_id:
+            raise RuntimeError(f"Seedance CreateVideoTask returned no task id: {data}")
+
+        if _span:
+            _output: Dict[str, Any] = {"task_id": task_id}
+            _x_req_id = response.headers.get("x-request-id", "")
+            if _x_req_id:
+                _output["x-request-id"] = _x_req_id
+            _span.log_output(_output)
+        return task_id
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -509,8 +531,9 @@ def _poll_video_task(
     api_key: str,
     base_url: str,
     task_id: str,
+    tracer: Any = None,
     poll_timeout: Optional[int] = None,
-) -> Tuple[str, Dict[str, int]]:
+) -> Tuple[str, Dict[str, int], int]:
     """
     轮询 GET /contents/generations/tasks/{task_id} 直到任务完成。
 
@@ -518,10 +541,14 @@ def _poll_video_task(
         api_key:   ARK API Key
         base_url:  API 基础 URL（含 /v3）
         task_id:   CreateVideoTask 返回的任务 ID
+        tracer:    可选的 tracer 实例，用于创建 poll span
+        poll_timeout: 轮询超时时间（秒）
 
     Returns:
-        (video_url, usage_dict) — video_url 为生成的视频地址；
-        usage_dict 包含 prompt_tokens / completion_tokens / total_tokens。
+        (video_url, usage_dict, poll_count)
+        video_url:  生成的视频地址
+        usage_dict: 包含 prompt_tokens / completion_tokens / total_tokens
+        poll_count: 轮询次数
 
     Raises:
         RuntimeError: 任务失败或超时
@@ -533,48 +560,75 @@ def _poll_video_task(
     }
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
+    poll_count = 0
 
-    with httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            response = client.get(url, headers=headers)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(task_id, model=task_id, provider_type="volcengine", obs_type="span")
+        if _span:
+            _span.log_input({"task_id": task_id})
+    _error: Optional[Exception] = None
 
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"Seedance DescribeVideoTask error ({response.status_code}): {response.text}"
-                )
+    try:
+        with httpx.Client(timeout=60) as client:
+            while time.time() < deadline:
+                poll_count += 1
+                response = client.get(url, headers=headers)
 
-            data = response.json()
-            status = data.get("status", "")
-
-            if status == "succeeded":
-                content = data.get("content") or {}
-                video_url = content.get("video_url", "")
-                if not video_url:
+                if response.status_code >= 400:
                     raise RuntimeError(
-                        f"Seedance task {task_id} succeeded but no video_url found: {data}"
+                        f"Seedance DescribeVideoTask error ({response.status_code}): {response.text}"
                     )
-                # 提取 API 返回的真实用量
-                raw_usage = data.get("usage") or {}
-                completion_tokens = int(raw_usage.get("completion_tokens", 0))
-                total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
-                prompt_tokens = total_tokens - completion_tokens
-                usage_dict = {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                }
-                return video_url, usage_dict
 
-            if status in ("failed", "cancelled"):
-                raise RuntimeError(
-                    f"Seedance video task {task_id} ended with status={status}: {data}"
-                )
+                data = response.json()
+                status = data.get("status", "")
 
-            time.sleep(_POLL_INTERVAL_S)
+                if _span:
+                    _poll_output: Dict[str, Any] = {
+                        "task_id": task_id,
+                        "status": status,
+                        "poll_count": poll_count,
+                    }
+                    _x_req_id = response.headers.get("x-request-id", "")
+                    if _x_req_id:
+                        _poll_output["x-request-id"] = _x_req_id
+                    _span.log_output(_poll_output)
 
-    raise RuntimeError(
-        f"Seedance video task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
-    )
+                if status == "succeeded":
+                    content = data.get("content") or {}
+                    video_url = content.get("video_url", "")
+                    if not video_url:
+                        raise RuntimeError(
+                            f"Seedance task {task_id} succeeded but no video_url found: {data}"
+                        )
+                    # 提取 API 返回的真实用量
+                    raw_usage = data.get("usage") or {}
+                    completion_tokens = int(raw_usage.get("completion_tokens", 0))
+                    total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
+                    prompt_tokens = total_tokens - completion_tokens
+                    usage_dict = {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                    }
+                    return video_url, usage_dict, poll_count
+
+                if status in ("failed", "cancelled"):
+                    raise RuntimeError(
+                        f"Seedance video task {task_id} ended with status={status}: {data}"
+                    )
+
+                time.sleep(_POLL_INTERVAL_S)
+
+        raise RuntimeError(
+            f"Seedance video task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
+        )
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -587,6 +641,7 @@ def execute_seedance_video_generation(
     model: str,
     messages: List[Message],
     metadata: Dict[str, Any],
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     执行 Seedance 视频生成并返回 ChatResponse。
@@ -597,6 +652,7 @@ def execute_seedance_video_generation(
         model:     模型名称（用户传入，如 "doubao-seedance-2.0"）
         messages:  消息列表
         metadata:  请求 metadata（视频生成参数）
+        tracer:    可选的 tracer 实例，用于追踪 API 调用
 
     Returns:
         ChatResponse，message.content 为 JSON 格式的 video_generation_call 列表
@@ -674,22 +730,52 @@ def execute_seedance_video_generation(
     if not prompt_text:
         raise RuntimeError("Seedance video generation: no text prompt found in user messages")
 
-    # ── 创建任务 ─────────────────────────────────────────────────────────
-    task_id = _create_video_task(
-        api_key=api_key,
-        base_url=base_url,
-        model_id=model_id,
-        content=content,
-        ratio=ratio,
-        duration=duration,
-        resolution=resolution,
-        generate_audio=generate_audio,
-        watermark=watermark,
-        seed=seed,
-    )
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _request_data: Dict[str, Any] = {"model": model_id, "content": content, "ratio": ratio, "resolution": resolution}
+    if duration is not None:
+        _request_data["duration"] = duration
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="volcengine", input_data=_request_data)
+        if _child_span:
+            _child_span.log_input(_request_data)
+    _trace_error: Optional[Exception] = None
 
-    # ── 轮询结果 ─────────────────────────────────────────────────────────
-    video_url, usage_dict = _poll_video_task(api_key, base_url, task_id, poll_timeout=metadata.get('timeout'))
+    try:
+        # ── 创建任务 ─────────────────────────────────────────────────────────
+        task_id = _create_video_task(
+            api_key=api_key,
+            base_url=base_url,
+            model_id=model_id,
+            content=content,
+            ratio=ratio,
+            duration=duration,
+            resolution=resolution,
+            generate_audio=generate_audio,
+            watermark=watermark,
+            seed=seed,
+            tracer=_child_span,
+        )
+
+        # ── 轮询结果 ─────────────────────────────────────────────────────────
+        video_url, usage_dict, poll_count = _poll_video_task(
+            api_key, base_url, task_id, tracer=_child_span, poll_timeout=metadata.get('timeout')
+        )
+
+        if _child_span:
+            _child_span.log_output({
+                "video_url": video_url,
+                "usage": usage_dict,
+                "task_id": task_id,
+                "poll_count": poll_count,
+                "status": "succeeded",
+            })
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
     # Determine whether a reference video was used in the request
     has_reference_video = any(
@@ -772,7 +858,7 @@ def stream_seedance_video_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            videos = json.loads(raw) if isinstance(raw, str) else []
+            videos = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             videos = []
 

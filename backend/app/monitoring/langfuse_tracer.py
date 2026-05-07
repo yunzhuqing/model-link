@@ -4,6 +4,8 @@ import logging
 import threading
 from typing import Any, Dict
 
+from langfuse import propagate_attributes
+
 from .base import BaseTracer
 
 logger = logging.getLogger("monitoring")
@@ -176,10 +178,40 @@ class ChildSpan:
 
     Created by ``LangfuseTracer.start_child()``, this wraps a Langfuse
     observation that is nested under the parent gateway span.
+
+    Supports arbitrary nesting: a ChildSpan can create its own child spans
+    via ``start_child()``, forming a tree of observations.
     """
 
-    def __init__(self, observation: Any):
+    def __init__(self, observation: Any, client: Any = None):
         self._obs = observation
+        self._client = client
+
+    def start_child(self, name: str, model: str | None = None, provider_type: str = "", input_data: dict | None = None, obs_type: str | None = None) -> "ChildSpan | None":
+        """Create a child observation nested under this span."""
+        if self._obs is None or self._client is None:
+            return None
+        try:
+            from langfuse.types import TraceContext
+
+            if obs_type:
+                _type = obs_type
+            else:
+                _type = _detect_type(input_data) if input_data else "generation"
+            trace_name = _derive_trace_name(name, input_data, _type, provider_type)
+            child = self._client.start_observation(
+                name=trace_name,
+                as_type=_type,
+                model=model or name,
+                trace_context=TraceContext(
+                    trace_id=self._obs.trace_id,
+                    parent_span_id=self._obs.id,
+                ),
+            )
+            return ChildSpan(child, client=self._client)
+        except Exception as e:
+            logger.warning(f"[langfuse] Failed to start child span: {e}")
+            return None
 
     def log_input(self, data: dict) -> None:
         if self._obs is not None:
@@ -220,21 +252,29 @@ class LangfuseTracer(BaseTracer):
         self._client = None
         self._generation = None
 
-    def start(self, name: str, input_data: Dict[str, Any] | None = None) -> None:
+    def start(self, name: str, input_data: Dict[str, Any] | None = None, session_id: str | None = None) -> None:
         obs_type = _detect_type(input_data)
         trace_name = _derive_trace_name(name, input_data, obs_type)
         try:
             self._client = _get_client(self.config)
-            self._generation = self._client.start_observation(
-                name=trace_name,
-                as_type=obs_type,
-                model=name,
-            )
+            if session_id:
+                with propagate_attributes(session_id=session_id):
+                    self._generation = self._client.start_observation(
+                        name=trace_name,
+                        as_type=obs_type,
+                        model=name,
+                    )
+            else:
+                self._generation = self._client.start_observation(
+                    name=trace_name,
+                    as_type=obs_type,
+                    model=name,
+                )
         except Exception as e:
             logger.warning(f"[langfuse] Failed to start {obs_type}: {e}")
             self._generation = None
 
-    def start_child(self, name: str, model: str | None = None, provider_type: str = "", input_data: dict | None = None) -> ChildSpan | None:
+    def start_child(self, name: str, model: str | None = None, provider_type: str = "", input_data: dict | None = None, obs_type: str | None = None) -> ChildSpan | None:
         """Create a child observation nested under the current gateway span.
 
         *name* and *model* are used to derive the model prefix for the trace
@@ -242,6 +282,9 @@ class LangfuseTracer(BaseTracer):
         spans (e.g. ``generation-bailian-qwen``).  *input_data* is used to
         detect the observation type (``_detect_type``) and to extract the
         tool name for tool-type spans.
+
+        *obs_type* overrides the auto-detected observation type.  Pass
+        ``"span"`` for generic spans that don't fit generation/tool.
 
         Returns a ``ChildSpan`` handle, or ``None`` when the parent
         observation was never started successfully.
@@ -251,18 +294,21 @@ class LangfuseTracer(BaseTracer):
         try:
             from langfuse.types import TraceContext
 
-            obs_type = _detect_type(input_data) if input_data else "generation"
-            trace_name = _derive_trace_name(name, input_data, obs_type, provider_type)
+            if obs_type:
+                _type = obs_type
+            else:
+                _type = _detect_type(input_data) if input_data else "generation"
+            trace_name = _derive_trace_name(name, input_data, _type, provider_type)
             child = self._client.start_observation(
                 name=trace_name,
-                as_type=obs_type,
+                as_type=_type,
                 model=model or name,
                 trace_context=TraceContext(
                     trace_id=self._generation.trace_id,
                     parent_span_id=self._generation.id,
                 ),
             )
-            return ChildSpan(child)
+            return ChildSpan(child, client=self._client)
         except Exception as e:
             logger.warning(f"[langfuse] Failed to start child span: {e}")
             return None

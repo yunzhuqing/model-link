@@ -394,6 +394,12 @@ wheels = [
 ]
 
 [[package]]
+name = "demjson3"
+version = "3.0.6"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/f7/d2/6a81a9b5311d50542e11218b470dafd8adbaf1b3e51fc1fddd8a57eed691/demjson3-3.0.6.tar.gz", hash = "sha256:37c83b0c6eb08d25defc88df0a2a4875d58a7809a9650bd6eee7afd8053cdbac" }
+
+[[package]]
 name = "dnspython"
 version = "2.8.0"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -843,6 +849,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "boto3" },
     { name = "cryptography" },
+    { name = "demjson3" },
     { name = "flask-migrate" },
     { name = "flask-sqlalchemy" },
     { name = "google-auth" },
@@ -881,6 +888,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "boto3", specifier = ">=1.42.88" },
     { name = "cryptography", specifier = ">=43.0.0" },
+    { name = "demjson3", specifier = ">=3.0.6" },
     { name = "flask-migrate", specifier = ">=4.0.0" },
     { name = "flask-sqlalchemy", specifier = ">=3.1.1" },
     { name = "google-auth", specifier = ">=2.29.0" },

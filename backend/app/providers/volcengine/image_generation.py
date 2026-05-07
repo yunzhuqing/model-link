@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any
 
 import httpx
 import json
+import sys
 
 
 # =============================================================================
@@ -25,28 +26,30 @@ import json
 class DoubaoImageProvider:
     """
     豆包图像生成工具执行器
-    
+
     通过 Responses API 调用豆包图像生成模型。
     当 LLM 调用图像生成工具时，此类负责：
     1. 构造符合 Responses API 格式的请求
     2. 调用 API 获取生成的图像
     3. 返回结构化的图像结果
     """
-    
+
     PROVIDER_TYPE: str = "volcengine_image"
     DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-    
-    def __init__(self, api_key: str, base_url: Optional[str] = None):
+
+    def __init__(self, api_key: str, base_url: Optional[str] = None, tracer: Any = None):
         """
         初始化图像生成工具执行器
-        
+
         Args:
             api_key: API 密钥
             base_url: 可选的 API 基础 URL
+            tracer: 可选的 tracer 实例，用于追踪 API 调用
         """
         self.api_key = api_key
         self.base_url = base_url or self.DEFAULT_BASE_URL
-        
+        self.tracer = tracer
+
         # Ensure base_url ends with /v3
         if not self.base_url.endswith("/v3") and "/v3/" not in self.base_url:
             self.base_url = self.base_url.rstrip("/") + "/v3"
@@ -124,6 +127,15 @@ class DoubaoImageProvider:
             "Authorization": f"Bearer {self.api_key}"
         }
 
+        _child_span = None
+        if self.tracer:
+            _child_span = self.tracer.start_child(
+                model_name, model=model_name, provider_type=self.PROVIDER_TYPE, input_data=request_body
+            )
+            if _child_span:
+                _child_span.log_input(request_body)
+        _trace_error: Optional[Exception] = None
+
         try:
             with httpx.Client(timeout=300) as client:
                 response = client.post(
@@ -144,12 +156,24 @@ class DoubaoImageProvider:
                             f"Doubao Image API error ({response.status_code}): {response.text}"
                         )
 
-                return response.json()
+                response_data = response.json()
+                if _child_span:
+                    _x_req_id = response.headers.get("x-request-id", "")
+                    _output = dict(response_data)
+                    if _x_req_id:
+                        _output["x-request-id"] = _x_req_id
+                    _child_span.log_output(_output)
+                return response_data
 
         except RuntimeError:
+            _trace_error = sys.exc_info()[1]
             raise
         except Exception as e:
+            _trace_error = e
             raise RuntimeError(f"Doubao Image API error: {str(e)}")
+        finally:
+            if _child_span:
+                _child_span.end(error=_trace_error)
     
     def parse_image_response(self, response_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """

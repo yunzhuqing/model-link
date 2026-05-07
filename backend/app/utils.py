@@ -2,7 +2,12 @@
 Shared utility functions and constants for Model Link AI Gateway.
 """
 import os
+import json
+import logging
 
+import demjson3
+
+logger = logging.getLogger("gateway")
 
 # ── Reasoning Effort Constants ──────────────────────────────────────────────
 # Standard reasoning_effort levels used across adapters and providers.
@@ -40,3 +45,32 @@ def gen_id(prefix: str) -> str:
         48
     """
     return f"{prefix}_{os.urandom(24).hex()}"
+
+
+def json_loads(s: str | bytes, **kwargs):
+    """Parse a JSON string, falling back to tolerant parsing for real-world clients.
+
+    Tries standard json.loads first (fast, strict, secure). If that fails with
+    JSONDecodeError, falls back to demjson3.decode which tolerates:
+
+    - Python-style \\xNN hex escapes (invalid per RFC 7159)
+    - Raw control characters (U+0000–U+001F) in strings
+    - Other minor JSON deviations
+
+    Raises json.JSONDecodeError if both parsers fail.
+    """
+    try:
+        return json.loads(s, **kwargs)
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        return demjson3.decode(s, strict=False)
+    except demjson3.JSONDecodeError:
+        pass
+
+    raise json.JSONDecodeError(
+        "Failed to parse JSON with both standard and tolerant parser",
+        s if isinstance(s, str) else s.decode("utf-8", errors="replace"),
+        0,
+    )

@@ -36,7 +36,7 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 from app.providers.vertexai.image_generation import (
     is_vertexai_image_model,
     has_vertexai_image_generation_tool,
@@ -1180,7 +1180,7 @@ class VertexAIProvider(BaseProvider):
                     tc_args = func.get("arguments", "{}")
                     if isinstance(tc_args, str):
                         try:
-                            tc_args = json.loads(tc_args)
+                            tc_args = json_loads(tc_args)
                         except json.JSONDecodeError:
                             tc_args = {}
                     tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, call_type="function"))

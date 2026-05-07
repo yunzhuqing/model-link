@@ -483,6 +483,7 @@ def _poll_task(
     task_query_url: str,
     timeout: int = _POLL_MAX_WAIT_S,
     poll_interval: int = _POLL_INTERVAL_S,
+    tracer: Any = None,
 ) -> Dict[str, Any]:
     """
     Poll the Dashscope task API until completion or timeout.
@@ -493,6 +494,7 @@ def _poll_task(
         task_query_url: Base URL for task query endpoint
         timeout: Maximum time to wait in seconds
         poll_interval: Interval between polls in seconds
+        tracer: Tracer for creating poll span
 
     Returns:
         Final task result dict
@@ -504,48 +506,74 @@ def _poll_task(
     start_time = time.time()
     url = f"{task_query_url}/{task_id}"
 
-    with httpx.Client(timeout=30) as client:
-        while True:
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                raise TimeoutError(
-                    f"Video generation task {task_id} timed out after {timeout}s"
-                )
+    _span = None
+    if tracer:
+        _span = tracer.start_child(task_id, model=task_id, provider_type="bailian", obs_type="span")
+    _error: Optional[Exception] = None
 
-            try:
-                response = client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
+    try:
+        with httpx.Client(timeout=30) as client:
+            poll_count = 0
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    raise TimeoutError(
+                        f"Video generation task {task_id} timed out after {timeout}s"
+                    )
 
-                if response.status_code >= 400:
-                    logger.warning(
-                        "Task query error (status=%s): %s",
-                        response.status_code,
-                        response.text,
+                try:
+                    response = client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+
+                    if response.status_code >= 400:
+                        logger.warning(
+                            "Task query error (status=%s): %s",
+                            response.status_code,
+                            response.text,
+                        )
+                        time.sleep(poll_interval)
+                        continue
+
+                    result = response.json()
+                    output = result.get("output", {})
+                    task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
+                    poll_count += 1
+
+                    if _span:
+                        _poll_output: Dict[str, Any] = {
+                            "task_id": task_id,
+                            "task_status": task_status,
+                            "elapsed": elapsed,
+                            "poll_count": poll_count,
+                        }
+                        _x_req_id = response.headers.get("x-request-id", "")
+                        if _x_req_id:
+                            _poll_output["x-request-id"] = _x_req_id
+                        _span.log_output(_poll_output)
+
+                    if task_status in TASK_TERMINAL_STATUSES:
+                        return result
+
+                    # Still PENDING or RUNNING, continue polling
+                    logger.debug(
+                        "Task %s status: %s, elapsed: %.1fs",
+                        task_id,
+                        task_status,
+                        elapsed,
                     )
                     time.sleep(poll_interval)
-                    continue
 
-                result = response.json()
-                output = result.get("output", {})
-                task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
-
-                if task_status in TASK_TERMINAL_STATUSES:
-                    return result
-
-                # Still PENDING or RUNNING, continue polling
-                logger.debug(
-                    "Task %s status: %s, elapsed: %.1fs",
-                    task_id,
-                    task_status,
-                    elapsed,
-                )
-                time.sleep(poll_interval)
-
-            except httpx.RequestError as e:
-                logger.warning("Task query network error: %s", e)
-                time.sleep(poll_interval)
+                except httpx.RequestError as e:
+                    logger.warning("Task query network error: %s", e)
+                    time.sleep(poll_interval)
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -558,6 +586,7 @@ def execute_happyhorse_video_generation(
     messages: List[Message],
     metadata: dict,
     domain: Optional[str] = None,
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     Execute a Happyhorse video generation request (non-streaming).
@@ -592,83 +621,102 @@ def execute_happyhorse_video_generation(
         len(request_body.get("input", {}).get("prompt", "")),
     )
 
-    with httpx.Client(timeout=60) as client:
-        try:
-            response = client.post(
-                video_url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "X-DashScope-Async": "enable",
-                },
-                json=request_body,
-            )
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="bailian", input_data=request_body)
+        if _child_span:
+            _child_span.log_input(request_body)
+    _trace_error: Optional[Exception] = None
 
-            if response.status_code >= 400:
-                error_msg = f"Dashscope video-synthesis error ({response.status_code})"
-                try:
-                    error_body = response.json()
-                    error_msg += f": {json.dumps(error_body, ensure_ascii=False)}"
-                except json.JSONDecodeError:
-                    error_msg += f": {response.text}"
-                raise RuntimeError(error_msg)
-
-            result = response.json()
-            output = result.get("output", {})
-            task_id = output.get("task_id")
-
-            if not task_id:
-                raise RuntimeError(
-                    f"No task_id in response: {json.dumps(result, ensure_ascii=False)}"
-                )
-
-            task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
-            logger.info(
-                "Video task created: task_id=%s, initial_status=%s",
-                task_id,
-                task_status,
-            )
-
-            # If task is already completed synchronously (rare but possible)
-            if task_status == TASK_STATUS_SUCCEEDED:
-                video_output_url = output.get("video_url", "")
-                return _build_success_response(
-                    model, video_output_url, output, task_id, metadata=metadata
-                )
-            elif task_status == TASK_STATUS_FAILED:
-                return _build_failure_response(
-                    model, output, task_id
-                )
-            elif task_status in (TASK_STATUS_CANCELED, TASK_STATUS_UNKNOWN):
-                return _build_canceled_response(model, task_id, task_status)
-
-        except httpx.RequestError as e:
-            raise RuntimeError(f"Dashscope video-synthesis network error: {e}")
-
-    # Poll for completion (run outside the with block since polling uses its own client)
     try:
-        final_result = _poll_task(
-            api_key=api_key,
-            task_id=task_id,
-            task_query_url=task_query_url,
-            timeout=timeout,
-        )
-    except TimeoutError:
-        # Return a response indicating timeout
-        return _build_timeout_response(model, task_id)
+        with httpx.Client(timeout=60) as client:
+            try:
+                response = client.post(
+                    video_url,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "X-DashScope-Async": "enable",
+                    },
+                    json=request_body,
+                )
 
-    final_output = final_result.get("output", {})
-    final_status = final_output.get("task_status", TASK_STATUS_UNKNOWN)
+                if response.status_code >= 400:
+                    error_msg = f"Dashscope video-synthesis error ({response.status_code})"
+                    try:
+                        error_body = response.json()
+                        error_msg += f": {json.dumps(error_body, ensure_ascii=False)}"
+                    except json.JSONDecodeError:
+                        error_msg += f": {response.text}"
+                    raise RuntimeError(error_msg)
 
-    if final_status == TASK_STATUS_SUCCEEDED:
-        video_output_url = final_output.get("video_url", "")
-        return _build_success_response(
-            model, video_output_url, final_output, task_id, metadata=metadata
-        )
-    elif final_status == TASK_STATUS_FAILED:
-        return _build_failure_response(model, final_output, task_id)
-    else:
-        return _build_canceled_response(model, task_id, final_status)
+                result = response.json()
+                output = result.get("output", {})
+                task_id = output.get("task_id")
+
+                if not task_id:
+                    raise RuntimeError(
+                        f"No task_id in response: {json.dumps(result, ensure_ascii=False)}"
+                    )
+
+                task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
+                logger.info(
+                    "Video task created: task_id=%s, initial_status=%s",
+                    task_id,
+                    task_status,
+                )
+
+                # If task is already completed synchronously (rare but possible)
+                if task_status == TASK_STATUS_SUCCEEDED:
+                    video_output_url = output.get("video_url", "")
+                    return _build_success_response(
+                        model, video_output_url, output, task_id, metadata=metadata
+                    )
+                elif task_status == TASK_STATUS_FAILED:
+                    return _build_failure_response(
+                        model, output, task_id
+                    )
+                elif task_status in (TASK_STATUS_CANCELED, TASK_STATUS_UNKNOWN):
+                    return _build_canceled_response(model, task_id, task_status)
+
+            except httpx.RequestError as e:
+                raise RuntimeError(f"Dashscope video-synthesis network error: {e}")
+
+        # Poll for completion (run outside the with block since polling uses its own client)
+        try:
+            final_result = _poll_task(
+                api_key=api_key,
+                task_id=task_id,
+                task_query_url=task_query_url,
+                timeout=timeout,
+                tracer=_child_span,
+            )
+        except TimeoutError:
+            # Return a response indicating timeout
+            return _build_timeout_response(model, task_id)
+
+        final_output = final_result.get("output", {})
+        final_status = final_output.get("task_status", TASK_STATUS_UNKNOWN)
+
+        if final_status == TASK_STATUS_SUCCEEDED:
+            video_output_url = final_output.get("video_url", "")
+            result = _build_success_response(
+                model, video_output_url, final_output, task_id, metadata=metadata
+            )
+            if _child_span:
+                _child_span.log_output({"task_id": task_id, "status": "succeeded", "video_url": video_output_url})
+            return result
+        elif final_status == TASK_STATUS_FAILED:
+            return _build_failure_response(model, final_output, task_id)
+        else:
+            return _build_canceled_response(model, task_id, final_status)
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
 
 def _build_video_usage_extra(

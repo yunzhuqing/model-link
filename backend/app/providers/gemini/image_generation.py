@@ -31,7 +31,7 @@ import time
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 
 # =============================================================================
@@ -218,7 +218,7 @@ def stream_image_generation(
         msg = response.choices[0].message
         raw = msg.content if isinstance(msg.content, str) else (msg.get_text_content() or "[]")
         try:
-            images = json.loads(raw) if isinstance(raw, str) else []
+            images = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             images = []
 

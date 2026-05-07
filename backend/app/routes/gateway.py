@@ -18,7 +18,6 @@ Responses API 端点已拆分至 gateway_responses 模块。
 from quart import Blueprint, request, jsonify, current_app
 from datetime import datetime
 from typing import Optional
-import json
 import logging
 import time
 import os
@@ -61,6 +60,28 @@ ALGORITHM = "HS256"
 
 # 创建全局服务实例
 _gateway_service = GatewayService()
+
+
+from app.utils import json_loads
+
+
+async def _parse_json_body():
+    """Parse Quart request body as JSON, tolerating non-standard client input.
+
+    Tries standard json.loads first, falls back to demjson3 for:
+    - Python-style \\xNN hex escapes
+    - Raw control characters in strings
+    """
+    raw = await request.get_data()
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json_loads(text)
+    except Exception as e:
+        logger.warning(
+            "_parse_json_body failed: %s | body preview: %.200r",
+            e, text[:200],
+        )
+        return None
 
 
 def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None) -> None:
@@ -353,21 +374,8 @@ async def _handle_request(adapter):
         _log_error("handle_request", status, error.get('detail', 'Not authenticated'))
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
-    # 2. 获取请求数据 (force=True to accept any Content-Type)
-    try:
-        data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError as e:
-        raw = await request.get_data()
-        logger.error(
-            "handle_request UnicodeDecodeError: %s | Content-Type: %s | "
-            "error at pos %d, context: %r",
-            e, request.content_type, e.start,
-            raw[max(0, e.start - 50):e.start + 50],
-        )
-        try:
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, Exception):
-            data = None
+    # 2. 获取请求数据
+    data = await _parse_json_body()
 
     if not data:
         _log_error("handle_request", 400, "Invalid or empty JSON request body")
@@ -528,7 +536,7 @@ async def _handle_request(adapter):
                     pass
 
             if tracer:
-                tracer.start(model_name, input_data=data)
+                tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
             chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer)
@@ -611,7 +619,7 @@ async def _handle_request(adapter):
 
         else:
             if tracer:
-                tracer.start(model_name, input_data=data)
+                tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
             response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
@@ -848,20 +856,7 @@ async def create_embeddings():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    try:
-        data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError as e:
-        raw = await request.get_data()
-        logger.warning(
-            "embeddings UnicodeDecodeError: %s | Content-Type: %s | "
-            "error at pos %d, context: %r",
-            e, request.content_type, e.start,
-            raw[max(0, e.start - 50):e.start + 50],
-        )
-        try:
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, Exception):
-            data = None
+    data = await _parse_json_body()
     if not data:
         _log_error("embeddings", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
@@ -991,20 +986,7 @@ async def create_images():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    try:
-        data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError as e:
-        raw = await request.get_data()
-        logger.warning(
-            "images_generations UnicodeDecodeError: %s | Content-Type: %s | "
-            "error at pos %d, context: %r",
-            e, request.content_type, e.start,
-            raw[max(0, e.start - 50):e.start + 50],
-        )
-        try:
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, Exception):
-            data = None
+    data = await _parse_json_body()
     if not data:
         _log_error("images_generations", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
@@ -1129,20 +1111,7 @@ async def edit_images():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    try:
-        data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError as e:
-        raw = await request.get_data()
-        logger.warning(
-            "images_edits UnicodeDecodeError: %s | Content-Type: %s | "
-            "error at pos %d, context: %r",
-            e, request.content_type, e.start,
-            raw[max(0, e.start - 50):e.start + 50],
-        )
-        try:
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, Exception):
-            data = None
+    data = await _parse_json_body()
     if not data:
         _log_error("images_edits", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
@@ -1316,20 +1285,7 @@ async def create_rerank():
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
     # 2. 获取请求数据
-    try:
-        data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError as e:
-        raw = await request.get_data()
-        logger.warning(
-            "rerank UnicodeDecodeError: %s | Content-Type: %s | "
-            "error at pos %d, context: %r",
-            e, request.content_type, e.start,
-            raw[max(0, e.start - 50):e.start + 50],
-        )
-        try:
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, Exception):
-            data = None
+    data = await _parse_json_body()
     if not data:
         _log_error("rerank", 400, "Invalid or empty JSON request body")
         return jsonify({'detail': 'Invalid or empty JSON request body'}), 400

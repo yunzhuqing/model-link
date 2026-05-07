@@ -50,7 +50,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import Message, MessageRole, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 
 # =============================================================================
@@ -691,7 +691,7 @@ def stream_3d_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            items = json.loads(raw) if isinstance(raw, str) else []
+            items = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             items = []
 

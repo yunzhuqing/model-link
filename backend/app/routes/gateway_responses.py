@@ -9,7 +9,7 @@ OpenAI Responses API 路由层
 此模块从 gateway.py 拆分而来，专门处理 Responses API 相关的路由。
 """
 from quart import Blueprint, request, jsonify, current_app
-from typing import Optional
+from typing import Any, Dict, Optional
 import json
 import logging
 import time
@@ -23,6 +23,19 @@ from app.monitoring import create_tracer
 from app.group_service import get_group_monitoring_config
 
 # 导入中间层
+from app.utils import json_loads
+
+
+async def _parse_json_body():
+    """Parse Quart request body as JSON, tolerating non-standard client input."""
+    raw = await request.get_data()
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json_loads(text)
+    except Exception:
+        return None
+
+
 from app.middleware.gateway_service import (
     GatewayService,
     GatewayServiceError,
@@ -65,6 +78,9 @@ def _run_background_response(
     api_key_name: Optional[str] = None,
     api_key_group_id: Optional[int] = None,
     api_key_group_name: Optional[str] = None,
+    tracer: Any = None,
+    model_name: Optional[str] = None,
+    request_data: Optional[Dict[str, Any]] = None,
 ):
     """
     Worker function executed in a background thread.
@@ -119,7 +135,7 @@ def _run_background_response(
             raw = storage.read(input_key)
             if raw is None:
                 raise RuntimeError(f"Input not found at storage key: {input_key}")
-            data = json.loads(raw)
+            data = json_loads(raw)
 
             adapter = OpenAIResponsesAdapter()
             chat_request = adapter.parse_request(data)
@@ -127,8 +143,18 @@ def _run_background_response(
             # ── LLM / video generation call ────────────────────────────────
             # chat() uses db.session for model resolution; the actual
             # provider API call may be long-running.
+            if tracer:
+                tracer.start(model_name or data.get('model', ''), input_data=request_data or data, session_id=chat_request.session_id)
+                tracer.log_input(request_data or data)
             _bg_start_time = time.monotonic()
-            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=None)
+            try:
+                response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
+                if tracer:
+                    tracer.log_output(adapter.format_response(response))
+            except Exception:
+                if tracer:
+                    tracer.end(error=Exception("background generation error"))
+                raise
 
             # Eagerly extract all ORM data we need for usage recording,
             # then release the DB session so the connection returns to the
@@ -267,7 +293,21 @@ def _run_background_response(
             except Exception as _ue:
                 logger.warning(f"[usage] Failed to record usage for background response {response_id!r}: {_ue}")
 
+            if tracer:
+                tracer.set_metadata({
+                    "group_id": group_id,
+                    "user": user_name,
+                    "provider": _pricing_snapshot.get('provider_name'),
+                    "duration_ms": _bg_duration_ms,
+                })
+                tracer.end()
+
         except Exception as exc:
+            if tracer:
+                try:
+                    tracer.end(error=exc)
+                except Exception:
+                    pass
             logger.exception(f"[background] Error processing {response_id!r}: {exc}")
             final_error = str(exc)
 
@@ -313,20 +353,7 @@ async def openai_responses():
     adapter = OpenAIResponsesAdapter()
 
     # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
-    try:
-        data = await request.get_json(force=True, silent=True)
-    except UnicodeDecodeError as e:
-        raw = await request.get_data()
-        logger.warning(
-            "responses UnicodeDecodeError: %s | Content-Type: %s | "
-            "error at pos %d, context: %r",
-            e, request.content_type, e.start,
-            raw[max(0, e.start - 50):e.start + 50],
-        )
-        try:
-            data = json.loads(raw.decode("utf-8", errors="replace"))
-        except (json.JSONDecodeError, Exception):
-            data = None
+    data = await _parse_json_body()
     if not data:
         _log_error("responses", 400, "Invalid or empty JSON request body")
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
@@ -371,6 +398,10 @@ async def openai_responses():
     if is_background:
         group_id = api_key.group_id if api_key else None
         apikey_value = api_key.key if api_key else None
+
+        # Create tracer for background request
+        monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+        tracer = create_tracer(monitoring_config)
 
         # Eagerly extract identity primitives while the DB session is alive.
         # These will be passed to the background thread for usage recording.
@@ -421,6 +452,9 @@ async def openai_responses():
                 api_key_name=_bg_api_key_name,
                 api_key_group_id=_bg_api_key_group_id,
                 api_key_group_name=_bg_api_key_group_name,
+                tracer=tracer,
+                model_name=model_name,
+                request_data=data,
             ),
             daemon=True,
         )
@@ -466,7 +500,7 @@ async def openai_responses():
                     pass
 
             if tracer:
-                tracer.start(model_name, input_data=data)
+                tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
             chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer)
@@ -543,7 +577,7 @@ async def openai_responses():
             return adapter.create_stream_response(_resp_chunks_with_usage(), model_name)
         else:
             if tracer:
-                tracer.start(model_name, input_data=data)
+                tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
             response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
@@ -637,7 +671,7 @@ async def get_response(response_id: str):
         raw = storage.read(bg_record["output_key"]) if bg_record.get("output_key") else None
         if raw:
             try:
-                result = json.loads(raw)
+                result = json_loads(raw)
             except (json.JSONDecodeError, TypeError):
                 result = {"error": {"code": "server_error", "message": "Failed to parse stored response"}}
         else:
@@ -670,7 +704,7 @@ async def get_response(response_id: str):
                 obj = raw
             elif isinstance(raw, str):
                 try:
-                    parsed = json.loads(raw)
+                    parsed = json_loads(raw)
                     obj = parsed if isinstance(parsed, dict) else {"code": "server_error", "message": raw}
                 except (json.JSONDecodeError, TypeError):
                     obj = {"code": "server_error", "message": raw}

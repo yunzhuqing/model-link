@@ -18,7 +18,7 @@ import uuid
 from typing import Optional
 
 from .base import BaseAdapter
-from app.utils import gen_id as _gen_id, REASONING_EFFORT_DEFAULT_FOR_THINKING
+from app.utils import gen_id as _gen_id, REASONING_EFFORT_DEFAULT_FOR_THINKING, json_loads
 
 logger = logging.getLogger("gateway")
 
@@ -134,7 +134,7 @@ def _handle_function_call_item(item: dict, messages: list):
     """Convert a function_call input item → assistant Message with tool_call block."""
     args_str = item.get('arguments', '{}')
     try:
-        args = json.loads(args_str) if isinstance(args_str, str) else args_str
+        args = json_loads(args_str) if isinstance(args_str, str) else args_str
     except (json.JSONDecodeError, TypeError):
         args = {}
     call_id = item.get('call_id') or item.get('id', '')
@@ -719,6 +719,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             presence_penalty=data.get('presence_penalty'),
             frequency_penalty=data.get('frequency_penalty'),
             user=data.get('user'),
+            session_id=data.get('session_id'),
             reasoning_effort=reasoning_effort,
             metadata=metadata,
         )
@@ -798,7 +799,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 else:
                     raw = "[]"
                 try:
-                    items = json.loads(raw) if isinstance(raw, str) else []
+                    items = json_loads(raw) if isinstance(raw, str) else []
                 except (json.JSONDecodeError, TypeError):
                     items = []
 
@@ -833,7 +834,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 else:
                     raw = "[]"
                 try:
-                    items = json.loads(raw) if isinstance(raw, str) else []
+                    items = json_loads(raw) if isinstance(raw, str) else []
                 except (json.JSONDecodeError, TypeError):
                     items = []
 
@@ -870,7 +871,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 else:
                     raw = "[]"
                 try:
-                    items = json.loads(raw) if isinstance(raw, str) else []
+                    items = json_loads(raw) if isinstance(raw, str) else []
                 except (json.JSONDecodeError, TypeError):
                     items = []
 

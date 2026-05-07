@@ -36,7 +36,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 from app.providers.image_size_utils import resolve_image_size
 
 
@@ -403,6 +403,7 @@ def _create_aigc_image_task(
     file_urls: Optional[List[str]] = None,
     session_id: str = "",
     enhance_prompt: str = "",
+    tracer: Any = None,
 ) -> str:
     """
     Call CreateAigcImageTask and return the TaskId.
@@ -470,24 +471,45 @@ def _create_aigc_image_task(
 
     headers = _build_auth_headers(secret_id, secret_key, "CreateAigcImageTask", payload_str)
 
-    response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
-    response.raise_for_status()
-    data = response.json()
+    _span = None
+    if tracer:
+        _span = tracer.start_child(model_name, model=model_name, provider_type="tencentvod", input_data=body, obs_type="span")
+        if _span:
+            _span.log_input(body)
+    _error: Optional[Exception] = None
 
-    resp = data.get("Response", {})
-    if "Error" in resp:
-        err = resp["Error"]
-        raise RuntimeError(
-            f"TencentVOD CreateAigcImageTask error "
-            f"(code={err.get('Code')}): {err.get('Message')}"
-        )
+    try:
+        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response.raise_for_status()
+        data = response.json()
 
-    task_id = resp.get("TaskId")
-    if not task_id:
-        raise RuntimeError(
-            f"TencentVOD CreateAigcImageTask returned no TaskId: {data}"
-        )
-    return task_id
+        resp = data.get("Response", {})
+        if "Error" in resp:
+            err = resp["Error"]
+            raise RuntimeError(
+                f"TencentVOD CreateAigcImageTask error "
+                f"(code={err.get('Code')}): {err.get('Message')}"
+            )
+
+        task_id = resp.get("TaskId")
+        if not task_id:
+            raise RuntimeError(
+                f"TencentVOD CreateAigcImageTask returned no TaskId: {data}"
+            )
+
+        if _span:
+            _output: Dict[str, Any] = {"task_id": task_id}
+            _req_id = resp.get("RequestId", "")
+            if _req_id:
+                _output["x-request-id"] = _req_id
+            _span.log_output(_output)
+        return task_id
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -544,6 +566,7 @@ def _poll_task(
     task_id: str,
     sub_app_id: Optional[int],
     poll_timeout: Optional[int] = None,
+    tracer: Any = None,
 ) -> List[Dict[str, Any]]:
     """
     Poll DescribeTaskDetail until the task finishes, then extract image URLs.
@@ -566,46 +589,71 @@ def _poll_task(
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
 
-    with httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            resp = _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(task_id, model=task_id, provider_type="tencentvod", obs_type="span")
+    _error: Optional[Exception] = None
 
-            # Extract the AigcImageTask sub-object
-            aigc_task = resp.get("AigcImageTask") or {}
-            status = resp.get("Status") or aigc_task.get("Status", "")
+    try:
+        with httpx.Client(timeout=60) as client:
+            poll_count = 0
+            while time.time() < deadline:
+                resp = _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
 
-            if status == "FINISH":
-                # Check for task-level error
-                err_code = aigc_task.get("ErrCode", 0)
-                if err_code != 0:
+                # Extract the AigcImageTask sub-object
+                aigc_task = resp.get("AigcImageTask") or {}
+                status = resp.get("Status") or aigc_task.get("Status", "")
+                poll_count += 1
+
+                if _span:
+                    _poll_output: Dict[str, Any] = {
+                        "task_id": task_id,
+                        "status": status,
+                        "poll_count": poll_count,
+                    }
+                    _req_id = resp.get("RequestId", "")
+                    if _req_id:
+                        _poll_output["x-request-id"] = _req_id
+                    _span.log_output(_poll_output)
+
+                if status == "FINISH":
+                    # Check for task-level error
+                    err_code = aigc_task.get("ErrCode", 0)
+                    if err_code != 0:
+                        raise RuntimeError(
+                            f"TencentVOD image task failed "
+                            f"(ErrCode={err_code}): {aigc_task.get('Message', '')}"
+                        )
+
+                    output = aigc_task.get("Output") or {}
+                    file_infos = output.get("FileInfos") or []
+                    image_items: List[Dict[str, Any]] = []
+                    for fi in file_infos:
+                        url = fi.get("FileUrl", "")
+                        if url:
+                            image_items.append({
+                                "type": "image_generation_call",
+                                "status": "completed",
+                                "result": url,
+                            })
+                    return image_items
+
+                if status in ("FAIL", "ABORTED"):
                     raise RuntimeError(
-                        f"TencentVOD image task failed "
-                        f"(ErrCode={err_code}): {aigc_task.get('Message', '')}"
+                        f"TencentVOD image task {task_id} failed with status={status}"
                     )
 
-                output = aigc_task.get("Output") or {}
-                file_infos = output.get("FileInfos") or []
-                image_items: List[Dict[str, Any]] = []
-                for fi in file_infos:
-                    url = fi.get("FileUrl", "")
-                    if url:
-                        image_items.append({
-                            "type": "image_generation_call",
-                            "status": "completed",
-                            "result": url,
-                        })
-                return image_items
+                time.sleep(_POLL_INTERVAL_S)
 
-            if status in ("FAIL", "ABORTED"):
-                raise RuntimeError(
-                    f"TencentVOD image task {task_id} failed with status={status}"
-                )
-
-            time.sleep(_POLL_INTERVAL_S)
-
-    raise RuntimeError(
-        f"TencentVOD image task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
-    )
+        raise RuntimeError(
+            f"TencentVOD image task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
+        )
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -618,6 +666,7 @@ def execute_tencentvod_image_generation(
     messages,
     metadata: Dict[str, Any],
     sub_app_id: Optional[int] = None,
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     Execute TencentVOD image generation and return a ChatResponse.
@@ -718,60 +767,79 @@ def execute_tencentvod_image_generation(
     session_id = metadata.get("session_id", "")
     enhance_prompt = metadata.get("enhance_prompt", "")
 
-    # Submit task
-    with httpx.Client(timeout=60) as client:
-        task_id = _create_aigc_image_task(
-            client=client,
-            secret_id=secret_id,
-            secret_key=secret_key,
-            sub_app_id=_sub_app,
-            model_name=model_name,
-            model_version=model_version,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-            file_ids=file_ids or None,
-            file_urls=file_urls or None,
-            session_id=session_id,
-            enhance_prompt=enhance_prompt,
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _request_data: Dict[str, Any] = {"model": model, "model_version": model_version, "prompt": prompt}
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="tencentvod", input_data=_request_data)
+        if _child_span:
+            _child_span.log_input(_request_data)
+    _trace_error: Optional[Exception] = None
+
+    try:
+        # Submit task
+        with httpx.Client(timeout=60) as client:
+            task_id = _create_aigc_image_task(
+                client=client,
+                secret_id=secret_id,
+                secret_key=secret_key,
+                sub_app_id=_sub_app,
+                model_name=model_name,
+                model_version=model_version,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                file_ids=file_ids or None,
+                file_urls=file_urls or None,
+                session_id=session_id,
+                enhance_prompt=enhance_prompt,
+                tracer=_child_span,
+            )
+
+        # Poll for result
+        image_items = _poll_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+
+        if _child_span:
+            _child_span.log_output({"task_id": task_id, "image_count": len(image_items), "status": "succeeded"})
+
+        message = Message(
+            role=MessageRole.ASSISTANT,
+            content=json.dumps(image_items, ensure_ascii=False),
         )
 
-    # Poll for result
-    image_items = _poll_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"))
+        image_count = max(len(image_items), 1)
+        response_format = metadata.get("response_format", "url")
 
-    message = Message(
-        role=MessageRole.ASSISTANT,
-        content=json.dumps(image_items, ensure_ascii=False),
-    )
-
-    image_count = max(len(image_items), 1)
-    # Extract user-requested response_format for b64_json conversion at the return point
-    response_format = metadata.get("response_format", "url")
-
-    return ChatResponse(
-        id=gen_id("img"),
-        model=model,
-        choices=[ChatChoice(
-            index=0,
-            message=message,
-            finish_reason=FinishReason.STOP,
-        )],
-        usage=UsageInfo(
-            prompt_tokens=0,
-            completion_tokens=image_count,
-            total_tokens=image_count,
-            extra={
-                'output_image_number': image_count,
-                'output_image_resolution': resolution or None,
-                'output_image_aspect': aspect_ratio or None,
-                'output_image_quality': quality or None,
-                '_response_format': response_format,
-            },
-        ),
-        created=int(time.time()),
-        provider="tencentvod",
-    )
+        return ChatResponse(
+            id=gen_id("img"),
+            model=model,
+            choices=[ChatChoice(
+                index=0,
+                message=message,
+                finish_reason=FinishReason.STOP,
+            )],
+            usage=UsageInfo(
+                prompt_tokens=0,
+                completion_tokens=image_count,
+                total_tokens=image_count,
+                extra={
+                    'output_image_number': image_count,
+                    'output_image_resolution': resolution or None,
+                    'output_image_aspect': aspect_ratio or None,
+                    'output_image_quality': quality or None,
+                    '_response_format': response_format,
+                },
+            ),
+            created=int(time.time()),
+            provider="tencentvod",
+        )
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
 
 # =============================================================================
@@ -815,7 +883,7 @@ def stream_image_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            images = json.loads(raw) if isinstance(raw, str) else []
+            images = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             images = []
 

@@ -8,6 +8,7 @@ import logging
 import time
 import uuid
 from .base import BaseProvider, ProviderConfig, ProviderCapability
+from app.utils import json_loads
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -31,7 +32,6 @@ def parse_openai_request(data: dict) -> ChatRequest:
     Returns:
         ChatRequest 对象
     """
-    logger.debug("Parsing OpenAI request data: %s", json.dumps(data, ensure_ascii=False))
     messages = []
     for msg_data in data.get('messages', []):
         role = MessageRole(msg_data.get('role', 'user'))
@@ -50,7 +50,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
                 
                 if isinstance(tc_args, str):
                     try:
-                        tc_args = json.loads(tc_args)
+                        tc_args = json_loads(tc_args)
                     except:
                         pass
                 
@@ -154,7 +154,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
     known_keys = {
         'model', 'messages', 'temperature', 'top_p', 'max_tokens',
         'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
-        'frequency_penalty', 'user', 'reasoning_effort'
+        'frequency_penalty', 'user', 'session_id', 'reasoning_effort'
     }
     metadata = {k: v for k, v in data.items() if k not in known_keys}
     
@@ -171,6 +171,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         presence_penalty=data.get('presence_penalty'),
         frequency_penalty=data.get('frequency_penalty'),
         user=data.get('user'),
+        session_id=data.get('session_id'),
         reasoning_effort=data.get('reasoning_effort'),
         metadata=metadata
     )
@@ -550,7 +551,7 @@ class OpenAIProvider(BaseProvider):
                 
                 if isinstance(tc_args, str):
                     try:
-                        tc_args = json.loads(tc_args)
+                        tc_args = json_loads(tc_args)
                     except:
                         pass
                 
@@ -597,7 +598,7 @@ class OpenAIProvider(BaseProvider):
         arguments_str = func.get("arguments", "{}")
         
         try:
-            arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
+            arguments = json_loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
         except json.JSONDecodeError:
             arguments = {}
         

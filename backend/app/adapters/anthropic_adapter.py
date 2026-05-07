@@ -16,7 +16,7 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 from app.middleware.gateway_service import GatewayServiceError, ProviderError
-from app.utils import REASONING_EFFORT_HIGH, REASONING_EFFORT_NONE, REASONING_EFFORT_DEFAULT_FOR_THINKING
+from app.utils import REASONING_EFFORT_HIGH, REASONING_EFFORT_NONE, REASONING_EFFORT_DEFAULT_FOR_THINKING, json_loads
 
 
 class AnthropicMessagesAdapter(BaseAdapter):
@@ -261,6 +261,18 @@ class AnthropicMessagesAdapter(BaseAdapter):
         #   {"response_format": {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}}
         metadata = data.get('metadata') or {}
         output_config = data.get('output_config')
+
+        # 从 metadata.user_id 中解析 session_id
+        # 格式: {"user_id": "{\"device_id\":\"...\",\"session_id\":\"...\"}"}
+        session_id = data.get('session_id')
+        if not session_id:
+            user_id_raw = metadata.get('user_id')
+            if isinstance(user_id_raw, str):
+                try:
+                    user_id_data = json_loads(user_id_raw)
+                    session_id = user_id_data.get('session_id')
+                except (json.JSONDecodeError, TypeError):
+                    pass
         if isinstance(output_config, dict):
             fmt = output_config.get('format', {})
             fmt_type = fmt.get('type', 'text')
@@ -294,6 +306,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             tool_choice=data.get('tool_choice', {}).get('type') if isinstance(data.get('tool_choice'), dict) else data.get('tool_choice'),
             stop=data.get('stop_sequences'),
             user=data.get('user'),
+            session_id=session_id,
             reasoning_effort=reasoning_effort,
             metadata=metadata
         )

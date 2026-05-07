@@ -14,6 +14,7 @@ from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
+from app.utils import json_loads
 
 
 class ProviderCapability(Enum):
@@ -286,7 +287,7 @@ class BaseProvider(ABC):
                         import json
                         if isinstance(tc_args, str):
                             try:
-                                tc_args = json.loads(tc_args)
+                                tc_args = json_loads(tc_args)
                             except:
                                 tc_args = {}
                         
@@ -317,7 +318,7 @@ class BaseProvider(ABC):
                     
                     if isinstance(tc_args, str):
                         try:
-                            tc_args = json.loads(tc_args)
+                            tc_args = json_loads(tc_args)
                         except:
                             tc_args = {}
                     

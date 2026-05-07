@@ -114,6 +114,7 @@ class ChatRequest:
     presence_penalty: Optional[float] = None
     frequency_penalty: Optional[float] = None
     user: Optional[str] = None
+    session_id: Optional[str] = None  # 会话 ID，用于 tracer 追踪整个会话
     reasoning_effort: Optional[str] = None  # 推理力度: "none"(默认), "low", "medium", "high"
     metadata: Dict[str, Any] = field(default_factory=dict)  # 额外参数
     

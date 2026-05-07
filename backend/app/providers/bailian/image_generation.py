@@ -67,7 +67,7 @@ from urllib.request import urlopen
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 
 # =============================================================================
@@ -340,6 +340,7 @@ def execute_qwen_image_generation(
     model: str,
     messages: List[Message],
     metadata: dict,
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     Execute Qwen image generation/editing via the Dashscope API.
@@ -411,6 +412,13 @@ def execute_qwen_image_generation(
         "Authorization": f"Bearer {api_key}",
     }
 
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="bailian", input_data=request_body)
+        if _child_span:
+            _child_span.log_input(request_body)
+    _trace_error: Optional[Exception] = None
+
     try:
         with httpx.Client(timeout=300) as client:
             response = client.post(
@@ -419,6 +427,13 @@ def execute_qwen_image_generation(
                 headers=headers,
             )
             response_data = response.json()
+
+        if _child_span:
+            _output = dict(response_data)
+            _x_req_id = response.headers.get("x-request-id", "")
+            if _x_req_id:
+                _output["x-request-id"] = _x_req_id
+            _child_span.log_output(_output)
 
         # Dashscope signals errors via top-level 'code' field (not HTTP status code alone)
         if 'code' in response_data and response_data['code'] not in ('Success', ''):
@@ -437,9 +452,14 @@ def execute_qwen_image_generation(
         return _parse_qwen_image_response(response_data, model, metadata)
 
     except RuntimeError:
+        _trace_error = sys.exc_info()[1]
         raise
     except Exception as e:
+        _trace_error = e
         raise RuntimeError(f"Qwen Image API error: {str(e)}")
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
 
 def _resolution_tier(width: int, height: int) -> str:
@@ -585,7 +605,7 @@ def stream_image_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            images = json.loads(raw) if isinstance(raw, str) else []
+            images = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             images = []
 

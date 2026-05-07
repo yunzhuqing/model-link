@@ -80,7 +80,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import ContentType, Message, MessageRole
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 
 # =============================================================================
@@ -276,6 +276,7 @@ def _create_3d_task(
     base_url: str,
     model_id: str,
     content: List[Dict[str, Any]],
+    tracer: Any = None,
 ) -> str:
     """
     调用 POST /contents/generations/tasks 创建 3D 生成任务，返回 task_id。
@@ -285,6 +286,7 @@ def _create_3d_task(
         base_url:  API 基础 URL（含 /v3）
         model_id:  实际 API 模型 ID
         content:   内容数组（文本参数 + 图片）
+        tracer:    可选的 tracer 实例
 
     Returns:
         task_id 字符串
@@ -303,22 +305,41 @@ def _create_3d_task(
         "Authorization": f"Bearer {api_key}",
     }
 
-    payload_str = json.dumps(body, ensure_ascii=False)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(model_id, model=model_id, provider_type="volcengine", input_data=body, obs_type="span")
+        if _span:
+            _span.log_input(body)
+    _error: Optional[Exception] = None
 
+    try:
+        payload_str = json.dumps(body, ensure_ascii=False)
+        with httpx.Client(timeout=60) as client:
+            response = client.post(url, content=payload_str, headers=headers)
 
-    with httpx.Client(timeout=60) as client:
-        response = client.post(url, content=payload_str, headers=headers)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Seed3D Create3DTask error ({response.status_code}): {response.text}"
+            )
 
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Seed3D Create3DTask error ({response.status_code}): {response.text}"
-        )
+        data = response.json()
+        task_id = data.get("id", "")
+        if not task_id:
+            raise RuntimeError(f"Seed3D Create3DTask returned no task id: {data}")
 
-    data = response.json()
-    task_id = data.get("id", "")
-    if not task_id:
-        raise RuntimeError(f"Seed3D Create3DTask returned no task id: {data}")
-    return task_id
+        if _span:
+            _output: Dict[str, Any] = {"task_id": task_id}
+            _x_req_id = response.headers.get("x-request-id", "")
+            if _x_req_id:
+                _output["x-request-id"] = _x_req_id
+            _span.log_output(_output)
+        return task_id
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -329,8 +350,9 @@ def _poll_3d_task(
     api_key: str,
     base_url: str,
     task_id: str,
+    tracer: Any = None,
     poll_timeout: Optional[int] = None,
-) -> Tuple[str, str, str, Dict[str, int]]:
+) -> Tuple[str, str, str, Dict[str, int], int]:
     """
     轮询 GET /contents/generations/tasks/{task_id} 直到任务完成。
 
@@ -338,13 +360,16 @@ def _poll_3d_task(
         api_key:   ARK API Key
         base_url:  API 基础 URL（含 /v3）
         task_id:   Create3DTask 返回的任务 ID
+        tracer:    可选的 tracer 实例，用于创建 poll span
+        poll_timeout: 轮询超时时间（秒）
 
     Returns:
-        (file_url, file_format, subdivision_level, usage_dict)
+        (file_url, file_format, subdivision_level, usage_dict, poll_count)
         file_url:          生成的 3D 模型文件地址
         file_format:       输出文件格式 (如 glb)
         subdivision_level: 细分层级 (如 medium)
         usage_dict:        包含 prompt_tokens / completion_tokens / total_tokens
+        poll_count:        轮询次数
 
     Raises:
         RuntimeError: 任务失败或超时
@@ -356,53 +381,80 @@ def _poll_3d_task(
     }
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
+    poll_count = 0
 
-    with httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            response = client.get(url, headers=headers)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(task_id, model=task_id, provider_type="volcengine", obs_type="span")
+        if _span:
+            _span.log_input({"task_id": task_id})
+    _error: Optional[Exception] = None
 
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"Seed3D Query3DTask error ({response.status_code}): {response.text}"
-                )
+    try:
+        with httpx.Client(timeout=60) as client:
+            while time.time() < deadline:
+                poll_count += 1
+                response = client.get(url, headers=headers)
 
-            data = response.json()
-            status = data.get("status", "")
-
-            if status == "succeeded":
-                content = data.get("content") or {}
-                file_url = content.get("file_url", "")
-                if not file_url:
+                if response.status_code >= 400:
                     raise RuntimeError(
-                        f"Seed3D task {task_id} succeeded but no file_url found: {data}"
+                        f"Seed3D Query3DTask error ({response.status_code}): {response.text}"
                     )
 
-                # Extract metadata from response
-                file_format = data.get("fileformat", _DEFAULT_FILE_FORMAT)
-                subdivision_level = data.get("subdivisionlevel", _DEFAULT_SUBDIVISION_LEVEL)
+                data = response.json()
+                status = data.get("status", "")
 
-                # 提取 API 返回的真实用量
-                raw_usage = data.get("usage") or {}
-                completion_tokens = int(raw_usage.get("completion_tokens", 0))
-                total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
-                prompt_tokens = total_tokens - completion_tokens
-                usage_dict = {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                }
-                return file_url, file_format, subdivision_level, usage_dict
+                if _span:
+                    _poll_output: Dict[str, Any] = {
+                        "task_id": task_id,
+                        "status": status,
+                        "poll_count": poll_count,
+                    }
+                    _x_req_id = response.headers.get("x-request-id", "")
+                    if _x_req_id:
+                        _poll_output["x-request-id"] = _x_req_id
+                    _span.log_output(_poll_output)
 
-            if status in ("failed", "cancelled"):
-                raise RuntimeError(
-                    f"Seed3D 3D task {task_id} ended with status={status}: {data}"
-                )
+                if status == "succeeded":
+                    content = data.get("content") or {}
+                    file_url = content.get("file_url", "")
+                    if not file_url:
+                        raise RuntimeError(
+                            f"Seed3D task {task_id} succeeded but no file_url found: {data}"
+                        )
 
-            time.sleep(_POLL_INTERVAL_S)
+                    # Extract metadata from response
+                    file_format = data.get("fileformat", _DEFAULT_FILE_FORMAT)
+                    subdivision_level = data.get("subdivisionlevel", _DEFAULT_SUBDIVISION_LEVEL)
 
-    raise RuntimeError(
-        f"Seed3D 3D task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
-    )
+                    # 提取 API 返回的真实用量
+                    raw_usage = data.get("usage") or {}
+                    completion_tokens = int(raw_usage.get("completion_tokens", 0))
+                    total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
+                    prompt_tokens = total_tokens - completion_tokens
+                    usage_dict = {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                    }
+                    return file_url, file_format, subdivision_level, usage_dict, poll_count
+
+                if status in ("failed", "cancelled"):
+                    raise RuntimeError(
+                        f"Seed3D 3D task {task_id} ended with status={status}: {data}"
+                    )
+
+                time.sleep(_POLL_INTERVAL_S)
+
+        raise RuntimeError(
+            f"Seed3D 3D task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
+        )
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -415,6 +467,7 @@ def execute_seed3d_generation(
     model: str,
     messages: List[Message],
     metadata: Dict[str, Any],
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     执行 Seed3D 3D 生成并返回 ChatResponse。
@@ -425,6 +478,7 @@ def execute_seed3d_generation(
         model:     模型名称（用户传入，如 "doubao-seed3d-2-0-260328"）
         messages:  消息列表
         metadata:  请求 metadata（3D 生成参数）
+        tracer:    可选的 tracer 实例，用于追踪 API 调用
 
     Returns:
         ChatResponse，message.content 为 JSON 格式的 3d_generation_call 列表
@@ -471,18 +525,44 @@ def execute_seed3d_generation(
             "Please provide an input image for 3D model generation."
         )
 
-    # ── 创建任务 ─────────────────────────────────────────────────────────
-    task_id = _create_3d_task(
-        api_key=api_key,
-        base_url=base_url,
-        model_id=model_id,
-        content=content,
-    )
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _request_data: Dict[str, Any] = {"model": model_id, "content": content}
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="volcengine", input_data=_request_data)
+        if _child_span:
+            _child_span.log_input(_request_data)
+    _trace_error: Optional[Exception] = None
 
-    # ── 轮询结果 ─────────────────────────────────────────────────────────
-    file_url, result_format, result_subdivision, usage_dict = _poll_3d_task(
-        api_key, base_url, task_id, poll_timeout=metadata.get('timeout')
-    )
+    try:
+        # ── 创建任务 ─────────────────────────────────────────────────────────
+        task_id = _create_3d_task(
+            api_key=api_key,
+            base_url=base_url,
+            model_id=model_id,
+            content=content,
+            tracer=_child_span,
+        )
+
+        # ── 轮询结果 ─────────────────────────────────────────────────────────
+        file_url, result_format, result_subdivision, usage_dict, poll_count = _poll_3d_task(
+            api_key, base_url, task_id, tracer=_child_span, poll_timeout=metadata.get('timeout')
+        )
+
+        if _child_span:
+            _child_span.log_output({
+                "file_url": file_url,
+                "usage": usage_dict,
+                "task_id": task_id,
+                "poll_count": poll_count,
+                "status": "succeeded",
+            })
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
     # Wrap in the 3d_generation_call response structure
     threed_items = [{
@@ -555,7 +635,7 @@ def stream_seed3d_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            items = json.loads(raw) if isinstance(raw, str) else []
+            items = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             items = []
 

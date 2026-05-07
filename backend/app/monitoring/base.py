@@ -22,13 +22,14 @@ class BaseTracer(ABC):
         self.config = config
 
     @abstractmethod
-    def start(self, name: str, input_data: Dict[str, Any] | None = None) -> None:
+    def start(self, name: str, input_data: Dict[str, Any] | None = None, session_id: str | None = None) -> None:
         """Start a generation span. Called before the provider call.
 
         Args:
             name: Span name (typically the model name).
             input_data: Raw request payload, used to infer the observation type
                         (generation, tool, agent, etc.).
+            session_id: Optional session ID for grouping traces into conversations.
         """
         ...
 
@@ -56,8 +57,17 @@ class BaseTracer(ABC):
         ...
 
     @abstractmethod
-    def start_child(self, name: str, model: str | None = None, provider_type: str = "", input_data: dict | None = None) -> Any:
+    def start_child(self, name: str, model: str | None = None, provider_type: str = "", input_data: dict | None = None, obs_type: str | None = None) -> Any:
         """Create a child observation nested under the current span.
+
+        Args:
+            name: Span name.
+            model: Model name (for generation-type spans).
+            provider_type: Provider type string (e.g. "volcengine").
+            input_data: Raw request payload, used to auto-detect obs_type
+                        when obs_type is not explicitly provided.
+            obs_type: Override the observation type (e.g. "span", "generation",
+                      "tool"). When None, the type is inferred from input_data.
 
         Returns a child-span handle (implementation-specific) or None if
         the parent span was never started.

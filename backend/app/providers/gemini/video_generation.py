@@ -38,7 +38,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import ContentBlock, ContentType, Message, MessageRole
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.utils import gen_id
+from app.utils import gen_id, json_loads
 
 
 # =============================================================================
@@ -598,7 +598,7 @@ def stream_veo_video_generation(
             else (msg.get_text_content() or "[]")
         )
         try:
-            videos = json.loads(raw) if isinstance(raw, str) else []
+            videos = json_loads(raw) if isinstance(raw, str) else []
         except (json.JSONDecodeError, TypeError):
             videos = []
 
