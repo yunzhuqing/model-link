@@ -141,6 +141,7 @@ def execute_vertexai_veo_generation(
     base_url: str,
     project_id: Optional[str],
     provider_type: str = "vertexai",
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     Execute Veo video generation via Vertex AI predictLongRunning endpoint.
@@ -189,75 +190,138 @@ def execute_vertexai_veo_generation(
             request_body["parameters"] = {}
         request_body["parameters"]["generateAudio"] = bool(generate_audio_raw)
 
-    # ── Create long-running operation ──────────────────────────────────
-    # IMPORTANT: call get_headers_fn() BEFORE reading base_url.
-    # get_headers_fn() triggers _get_credentials() which sets base_url
-    # from the service account project_id when no explicit base_url is configured.
-    headers = get_headers_fn()
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type=provider_type, input_data=request_body)
+        if _child_span:
+            _child_span.log_input(request_body)
+    _trace_error: Optional[Exception] = None
 
-    veo_base_url = _resolve_veo_base_url(base_url, project_id)
-    create_url = f"{veo_base_url}/publishers/google/models/{model}:predictLongRunning"
+    try:
+        # ── Create long-running operation ──────────────────────────────────
+        # IMPORTANT: call get_headers_fn() BEFORE reading base_url.
+        # get_headers_fn() triggers _get_credentials() which sets base_url
+        # from the service account project_id when no explicit base_url is configured.
+        headers = get_headers_fn()
 
-    payload_str = json.dumps(request_body, ensure_ascii=False)
+        veo_base_url = _resolve_veo_base_url(base_url, project_id)
+        create_url = f"{veo_base_url}/publishers/google/models/{model}:predictLongRunning"
 
-    with _httpx.Client(timeout=60) as client:
-        resp = client.post(create_url, content=payload_str, headers=headers)
+        payload_str = json.dumps(request_body, ensure_ascii=False)
 
-    if resp.status_code >= 400:
-        raise RuntimeError(
-            f"Vertex AI Veo CreateOperation error ({resp.status_code}): {resp.text}"
-        )
+        _create_span = None
+        if _child_span:
+            _create_span = _child_span.start_child(model, model=model, provider_type=provider_type, input_data=request_body, obs_type="span")
+            if _create_span:
+                _create_span.log_input(request_body)
+        _create_error: Optional[Exception] = None
 
-    op_data = resp.json()
-    operation_name = op_data.get("name", "")
-    if not operation_name:
-        raise RuntimeError(
-            f"Vertex AI Veo CreateOperation returned no operation name: {op_data}"
-        )
+        operation_name = ""
+        try:
+            with _httpx.Client(timeout=60) as client:
+                resp = client.post(create_url, content=payload_str, headers=headers)
 
-    # ── Poll via fetchPredictOperation ─────────────────────────────────
-    fetch_url = f"{veo_base_url}/publishers/google/models/{model}:fetchPredictOperation"
-    fetch_body = {"operationName": operation_name}
-
-    # Collected video info
-    raw_videos: List[Dict[str, str]] = []
-    poll_timeout = request.metadata.get('timeout')
-    max_wait = poll_timeout or 600  # 10 min
-    deadline = time.time() + max_wait
-
-    with _httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            poll_headers = get_headers_fn()
-            poll_resp = client.post(
-                fetch_url,
-                json=fetch_body,
-                headers=poll_headers,
-            )
-            if poll_resp.status_code >= 400:
+            if resp.status_code >= 400:
                 raise RuntimeError(
-                    f"Vertex AI Veo fetchPredictOperation error "
-                    f"({poll_resp.status_code}): {poll_resp.text}"
+                    f"Vertex AI Veo CreateOperation error ({resp.status_code}): {resp.text}"
                 )
-            poll_data = poll_resp.json()
-            is_done = poll_data.get("done", False)
 
-            if is_done:
-                error = poll_data.get("error")
-                if error:
-                    raise RuntimeError(
-                        f"Vertex AI Veo operation failed: "
-                        f"{json.dumps(error, ensure_ascii=False)}"
+            op_data = resp.json()
+            operation_name = op_data.get("name", "")
+            if not operation_name:
+                raise RuntimeError(
+                    f"Vertex AI Veo CreateOperation returned no operation name: {op_data}"
+                )
+
+            if _create_span:
+                _create_span.log_output({"operation_name": operation_name})
+        except Exception as e:
+            _create_error = e
+            raise
+        finally:
+            if _create_span:
+                _create_span.end(error=_create_error)
+
+        # ── Poll via fetchPredictOperation ─────────────────────────────────
+        fetch_url = f"{veo_base_url}/publishers/google/models/{model}:fetchPredictOperation"
+        fetch_body = {"operationName": operation_name}
+
+        # Collected video info
+        raw_videos: List[Dict[str, str]] = []
+        poll_timeout = request.metadata.get('timeout')
+        max_wait = poll_timeout or 600  # 10 min
+        deadline = time.time() + max_wait
+
+        _poll_span = None
+        if _child_span:
+            _poll_span = _child_span.start_child(operation_name, model=operation_name, provider_type=provider_type, obs_type="span")
+        _poll_error: Optional[Exception] = None
+
+        try:
+            with _httpx.Client(timeout=60) as client:
+                poll_count = 0
+                while time.time() < deadline:
+                    poll_headers = get_headers_fn()
+                    poll_resp = client.post(
+                        fetch_url,
+                        json=fetch_body,
+                        headers=poll_headers,
                     )
-                response_data = poll_data.get("response", {})
-                for video_entry in response_data.get("videos", []):
-                    raw_videos.append({
-                        "gcsUri": video_entry.get("gcsUri", ""),
-                        "bytesBase64Encoded": video_entry.get("bytesBase64Encoded", ""),
-                        "mimeType": video_entry.get("mimeType", "video/mp4"),
-                    })
-                break
+                    if poll_resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"Vertex AI Veo fetchPredictOperation error "
+                            f"({poll_resp.status_code}): {poll_resp.text}"
+                        )
+                    poll_data = poll_resp.json()
+                    is_done = poll_data.get("done", False)
+                    poll_count += 1
 
-            time.sleep(5.0)
+                    if _poll_span:
+                        _poll_span.log_output({
+                            "operation_name": operation_name,
+                            "done": is_done,
+                            "poll_count": poll_count,
+                        })
+
+                    if is_done:
+                        error = poll_data.get("error")
+                        if error:
+                            raise RuntimeError(
+                                f"Vertex AI Veo operation failed: "
+                                f"{json.dumps(error, ensure_ascii=False)}"
+                            )
+                        response_data = poll_data.get("response", {})
+                        for video_entry in response_data.get("videos", []):
+                            raw_videos.append({
+                                "gcsUri": video_entry.get("gcsUri", ""),
+                                "bytesBase64Encoded": video_entry.get("bytesBase64Encoded", ""),
+                                "mimeType": video_entry.get("mimeType", "video/mp4"),
+                            })
+                        break
+
+                    time.sleep(5.0)
+
+                # Timeout error
+                if not raw_videos:
+                    raise TimeoutError(
+                        f"Vertex AI Veo operation {operation_name} timed out after {max_wait}s"
+                    )
+        except Exception as e:
+            _poll_error = e
+            raise
+        finally:
+            if _poll_span:
+                _poll_span.end(error=_poll_error)
+
+        if _child_span:
+            _child_span.log_output({"operation_name": operation_name, "video_count": len(raw_videos), "status": "succeeded"})
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
     if not raw_videos:
         raise RuntimeError(

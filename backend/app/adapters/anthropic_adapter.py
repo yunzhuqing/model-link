@@ -265,14 +265,16 @@ class AnthropicMessagesAdapter(BaseAdapter):
         # 从 metadata.user_id 中解析 session_id
         # 格式: {"user_id": "{\"device_id\":\"...\",\"session_id\":\"...\"}"}
         session_id = data.get('session_id')
-        if not session_id:
-            user_id_raw = metadata.get('user_id')
-            if isinstance(user_id_raw, str):
-                try:
-                    user_id_data = json_loads(user_id_raw)
-                    session_id = user_id_data.get('session_id')
-                except (json.JSONDecodeError, TypeError):
-                    pass
+        user_id_raw = metadata.get('user_id')
+        user_id = None
+        if isinstance(user_id_raw, str):
+            try:
+                user_id_data = json_loads(user_id_raw)
+                session_id = session_id if session_id else user_id_data.get('session_id')
+                user_id = user_id_data.get('account_uuid') or user_id_data.get('device_id')
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
         if isinstance(output_config, dict):
             fmt = output_config.get('format', {})
             fmt_type = fmt.get('type', 'text')
@@ -305,10 +307,10 @@ class AnthropicMessagesAdapter(BaseAdapter):
             tools=tools,
             tool_choice=data.get('tool_choice', {}).get('type') if isinstance(data.get('tool_choice'), dict) else data.get('tool_choice'),
             stop=data.get('stop_sequences'),
-            user=data.get('user'),
+            user=user_id,
             session_id=session_id,
             reasoning_effort=reasoning_effort,
-            metadata=metadata
+            metadata=metadata,
         )
 
     def format_response(self, response: ChatResponse) -> dict:

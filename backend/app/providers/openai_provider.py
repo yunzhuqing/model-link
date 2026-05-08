@@ -308,13 +308,7 @@ class OpenAIProvider(BaseProvider):
         if request.user:
             result["user"] = request.user
         if request.reasoning_effort and request.reasoning_effort != 'none':
-            result["reasoning_effort"] = request.reasoning_effort
-        
-        # 添加额外参数（排除网关内部元数据键，避免泄漏到上游供应商 API）
-        for key, value in request.metadata.items():
-            if key not in _GATEWAY_INTERNAL_KEYS:
-                result[key] = value
-        
+            result["reasoning_effort"] = request.reasoning_effort    
         return result
     
     def _expand_messages_to_openai(self, messages: List[Message]) -> List[Dict[str, Any]]:

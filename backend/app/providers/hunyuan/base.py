@@ -178,6 +178,7 @@ class HunyuanProvider(BaseProvider):
                 messages=request.messages,
                 metadata=request.metadata,
                 region=self._get_region(),
+                tracer=self.tracer,
             )
 
         raise ValueError(

@@ -1283,6 +1283,7 @@ class VertexAIProvider(BaseProvider):
             base_url=self.config.base_url,
             project_id=self._project_id,
             provider_type=self.PROVIDER_TYPE,
+            tracer=self.tracer,
         )
 
     # ==================== 响应解析（分发） ====================

@@ -255,6 +255,7 @@ def _create_veo_operation(
     base_url: str,
     model: str,
     request_body: Dict[str, Any],
+    tracer: Any = None,
 ) -> str:
     """
     调用 POST /v1beta/models/{model}:predictLongRunning 创建视频生成任务。
@@ -279,21 +280,38 @@ def _create_veo_operation(
 
     payload_str = json.dumps(request_body, ensure_ascii=False)
 
-    with httpx.Client(timeout=60) as client:
-        response = client.post(url, content=payload_str, headers=headers)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(model, model=model, provider_type="gemini", input_data=request_body, obs_type="span")
+        if _span:
+            _span.log_input(request_body)
+    _error: Optional[Exception] = None
 
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Gemini Veo CreateOperation error ({response.status_code}): {response.text}"
-        )
+    try:
+        with httpx.Client(timeout=60) as client:
+            response = client.post(url, content=payload_str, headers=headers)
 
-    data = response.json()
-    operation_name = data.get("name", "")
-    if not operation_name:
-        raise RuntimeError(
-            f"Gemini Veo CreateOperation returned no operation name: {data}"
-        )
-    return operation_name
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Gemini Veo CreateOperation error ({response.status_code}): {response.text}"
+            )
+
+        data = response.json()
+        operation_name = data.get("name", "")
+        if not operation_name:
+            raise RuntimeError(
+                f"Gemini Veo CreateOperation returned no operation name: {data}"
+            )
+
+        if _span:
+            _span.log_output({"operation_name": operation_name})
+        return operation_name
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -361,6 +379,7 @@ def _poll_veo_operation(
     base_url: str,
     operation_name: str,
     poll_timeout: Optional[int] = None,
+    tracer: Any = None,
 ) -> Tuple[List[str], Dict[str, int]]:
     """
     轮询 GET /v1beta/{operation_name} 直到视频生成完成。
@@ -394,73 +413,95 @@ def _poll_veo_operation(
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
 
-    with httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            response = client.get(poll_url, headers=headers)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(operation_name, model=operation_name, provider_type="gemini", obs_type="span")
+    _error: Optional[Exception] = None
 
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"Gemini Veo PollOperation error ({response.status_code}): {response.text}"
-                )
+    try:
+        with httpx.Client(timeout=60) as client:
+            poll_count = 0
+            while time.time() < deadline:
+                response = client.get(poll_url, headers=headers)
 
-            data = response.json()
-            is_done = data.get("done", False)
-
-            if is_done:
-                # 检查是否有错误
-                error = data.get("error")
-                if error:
+                if response.status_code >= 400:
                     raise RuntimeError(
-                        f"Gemini Veo operation failed: {json.dumps(error, ensure_ascii=False)}"
+                        f"Gemini Veo PollOperation error ({response.status_code}): {response.text}"
                     )
 
-                # 解析生成的视频 URI
-                response_data = data.get("response", {})
-                generated_samples = response_data.get("generateVideoResponse", {}).get(
-                    "generatedSamples", []
-                )
+                data = response.json()
+                is_done = data.get("done", False)
+                poll_count += 1
 
-                video_uris: List[str] = []
-                for sample in generated_samples:
-                    uri = sample.get("video", {}).get("uri", "")
-                    if uri:
-                        video_uris.append(uri)
+                if _span:
+                    _poll_output: Dict[str, Any] = {
+                        "operation_name": operation_name,
+                        "done": is_done,
+                        "poll_count": poll_count,
+                    }
+                    _span.log_output(_poll_output)
 
-                if not video_uris:
-                    raise RuntimeError(
-                        f"Gemini Veo operation succeeded but no video URIs found: {data}"
+                if is_done:
+                    # 检查是否有错误
+                    error = data.get("error")
+                    if error:
+                        raise RuntimeError(
+                            f"Gemini Veo operation failed: {json.dumps(error, ensure_ascii=False)}"
+                        )
+
+                    # 解析生成的视频 URI
+                    response_data = data.get("response", {})
+                    generated_samples = response_data.get("generateVideoResponse", {}).get(
+                        "generatedSamples", []
                     )
 
-                # 下载视频并保存到 storage，用存储后的 URL 替换原始 Gemini URI
-                stored_urls: List[str] = []
-                for idx, uri in enumerate(video_uris):
-                    # 生成唯一文件名（基于 operation_name + 索引）
-                    safe_op = operation_name.replace("/", "_").replace(":", "_")
-                    video_id = f"{safe_op}_{idx}" if idx > 0 else safe_op
-                    # 截断过长的名称
-                    if len(video_id) > 80:
-                        video_id = video_id[-80:]
+                    video_uris: List[str] = []
+                    for sample in generated_samples:
+                        uri = sample.get("video", {}).get("uri", "")
+                        if uri:
+                            video_uris.append(uri)
 
-                    try:
-                        stored_url = _download_and_store_video(uri, api_key, video_id)
-                        stored_urls.append(stored_url)
-                    except Exception as exc:
-                        # 下载失败时回退到原始 Gemini URI（加上 API Key 供客户端访问）
-                        separator = "&" if "?" in uri else "?"
-                        stored_urls.append(f"{uri}{separator}key={api_key}")
+                    if not video_uris:
+                        raise RuntimeError(
+                            f"Gemini Veo operation succeeded but no video URIs found: {data}"
+                        )
 
-                usage_dict = {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                }
-                return stored_urls, usage_dict
+                    # 下载视频并保存到 storage，用存储后的 URL 替换原始 Gemini URI
+                    stored_urls: List[str] = []
+                    for idx, uri in enumerate(video_uris):
+                        # 生成唯一文件名（基于 operation_name + 索引）
+                        safe_op = operation_name.replace("/", "_").replace(":", "_")
+                        video_id = f"{safe_op}_{idx}" if idx > 0 else safe_op
+                        # 截断过长的名称
+                        if len(video_id) > 80:
+                            video_id = video_id[-80:]
 
-            time.sleep(_POLL_INTERVAL_S)
+                        try:
+                            stored_url = _download_and_store_video(uri, api_key, video_id)
+                            stored_urls.append(stored_url)
+                        except Exception as exc:
+                            # 下载失败时回退到原始 Gemini URI（加上 API Key 供客户端访问）
+                            separator = "&" if "?" in uri else "?"
+                            stored_urls.append(f"{uri}{separator}key={api_key}")
 
-    raise RuntimeError(
-        f"Gemini Veo operation {operation_name} timed out after {_POLL_MAX_WAIT_S}s"
-    )
+                    usage_dict = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    }
+                    return stored_urls, usage_dict
+
+                time.sleep(_POLL_INTERVAL_S)
+
+        raise RuntimeError(
+            f"Gemini Veo operation {operation_name} timed out after {_POLL_MAX_WAIT_S}s"
+        )
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -473,6 +514,7 @@ def execute_veo_video_generation(
     model: str,
     messages: List[Message],
     metadata: Dict[str, Any],
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     执行 Gemini Veo 视频生成并返回 ChatResponse。
@@ -493,21 +535,41 @@ def execute_veo_video_generation(
     # 构建请求体
     request_body = _build_veo_request(messages, metadata)
 
-    # 创建异步操作
-    operation_name = _create_veo_operation(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        request_body=request_body,
-    )
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="gemini", input_data=request_body)
+        if _child_span:
+            _child_span.log_input(request_body)
+    _trace_error: Optional[Exception] = None
 
-    # 轮询结果
-    video_uris, usage_dict = _poll_veo_operation(
-        api_key=api_key,
-        base_url=base_url,
-        operation_name=operation_name,
-        poll_timeout=metadata.get('timeout'),
-    )
+    try:
+        # 创建异步操作
+        operation_name = _create_veo_operation(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            request_body=request_body,
+            tracer=_child_span,
+        )
+
+        # 轮询结果
+        video_uris, usage_dict = _poll_veo_operation(
+            api_key=api_key,
+            base_url=base_url,
+            operation_name=operation_name,
+            poll_timeout=metadata.get('timeout'),
+            tracer=_child_span,
+        )
+
+        if _child_span:
+            _child_span.log_output({"operation_name": operation_name, "video_count": len(video_uris), "status": "succeeded"})
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
     video_items = [
         {

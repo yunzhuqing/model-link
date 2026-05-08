@@ -357,6 +357,7 @@ class TencentVODProvider(OpenAIProvider):
                 messages=request.messages,
                 metadata=request.metadata,
                 sub_app_id=self._get_sub_app_id(request),
+                tracer=self.tracer,
             )
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
@@ -366,6 +367,7 @@ class TencentVODProvider(OpenAIProvider):
                 messages=request.messages,
                 metadata=request.metadata,
                 sub_app_id=self._get_sub_app_id(request),
+                tracer=self.tracer,
             )
 
         # 标准对话路径 (OpenAI 兼容)

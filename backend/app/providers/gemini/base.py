@@ -579,6 +579,7 @@ class GeminiProvider(BaseProvider):
                 model=request.model,
                 messages=request.messages,
                 metadata=request.metadata,
+                tracer=self.tracer,
             )
 
         request_data = self.prepare_request(request)

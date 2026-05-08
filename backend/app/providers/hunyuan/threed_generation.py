@@ -272,6 +272,7 @@ def _submit_3d_job(
     generate_type: Optional[str] = None,
     polygon_type: Optional[str] = None,
     region: str = HUNYUAN3D_API_REGION,
+    tracer: Any = None,
 ) -> str:
     """
     Submit a Hunyuan 3D generation job and return the JobId.
@@ -369,24 +370,46 @@ def _submit_3d_job(
     payload_str = json.dumps(body, ensure_ascii=False)
 
     headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
-    response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
-    response.raise_for_status()
-    data = response.json()
 
-    resp = data.get("Response", {})
-    if "Error" in resp:
-        err = resp["Error"]
-        raise RuntimeError(
-            f"Hunyuan3D {action} error "
-            f"(code={err.get('Code')}): {err.get('Message')}"
-        )
+    _span = None
+    if tracer:
+        _span = tracer.start_child(model, model=model, provider_type="hunyuan", input_data=body, obs_type="span")
+        if _span:
+            _span.log_input(body)
+    _error: Optional[Exception] = None
 
-    job_id = resp.get("JobId")
-    if not job_id:
-        raise RuntimeError(
-            f"Hunyuan3D {action} returned no JobId: {data}"
-        )
-    return job_id
+    try:
+        response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        resp = data.get("Response", {})
+        if "Error" in resp:
+            err = resp["Error"]
+            raise RuntimeError(
+                f"Hunyuan3D {action} error "
+                f"(code={err.get('Code')}): {err.get('Message')}"
+            )
+
+        job_id = resp.get("JobId")
+        if not job_id:
+            raise RuntimeError(
+                f"Hunyuan3D {action} returned no JobId: {data}"
+            )
+
+        if _span:
+            _output: Dict[str, Any] = {"job_id": job_id}
+            _req_id = resp.get("RequestId", "")
+            if _req_id:
+                _output["x-request-id"] = _req_id
+            _span.log_output(_output)
+        return job_id
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -400,6 +423,7 @@ def _poll_3d_job(
     model: str,
     region: str = HUNYUAN3D_API_REGION,
     poll_timeout: Optional[int] = None,
+    tracer: Any = None,
 ) -> List[Dict[str, Any]]:
     """
     Poll the 3D job until it finishes, then extract result files.
@@ -425,64 +449,89 @@ def _poll_3d_job(
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
 
-    with httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            body = {"JobId": job_id}
-            payload_str = json.dumps(body, ensure_ascii=False)
-            headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(job_id, model=job_id, provider_type="hunyuan", obs_type="span")
+    _error: Optional[Exception] = None
 
-            response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+    try:
+        with httpx.Client(timeout=60) as client:
+            poll_count = 0
+            while time.time() < deadline:
+                body = {"JobId": job_id}
+                payload_str = json.dumps(body, ensure_ascii=False)
+                headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
 
-            resp = data.get("Response", {})
-            if "Error" in resp:
-                err = resp["Error"]
-                raise RuntimeError(
-                    f"Hunyuan3D {action} error "
-                    f"(code={err.get('Code')}): {err.get('Message')}"
-                )
+                response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
+                response.raise_for_status()
+                data = response.json()
 
-            status = resp.get("Status", "")
-
-            if status == "DONE":
-                error_code = resp.get("ErrorCode", "")
-                if error_code:
+                resp = data.get("Response", {})
+                if "Error" in resp:
+                    err = resp["Error"]
                     raise RuntimeError(
-                        f"Hunyuan3D job {job_id} failed: "
-                        f"ErrorCode={error_code}, "
+                        f"Hunyuan3D {action} error "
+                        f"(code={err.get('Code')}): {err.get('Message')}"
+                    )
+
+                status = resp.get("Status", "")
+                poll_count += 1
+
+                if _span:
+                    _poll_output: Dict[str, Any] = {
+                        "job_id": job_id,
+                        "status": status,
+                        "poll_count": poll_count,
+                    }
+                    _req_id = resp.get("RequestId", "")
+                    if _req_id:
+                        _poll_output["x-request-id"] = _req_id
+                    _span.log_output(_poll_output)
+
+                if status == "DONE":
+                    error_code = resp.get("ErrorCode", "")
+                    if error_code:
+                        raise RuntimeError(
+                            f"Hunyuan3D job {job_id} failed: "
+                            f"ErrorCode={error_code}, "
+                            f"ErrorMessage={resp.get('ErrorMessage', '')}"
+                        )
+
+                    result_files = resp.get("ResultFile3Ds") or []
+                    items: List[Dict[str, Any]] = []
+                    for f in result_files:
+                        items.append({
+                            "type": f.get("Type", "OBJ"),
+                            "url": f.get("Url", ""),
+                            "preview_url": f.get("PreviewImageUrl", ""),
+                        })
+
+                    if not items:
+                        raise RuntimeError(
+                            f"Hunyuan3D job {job_id} finished but no ResultFile3Ds found: "
+                            f"{json.dumps(resp, ensure_ascii=False)}"
+                        )
+
+                    return items
+
+                if status in ("FAILED", "FAIL", "ERROR"):
+                    raise RuntimeError(
+                        f"Hunyuan3D job {job_id} failed with status={status}: "
+                        f"ErrorCode={resp.get('ErrorCode', '')}, "
                         f"ErrorMessage={resp.get('ErrorMessage', '')}"
                     )
 
-                result_files = resp.get("ResultFile3Ds") or []
-                items: List[Dict[str, Any]] = []
-                for f in result_files:
-                    items.append({
-                        "type": f.get("Type", "OBJ"),
-                        "url": f.get("Url", ""),
-                        "preview_url": f.get("PreviewImageUrl", ""),
-                    })
+                time.sleep(_POLL_INTERVAL_S)
 
-                if not items:
-                    raise RuntimeError(
-                        f"Hunyuan3D job {job_id} finished but no ResultFile3Ds found: "
-                        f"{json.dumps(resp, ensure_ascii=False)}"
-                    )
-
-                return items
-
-            if status in ("FAILED", "FAIL", "ERROR"):
-                raise RuntimeError(
-                    f"Hunyuan3D job {job_id} failed with status={status}: "
-                    f"ErrorCode={resp.get('ErrorCode', '')}, "
-                    f"ErrorMessage={resp.get('ErrorMessage', '')}"
-                )
-
-            time.sleep(_POLL_INTERVAL_S)
-
-    raise RuntimeError(
-        f"Hunyuan3D job {job_id} timed out after {_POLL_MAX_WAIT_S}s"
-    )
+        raise RuntimeError(
+            f"Hunyuan3D job {job_id} timed out after {_POLL_MAX_WAIT_S}s"
+        )
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -540,6 +589,7 @@ def execute_hunyuan3d_generation(
     messages,
     metadata: Dict[str, Any],
     region: str = HUNYUAN3D_API_REGION,
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     Execute Hunyuan 3D generation and return a ChatResponse.
@@ -587,28 +637,48 @@ def execute_hunyuan3d_generation(
             "or text prompt found in user messages / tool parameters"
         )
 
-    # Submit 3D job
-    with httpx.Client(timeout=60) as client:
-        job_id = _submit_3d_job(
-            client=client,
-            secret_id=secret_id,
-            secret_key=secret_key,
-            model=model,
-            image_url=image_url,
-            image_base64=image_base64,
-            prompt=text_prompt if not image_url and not image_base64 and not multi_view_images else None,
-            enable_pbr=enable_pbr,
-            result_format=result_format,
-            enable_geometry=enable_geometry,
-            multi_view_images=multi_view_images,
-            face_count=face_count,
-            generate_type=generate_type,
-            polygon_type=polygon_type,
-            region=region,
-        )
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _request_data: Dict[str, Any] = {"model": model, "prompt": text_prompt}
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="hunyuan", input_data=_request_data)
+        if _child_span:
+            _child_span.log_input(_request_data)
+    _trace_error: Optional[Exception] = None
 
-    # Poll for result
-    result_items = _poll_3d_job(secret_id, secret_key, job_id, model, region=region, poll_timeout=metadata.get("timeout"))
+    try:
+        # Submit 3D job
+        with httpx.Client(timeout=60) as client:
+            job_id = _submit_3d_job(
+                client=client,
+                secret_id=secret_id,
+                secret_key=secret_key,
+                model=model,
+                image_url=image_url,
+                image_base64=image_base64,
+                prompt=text_prompt if not image_url and not image_base64 and not multi_view_images else None,
+                enable_pbr=enable_pbr,
+                result_format=result_format,
+                enable_geometry=enable_geometry,
+                multi_view_images=multi_view_images,
+                face_count=face_count,
+                generate_type=generate_type,
+                polygon_type=polygon_type,
+                region=region,
+                tracer=_child_span,
+            )
+
+        # Poll for result
+        result_items = _poll_3d_job(secret_id, secret_key, job_id, model, region=region, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+
+        if _child_span:
+            _child_span.log_output({"job_id": job_id, "result_count": len(result_items), "status": "succeeded"})
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
     # Wrap in the 3d_generation_call response structure
     output_items = [

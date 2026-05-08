@@ -427,70 +427,95 @@ def _poll_video_task(
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
 
-    with httpx.Client(timeout=60) as client:
-        while time.time() < deadline:
-            resp = _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
+    _span = None
+    if tracer:
+        _span = tracer.start_child(task_id, model=task_id, provider_type="tencentvod", obs_type="span")
+    _error: Optional[Exception] = None
 
-            # Extract the AigcVideoTask sub-object
-            aigc_task = resp.get("AigcVideoTask") or {}
-            status = resp.get("Status") or aigc_task.get("Status", "")
+    try:
+        with httpx.Client(timeout=60) as client:
+            poll_count = 0
+            while time.time() < deadline:
+                resp = _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
 
-            if status == "FINISH":
-                # Check for task-level error
-                err_code = aigc_task.get("ErrCode", 0)
-                if err_code != 0:
+                # Extract the AigcVideoTask sub-object
+                aigc_task = resp.get("AigcVideoTask") or {}
+                status = resp.get("Status") or aigc_task.get("Status", "")
+                poll_count += 1
+
+                if _span:
+                    _poll_output: Dict[str, Any] = {
+                        "task_id": task_id,
+                        "status": status,
+                        "poll_count": poll_count,
+                    }
+                    _req_id = resp.get("RequestId", "")
+                    if _req_id:
+                        _poll_output["x-request-id"] = _req_id
+                    _span.log_output(_poll_output)
+
+                if status == "FINISH":
+                    # Check for task-level error
+                    err_code = aigc_task.get("ErrCode", 0)
+                    if err_code != 0:
+                        err_code_ext = aigc_task.get("ErrCodeExt", "")
+                        raise RuntimeError(
+                            f"TencentVOD video task failed "
+                            f"(ErrCode={err_code}, ErrCodeExt={err_code_ext}): "
+                            f"{aigc_task.get('Message', '')}"
+                        )
+
+                    output = aigc_task.get("Output") or {}
+                    video_items: List[Dict[str, Any]] = []
+
+                    # Pattern 1: single FileUrl (most common for video tasks)
+                    file_url = output.get("FileUrl", "")
+                    if file_url:
+                        video_items.append({
+                            "type": "video_generation_call",
+                            "status": "completed",
+                            "result": file_url,
+                            "file_type": output.get("FileType", "mp4"),
+                        })
+
+                    # Pattern 2: FileInfos array (fallback, similar to image tasks)
+                    if not video_items:
+                        for fi in (output.get("FileInfos") or []):
+                            url = fi.get("FileUrl", "")
+                            if url:
+                                video_items.append({
+                                    "type": "video_generation_call",
+                                    "status": "completed",
+                                    "result": url,
+                                    "file_type": fi.get("FileType", "mp4"),
+                                })
+
+                    if not video_items:
+                        raise RuntimeError(
+                            f"TencentVOD video task {task_id} finished but no FileUrl found in output: "
+                            f"{json.dumps(output, ensure_ascii=False)}"
+                        )
+
+                    return video_items
+
+                if status in ("FAIL", "ABORTED"):
                     err_code_ext = aigc_task.get("ErrCodeExt", "")
                     raise RuntimeError(
-                        f"TencentVOD video task failed "
-                        f"(ErrCode={err_code}, ErrCodeExt={err_code_ext}): "
-                        f"{aigc_task.get('Message', '')}"
+                        f"TencentVOD video task {task_id} failed with status={status}, "
+                        f"ErrCodeExt={err_code_ext}"
                     )
 
-                output = aigc_task.get("Output") or {}
-                video_items: List[Dict[str, Any]] = []
+                time.sleep(_POLL_INTERVAL_S)
 
-                # Pattern 1: single FileUrl (most common for video tasks)
-                file_url = output.get("FileUrl", "")
-                if file_url:
-                    video_items.append({
-                        "type": "video_generation_call",
-                        "status": "completed",
-                        "result": file_url,
-                        "file_type": output.get("FileType", "mp4"),
-                    })
-
-                # Pattern 2: FileInfos array (fallback, similar to image tasks)
-                if not video_items:
-                    for fi in (output.get("FileInfos") or []):
-                        url = fi.get("FileUrl", "")
-                        if url:
-                            video_items.append({
-                                "type": "video_generation_call",
-                                "status": "completed",
-                                "result": url,
-                                "file_type": fi.get("FileType", "mp4"),
-                            })
-
-                if not video_items:
-                    raise RuntimeError(
-                        f"TencentVOD video task {task_id} finished but no FileUrl found in output: "
-                        f"{json.dumps(output, ensure_ascii=False)}"
-                    )
-
-                return video_items
-
-            if status in ("FAIL", "ABORTED"):
-                err_code_ext = aigc_task.get("ErrCodeExt", "")
-                raise RuntimeError(
-                    f"TencentVOD video task {task_id} failed with status={status}, "
-                    f"ErrCodeExt={err_code_ext}"
-                )
-
-            time.sleep(_POLL_INTERVAL_S)
-
-    raise RuntimeError(
-        f"TencentVOD video task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
-    )
+        raise RuntimeError(
+            f"TencentVOD video task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
+        )
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 # =============================================================================
@@ -588,6 +613,7 @@ def execute_tencentvod_video_generation(
     messages,
     metadata: Dict[str, Any],
     sub_app_id: Optional[int] = None,
+    tracer: Any = None,
 ) -> ChatResponse:
     """
     Execute TencentVOD video generation and return a ChatResponse.
@@ -680,31 +706,51 @@ def execute_tencentvod_video_generation(
         reference_image_ids=reference_image_ids,
     )
 
-    # Submit task
-    with httpx.Client(timeout=60) as client:
-        task_id = _create_aigc_video_task(
-            client=client,
-            secret_id=secret_id,
-            secret_key=secret_key,
-            sub_app_id=_sub_app,
-            model_name=model_name,
-            model_version=model_version,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-            seconds=seconds,
-            audio_generation=audio_generation,
-            person_generation=person_generation,
-            enhance_prompt=enhance_prompt,
-            file_infos=file_infos or None,
-            last_frame_url=last_frame_url,
-            last_frame_file_id=last_frame_file_id,
-            session_id=session_id,
-        )
+    # ── Tracing ────────────────────────────────────────────────────────────
+    _request_data: Dict[str, Any] = {"model": model, "model_version": model_version, "prompt": prompt}
+    _child_span = None
+    if tracer:
+        _child_span = tracer.start_child(model, model=model, provider_type="tencentvod", input_data=_request_data)
+        if _child_span:
+            _child_span.log_input(_request_data)
+    _trace_error: Optional[Exception] = None
 
-    # Poll for result
-    video_items = _poll_video_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"))
+    try:
+        # Submit task
+        with httpx.Client(timeout=60) as client:
+            task_id = _create_aigc_video_task(
+                client=client,
+                secret_id=secret_id,
+                secret_key=secret_key,
+                sub_app_id=_sub_app,
+                model_name=model_name,
+                model_version=model_version,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                seconds=seconds,
+                audio_generation=audio_generation,
+                person_generation=person_generation,
+                enhance_prompt=enhance_prompt,
+                file_infos=file_infos or None,
+                last_frame_url=last_frame_url,
+                last_frame_file_id=last_frame_file_id,
+                session_id=session_id,
+                tracer=_child_span,
+            )
+
+        # Poll for result
+        video_items = _poll_video_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+
+        if _child_span:
+            _child_span.log_output({"task_id": task_id, "video_count": len(video_items), "status": "succeeded"})
+    except Exception as e:
+        _trace_error = e
+        raise
+    finally:
+        if _child_span:
+            _child_span.end(error=_trace_error)
 
     message = Message(
         role=MessageRole.ASSISTANT,
