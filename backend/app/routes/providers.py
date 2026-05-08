@@ -21,19 +21,19 @@ from app.routes.permissions import (
 
 def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
     """
-    For TencentVOD providers, auto-create an ApiToken via CreateAigcApiToken API
-    if one hasn't been stored yet.
+    For TencentVOD providers, auto-fetch or create an ApiToken.
+
+    First checks for existing tokens via DescribeAigcApiTokens — if any exist,
+    uses the first one. Otherwise creates a new token via CreateAigcApiToken.
 
     Reads secret_id (AK), secret_key (SK), and optionally app_id from
-    provider.extra_config and calls the TencentVOD API to get a permanent
-    ApiToken, which is then stored in provider.api_key.
+    provider.extra_config. The resulting ApiToken is stored in provider.api_key.
 
     Does nothing if api_key is already set.
     """
     if provider.type != 'tencentvod':
         return
 
-    # Skip if api_key already exists
     if provider.api_key:
         return
 
@@ -43,17 +43,24 @@ def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
     app_id = extra.get('app_id')
 
     if not secret_id or not secret_key:
-        return  # Cannot create token without credentials
+        return
 
     try:
-        from app.providers.tencentvod.image_generation import create_aigc_api_token
+        from app.providers.tencentvod.image_generation import (
+            create_aigc_api_token,
+            describe_aigc_api_tokens,
+        )
         sub_app_id = int(app_id) if app_id else None
-        api_token = create_aigc_api_token(secret_id, secret_key, sub_app_id)
-        provider.api_key = api_token
+
+        # Check for existing tokens first
+        existing_tokens = describe_aigc_api_tokens(secret_id, secret_key, sub_app_id)
+        if existing_tokens:
+            provider.api_key = existing_tokens[0]
+        else:
+            provider.api_key = create_aigc_api_token(secret_id, secret_key, sub_app_id)
     except Exception as e:
-        # Log error but don't fail the provider save
         import sys
-        print(f"[TencentVOD] Failed to create ApiToken: {e}", file=sys.stderr)
+        print(f"[TencentVOD] Failed to get or create ApiToken: {e}", file=sys.stderr)
 
 providers_bp = Blueprint('providers', __name__)
 

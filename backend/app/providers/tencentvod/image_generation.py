@@ -385,6 +385,52 @@ def create_aigc_api_token(
 
 
 # =============================================================================
+# API 调用: DescribeAigcApiTokens
+# =============================================================================
+
+def describe_aigc_api_tokens(
+    secret_id: str,
+    secret_key: str,
+    sub_app_id: Optional[int] = None,
+) -> List[str]:
+    """
+    Call DescribeAigcApiTokens and return the list of existing ApiTokens.
+
+    Args:
+        secret_id:  腾讯云 SecretId (AK)
+        secret_key: 腾讯云 SecretKey (SK)
+        sub_app_id: 点播子应用 ID（可选）
+
+    Returns:
+        List of ApiToken strings (may be empty)
+
+    Raises:
+        RuntimeError: On API error
+    """
+    body: Dict[str, Any] = {}
+    if sub_app_id is not None:
+        body["SubAppId"] = sub_app_id
+
+    payload_str = json.dumps(body, ensure_ascii=False)
+    headers = _build_auth_headers(secret_id, secret_key, "DescribeAigcApiTokens", payload_str)
+
+    with httpx.Client(timeout=60) as client:
+        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    resp = data.get("Response", {})
+    if "Error" in resp:
+        err = resp["Error"]
+        raise RuntimeError(
+            f"TencentVOD DescribeAigcApiTokens error "
+            f"(code={err.get('Code')}): {err.get('Message')}"
+        )
+
+    return resp.get("ApiTokens", [])
+
+
+# =============================================================================
 # API 调用: CreateAigcImageTask
 # =============================================================================
 

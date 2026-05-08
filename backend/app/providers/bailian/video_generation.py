@@ -624,7 +624,7 @@ def execute_happyhorse_video_generation(
     # ── Tracing ────────────────────────────────────────────────────────────
     _child_span = None
     if tracer:
-        _child_span = tracer.start_child(model, model=model, provider_type="bailian", input_data=request_body)
+        _child_span = tracer.start_child(model, model=model, provider_type="bailian", obs_type="generation",input_data=request_body)
         if _child_span:
             _child_span.log_input(request_body)
     _trace_error: Optional[Exception] = None
@@ -671,14 +671,14 @@ def execute_happyhorse_video_generation(
                 if task_status == TASK_STATUS_SUCCEEDED:
                     video_output_url = output.get("video_url", "")
                     return _build_success_response(
-                        model, video_output_url, output, task_id, metadata=metadata
+                        model, video_output_url, output, task_id, metadata=metadata, tracer=_child_span
                     )
                 elif task_status == TASK_STATUS_FAILED:
                     return _build_failure_response(
-                        model, output, task_id
+                        model, output, task_id, tracer=_child_span
                     )
                 elif task_status in (TASK_STATUS_CANCELED, TASK_STATUS_UNKNOWN):
-                    return _build_canceled_response(model, task_id, task_status)
+                    return _build_canceled_response(model, task_id, task_status, tracer=_child_span)
 
             except httpx.RequestError as e:
                 raise RuntimeError(f"Dashscope video-synthesis network error: {e}")
@@ -694,23 +694,20 @@ def execute_happyhorse_video_generation(
             )
         except TimeoutError:
             # Return a response indicating timeout
-            return _build_timeout_response(model, task_id)
+            return _build_timeout_response(model, task_id, tracer=_child_span)
 
         final_output = final_result.get("output", {})
         final_status = final_output.get("task_status", TASK_STATUS_UNKNOWN)
 
         if final_status == TASK_STATUS_SUCCEEDED:
             video_output_url = final_output.get("video_url", "")
-            result = _build_success_response(
-                model, video_output_url, final_output, task_id, metadata=metadata
+            return _build_success_response(
+                model, video_output_url, final_output, task_id, metadata=metadata, tracer=_child_span
             )
-            if _child_span:
-                _child_span.log_output({"task_id": task_id, "status": "succeeded", "video_url": video_output_url})
-            return result
         elif final_status == TASK_STATUS_FAILED:
-            return _build_failure_response(model, final_output, task_id)
+            return _build_failure_response(model, final_output, task_id, tracer=_child_span)
         else:
-            return _build_canceled_response(model, task_id, final_status)
+            return _build_canceled_response(model, task_id, final_status, tracer=_child_span)
     except Exception as e:
         _trace_error = e
         raise
@@ -812,8 +809,12 @@ def _build_success_response(
     output: Dict[str, Any],
     task_id: str,
     metadata: Optional[Dict[str, Any]] = None,
+    tracer: Any = None,
 ) -> ChatResponse:
     """Build a successful ChatResponse with video URL."""
+    if tracer:
+        tracer.log_output({"task_id": task_id, "status": "succeeded", "video_url": video_url})
+
     if metadata is None:
         metadata = {}
 
@@ -867,8 +868,12 @@ def _build_failure_response(
     model: str,
     output: Dict[str, Any],
     task_id: str,
+    tracer: Any = None,
 ) -> ChatResponse:
     """Build a ChatResponse for a failed video generation task."""
+    if tracer:
+        tracer.log_output({"task_id": task_id, "status": "failed", "code": output.get("code", "UnknownError"), "message": output.get("message", "Video generation failed")})
+
     response_id = gen_id("vid-")
     code = output.get("code", "UnknownError")
     message = output.get("message", "Video generation failed")
@@ -903,8 +908,12 @@ def _build_canceled_response(
     model: str,
     task_id: str,
     task_status: str,
+    tracer: Any = None,
 ) -> ChatResponse:
     """Build a ChatResponse for a canceled/unknown video generation task."""
+    if tracer:
+        tracer.log_output({"task_id": task_id, "status": task_status.lower()})
+
     response_id = gen_id("vid-")
 
     status_texts = {
@@ -942,8 +951,12 @@ def _build_canceled_response(
 def _build_timeout_response(
     model: str,
     task_id: str,
+    tracer: Any = None,
 ) -> ChatResponse:
     """Build a ChatResponse for a timed-out video generation task."""
+    if tracer:
+        tracer.log_output({"task_id": task_id, "status": "timeout"})
+
     response_id = gen_id("vid-")
 
     video_call_items = [
