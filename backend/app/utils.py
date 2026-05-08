@@ -59,18 +59,19 @@ def json_loads(s: str | bytes, **kwargs):
 
     Raises json.JSONDecodeError if both parsers fail.
     """
+    std_err = None
     try:
         return json.loads(s, **kwargs)
     except json.JSONDecodeError as e1:
-        pass
+        std_err = str(e1)
 
     try:
         return demjson3.decode(s, strict=False)
     except demjson3.JSONDecodeError as e2:
         raw = s if isinstance(s, str) else s.decode("utf-8", errors="replace")
         logger.error(
-            "json_loads failed with both parsers: std=%s tolerant=%s raw_bytes=%d preview=%s",
-            e1,
+            "json_loads failed with both parsers: std=%s tolerant=%s raw_bytes=%d full_str=%s",
+            std_err,
             e2,
             len(raw),
             raw,
