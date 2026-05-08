@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, Plus, ChevronDown } from 'lucide-react';
-import { tagsApi, Tag } from '../api/client';
+import { tagsApi, type Tag } from '../api/client';
 
 interface TagEntry {
   name: string;
