@@ -162,41 +162,29 @@ class AnthropicProvider(BaseProvider):
             "max_tokens": request.max_tokens or 4096,
         }
 
-        # system 消息是顶级字段
-        # Support cache_control on system content blocks
-        system_msg = self._get_system_message_object(request)
-        if system_msg:
-            if isinstance(system_msg.content, list):
-                # Check if any system block has cache_control
-                has_cache_control = any(
-                    isinstance(b, ContentBlock) and b.cache_control
-                    for b in system_msg.content
-                )
-                if has_cache_control:
-                    # Output as array of content blocks with cache_control
-                    system_blocks = []
-                    for b in system_msg.content:
-                        if isinstance(b, ContentBlock) and b.type == ContentType.TEXT:
-                            block_dict = {"type": "text", "text": b.text or ""}
-                            if b.cache_control:
-                                block_dict["cache_control"] = b.cache_control
-                            system_blocks.append(block_dict)
-                    result["system"] = system_blocks
-                else:
-                    # No cache_control, use simple string
-                    result["system"] = system_msg.get_text_content() or ""
-            else:
-                result["system"] = system_msg.get_text_content() or ""
-
-        # 转换对话消息（排除 system）
+        # system 消息是顶级字段。developer 消息合并入 system（Anthropic 无 developer 角色）。
+        system_val = request.system
         messages = []
         for msg in request.messages:
-            if msg.role.is_system_like():
-                continue
-            anthropic_msg = self._message_to_anthropic(msg)
-            if anthropic_msg:
-                messages.append(anthropic_msg)
+            if msg.role == MessageRole.DEVELOPER:
+                text = msg.get_text_content() or ""
+                if text:
+                    if system_val is None:
+                        system_val = text
+                    elif isinstance(system_val, str):
+                        system_val = system_val + "\n\n" + text
+                    else:
+                        system_val = list(system_val) + [{"type": "text", "text": text}]
+            elif msg.role == MessageRole.SYSTEM:
+                continue  # Already in system field (safety)
+            else:
+                anthropic_msg = self._message_to_anthropic(msg)
+                if anthropic_msg:
+                    messages.append(anthropic_msg)
         result["messages"] = messages
+
+        if system_val is not None:
+            result["system"] = system_val
 
         # 可选参数
         if request.temperature is not None:
@@ -255,14 +243,6 @@ class AnthropicProvider(BaseProvider):
             result["stream"] = True
 
         return result
-
-    @staticmethod
-    def _get_system_message_object(request: ChatRequest) -> Optional[Message]:
-        """Get the first system Message object from the request."""
-        for msg in request.messages:
-            if msg.role.is_system_like():
-                return msg
-        return None
 
     def _message_to_anthropic(self, message: Message) -> Optional[Dict[str, Any]]:
         """将 Message 转换为 Anthropic 格式"""

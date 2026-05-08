@@ -256,9 +256,6 @@ class BailianProvider(OpenAIProvider):
         else:
             data["enable_thinking"] = False
 
-        # 打印请求体到控制台
-        logging.debug("Prepared Bailian request data: %s", json.dumps(data, ensure_ascii=False))
-
         return data
 
     def _content_block_to_openai(self, block) -> Dict[str, Any]:

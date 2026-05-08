@@ -112,29 +112,30 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
           - max_tokens → max_output_tokens
           - reasoning_effort → reasoning.effort
         """
-        # 分离 system 消息（取第一条作为 instructions）
-        system_content: Optional[str] = None
-        non_system_messages: List[Message] = []
-
+        # System instructions pass through as-is
+        # Separate developer messages from regular messages for different handling
+        other_messages = []
+        developer_items = []
         for msg in request.messages:
-            if msg.role.is_system_like() and system_content is None:
-                if isinstance(msg.content, str):
-                    system_content = msg.content
-                elif isinstance(msg.content, list):
-                    texts = [b.text or "" for b in msg.content if hasattr(b, 'text')]
-                    system_content = " ".join(texts).strip() or None
-            else:
-                non_system_messages.append(msg)
+            if msg.role == MessageRole.DEVELOPER:
+                content = msg.get_text_content() or ''
+                if content:
+                    developer_items.append({"role": "developer", "content": content})
+            elif msg.role != MessageRole.SYSTEM:
+                other_messages.append(msg)
+
+        # Build input array, developer messages first
+        input_array = developer_items + self._messages_to_responses_input(other_messages)
 
         # 构建基础请求体
         result: Dict[str, Any] = {
             "model": request.model,
-            "input": self._messages_to_responses_input(non_system_messages),
+            "input": input_array,
             "stream": request.stream,
         }
 
-        if system_content:
-            result["instructions"] = system_content
+        if request.system is not None:
+            result["instructions"] = request.system
 
         if request.temperature is not None:
             result["temperature"] = request.temperature

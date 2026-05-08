@@ -47,35 +47,18 @@ class AnthropicMessagesAdapter(BaseAdapter):
         """
         messages = []
 
-        # 处理 system 消息
-        # Anthropic system can be a string or an array of content blocks (with optional cache_control)
+        # 处理 system —— 存储到 ChatRequest.system 而不是创建 Message
+        # Anthropic system 可以是字符串或内容块数组（支持 cache_control）
         model_name = data.get('model', '')
         is_claude_model = model_name.startswith('claude-')
 
-        if 'system' in data:
-            system_val = data['system']
-            if isinstance(system_val, list):
-                # Array of content blocks: [{"type": "text", "text": "...", "cache_control": {"type": "ephemeral"}}]
-                system_blocks = []
-                for item in system_val:
-                    text = item.get('text', '')
-                    if not is_claude_model:
-                        text = re.sub(r'cch=[a-zA-Z0-9]+;\s*', '', text)
-                    block = ContentBlock.from_text(text)
-                    if 'cache_control' in item:
-                        block.cache_control = item['cache_control']
-                    system_blocks.append(block)
-                messages.append(Message(
-                    role=MessageRole.SYSTEM,
-                    content=system_blocks
-                ))
-            else:
-                if not is_claude_model:
-                    system_val = re.sub(r'cch=[a-zA-Z0-9]+;\s*', '', system_val)
-                messages.append(Message(
-                    role=MessageRole.SYSTEM,
-                    content=system_val
-                ))
+        system_val = data.get('system')
+        if isinstance(system_val, str) and not is_claude_model:
+            system_val = re.sub(r'cch=[a-zA-Z0-9]+;\s*', '', system_val)
+        elif isinstance(system_val, list) and not is_claude_model:
+            for item in system_val:
+                if 'text' in item:
+                    item['text'] = re.sub(r'cch=[a-zA-Z0-9]+;\s*', '', item['text'])
 
         # 处理对话消息
         for msg_data in data.get('messages', []):
@@ -300,6 +283,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),
+            system=system_val,
             temperature=data.get('temperature'),
             top_p=data.get('top_p'),
             max_tokens=data.get('max_tokens', 4096),

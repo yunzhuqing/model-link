@@ -46,6 +46,8 @@
     "rateLimitsDesc": "Monitor model RPM/TPM usage",
     "permissions": "Permissions",
     "permissionsDesc": "Manage permission points for roles",
+    "tags": "Tags",
+    "tagsDesc": "Manage system tag definitions",
     "workspace": "Workspace",
     "logout": "Logout",
     "collapseSidebar": "Collapse sidebar",
@@ -616,5 +618,29 @@
     "disable": "Disable",
     "allRoles": "Roles",
     "permissionsHint": "Permissions are system-global, shared across all groups. Root users are never restricted by permission toggles. When a permission is disabled, no user in that role can perform the corresponding action."
+  },
+  "tagManager": {
+    "pageTitle": "Tag Manager",
+    "pageSubtitle": "Create and manage tags available for groups, providers, and API keys",
+    "createTag": "Create Tag",
+    "editTag": "Edit Tag",
+    "deleteTag": "Delete Tag",
+    "tagName": "Tag Name",
+    "tagNamePlaceholder": "e.g., dept",
+    "tagValue": "Tag Value",
+    "tagValuePlaceholder": "e.g., engineering",
+    "description": "Description",
+    "descriptionOptional": "Description (optional)",
+    "descriptionPlaceholder": "Tag description (optional)",
+    "actions": "Actions",
+    "noTags": "No tags yet",
+    "noTagsHint": "Click the button above to create your first tag",
+    "nameValueRequired": "Tag name and value are required",
+    "createFailed": "Failed to create tag",
+    "updateFailed": "Failed to update tag",
+    "deleteConfirm": "Are you sure you want to delete this tag? This action cannot be undone.",
+    "rootOnly": "Root access required",
+    "rootOnlyDesc": "Only root users can manage tag definitions. Please contact your system administrator.",
+    "saving": "Saving..."
   }
 }

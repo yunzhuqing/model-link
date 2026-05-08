@@ -23,6 +23,7 @@ import HelpModelRouting from './pages/HelpModelRouting';
 import ApiKeyDetail from './pages/ApiKeyDetail';
 import RateLimits from './pages/RateLimits';
 import PermissionManager from './pages/PermissionManager';
+import TagManager from './pages/TagManager';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -74,6 +75,7 @@ function App() {
               <Route path="help/model-routing" element={<HelpModelRouting />} />
               <Route path="rate-limits" element={<RateLimits />} />
               <Route path="permissions" element={<PermissionManager />} />
+              <Route path="tags" element={<TagManager />} />
             </Route>
           </Routes>
         </BrowserRouter>

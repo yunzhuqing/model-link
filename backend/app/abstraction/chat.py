@@ -3,7 +3,7 @@
 提供统一的对话请求和响应格式。
 """
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from dataclasses import dataclass, field
 import time
 import uuid
@@ -104,6 +104,7 @@ class ChatRequest:
     """
     messages: List[Message]
     model: str
+    system: Optional[Union[str, List[Dict[str, Any]]]] = None  # 系统指令：文本或内容块数组
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -119,14 +120,16 @@ class ChatRequest:
     metadata: Dict[str, Any] = field(default_factory=dict)  # 额外参数
     
     def get_system_message(self) -> Optional[str]:
-        """获取系统消息（包括 system 和 developer 角色）"""
-        for msg in self.messages:
-            if msg.role.is_system_like():
-                return msg.get_text_content()
-        return None
-    
+        """获取系统消息文本（从 system 字段提取）"""
+        if self.system is None:
+            return None
+        if isinstance(self.system, str):
+            return self.system
+        texts = [b.get("text", "") for b in self.system if b.get("type") == "text"]
+        return "\n".join(texts) if texts else None
+
     def get_conversation_messages(self) -> List[Message]:
-        """获取对话消息（排除系统消息和 developer 消息）"""
+        """获取对话消息（排除系统消息，安全兜底）"""
         return [msg for msg in self.messages if not msg.role.is_system_like()]
 
 

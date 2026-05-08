@@ -163,21 +163,21 @@ class AzureProvider(OpenAIProvider):
         """
         messages = request.messages
 
-        # Separate system messages (become `instructions`) from the rest
-        system_parts = []
-        non_system_messages = []
-        for msg in messages:
-            if msg.role.is_system_like():
-                if isinstance(msg.content, str):
-                    system_parts.append(msg.content)
-                elif isinstance(msg.content, list):
-                    system_parts.append(" ".join(b.text or "" for b in msg.content if hasattr(b, "text")))
-            else:
-                non_system_messages.append(msg)
+        # System instructions pass through as-is (str or list of content blocks)
+        instructions = request.system
 
         # Build `input` array
         input_items = []
-        for msg in non_system_messages:
+        for msg in messages:
+            # Developer messages → {"role": "developer"} items in input
+            if msg.role == MessageRole.DEVELOPER:
+                content = msg.get_text_content() or ''
+                if content:
+                    input_items.append({"role": "developer", "content": content})
+                continue
+            # System messages are already in the instructions field (safety skip)
+            if msg.role == MessageRole.SYSTEM:
+                continue
             # Handle tool role messages → function_call_output
             # OpenAI Chat Completions uses role=tool with tool_call_id;
             # Responses API uses {"type": "function_call_output", "call_id": ..., "output": ...}
@@ -316,8 +316,8 @@ class AzureProvider(OpenAIProvider):
             "stream": request.stream,
         }
 
-        if system_parts:
-            result["instructions"] = "\n".join(system_parts)
+        if instructions:
+            result["instructions"] = instructions
 
         if request.temperature is not None:
             result["temperature"] = request.temperature

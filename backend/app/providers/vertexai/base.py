@@ -434,14 +434,6 @@ class VertexAIProvider(BaseProvider):
 
     # ==================== Anthropic (Claude) 格式 ====================
 
-    @staticmethod
-    def _get_system_message_object(request: ChatRequest) -> Optional[Message]:
-        """Get the first system Message object from the request."""
-        for msg in request.messages:
-            if msg.role.is_system_like():
-                return msg
-        return None
-
     def _prepare_anthropic_request(self, request: ChatRequest) -> Dict[str, Any]:
         """准备 Anthropic Messages API 格式的请求体"""
         result = {
@@ -449,27 +441,9 @@ class VertexAIProvider(BaseProvider):
             "max_tokens": request.max_tokens or 4096,
         }
 
-        # Support cache_control on system content blocks
-        system_msg = self._get_system_message_object(request)
-        if system_msg:
-            if isinstance(system_msg.content, list):
-                has_cache_control = any(
-                    isinstance(b, ContentBlock) and b.cache_control
-                    for b in system_msg.content
-                )
-                if has_cache_control:
-                    system_blocks = []
-                    for b in system_msg.content:
-                        if isinstance(b, ContentBlock) and b.type == ContentType.TEXT:
-                            block_dict = {"type": "text", "text": b.text or ""}
-                            if b.cache_control:
-                                block_dict["cache_control"] = b.cache_control
-                            system_blocks.append(block_dict)
-                    result["system"] = system_blocks
-                else:
-                    result["system"] = system_msg.get_text_content() or ""
-            else:
-                result["system"] = system_msg.get_text_content() or ""
+        # system 消息直接透传（支持 string 或 List[Dict] 含 cache_control）
+        if request.system is not None:
+            result["system"] = request.system
 
         messages = []
         for msg in request.messages:

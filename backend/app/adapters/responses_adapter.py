@@ -634,43 +634,58 @@ class OpenAIResponsesAdapter(BaseAdapter):
         elif 'role' in item:
             _handle_role_message_item(item, messages)
 
-    def _build_messages_from_input(self, data: dict) -> list:
-        """Convert the Responses-API 'instructions' + 'input' fields → Message list.
+    def _build_messages_from_input(self, data: dict):
+        """Convert the Responses-API 'instructions' + 'input' fields → (system, messages).
 
-        Handles three input shapes:
-          - string               → single user message
-          - list of content blocks → single user message with parsed blocks
-          - mixed list           → individual messages / tool calls dispatched by type
+        - ``instructions`` → ``system`` (pass-through, can be str or list of content blocks)
+        - ``role=system`` in input → merged into ``system``
+        - ``role=developer`` in input → ``Message(role=DEVELOPER)`` in messages
+        - Everything else → dispatched as usual
+
+        Returns ``(system, messages: List[Message])`` where *system* is
+        ``None | str | List[Dict[str, Any]]``.
         """
         messages = []
 
-        # System message from instructions
-        if 'instructions' in data:
-            messages.append(Message(role=MessageRole.SYSTEM,
-                                    content=data['instructions']))
+        # System value from instructions (pass-through, may be str or list)
+        system_val = data.get('instructions')
 
         input_data = data.get('input', '')
         if isinstance(input_data, str):
-            messages.append(Message(role=MessageRole.USER, content=input_data))
-            return messages
+            return (system_val,
+                    [Message(role=MessageRole.USER, content=input_data)])
 
         if not isinstance(input_data, list):
-            return messages
+            return (system_val, messages)
 
         if self._all_content_blocks(input_data):
             blocks = _parse_content_blocks(input_data)
             if blocks:
                 messages.append(Message(role=MessageRole.USER, content=blocks))
-            return messages
+            return (system_val, messages)
 
-        # Mixed format: messages, function_calls, generation_calls, tool results
+        # Mixed format
         for item in input_data:
             if isinstance(item, str):
                 messages.append(Message(role=MessageRole.USER, content=item))
             elif isinstance(item, dict):
-                self._dispatch_input_item(item, messages)
+                # Intercept only role=system (same concept as instructions)
+                if item.get('role') == 'system':
+                    content = item.get('content', '')
+                    if isinstance(content, list):
+                        texts = [b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text']
+                        content = ' '.join(texts) if texts else ''
+                    if content:
+                        if system_val is None:
+                            system_val = content
+                        elif isinstance(system_val, str):
+                            system_val = system_val + '\n\n' + content
+                        else:
+                            system_val = list(system_val) + [{'type': 'text', 'text': content}]
+                else:
+                    self._dispatch_input_item(item, messages)
 
-        return messages
+        return (system_val, messages)
 
     # ───────────────────────────────────────────────────────────────────
     #  parse_request  —  6-step orchestration
@@ -690,7 +705,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         }
         """
         # 1. Build messages from instructions + input
-        messages = self._build_messages_from_input(data)
+        system, messages = self._build_messages_from_input(data)
 
         # 2. Build file_id → media map
         file_id_media_map = self._build_file_id_media_map(data)
@@ -709,6 +724,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         return ChatRequest(
             messages=messages,
             model=data.get('model', ''),
+            system=system,
             temperature=data.get('temperature'),
             top_p=data.get('top_p'),
             max_tokens=data.get('max_output_tokens'),

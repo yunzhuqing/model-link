@@ -116,16 +116,22 @@ class VolcengineProvider(BaseProvider):
         """
         result: Dict[str, Any] = {"model": request.model}
 
-        # Extract system message as instructions
-        system_text = request.get_system_message()
-        if system_text:
-            result["instructions"] = system_text
+        # System instructions pass through as-is
+        if request.system is not None:
+            result["instructions"] = request.system
 
         # Convert messages to input array
         input_items = []
         for msg in request.messages:
-            if msg.role.is_system_like():
-                continue  # Already handled as instructions
+            # Developer messages → {"role": "developer"} items in input
+            if msg.role == MessageRole.DEVELOPER:
+                content = msg.get_text_content() or ''
+                if content:
+                    input_items.append({"role": "developer", "content": content})
+                continue
+            # System messages are already in instructions (safety skip)
+            if msg.role == MessageRole.SYSTEM:
+                continue
 
             item = self._message_to_input_item(msg)
             if item is not None:

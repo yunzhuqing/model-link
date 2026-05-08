@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Plus, ChevronDown } from 'lucide-react';
 import { tagsApi, type Tag } from '../api/client';
 
@@ -15,7 +16,10 @@ interface Props {
 export default function TagSelector({ value = [], onChange }: Props) {
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [open, setOpen] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
   const containerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     tagsApi.list().then((res) => setAllTags(res.data)).catch(() => {});
@@ -23,7 +27,11 @@ export default function TagSelector({ value = [], onChange }: Props) {
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        containerRef.current && !containerRef.current.contains(target) &&
+        dropdownRef.current && !dropdownRef.current.contains(target)
+      ) {
         setOpen(false);
       }
     }
@@ -42,6 +50,20 @@ export default function TagSelector({ value = [], onChange }: Props) {
   for (const t of availableTags) {
     if (!grouped[t.name]) grouped[t.name] = [];
     grouped[t.name].push(t);
+  }
+
+  function toggleDropdown() {
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setDropdownStyle({
+        position: 'fixed',
+        top: rect.bottom + 4,
+        left: rect.left,
+        minWidth: rect.width,
+        zIndex: 9999,
+      });
+    }
+    setOpen(!open);
   }
 
   function addTag(tag: Tag) {
@@ -73,8 +95,9 @@ export default function TagSelector({ value = [], onChange }: Props) {
           </span>
         ))}
         <button
+          ref={buttonRef}
           type="button"
-          onClick={() => setOpen(!open)}
+          onClick={toggleDropdown}
           className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
         >
           <Plus size={14} />
@@ -82,8 +105,8 @@ export default function TagSelector({ value = [], onChange }: Props) {
         </button>
       </div>
 
-      {open && (
-        <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
+      {open && createPortal(
+        <div ref={dropdownRef} style={dropdownStyle} className="max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
           {Object.keys(grouped).length === 0 ? (
             <div className="px-3 py-2 text-sm text-gray-400">No tags available</div>
           ) : (
@@ -105,7 +128,8 @@ export default function TagSelector({ value = [], onChange }: Props) {
               </div>
             ))
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

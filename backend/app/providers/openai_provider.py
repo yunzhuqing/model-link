@@ -33,8 +33,22 @@ def parse_openai_request(data: dict) -> ChatRequest:
         ChatRequest 对象
     """
     messages = []
+    system_parts = []
     for msg_data in data.get('messages', []):
         role = MessageRole(msg_data.get('role', 'user'))
+        if role == MessageRole.DEVELOPER:
+            role = MessageRole.SYSTEM
+
+        # Extract system/developer messages to system field
+        if role == MessageRole.SYSTEM:
+            content = msg_data.get('content', '')
+            if isinstance(content, str):
+                system_parts.append(content)
+            elif isinstance(content, list):
+                texts = [item.get('text', '') for item in content if isinstance(item, dict) and item.get('type') == 'text']
+                if texts:
+                    system_parts.append(' '.join(texts))
+            continue
         content = msg_data.get('content')
         name = msg_data.get('name')
         tool_call_id = msg_data.get('tool_call_id')
@@ -161,6 +175,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
     return ChatRequest(
         messages=messages,
         model=data.get('model', ''),
+        system='\n\n'.join(system_parts) if system_parts else None,
         temperature=data.get('temperature'),
         top_p=data.get('top_p'),
         max_tokens=data.get('max_tokens'),
@@ -283,9 +298,33 @@ class OpenAIProvider(BaseProvider):
         Returns:
             OpenAI 请求字典
         """
+        # Collect system text from the canonical system field
+        system_text = ""
+        if request.system is not None:
+            if isinstance(request.system, list):
+                system_text = " ".join(b.get("text", "") for b in request.system if isinstance(b, dict) and b.get("type") == "text")
+            else:
+                system_text = request.system
+
+        # Separate developer messages — merge their text into system and
+        # exclude them from the conversation messages (chat/completions only
+        # supports system + user/assistant/tool roles).
+        conv_messages = []
+        for msg in request.messages:
+            if msg.role == MessageRole.DEVELOPER:
+                text = msg.get_text_content() or ""
+                if text:
+                    system_text = system_text + "\n\n" + text if system_text else text
+            elif msg.role != MessageRole.SYSTEM:
+                conv_messages.append(msg)
+
+        expanded = self._expand_messages_to_openai(conv_messages)
+        if system_text:
+            expanded.insert(0, {"role": "system", "content": system_text})
+
         result = {
             "model": request.model,
-            "messages": self._expand_messages_to_openai(request.messages),
+            "messages": expanded,
             "stream": request.stream,
         }
         
