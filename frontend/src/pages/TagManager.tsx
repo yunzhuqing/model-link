@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { tagsApi, type Tag } from '../api/client';
 import client from '../api/client';
-import { Tag as TagIcon, Plus, Edit2, Trash2, X, AlertCircle, Loader2, Check } from 'lucide-react';
+import { Tag as TagIcon, Plus, Edit2, Trash2, X, AlertCircle, Loader2 } from 'lucide-react';
 
 export default function TagManager() {
   const { t } = useTranslation();
@@ -17,7 +17,7 @@ export default function TagManager() {
   const { data: tagData, isLoading } = useQuery<{ tags: Tag[]; is_root: boolean }>({
     queryKey: ['tags-manager'],
     queryFn: async () => {
-      const [tagsRes, permRes] = await Promise.all([
+      const [tagsRes] = await Promise.all([
         tagsApi.list(),
         client.get('/api/permissions/groups/0/my-role').catch(() => ({ data: { permissions: {} } })),
       ]);
