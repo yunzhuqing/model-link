@@ -27,6 +27,7 @@ dependencies = [
     "tooz>=6.0.0",
     "redis>=5.0.0",
     "demjson3>=3.0.6",
+    "json-repair>=0.30.0",
 ]
 
 [project.optional-dependencies]

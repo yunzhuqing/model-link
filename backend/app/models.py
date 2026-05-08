@@ -173,6 +173,7 @@ class Group(db.Model):
     description = db.Column(db.String(255))
     workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
     monitoring_config = db.Column(db.JSON, nullable=True)
+    tags = db.Column(db.JSON, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -201,6 +202,7 @@ class Group(db.Model):
             'description': self.description,
             'workspace_id': self.workspace_id,
             'monitoring_config': self.monitoring_config,
+            'tags': self.tags or [],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'users': user_list,
             'api_keys': [k.to_dict_simple() for k in self.api_keys],
@@ -214,6 +216,7 @@ class Group(db.Model):
             'description': self.description,
             'workspace_id': self.workspace_id,
             'monitoring_config': self.monitoring_config,
+            'tags': self.tags or [],
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -253,7 +256,10 @@ class ApiKey(db.Model):
     # Allowed models — JSON list of model names (e.g. ["gpt-4o", "claude-3.5-sonnet"])
     # NULL or empty list means all models are allowed.
     allowed_models = db.Column(db.JSON, nullable=True, default=None)
-    
+
+    # Tags — key-value pairs for categorization (e.g. [{"name": "dept", "value": "a"}])
+    tags = db.Column(db.JSON, nullable=True)
+
     # Budget — remaining spending allowance for this API key (in USD).
     # When adding budget, it is appended to the current remaining amount.
     # NULL means no budget has been set yet (check unlimited_budget for behavior).
@@ -290,6 +296,7 @@ class ApiKey(db.Model):
             'request_count': self.request_count,
             'token_count': self.token_count,
             'allowed_models': self.allowed_models or [],
+            'tags': self.tags or [],
             'budget': self.budget,
             'unlimited_budget': self.unlimited_budget,
         }
@@ -772,7 +779,43 @@ DEFAULT_PERMISSIONS = [
         "allowed_roles": ["root", "admin", "member"],
         "is_enabled": True,
     },
+    {
+        "key": "tag.manage",
+        "label": "标签管理",
+        "description": "创建、编辑、删除系统标签定义",
+        "allowed_roles": ["root"],
+    },
 ]
+
+
+class Tag(db.Model):
+    """Tag catalog model — defines available tag name+value pairs.
+
+    Entities (Group, Provider, ApiKey) reference tags by storing
+    [{"name": "dept", "value": "a"}, ...] in their tags JSON column.
+    """
+    __tablename__ = "ml_tags"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(100), nullable=False, index=True)
+    value = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.String(500), nullable=True, default="")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('name', 'value', name='uq_tag_name_value'),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "value": self.value,
+            "description": self.description or "",
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
 
 
 def seed_default_permissions() -> list[Permission]:

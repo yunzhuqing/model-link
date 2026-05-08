@@ -228,6 +228,7 @@
     "descriptionPlaceholder": "Group description",
     "noDescription": "No description",
     "members": "Members",
+    "tags": "Tags",
     "memberCount": "{{count}} members",
     "providers": "Providers",
     "apiKeys": "API Keys",

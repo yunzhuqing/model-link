@@ -117,7 +117,7 @@ def create_group(name: str, description: str | None = None) -> tuple[Group | Non
 def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
     """Update group fields. Returns (group, error).
 
-    Accepted kwargs: name, description, monitoring_config
+    Accepted kwargs: name, description, monitoring_config, tags
     """
     group = get_group_by_id(group_id)
     if not group:
@@ -147,6 +147,9 @@ def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
             if err:
                 return None, err
             group.monitoring_config = merged
+
+    if "tags" in kwargs:
+        group.tags = kwargs["tags"]
 
     invalidate_group_cache(group_id)
     return group, None

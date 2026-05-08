@@ -270,6 +270,9 @@ def create_app(config=None):
     app.register_blueprint(model_templates_bp, url_prefix='/api')
     app.register_blueprint(usage_bp)
     app.register_blueprint(permissions_bp, url_prefix='/api')
+    # Import and register tags blueprint
+    from app.routes.tags import tags_bp
+    app.register_blueprint(tags_bp, url_prefix='/api')
     
     # Serve React frontend if static folder exists, otherwise API-only mode
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'static')

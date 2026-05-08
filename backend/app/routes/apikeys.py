@@ -113,6 +113,8 @@ async def update_group(current_user, group_id):
         kwargs['description'] = data['description']
     if 'monitoring_config' in data:
         kwargs['monitoring_config'] = data['monitoring_config']
+    if 'tags' in data:
+        kwargs['tags'] = data['tags']
 
     group, err = _svc_update_group(group_id, **kwargs)
     if err:
@@ -364,7 +366,8 @@ async def create_api_key(current_user):
         group_id=data.get('group_id'),
         user_id=current_user.id,
         expires_at=expires_at,
-        allowed_models=data.get('allowed_models') or None
+        allowed_models=data.get('allowed_models') or None,
+        tags=data.get('tags') or None
     )
     db.session.add(api_key)
     db.session.commit()
@@ -410,6 +413,8 @@ async def update_api_key(current_user, api_key_id):
         # Convert empty string to None for expires_at (empty string is not valid for timestamp)
         expires_at = data['expires_at']
         api_key.expires_at = None if expires_at == '' else expires_at
+    if 'tags' in data:
+        api_key.tags = data['tags'] if data['tags'] else None
     if 'unlimited_budget' in data:
         api_key.unlimited_budget = bool(data['unlimited_budget'])
     if 'budget' in data:

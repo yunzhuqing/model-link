@@ -228,6 +228,7 @@
     "descriptionPlaceholder": "分组描述",
     "noDescription": "无描述",
     "members": "成员",
+    "tags": "标签",
     "memberCount": "{{count}} 名成员",
     "providers": "供应商",
     "apiKeys": "API Key",

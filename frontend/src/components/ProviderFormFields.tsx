@@ -8,6 +8,7 @@
  * groups        – if provided, renders a "Group" selector (used by ProviderList)
  */
 import { useTranslation } from 'react-i18next';
+import TagSelector from './TagSelector';
 
 interface Group {
   id: number;
@@ -23,7 +24,7 @@ export interface ProviderFormData {
   api_key: string;
   group_id?: number;
   authorization: string;
-  tags: string[];
+  tags: { name: string; value: string }[];
   extra_config: Record<string, any>;
 }
 
@@ -205,22 +206,10 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
             {t('provider.tagsLabel')}
             <span className="text-slate-400 font-normal ml-1 text-xs">{t('provider.tagsHint')}</span>
           </label>
-          <input
-            placeholder={t('provider.tagsPlaceholder')}
-            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-            value={(data.tags || []).join(', ')}
-            onChange={(e) => {
-              const tags = e.target.value.split(',').map((t) => t.trim()).filter(Boolean);
-              set({ tags });
-            }}
-            onBlur={(e) => {
-              const tags = e.target.value.split(',').map((t) => t.trim()).filter(Boolean);
-              set({ tags });
-            }}
+          <TagSelector
+            value={data.tags || []}
+            onChange={(tags) => set({ tags })}
           />
-          <p className="text-xs text-slate-400 mt-1">
-            {t('provider.tagsHelp')}
-          </p>
         </div>
       </div>
 

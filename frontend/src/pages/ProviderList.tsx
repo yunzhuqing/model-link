@@ -88,7 +88,7 @@ interface Provider {
   api_key: string;
   group_id: number;
   authorization: string;
-  tags: string[];
+  tags: { name: string; value: string }[];
   extra_config: Record<string, any>;
   is_active: boolean;
   models: Model[];

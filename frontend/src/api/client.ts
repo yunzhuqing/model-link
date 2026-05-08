@@ -48,6 +48,7 @@ export interface ApiKey {
   request_count: number;
   token_count: number;
   allowed_models: string[];
+  tags?: { name: string; value: string }[];
   group?: { id: number; name: string; description: string | null; created_at: string | null };
 }
 
@@ -57,6 +58,7 @@ export interface ApiKeyCreate {
   group_id?: number;
   expires_at?: string;
   allowed_models?: string[];
+  tags?: { name: string; value: string }[];
 }
 
 export interface ApiKeyUpdate {
@@ -65,6 +67,7 @@ export interface ApiKeyUpdate {
   is_active?: boolean;
   expires_at?: string;
   allowed_models?: string[];
+  tags?: { name: string; value: string }[];
 }
 
 export interface ApiKeyModelsResponse {
@@ -96,6 +99,7 @@ export interface Group {
   user_count?: number;
   api_key_count?: number;
   users?: Array<{ id: number; username: string; email: string }>;
+  tags?: { name: string; value: string }[];
   api_keys?: Array<{ id: number; name: string; is_active: boolean }>;
   providers?: Array<{ id: number; name: string; type: string }>;
 }
@@ -109,6 +113,7 @@ export interface GroupUpdate {
   name?: string;
   description?: string;
   monitoring_config?: MonitoringConfig | null;
+  tags?: { name: string; value: string }[];
 }
 
 export interface Provider {
@@ -150,6 +155,16 @@ export interface ProviderCreate {
   provider_type: string;
   base_url?: string;
   api_key?: string;
+  tags?: { name: string; value: string }[];
+}
+
+export interface Tag {
+  id: number;
+  name: string;
+  value: string;
+  description: string;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface ModelCreate {
@@ -211,6 +226,16 @@ export const providersApi = {
     client.put<Model>(`/api/providers/${providerId}/models/${modelId}`, data),
   deleteModel: (providerId: number, modelId: number) =>
     client.delete(`/api/providers/${providerId}/models/${modelId}`),
+};
+
+// Tag endpoints
+export const tagsApi = {
+  list: () => client.get<Tag[]>('/api/tags/'),
+  create: (data: { name: string; value: string; description?: string }) =>
+    client.post<Tag>('/api/tags/', data),
+  update: (id: number, data: { name: string; value: string; description?: string }) =>
+    client.put<Tag>(`/api/tags/${id}`, data),
+  delete: (id: number) => client.delete(`/api/tags/${id}`),
 };
 
 // Rate limit status endpoints

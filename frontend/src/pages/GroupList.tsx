@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { groupsApi } from '../api/client';
 import type { Group, GroupCreate } from '../api/client';
+import TagSelector from '../components/TagSelector';
 import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database } from 'lucide-react';
 
 export default function GroupList() {
@@ -13,7 +14,7 @@ export default function GroupList() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
-  const [formData, setFormData] = useState<GroupCreate>({ name: '', description: '' });
+  const [formData, setFormData] = useState<GroupCreate & { tags?: { name: string; value: string }[] }>({ name: '', description: '', tags: [] });
 
   const { data: groups, isLoading } = useQuery({
     queryKey: ['groups'],
@@ -61,6 +62,7 @@ export default function GroupList() {
       data: {
         name: formData.name,
         description: formData.description,
+        tags: formData.tags,
       },
     });
   };
@@ -76,6 +78,7 @@ export default function GroupList() {
     setFormData({
       name: group.name,
       description: group.description || '',
+      tags: group.tags || [],
     });
     setIsEditModalOpen(true);
   };
@@ -230,12 +233,19 @@ export default function GroupList() {
                   placeholder={t('group.descriptionPlaceholder')}
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.tags')}</label>
+                <TagSelector
+                  value={formData.tags || []}
+                  onChange={(tags) => setFormData({ ...formData, tags })}
+                />
+              </div>
             </div>
             <div className="p-6 border-t border-slate-200 flex justify-end space-x-3">
               <button
                 onClick={() => {
                   setIsCreateModalOpen(false);
-                  setFormData({ name: '', description: '' });
+                  setFormData({ name: '', description: '', tags: [] });
                 }}
                 className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
               >
@@ -290,8 +300,15 @@ export default function GroupList() {
                   rows={3}
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.tags')}</label>
+                <TagSelector
+                  value={formData.tags || []}
+                  onChange={(tags) => setFormData({ ...formData, tags })}
+                />
+              </div>
             </div>
-            <div className="p-6 border-t border-slate-200 flex justify-end space-x-3">
+            <div className="p-6 border-t border-slate-200 flex justify-end space-x-3"> {/* Edit modal footer */}
               <button
                 onClick={() => {
                   setIsEditModalOpen(false);

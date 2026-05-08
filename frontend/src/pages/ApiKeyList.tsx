@@ -5,6 +5,7 @@ import { apiKeysApi, groupsApi } from '../api/client';
 import client from '../api/client';
 import type { ApiKey } from '../api/client';
 import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Users, User, Eye, EyeOff, Tag, Search } from 'lucide-react';
+import TagSelector from '../components/TagSelector';
 import { useAuth } from '../contexts/AuthContext';
 
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
@@ -25,6 +26,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const [newKeyGroupId, setNewKeyGroupId] = useState<number | undefined>(groupId);
   const [newKeyExpires, setNewKeyExpires] = useState('');
   const [newKeyAllowedModels, setNewKeyAllowedModels] = useState<string[]>([]);
+  const [newKeyTags, setNewKeyTags] = useState<{ name: string; value: string }[]>([]);
   const [modelSearchInput, setModelSearchInput] = useState('');
   const [editAllowedModels, setEditAllowedModels] = useState<string[]>([]);
   const [editModelSearchInput, setEditModelSearchInput] = useState('');
@@ -36,6 +38,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const [editKeyName, setEditKeyName] = useState('');
   const [editKeyDescription, setEditKeyDescription] = useState('');
   const [editKeyExpires, setEditKeyExpires] = useState('');
+  const [editKeyTags, setEditKeyTags] = useState<{ name: string; value: string }[]>([]);
 
   const apiKeysQueryKey = groupId ? ['api-keys', 'group', String(groupId)] : ['apiKeys'];
 
@@ -167,6 +170,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
       group_id: groupId || newKeyGroupId,
       expires_at: newKeyExpires || undefined,
       allowed_models: newKeyAllowedModels.length > 0 ? newKeyAllowedModels : undefined,
+      tags: newKeyTags.length > 0 ? newKeyTags : undefined,
     });
   };
 
@@ -196,6 +200,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     setEditKeyDescription(apiKey.description || '');
     setEditKeyExpires(apiKey.expires_at ? apiKey.expires_at.slice(0, 16) : '');
     setEditAllowedModels(apiKey.allowed_models || []);
+    setEditKeyTags((apiKey as any).tags || []);
     setEditModelSearchInput('');
     setIsEditModalOpen(true);
   };
@@ -505,10 +510,14 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   searchInput={modelSearchInput}
                   onSearchChange={setModelSearchInput}
                 />
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
+                  <TagSelector value={newKeyTags} onChange={setNewKeyTags} />
+                </div>
               </div>
               <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
                 <button
-                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setModelSearchInput(''); }}
+                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setNewKeyTags([]); setModelSearchInput(''); }}
                   className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
                 >
                   取消
@@ -576,6 +585,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   searchInput={editModelSearchInput}
                   onSearchChange={setEditModelSearchInput}
                 />
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
+                  <TagSelector value={editKeyTags} onChange={setEditKeyTags} />
+                </div>
               </div>
               <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
                 <button
@@ -593,6 +606,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                         description: editKeyDescription || undefined,
                         expires_at: editKeyExpires || undefined,
                         allowed_models: editAllowedModels,
+                        tags: editKeyTags.length > 0 ? editKeyTags : undefined,
                       },
                     });
                   }}
@@ -865,6 +879,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 searchInput={modelSearchInput}
                 onSearchChange={setModelSearchInput}
               />
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
+                <TagSelector value={newKeyTags} onChange={setNewKeyTags} />
+              </div>
             </div>
             <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
               <button
@@ -875,6 +893,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   setNewKeyGroupId(groupId);
                   setNewKeyExpires('');
                   setNewKeyAllowedModels([]);
+                  setNewKeyTags([]);
                   setModelSearchInput('');
                 }}
                 className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
@@ -944,6 +963,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 searchInput={editModelSearchInput}
                 onSearchChange={setEditModelSearchInput}
               />
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
+                <TagSelector value={editKeyTags} onChange={setEditKeyTags} />
+              </div>
             </div>
             <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
               <button
@@ -961,6 +984,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                       description: editKeyDescription || undefined,
                       expires_at: editKeyExpires || undefined,
                       allowed_models: editAllowedModels,
+                      tags: editKeyTags.length > 0 ? editKeyTags : undefined,
                     },
                   });
                 }}
