@@ -15,10 +15,11 @@ Responses API 端点已拆分至 gateway_responses 模块。
   - 具体使用哪个供应商（由中间层决定）
   - 供应商 API 的差异（由供应商层处理）
 """
-from quart import Blueprint, request, jsonify, current_app
+from quart import Blueprint, request, jsonify, current_app, g
 from datetime import datetime
 from typing import Optional
 import logging
+import re
 import time
 import os
 
@@ -220,6 +221,17 @@ def get_current_user_or_api_key():
     else:
         token = auth_header
 
+    # ── Parse provider ID suffix from API key ──────────────────────────
+    # Format: sk-xxxxxxxxx-{providerId}
+    # The last dash-separated segment, if purely numeric, is treated as a
+    # provider ID override and stripped from the key before lookup.
+    provider_id_override = None
+    _m = re.fullmatch(r'(.+)-(\d+)$', token)
+    if _m:
+        token = _m.group(1)
+        provider_id_override = int(_m.group(2))
+        g.api_key_provider_id = provider_id_override
+
     # ── Try cache first for API key authentication ────────────────────────
     from app.cache import get_cache
     cache = get_cache()
@@ -402,6 +414,9 @@ async def _handle_request(adapter):
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
 
+    # 4.1. 获取 API Key 指定的供应商 ID（通过 sk-xxx-{providerId} 后缀）
+    provider_id = g.get('api_key_provider_id', None) if api_key else None
+
     # 4.5. 限流检查 — RPM / TPM 预扣 (group-level + workspace-level)
     rate_limiter = None
     rate_limit_info = None  # (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, workspace_id, model_name_for_ws, workspace_tpm)
@@ -410,7 +425,7 @@ async def _handle_request(adapter):
         from app.models import WorkspaceRateLimit
         rate_limiter = get_rate_limiter()
         # Resolve model first to get rpm/tpm limits (DB query)
-        resolved_rl = _gateway_service.resolve_model(model_name, group_id)
+        resolved_rl = _gateway_service.resolve_model(model_name, group_id, provider_id=provider_id)
         db_model_rl = resolved_rl.db_model
         rpm_limit = getattr(db_model_rl, 'rpm', None)
         tpm_limit = getattr(db_model_rl, 'tpm', None)
@@ -539,7 +554,7 @@ async def _handle_request(adapter):
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
-            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer)
+            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
 
             _app = current_app._get_current_object()
 
@@ -622,7 +637,7 @@ async def _handle_request(adapter):
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
-            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
+            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
 
             if tracer:
@@ -933,10 +948,11 @@ async def create_embeddings():
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
+    provider_id = g.get('api_key_provider_id', None) if api_key else None
 
     # 5. 调用中间层
     try:
-        response = _gateway_service.embed(embedding_request, group_id)
+        response = _gateway_service.embed(embedding_request, group_id, provider_id=provider_id)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
@@ -1021,6 +1037,7 @@ async def create_images():
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
+    provider_id = g.get('api_key_provider_id', None) if api_key else None
 
     # 5. 调用中间层
     _request_start_time = time.monotonic()
@@ -1039,6 +1056,7 @@ async def create_images():
             group_id=group_id,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
+            provider_id=provider_id,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         # Record usage asynchronously (fire-and-forget)
@@ -1147,6 +1165,7 @@ async def edit_images():
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
+    provider_id = g.get('api_key_provider_id', None) if api_key else None
 
     # 5. 调用中间层
     _request_start_time = time.monotonic()
@@ -1166,6 +1185,7 @@ async def edit_images():
             moderation=moderation,
             user=user_id,
             group_id=group_id,
+            provider_id=provider_id,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         # Record usage asynchronously (fire-and-forget)

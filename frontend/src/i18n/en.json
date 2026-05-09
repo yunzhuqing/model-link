@@ -469,6 +469,7 @@
     "addProvider": "Add Provider",
     "editProvider": "Edit Provider",
     "configureNew": "Configure a new AI provider",
+    "providerId": "Provider ID for API key suffix routing",
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",

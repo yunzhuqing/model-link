@@ -469,6 +469,7 @@
     "addProvider": "添加供应商",
     "editProvider": "编辑供应商",
     "configureNew": "配置一个新的 AI 供应商",
+    "providerId": "供应商 ID，用于 API Key 后缀路由",
     "save": "保存",
     "saving": "保存中...",
     "cancel": "取消",

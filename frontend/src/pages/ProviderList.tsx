@@ -1134,6 +1134,9 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                   <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-semibold uppercase">
                     {provider.type}
                   </span>
+                  <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded text-xs font-mono font-semibold" title={t('provider.providerId')}>
+                    ID: {provider.id}
+                  </span>
                 </div>
                 <p className="text-sm text-slate-500 flex items-center">
                   {provider.base_url ? (

@@ -88,7 +88,7 @@ class GatewayService:
     # Default timeout (seconds) when no model-level timeout is configured.
     DEFAULT_TIMEOUT = 300
 
-    def resolve_model(self, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None) -> ResolvedModel:
+    def resolve_model(self, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModel:
         """
         解析模型名称/别名，返回供应商实例和模型信息。
 
@@ -98,6 +98,7 @@ class GatewayService:
         Args:
             model_name: 模型名称或别名
             group_id: 可选的组 ID（用于访问控制）
+            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             ResolvedModel 对象
@@ -115,6 +116,9 @@ class GatewayService:
 
         if group_id is not None:
             query = query.filter(Provider.group_id == group_id)
+
+        if provider_id is not None:
+            query = query.filter(Model.provider_id == provider_id)
 
         # Fetch ALL matching models (across all providers)
         all_models: List[Model] = query.all()
@@ -261,7 +265,8 @@ class GatewayService:
             return random.choice(candidates)
 
     def chat(
-        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None
+        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
+        provider_id: Optional[int] = None,
     ) -> Tuple[ChatResponse, ResolvedModel]:
         """
         执行非流式对话请求，返回 (ChatResponse, ResolvedModel)。
@@ -275,6 +280,7 @@ class GatewayService:
         Args:
             request: 统一的对话请求对象（由 Adapter 从任意 API 格式解析而来）
             group_id: 可选的组 ID（用于访问控制）
+            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             (ChatResponse, ResolvedModel) 元组
@@ -285,7 +291,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id, user_id=request.user)
+        resolved = self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
@@ -333,7 +339,8 @@ class GatewayService:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
     def stream_chat(
-        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None
+        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
+        provider_id: Optional[int] = None,
     ) -> Tuple[Generator[StreamChunk, None, None], dict]:
         """
         执行流式对话请求，返回 (StreamChunk 生成器, model_meta dict)。
@@ -346,6 +353,7 @@ class GatewayService:
         Args:
             request: 统一的对话请求对象
             group_id: 可选的组 ID
+            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             (StreamChunk 生成器, model_meta dict)
@@ -361,7 +369,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. Resolve model (DB access)
-        resolved = self.resolve_model(request.model, group_id, user_id=request.user)
+        resolved = self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
 
         # 2. Replace with real model name
         request.model = resolved.real_model_name
@@ -704,13 +712,14 @@ class GatewayService:
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
-    def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None) -> EmbeddingResponse:
+    def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None) -> EmbeddingResponse:
         """
         执行嵌入请求。
 
         Args:
             request: 嵌入请求对象
             group_id: 可选的组 ID（用于访问控制）
+            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             嵌入响应对象
@@ -721,7 +730,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id, user_id=None)
+        resolved = self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
@@ -773,6 +782,7 @@ class GatewayService:
         group_id: Optional[int] = None,
         aspect_ratio: Optional[str] = None,
         resolution: Optional[str] = None,
+        provider_id: Optional[int] = None,
     ) -> dict:
         """
         Execute image generation and return an OpenAI-compatible response.
@@ -848,7 +858,7 @@ class GatewayService:
         # Providers that support image generation (Volcengine, Bailian, Gemini,
         # …) will detect the metadata and call their image-gen API.
         try:
-            chat_response, resolved = self.chat(chat_request, group_id)
+            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -908,6 +918,7 @@ class GatewayService:
         moderation: Optional[str] = None,
         user: Optional[str] = None,
         group_id: Optional[int] = None,
+        provider_id: Optional[int] = None,
     ) -> dict:
         """
         Execute image editing and return an OpenAI-compatible response.
@@ -984,7 +995,7 @@ class GatewayService:
         # Route through the standard chat pipeline (with resolved model info
         # for usage recording)
         try:
-            chat_response, resolved = self.chat(chat_request, group_id)
+            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
