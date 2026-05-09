@@ -524,7 +524,7 @@ async def _handle_request(adapter):
         # the actual request flow produce the proper ModelNotFoundError.
         pass
     except Exception as e:
-        logger.warning(f"[rate_limiter] Pre-check failed, skipping: {e}")
+        logger.error(f"[rate_limiter] Pre-check failed, skipping: {e}")
 
     # 4.6. Get monitoring config from group (cache-first)
     monitoring_config = get_group_monitoring_config(group_id) if group_id else None
@@ -583,9 +583,10 @@ async def _handle_request(adapter):
                             "content": "".join(_content_parts) if _content_parts else None,
                             "usage": last_usage.to_dict() if last_usage else None,
                         })
-                except Exception:
+                except Exception as e:
+                    logger.error(f"[stream] Error during stream processing: {e}", exc_info=True)
                     if tracer:
-                        tracer.end(error=Exception("stream error"))
+                        tracer.end(error=e)
                     raise
                 finally:
                     if last_usage is not None:

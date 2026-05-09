@@ -16,7 +16,7 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 from app.middleware.gateway_service import GatewayServiceError, ProviderError
-from app.utils import REASONING_EFFORT_HIGH, REASONING_EFFORT_NONE, REASONING_EFFORT_DEFAULT_FOR_THINKING, json_loads
+from app.utils import REASONING_EFFORT_HIGH, REASONING_EFFORT_MEDIUM, REASONING_EFFORT_NONE, REASONING_EFFORT_DEFAULT_FOR_THINKING, json_loads
 
 
 class AnthropicMessagesAdapter(BaseAdapter):
