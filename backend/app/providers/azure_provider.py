@@ -163,8 +163,16 @@ class AzureProvider(OpenAIProvider):
         """
         messages = request.messages
 
-        # System instructions pass through as-is (str or list of content blocks)
-        instructions = request.system
+        # System instructions: Azure Responses API only accepts string
+        if request.system is None:
+            instructions = None
+        elif isinstance(request.system, list):
+            instructions = " ".join(
+                b.get("text", "") for b in request.system
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            instructions = request.system
 
         # Build `input` array
         input_items = []

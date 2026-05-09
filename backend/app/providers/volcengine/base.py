@@ -116,9 +116,15 @@ class VolcengineProvider(BaseProvider):
         """
         result: Dict[str, Any] = {"model": request.model}
 
-        # System instructions pass through as-is
+        # System instructions: Volcengine Responses API only accepts string
         if request.system is not None:
-            result["instructions"] = request.system
+            if isinstance(request.system, list):
+                result["instructions"] = " ".join(
+                    b.get("text", "") for b in request.system
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            else:
+                result["instructions"] = request.system
 
         # Convert messages to input array
         input_items = []
