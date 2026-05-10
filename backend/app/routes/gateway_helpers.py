@@ -1,0 +1,233 @@
+"""
+Shared helper functions and singletons for gateway route modules.
+
+Extracted from gateway.py to be reusable by embeddings, images, rerank, and
+other gateway sub-modules.
+"""
+from quart import request, g
+from datetime import datetime
+from typing import Optional
+import logging
+import re
+import os
+
+logger = logging.getLogger("gateway")
+
+from app import db
+from app.models import ApiKey, User
+from jose import JWTError, jwt
+
+from app.middleware.gateway_service import GatewayService
+from app.utils import json_loads
+
+# Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
+ALGORITHM = "HS256"
+
+# Global service instance shared across all gateway modules
+_gateway_service = GatewayService()
+
+
+async def _parse_json_body():
+    """Parse Quart request body as JSON, tolerating non-standard client input.
+
+    Tries standard json.loads first, falls back to demjson3 for:
+    - Python-style \\xNN hex escapes
+    - Raw control characters in strings
+    """
+    raw = await request.get_data()
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json_loads(text)
+    except Exception as e:
+        logger.warning(
+            "_parse_json_body failed: %s | body preview: %.200r",
+            e, text[:200],
+        )
+        return None
+
+
+def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None) -> None:
+    """Log gateway errors with consistent format.
+
+    Args:
+        endpoint: The API endpoint name (e.g. 'chat_completions', 'embeddings')
+        status_code: HTTP status code of the error response
+        detail: Error detail message
+        extra: Optional additional context (e.g. model name, user info)
+    """
+    log_data = {
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "detail": detail,
+    }
+    if extra:
+        log_data.update(extra)
+
+    if 500 <= status_code < 600:
+        logger.error(f"[gateway] {endpoint} error: {detail}", extra=log_data)
+    elif 400 <= status_code < 500:
+        logger.warning(f"[gateway] {endpoint} client error: {detail}", extra=log_data)
+
+
+def _check_allowed_models(api_key, model_name: str) -> Optional[dict]:
+    """Check if the API key's allowed_models list permits access to this model.
+
+    Returns None if access is allowed, or a (error_dict, status_code) tuple
+    if the model is not in the allowed list.
+    """
+    if api_key is None:
+        return None
+    allowed = getattr(api_key, 'allowed_models', None)
+    if not allowed:
+        return None
+    if model_name in allowed:
+        return None
+    return {
+        'detail': f"Model '{model_name}' is not allowed for this API key. "
+                  f"Allowed models: {', '.join(allowed)}"
+    }
+
+
+def get_current_user_or_api_key():
+    """Authenticate via either JWT token, API key, or Anthropic x-api-key header.
+
+    Supported authentication methods:
+    1. Authorization: Bearer <token>  (JWT or API key)
+    2. Authorization: <token>         (API key without Bearer prefix)
+    3. x-api-key: <key>              (Anthropic SDK compatible)
+
+    API key lookups are accelerated by the cache middleware:
+    - On cache hit: validates is_active / expires_at from cached data,
+      then updates last_used_at / request_count in DB asynchronously.
+    - On cache miss: falls back to a DB query and populates the cache.
+    """
+    auth_header = request.headers.get('Authorization')
+    x_api_key = request.headers.get('x-api-key')
+
+    if not auth_header and not x_api_key:
+        return None, None, {'detail': 'Not authenticated'}, 401
+
+    token = None
+    if x_api_key:
+        token = x_api_key
+    elif auth_header.startswith('Bearer '):
+        token = auth_header.split(' ')[1]
+    else:
+        token = auth_header
+
+    # Parse provider ID suffix from API key
+    # Format: sk-xxxxxxxxx-{providerId}
+    provider_id_override = None
+    _m = re.fullmatch(r'(.+)-(\d+)$', token)
+    if _m:
+        token = _m.group(1)
+        provider_id_override = int(_m.group(2))
+        g.api_key_provider_id = provider_id_override
+
+    # Try cache first for API key authentication
+    from app.cache import get_cache
+    cache = get_cache()
+    cached_info = cache.get_api_key_info(token)
+
+    if cached_info is not None:
+        if not cached_info.get('is_active', True):
+            return None, None, {'detail': 'API key is inactive'}, 401
+
+        expires_at_str = cached_info.get('expires_at')
+        if expires_at_str:
+            try:
+                expires_at = datetime.fromisoformat(expires_at_str)
+                if expires_at < datetime.utcnow():
+                    return None, None, {'detail': 'API key has expired'}, 401
+            except (ValueError, TypeError):
+                pass
+
+        is_unlimited = cached_info.get('unlimited_budget', True)
+        if not is_unlimited:
+            from app.budget_manager import get_budget_manager
+            budget_remaining = get_budget_manager().get_remaining(token)
+            if budget_remaining is not None and float(budget_remaining) <= 0:
+                return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
+
+        api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
+        if api_key:
+            api_key.last_used_at = datetime.utcnow()
+            api_key.request_count += 1
+            db.session.commit()
+
+            _ = api_key.user
+            _ = api_key.group
+
+            return None, api_key, None, 200
+        else:
+            cache.invalidate_api_key(token)
+
+    # Cache miss — fall back to DB query
+    api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
+
+    if api_key:
+        if not api_key.is_active:
+            return None, None, {'detail': 'API key is inactive'}, 401
+
+        if api_key.expires_at and api_key.expires_at < datetime.utcnow():
+            return None, None, {'detail': 'API key has expired'}, 401
+
+        if not api_key.unlimited_budget:
+            budget_val = api_key.budget
+            if budget_val is not None and budget_val <= 0:
+                return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
+
+        api_key.last_used_at = datetime.utcnow()
+        api_key.request_count += 1
+        db.session.commit()
+
+        _ = api_key.user
+        _ = api_key.group
+
+        try:
+            _populate_api_key_cache(api_key, cache)
+        except Exception as _ce:
+            logger.debug(f"[cache] Failed to populate API key cache: {_ce}")
+
+        return None, api_key, None, 200
+
+    # Try JWT token authentication
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get('sub')
+        if not username:
+            return None, None, {'detail': 'Invalid token'}, 401
+    except JWTError:
+        return None, None, {'detail': 'Invalid token or API key'}, 401
+
+    user = db.session.query(User).filter(User.username == username).first()
+    if not user:
+        return None, None, {'detail': 'User not found'}, 401
+
+    return user, None, None, 200
+
+
+def _populate_api_key_cache(api_key, cache):
+    """Compute the current budget_used from UsageRecord and populate the cache."""
+    import hashlib
+    from app.models import UsageRecord
+
+    budget_used = 0.0
+    if api_key.budget is not None:
+        key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
+        row = (
+            db.session.query(
+                db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0)
+            )
+            .filter(UsageRecord.api_key_hash == key_hash)
+            .scalar()
+        )
+        budget_used = float(row or 0)
+
+    info = cache.build_api_key_cache_info(api_key, budget_used=budget_used)
+    cache.set_api_key_info(api_key.key, info)
+
+    if not api_key.unlimited_budget and api_key.budget is not None:
+        from app.budget_manager import get_budget_manager
+        get_budget_manager().set_remaining(api_key.key, float(api_key.budget))

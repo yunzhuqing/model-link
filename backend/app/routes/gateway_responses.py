@@ -267,7 +267,7 @@ def _run_background_response(
             # eagerly extracted before db.session.remove()).
             _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
             try:
-                from app.usage_service import record_stream_usage
+                from app.usagerecord.usage_service import record_stream_usage
                 record_stream_usage(
                     app=app,
                     usage_info=response.usage,
@@ -546,7 +546,7 @@ async def openai_responses():
                 finally:
                     if last_usage is not None:
                         try:
-                            from app.usage_service import record_stream_usage
+                            from app.usagerecord.usage_service import record_stream_usage
                             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
                             record_stream_usage(
                                 app=_app,
@@ -604,7 +604,7 @@ async def openai_responses():
                 tracer.end()
 
             try:
-                from app.usage_service import record_usage
+                from app.usagerecord.usage_service import record_usage
                 record_usage(
                     app=current_app._get_current_object(),
                     response=response,

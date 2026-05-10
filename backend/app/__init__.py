@@ -279,7 +279,7 @@ def create_app(config=None):
 
     # Register the usage-sync daemon to start only when this node becomes leader,
     # and stop it immediately when leadership is lost.
-    from app.usage_sync_service import start_usage_sync as _start_usage_sync, stop_usage_sync as _stop_usage_sync
+    from app.usagerecord.sync_service import start_usage_sync as _start_usage_sync, stop_usage_sync as _stop_usage_sync
     register_on_leader(lambda: _start_usage_sync(app))
     register_on_lost_leader(_stop_usage_sync)
 
@@ -290,6 +290,9 @@ def create_app(config=None):
     from app.routes.providers import providers_bp
     from app.routes.gateway import gateway_bp
     from app.routes.gateway_responses import gateway_responses_bp
+    from app.routes.embeddings import embeddings_bp
+    from app.routes.images import images_bp
+    from app.routes.rerank import rerank_bp
     from app.routes.apikeys import apikeys_bp
     from app.routes.model_templates import model_templates_bp
     from app.routes.usage import usage_bp
@@ -299,6 +302,9 @@ def create_app(config=None):
     app.register_blueprint(providers_bp, url_prefix='/api')
     app.register_blueprint(gateway_bp)
     app.register_blueprint(gateway_responses_bp)
+    app.register_blueprint(embeddings_bp)
+    app.register_blueprint(images_bp)
+    app.register_blueprint(rerank_bp)
     app.register_blueprint(apikeys_bp, url_prefix='/api')
     app.register_blueprint(model_templates_bp, url_prefix='/api')
     app.register_blueprint(usage_bp)

@@ -262,7 +262,10 @@ class ApiKey(db.Model):
     total_image_count = db.Column(db.Integer, default=0)      # Total images generated
     total_video_count = db.Column(db.Integer, default=0)      # Total videos generated
     total_audio_seconds = db.Column(db.Float, default=0.0)    # Total audio seconds generated
-    
+
+    # Incremental sync position — the max UsageRecord.id covered by the last sync cycle
+    last_stat_id = db.Column(db.BigInteger, default=0, nullable=False)
+
     # Allowed models — JSON list of model names (e.g. ["gpt-4o", "claude-3.5-sonnet"])
     # NULL or empty list means all models are allowed.
     allowed_models = db.Column(db.JSON, nullable=True, default=None)
