@@ -267,7 +267,7 @@ class ApiKey(db.Model):
     
     # Unlimited budget flag — if True, no budget deduction is performed.
     # The API key can spend without limit regardless of the budget field.
-    unlimited_budget = db.Column(db.Boolean, default=True, nullable=False)
+    unlimited_budget = db.Column(db.Boolean, default=False, nullable=False)
     
     # Workspace
     workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
@@ -785,6 +785,18 @@ DEFAULT_PERMISSIONS = [
         "description": "创建、编辑、删除系统标签定义",
         "allowed_roles": ["root"],
     },
+    {
+        "key": "apikey.unlimited_budget",
+        "label": "不限制预算",
+        "description": "开启或关闭 API Key 的不限制预算功能",
+        "allowed_roles": ["root"],
+    },
+    {
+        "key": "apikey.add_budget",
+        "label": "追加预算",
+        "description": "为 API Key 追加预算金额",
+        "allowed_roles": ["root"],
+    },
 ]
 
 
@@ -819,14 +831,14 @@ class Tag(db.Model):
 
 
 def seed_default_permissions() -> list[Permission]:
-    """Create default system-level permission points if none exist yet."""
+    """Ensure every default permission point exists in the DB (idempotent)."""
     from app import db
-    existing = db.session.query(Permission).count()
-    if existing > 0:
-        return []
+    existing_keys = {p.key for p in db.session.query(Permission.key).all()}
 
     created = []
     for perm_def in DEFAULT_PERMISSIONS:
+        if perm_def["key"] in existing_keys:
+            continue
         perm = Permission(
             key=perm_def["key"],
             label=perm_def["label"],
@@ -836,7 +848,8 @@ def seed_default_permissions() -> list[Permission]:
         )
         db.session.add(perm)
         created.append(perm)
-    db.session.flush()
+    if created:
+        db.session.flush()
     return created
 
 
@@ -849,10 +862,9 @@ def check_permission(user_role: str, permission_key: str) -> bool:
 
     Logic:
       1. Permission point not found → deny (fail closed)
-      2. Permission is disabled → deny (even root)
-      3. Root role → always allow (root is excluded from role-based check)
-      4. user_role in allowed_roles → allow
-      5. Otherwise → deny
+      2. Root role → always allow
+      3. user_role in allowed_roles → allow
+      4. Otherwise → deny
     """
     from app import db
     perm = db.session.query(Permission).filter(
@@ -860,8 +872,6 @@ def check_permission(user_role: str, permission_key: str) -> bool:
     ).first()
 
     if perm is None:
-        return False
-    if not perm.is_enabled:
         return False
     if user_role == "root":
         return True

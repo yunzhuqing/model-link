@@ -130,11 +130,11 @@ class BudgetManager:
             if ak.unlimited_budget:
                 return None
 
-            # No budget set
+            # No budget set → treat as zero remaining (block all requests)
             if ak.budget is None:
-                return None
-
-            remaining = float(ak.budget)
+                remaining = 0.0
+            else:
+                remaining = float(ak.budget)
             cache.set_budget_remaining(api_key_raw, remaining, ttl=self._ttl)
             return remaining
         except Exception as exc:

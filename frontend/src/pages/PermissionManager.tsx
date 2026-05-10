@@ -4,8 +4,6 @@ import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   Shield,
-  ToggleLeft,
-  ToggleRight,
   Crown,
   UserCog,
   Users,
@@ -36,8 +34,6 @@ interface RoleDef {
   icon: React.ReactNode;
   iconBg: string;
   borderColor: string;
-  badgeBg: string;
-  badgeText: string;
   description: string;
 }
 
@@ -48,8 +44,6 @@ const ROLE_DEFS: RoleDef[] = [
     icon: <Crown className="w-5 h-5 text-amber-600" />,
     iconBg: 'bg-amber-100',
     borderColor: 'border-amber-200',
-    badgeBg: 'bg-amber-100',
-    badgeText: 'text-amber-700',
     description: 'rootRoleDesc',
   },
   {
@@ -58,8 +52,6 @@ const ROLE_DEFS: RoleDef[] = [
     icon: <UserCog className="w-5 h-5 text-indigo-600" />,
     iconBg: 'bg-indigo-100',
     borderColor: 'border-indigo-200',
-    badgeBg: 'bg-indigo-100',
-    badgeText: 'text-indigo-700',
     description: 'adminRoleDesc',
   },
   {
@@ -68,8 +60,6 @@ const ROLE_DEFS: RoleDef[] = [
     icon: <Users className="w-5 h-5 text-emerald-600" />,
     iconBg: 'bg-emerald-100',
     borderColor: 'border-emerald-200',
-    badgeBg: 'bg-emerald-100',
-    badgeText: 'text-emerald-700',
     description: 'memberRoleDesc',
   },
 ];
@@ -100,31 +90,12 @@ export default function PermissionManager() {
       data,
     }: {
       key: string;
-      data: Partial<Pick<PermissionItem, 'is_enabled' | 'allowed_roles'>>;
+      data: Partial<Pick<PermissionItem, 'allowed_roles'>>;
     }) => client.put(`/api/permissions/${key}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['global-permissions'] });
     },
   });
-
-  const toggleMutation = useMutation({
-    mutationFn: ({ key, is_enabled }: { key: string; is_enabled: boolean }) =>
-      client.put(`/api/permissions/${key}/toggle`, { is_enabled }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['global-permissions'] });
-    },
-  });
-
-  const isUpdating = toggleMutation.isPending || updateMutation.isPending;
-
-  const handleBatchToggle = useCallback(
-    (enabled: boolean) => {
-      for (const p of permissions) {
-        toggleMutation.mutate({ key: p.key, is_enabled: enabled });
-      }
-    },
-    [permissions, toggleMutation],
-  );
 
   const handleAddPermission = useCallback(
     (role: string, permKey: string, currentRoles: string[]) => {
@@ -183,10 +154,6 @@ export default function PermissionManager() {
           <h1 className="text-2xl font-bold text-slate-800">{t('permissions.pageTitle')}</h1>
           <p className="text-slate-500 mt-1">{t('permissions.pageSubtitle')}</p>
         </div>
-        <span className="inline-flex items-center px-3 py-1.5 bg-indigo-50 text-indigo-700 text-sm font-medium rounded-lg border border-indigo-200">
-          <Shield className="w-4 h-4 mr-1.5" />
-          {t('permissions.globalControl')}
-        </span>
       </div>
 
       {error && (
@@ -201,48 +168,20 @@ export default function PermissionManager() {
 
       {!isLoading && !error && permissions.length > 0 && (
         <>
-          {/* Bulk Actions */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
-            <div className="text-sm text-slate-500">
-              {permissions.length} {t('permissions.points')}
-            </div>
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={() => handleBatchToggle(true)}
-                disabled={isUpdating}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-200 hover:bg-emerald-100 transition-colors disabled:opacity-50"
-              >
-                {t('permissions.enableAll')}
-              </button>
-              <button
-                onClick={() => handleBatchToggle(false)}
-                disabled={isUpdating}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition-colors disabled:opacity-50"
-              >
-                {t('permissions.disableAll')}
-              </button>
-            </div>
-          </div>
-
-          {/* Role Cards */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {ROLE_DEFS.map((roleDef) => (
               <RoleCard
                 key={roleDef.key}
                 roleDef={roleDef}
                 allPermissions={permissions}
-                isUpdating={isUpdating}
+                isUpdating={updateMutation.isPending}
                 onAdd={handleAddPermission}
                 onRemove={handleRemovePermission}
-                onToggle={(key, enabled) =>
-                  toggleMutation.mutate({ key, is_enabled: enabled })
-                }
                 t={t}
               />
             ))}
           </div>
 
-          {/* Footer */}
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex items-start space-x-3">
             <Shield className="w-5 h-5 text-slate-400 mt-0.5 shrink-0" />
             <div className="text-xs text-slate-500 leading-relaxed">
@@ -271,7 +210,6 @@ interface RoleCardProps {
   isUpdating: boolean;
   onAdd: (role: string, permKey: string, currentRoles: string[]) => void;
   onRemove: (role: string, permKey: string, currentRoles: string[]) => void;
-  onToggle: (key: string, enabled: boolean) => void;
   t: (key: string, options?: Record<string, string>) => string;
 }
 
@@ -281,7 +219,6 @@ function RoleCard({
   isUpdating,
   onAdd,
   onRemove,
-  onToggle,
   t,
 }: RoleCardProps) {
   const [adding, setAdding] = useState(false);
@@ -290,14 +227,12 @@ function RoleCard({
     (p.allowed_roles || []).includes(roleDef.key),
   );
 
-  // Permissions not yet assigned to this role
   const availablePermissions = allPermissions.filter(
     (p) => !(p.allowed_roles || []).includes(roleDef.key),
   );
 
   return (
     <div className={`bg-white rounded-2xl shadow-sm border ${roleDef.borderColor} overflow-hidden flex flex-col`}>
-      {/* Header */}
       <div className="px-4 py-3 border-b border-slate-100 flex items-center space-x-2.5">
         <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${roleDef.iconBg}`}>
           {roleDef.icon}
@@ -308,7 +243,6 @@ function RoleCard({
         </div>
       </div>
 
-      {/* Assigned permissions */}
       <div className="flex-1 px-4 py-3 space-y-2 min-h-[120px]">
         {assignedPermissions.length === 0 ? (
           <p className="text-xs text-slate-400 py-2">{t('permissions.noRolePermissions')}</p>
@@ -319,52 +253,24 @@ function RoleCard({
               className="flex items-center justify-between group"
             >
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm text-slate-700 truncate">{perm.label}</span>
-                  {!perm.is_enabled && (
-                    <span className="text-[10px] font-medium px-1 py-0 rounded bg-red-50 text-red-500 shrink-0">
-                      {t('permissions.disabled')}
-                    </span>
-                  )}
-                </div>
-                <span className="text-[10px] font-mono text-slate-400">{perm.key}</span>
+                <span className="text-sm text-slate-700 truncate">{perm.label}</span>
+                <span className="text-[10px] font-mono text-slate-400 ml-2">{perm.key}</span>
               </div>
 
-              <div className="flex items-center gap-1 shrink-0 ml-2">
-                {/* Enable/disable toggle */}
-                <button
-                  onClick={() => onToggle(perm.key, !perm.is_enabled)}
-                  disabled={isUpdating}
-                  className={`p-0.5 rounded transition-colors
-                    ${perm.is_enabled ? 'text-emerald-500 hover:text-emerald-600' : 'text-slate-400 hover:text-slate-500'}
-                    disabled:opacity-50 disabled:cursor-not-allowed
-                  `}
-                  title={perm.is_enabled ? t('permissions.disable') : t('permissions.enable')}
-                >
-                  {perm.is_enabled ? (
-                    <ToggleRight className="w-5 h-5" />
-                  ) : (
-                    <ToggleLeft className="w-5 h-5" />
-                  )}
-                </button>
-
-                {/* Remove button */}
-                <button
-                  onClick={() =>
-                    onRemove(roleDef.key, perm.key, perm.allowed_roles || [])
-                  }
-                  disabled={isUpdating}
-                  className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed"
-                  title={t('permissions.removeFromRole', { role: roleDef.label })}
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+              <button
+                onClick={() =>
+                  onRemove(roleDef.key, perm.key, perm.allowed_roles || [])
+                }
+                disabled={isUpdating}
+                className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed shrink-0 ml-2"
+                title={t('permissions.removeFromRole', { role: roleDef.label })}
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           ))
         )}
 
-        {/* Add permission area */}
         {adding ? (
           <div className="pt-1">
             <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 max-h-40 overflow-y-auto space-y-0.5">

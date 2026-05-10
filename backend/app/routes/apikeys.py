@@ -366,9 +366,21 @@ async def create_api_key(current_user):
         user_id=current_user.id,
         expires_at=expires_at,
         allowed_models=data.get('allowed_models') or None,
-        tags=data.get('tags') or None
+        tags=data.get('tags') or None,
+        workspace_id=group.workspace_id,
+        unlimited_budget=False,
+        budget=100.0,
     )
     db.session.add(api_key)
+    db.session.flush()
+
+    # Create default budget record
+    budget_entry = ApiKeyBudget(
+        api_key_id=api_key.id,
+        amount=100.0,
+        remaining=100.0,
+    )
+    db.session.add(budget_entry)
     db.session.commit()
     db.session.refresh(api_key)
     
@@ -399,6 +411,14 @@ async def update_api_key(current_user, api_key_id):
             return jsonify({'detail': 'Editing own API keys is disabled for your role'}), 403
     
     data = await request.get_json()
+
+    # Check field-specific permissions for budget operations
+    if user_role != 'root':
+        if 'unlimited_budget' in data and not check_permission(user_role, 'apikey.unlimited_budget'):
+            return jsonify({'detail': 'You do not have permission to toggle unlimited budget'}), 403
+        if 'budget' in data and not check_permission(user_role, 'apikey.add_budget'):
+            return jsonify({'detail': 'You do not have permission to add budget'}), 403
+
     if 'name' in data:
         api_key.name = data['name']
     if 'description' in data:
@@ -854,7 +874,7 @@ async def list_budgets(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/budgets', methods=['POST'])
 @token_required
-@require_apikey_permission('apikey.manage')
+@require_apikey_permission('apikey.add_budget')
 async def add_budget(current_user, api_key_id):
     """
     Add a new budget entry to an API key. Root only.
@@ -915,9 +935,9 @@ async def add_budget(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/budgets/<int:budget_id>', methods=['DELETE'])
 @token_required
-@require_apikey_permission('apikey.manage')
+@require_apikey_permission('apikey.add_budget')
 async def delete_budget(current_user, api_key_id, budget_id):
-    """Delete a budget entry. Root only. Only allowed if budget has remaining > 0 (refund scenario)."""
+    """Delete a budget entry. Requires apikey.add_budget permission."""
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404

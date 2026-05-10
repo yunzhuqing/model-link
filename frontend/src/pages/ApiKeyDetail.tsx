@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import client from '../api/client';
 import type {
   ApiKeyDetailData, TimeSeries, TimeSeriesByModel,
@@ -33,6 +34,22 @@ const ApiKeyDetail = () => {
     },
     enabled: !!id,
   });
+
+  // Fetch user's role and permissions for this key's group
+  const { data: myRoleData } = useQuery<{ permissions: Record<string, boolean>; role: string }>({
+    queryKey: ['my-role', data?.group_id],
+    queryFn: async () => {
+      const res = await client.get(`/api/permissions/groups/${data!.group_id}/my-role`);
+      return res.data;
+    },
+    enabled: !!data?.group_id,
+  });
+
+  const permissions = myRoleData?.permissions || {};
+  const canManageBudget = useMemo(
+    () => permissions['apikey.unlimited_budget'] === true || permissions['apikey.add_budget'] === true,
+    [permissions],
+  );
 
   // Fetch hourly time series for the last 24 hours (scoped by api_key_hash)
   const now = new Date();
@@ -210,6 +227,7 @@ const ApiKeyDetail = () => {
             remaining={data.total_budget_remaining || 0}
             unlimitedBudget={budget.unlimited_budget}
             onEdit={() => setShowBudgetModal(true)}
+            canManageBudget={canManageBudget}
           />
 
           {/* Token Stats */}
@@ -619,6 +637,7 @@ const ApiKeyDetail = () => {
           currentRemaining={data.total_budget_remaining || budget.remaining || 0}
           budgets={data.budgets || []}
           onClose={() => setShowBudgetModal(false)}
+          permissions={permissions}
         />
       )}
     </div>

@@ -343,38 +343,6 @@ async def update_permission(current_user, permission_key):
     return jsonify(perm.to_dict())
 
 
-# ── Toggle a permission ────────────────────────────────────────────────
-
-@permissions_bp.route(
-    "/permissions/<permission_key>/toggle", methods=["PUT"]
-)
-@token_required
-async def toggle_permission(current_user, permission_key):
-    """Toggle a permission on or off. Only root.
-
-    Request body: {"is_enabled": true} or {"is_enabled": false}
-    """
-    err = _require_root(current_user)
-    if err:
-        return err
-
-    perm = db.session.query(Permission).filter(
-        Permission.key == permission_key,
-    ).first()
-    if not perm:
-        return jsonify({"detail": "Permission not found"}), 404
-
-    data = await request.get_json()
-    if "is_enabled" not in data or not isinstance(data["is_enabled"], bool):
-        return jsonify({"detail": "is_enabled (boolean) is required"}), 400
-
-    perm.is_enabled = data["is_enabled"]
-    db.session.commit()
-    db.session.refresh(perm)
-
-    return jsonify(perm.to_dict())
-
-
 # ── Delete a permission ────────────────────────────────────────────────
 
 @permissions_bp.route(

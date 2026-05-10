@@ -11,9 +11,12 @@ interface Props {
   currentRemaining: number;
   budgets: BudgetRecord[];
   onClose: () => void;
+  permissions?: Record<string, boolean>;
 }
 
-const BudgetEditModal = ({ apiKeyId, isUnlimitedBudget, budgets, onClose }: Props) => {
+const BudgetEditModal = ({ apiKeyId, isUnlimitedBudget, budgets, onClose, permissions = {} }: Props) => {
+  const canToggleUnlimited = permissions['apikey.unlimited_budget'] !== false;
+  const canAddBudget = permissions['apikey.add_budget'] !== false;
   const queryClient = useQueryClient();
   const [addAmount, setAddAmount] = useState('');
   const [isUnlimited, setIsUnlimited] = useState(isUnlimitedBudget);
@@ -93,27 +96,32 @@ const BudgetEditModal = ({ apiKeyId, isUnlimitedBudget, budgets, onClose }: Prop
 
         {/* Body */}
         <div className="p-5 space-y-4">
-          {/* Toggle: unlimited / limited */}
+          {canToggleUnlimited && (
           <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
             <div className="flex items-center gap-2">
               <RotateCcw className="w-4 h-4 text-slate-400" />
               <span className="text-sm font-medium text-slate-700">不限制预算</span>
             </div>
             <button
-              onClick={() => setIsUnlimited(!isUnlimited)}
+              onClick={() => {
+                const newVal = !isUnlimited;
+                setIsUnlimited(newVal);
+                toggleMutation.mutate({ unlimited_budget: newVal });
+              }}
               className={`relative w-11 h-6 rounded-full transition-colors ${isUnlimited ? 'bg-indigo-500' : 'bg-slate-300'}`}
             >
               <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${isUnlimited ? 'translate-x-5' : ''}`} />
             </button>
           </div>
+          )}
 
           {/* Add Budget */}
-          {!isUnlimited && (
+          {!isUnlimited && canAddBudget && (
             <div className="p-4 bg-gradient-to-br from-indigo-50/50 to-transparent border border-indigo-100/50 rounded-xl">
-              <label className="text-xs font-medium text-slate-500 mb-2 block">追加预算 (CNY)</label>
+              <label className="text-xs font-medium text-slate-500 mb-2 block">追加预算 (USD)</label>
               <div className="flex items-center gap-2">
                 <div className="flex-1 relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">¥</span>
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">$</span>
                   <input
                     type="number"
                     step="0.01"
@@ -171,16 +179,18 @@ const BudgetEditModal = ({ apiKeyId, isUnlimitedBudget, budgets, onClose }: Prop
                       <div className="flex items-center gap-3 flex-shrink-0">
                         <span className={`text-sm font-semibold ${isExhausted ? 'text-slate-300' : 'text-slate-700'}`}>{fmtCost(b.remaining)}</span>
                         {!isExhausted && <span className="text-xs text-slate-400 w-10 text-right">{pct.toFixed(0)}%</span>}
-                        <button
-                          onClick={() => {
-                            if (window.confirm('确定删除此预算记录？')) {
-                              deleteBudgetMutation.mutate(b.id);
-                            }
-                          }}
-                          className={`p-1 rounded-lg ${isExhausted ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'} hover:bg-red-50 transition-all`}
-                        >
-                          <X className="w-3.5 h-3.5 text-red-400" />
-                        </button>
+                        {canAddBudget && (
+                          <button
+                            onClick={() => {
+                              if (window.confirm('确定删除此预算记录？')) {
+                                deleteBudgetMutation.mutate(b.id);
+                              }
+                            }}
+                            className={`p-1 rounded-lg ${isExhausted ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'} hover:bg-red-50 transition-all`}
+                          >
+                            <X className="w-3.5 h-3.5 text-red-400" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

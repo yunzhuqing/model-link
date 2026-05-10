@@ -7,9 +7,10 @@ interface Props {
   remaining: number;
   unlimitedBudget: boolean;
   onEdit: () => void;
+  canManageBudget?: boolean;
 }
 
-const BudgetBars = ({ budgets, remaining, unlimitedBudget, onEdit }: Props) => {
+const BudgetBars = ({ budgets, remaining, unlimitedBudget, onEdit, canManageBudget }: Props) => {
   const budgetsWithRemaining = budgets.filter(b => b.remaining > 0);
 
   // Total budget: only sum amounts of budgets that still have remaining > 0
@@ -33,10 +34,12 @@ const BudgetBars = ({ budgets, remaining, unlimitedBudget, onEdit }: Props) => {
             <p className="text-[11px] text-slate-400">{unlimitedBudget ? '不限制' : `已使用 ${fmtCost(totalBudget - remainingSum)} / ${fmtCost(totalBudget)}`}</p>
           </div>
         </div>
+        {canManageBudget !== false && (
         <button onClick={onEdit}
           className="text-xs font-medium text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-all duration-200">
           管理预算
         </button>
+        )}
       </div>
 
       {!unlimitedBudget && totalBudget > 0 && (
@@ -126,7 +129,7 @@ const BudgetBars = ({ budgets, remaining, unlimitedBudget, onEdit }: Props) => {
           <p className="text-sm font-bold mt-0.5" style={{
             color: unlimitedBudget ? '#059669' : (remaining > 0 ? '#2563eb' : '#dc2626'),
           }}>
-            {unlimitedBudget ? '不限制' : (remaining > 0 ? `剩余 ¥${Number(remaining).toFixed(2)}` : '已耗尽')}
+            {unlimitedBudget ? '不限制' : (remaining > 0 ? `剩余 $${Number(remaining).toFixed(2)}` : '已耗尽')}
           </p>
         </div>
         <div className="text-right">
