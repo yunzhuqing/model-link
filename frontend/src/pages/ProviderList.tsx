@@ -879,7 +879,7 @@ const ModelForm = ({
 
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all providers with a group selector. */
-const ProviderList = ({ groupId, currentRole, permissions }: { groupId?: number; currentRole?: string; permissions?: Record<string, boolean> } = {}) => {
+const ProviderList = ({ groupId, currentRole: _currentRole, permissions }: { groupId?: number; currentRole?: string; permissions?: Record<string, boolean> } = {}) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [showProviderModal, setShowProviderModal] = useState(false);

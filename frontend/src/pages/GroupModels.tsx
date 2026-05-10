@@ -8,7 +8,6 @@ import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import client from '../api/client';
-import type { Group } from '../api/client';
 import {
   Cpu, Database, Search, Check, X,
   Image, Video, Mic, FileText, Globe, Brain, Layers, Share2
