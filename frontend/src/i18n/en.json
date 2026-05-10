@@ -298,7 +298,23 @@
       "featureFile": "File",
       "featureWebSearch": "Web Search",
       "featureThinking": "Deep Thinking",
-      "featureEmbedding": "Embedding"
+      "featureEmbedding": "Embedding",
+      "actions": "Actions",
+      "shareToGroup": "Share",
+      "sharedBadge": "Shared from {{group}}"
+    },
+    "shareModel": {
+      "title": "Share Model to Another Group",
+      "selectGroup": "Select target group",
+      "noGroups": "No groups available",
+      "share": "Share to this group",
+      "shared": "Shared",
+      "removeShare": "Remove share",
+      "fromGroup": "From {{group}}",
+      "sharing": "Sharing...",
+      "shareSuccess": "Model shared successfully",
+      "removeSuccess": "Share removed",
+      "alreadyShared": "Model is already shared to this group"
     },
     "statistics": {
       "title": "Usage Statistics",

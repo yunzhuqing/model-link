@@ -275,6 +275,148 @@ async def update_member_role(current_user, group_id, user_id):
     return jsonify(group.to_dict())
 
 
+# ============== Model Share Management ==============
+
+@apikeys_bp.route('/groups/<int:group_id>/model-shares', methods=['GET'])
+@token_required
+async def list_model_shares(current_user, group_id):
+    """List models shared to this group from other groups."""
+    from app.models import Group, ModelShare, Model as MLModel, Provider
+
+    group = get_group_by_id(group_id)
+    if not group:
+        return jsonify({'detail': 'Group not found'}), 404
+
+    if current_user not in group.users:
+        return jsonify({'detail': 'You do not have access to this group'}), 403
+
+    shares = (
+        db.session.query(ModelShare, MLModel, Provider, Group)
+        .join(MLModel, ModelShare.model_id == MLModel.id)
+        .join(Provider, MLModel.provider_id == Provider.id)
+        .join(Group, ModelShare.source_group_id == Group.id)
+        .filter(ModelShare.target_group_id == group_id)
+        .all()
+    )
+
+    result = []
+    for share, model, provider, source_group in shares:
+        result.append({
+            'id': share.id,
+            'model_id': model.id,
+            'model_name': model.name,
+            'model_alias': model.alias,
+            'provider_name': provider.name,
+            'provider_type': provider.type,
+            'source_group_id': source_group.id,
+            'source_group_name': source_group.name,
+            'created_at': share.created_at.isoformat() if share.created_at else None,
+            # Full model details for display
+            'context_size': model.context_size,
+            'input_size': model.input_size,
+            'output_size': model.output_size,
+            'input_price': float(model.input_price) if model.input_price else 0,
+            'output_price': float(model.output_price) if model.output_price else 0,
+            'currency': model.currency or 'USD',
+            'is_active': model.is_active,
+            'support_image': model.support_image,
+            'support_audio': model.support_audio,
+            'support_video': model.support_video,
+            'support_file': model.support_file,
+            'support_web_search': model.support_web_search,
+            'support_thinking': model.support_thinking,
+            'support_embedding': model.support_embedding,
+            'rpm': model.rpm,
+            'tpm': model.tpm,
+        })
+
+    return jsonify({'shares': result})
+
+
+@apikeys_bp.route('/groups/<int:group_id>/model-shares', methods=['POST'])
+@token_required
+@require_permission('member.manage')
+async def add_model_share(current_user, group_id):
+    """Share a model from another group to this group."""
+    from app.models import ModelShare, Model as MLModel
+
+    group = get_group_by_id(group_id)
+    if not group:
+        return jsonify({'detail': 'Group not found'}), 404
+
+    if current_user not in group.users:
+        return jsonify({'detail': 'You do not have access to this group'}), 403
+
+    data = await request.get_json()
+    model_id = data.get('model_id')
+    if not model_id:
+        return jsonify({'detail': 'model_id is required'}), 400
+
+    model = db.session.query(MLModel).filter(MLModel.id == model_id).first()
+    if not model:
+        return jsonify({'detail': 'Model not found'}), 404
+
+    # Determine source group from the model's provider
+    if not model.provider or not model.provider.group_id:
+        return jsonify({'detail': 'Model has no source group'}), 400
+
+    source_group_id = model.provider.group_id
+    if source_group_id == group_id:
+        return jsonify({'detail': 'Cannot share a model to its own group'}), 400
+
+    # Check if already shared
+    existing = db.session.query(ModelShare).filter(
+        ModelShare.model_id == model_id,
+        ModelShare.target_group_id == group_id,
+    ).first()
+    if existing:
+        return jsonify({'detail': 'Model is already shared to this group'}), 409
+
+    share = ModelShare(
+        model_id=model_id,
+        source_group_id=source_group_id,
+        target_group_id=group_id,
+        created_by=current_user.id,
+    )
+    db.session.add(share)
+    db.session.commit()
+
+    return jsonify({
+        'id': share.id,
+        'model_id': share.model_id,
+        'source_group_id': share.source_group_id,
+        'target_group_id': share.target_group_id,
+        'created_at': share.created_at.isoformat() if share.created_at else None,
+    }), 201
+
+
+@apikeys_bp.route('/groups/<int:group_id>/model-shares/<int:share_id>', methods=['DELETE'])
+@token_required
+@require_permission('member.manage')
+async def remove_model_share(current_user, group_id, share_id):
+    """Remove a model share from this group."""
+    from app.models import ModelShare
+
+    group = get_group_by_id(group_id)
+    if not group:
+        return jsonify({'detail': 'Group not found'}), 404
+
+    if current_user not in group.users:
+        return jsonify({'detail': 'You do not have access to this group'}), 403
+
+    share = db.session.query(ModelShare).filter(
+        ModelShare.id == share_id,
+        ModelShare.target_group_id == group_id,
+    ).first()
+    if not share:
+        return jsonify({'detail': 'Model share not found'}), 404
+
+    db.session.delete(share)
+    db.session.commit()
+
+    return jsonify({'detail': 'Model share removed'})
+
+
 # ============== API Key Management ==============
 
 @apikeys_bp.route('/apikeys/', methods=['GET'])
@@ -480,7 +622,7 @@ async def update_api_key(current_user, api_key_id):
 @token_required
 async def get_api_key_models(current_user, api_key_id):
     """Get the list of models available to this API key, with per-model usage stats."""
-    from app.models import UsageRecord, Provider, Model as MLModel
+    from app.models import UsageRecord, get_group_models_with_shares
     import hashlib
 
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
@@ -490,15 +632,9 @@ async def get_api_key_models(current_user, api_key_id):
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
-    # Get all active models in the same group
-    all_models = (
-        db.session.query(MLModel)
-        .join(Provider, MLModel.provider_id == Provider.id)
-        .filter(Provider.group_id == api_key.group_id)
-        .filter(Provider.is_active == True)
-        .filter(MLModel.is_active == True)
-        .all()
-    )
+    # Get all active models in the group (including shared models)
+    pairs = get_group_models_with_shares(api_key.group_id)
+    all_models = [m for m, _ in pairs]
 
     allowed = api_key.allowed_models or []
     # Filter by allowed_models if set
@@ -561,7 +697,7 @@ async def get_api_key_detail(current_user, api_key_id):
     - Available models (with rpm/tpm)
     - By-model breakdown (from DB)
     """
-    from app.models import UsageRecord, Provider, Model as MLModel
+    from app.models import UsageRecord, get_group_models_with_shares
     from app.cache import get_cache
     import hashlib
 
@@ -680,14 +816,8 @@ async def get_api_key_detail(current_user, api_key_id):
     ]
 
     # ── Available models with rpm/tpm ─────────────────────────────────────
-    all_models = (
-        db.session.query(MLModel)
-        .join(Provider, MLModel.provider_id == Provider.id)
-        .filter(Provider.group_id == api_key.group_id)
-        .filter(Provider.is_active == True)
-        .filter(MLModel.is_active == True)
-        .all()
-    )
+    pairs = get_group_models_with_shares(api_key.group_id)
+    all_models = [m for m, _ in pairs]
 
     allowed = api_key.allowed_models or []
     if allowed:

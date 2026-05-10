@@ -185,6 +185,16 @@ class Group(db.Model):
     api_keys = db.relationship("ApiKey", back_populates="group", cascade="all, delete-orphan")
     # Providers in group (one-to-many)
     providers = db.relationship("Provider", back_populates="group", cascade="all, delete-orphan")
+    # Models shared TO this group
+    model_shares_incoming = db.relationship(
+        "ModelShare", foreign_keys="ModelShare.target_group_id",
+        back_populates="target_group", cascade="all, delete-orphan"
+    )
+    # Models shared FROM this group
+    model_shares_outgoing = db.relationship(
+        "ModelShare", foreign_keys="ModelShare.source_group_id",
+        back_populates="source_group", cascade="all, delete-orphan"
+    )
 
     def to_dict(self):
         # Include role information with users
@@ -567,6 +577,7 @@ class Model(db.Model):
     is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this model is enabled
 
     provider = db.relationship("Provider", back_populates="models")
+    shares = db.relationship("ModelShare", back_populates="model", cascade="all, delete-orphan")
 
     @property
     def is_retired(self):
@@ -616,6 +627,26 @@ class Model(db.Model):
             'support_embedding': self.support_embedding,
             'is_active': self.is_active
         }
+
+
+class ModelShare(db.Model):
+    """Records models shared from one group to another."""
+    __tablename__ = "ml_model_shares"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    model_id = db.Column(db.Integer, db.ForeignKey("ml_models.id", ondelete="CASCADE"), nullable=False)
+    source_group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id", ondelete="CASCADE"), nullable=False)
+    target_group_id = db.Column(db.Integer, db.ForeignKey("ml_groups.id", ondelete="CASCADE"), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by = db.Column(db.Integer, db.ForeignKey("ml_users.id"), nullable=True)
+
+    model = db.relationship("Model", back_populates="shares")
+    source_group = db.relationship("Group", foreign_keys=[source_group_id], back_populates="model_shares_outgoing")
+    target_group = db.relationship("Group", foreign_keys=[target_group_id], back_populates="model_shares_incoming")
+
+    __table_args__ = (
+        db.UniqueConstraint('model_id', 'target_group_id', name='uq_model_share_target'),
+    )
 
 
 class ApiKeyBudget(db.Model):
@@ -1049,3 +1080,44 @@ class UsageRecord(db.Model):
             # Timestamp
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+def get_group_models_with_shares(group_id):
+    """
+    Return all active models available to a group, including shared models.
+    Deduplicated by model ID.
+    Returns a list of (Model, Provider) tuples.
+    """
+    from app import db as _db
+
+    # Own models — through the group's own providers
+    own = (
+        _db.session.query(Model, Provider)
+        .join(Provider, Model.provider_id == Provider.id)
+        .filter(Provider.group_id == group_id)
+        .filter(Provider.is_active == True)
+        .filter(Model.is_active == True)
+        .all()
+    )
+
+    # Shared models — models shared TO this group from other groups
+    shared = (
+        _db.session.query(Model, Provider)
+        .join(ModelShare, ModelShare.model_id == Model.id)
+        .join(Provider, Model.provider_id == Provider.id)
+        .filter(ModelShare.target_group_id == group_id)
+        .filter(Provider.is_active == True)
+        .filter(Model.is_active == True)
+        .all()
+    )
+
+    # Merge and deduplicate by model id
+    seen = set()
+    result = []
+    for model, provider in own + shared:
+        if model.id in seen:
+            continue
+        seen.add(model.id)
+        result.append((model, provider))
+
+    return result

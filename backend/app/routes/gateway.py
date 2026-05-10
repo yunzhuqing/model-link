@@ -726,56 +726,53 @@ async def anthropic_messages():
 @gateway_bp.route('/v1/models', methods=['GET'])
 async def list_models():
     """List all available models (OpenAI compatible)."""
+    from app.models import get_group_models_with_shares
+
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
         return jsonify(error), status
 
-    # Filter providers by group if using API key, and exclude disabled providers
+    # Get all models for this group (including shared models)
     if api_key:
-        providers = db.session.query(Provider).filter(
-            Provider.group_id == api_key.group_id,
-            Provider.is_active == True
-        ).all()
+        model_provider_pairs = get_group_models_with_shares(api_key.group_id)
     else:
+        # No API key — return all active models from all active providers
         providers = db.session.query(Provider).filter(Provider.is_active == True).all()
+        model_provider_pairs = []
+        seen = set()
+        for provider in providers:
+            for model in provider.models:
+                if model.is_active and model.id not in seen:
+                    seen.add(model.id)
+                    model_provider_pairs.append((model, provider))
 
     # Get allowed_models restriction from API key (if any)
     allowed_models = None
     if api_key:
         allowed_models = getattr(api_key, 'allowed_models', None) or None
 
+    seen_ids = set()
     models_list = []
-    for provider in providers:
-        for model in provider.models:
-            # Skip disabled models
-            if not model.is_active:
+    for model, provider in model_provider_pairs:
+        # Skip models not in allowed_models (if restriction is set)
+        if allowed_models:
+            if model.name not in allowed_models and (not model.alias or model.alias not in allowed_models):
                 continue
-            # Skip models not in allowed_models (if restriction is set)
-            if allowed_models:
-                if model.name not in allowed_models and (not model.alias or model.alias not in allowed_models):
-                    continue
-            # Use alias as id if available, otherwise use name
-            model_id = model.alias if model.alias else model.name
-            models_list.append({
-                "id": model_id,
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": provider.name,
-                "permission": [],
-                "root": model.name,
-                "parent": None,
-            })
-            # If alias exists, also add an entry with the original name
-            if model.alias and model.alias != model.name:
-                models_list.append({
-                    "id": model.name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": provider.name,
-                    "permission": [],
-                    "root": model.name,
-                    "parent": None,
-                })
+        # Use alias as id if available, otherwise use name
+        model_id = model.alias if model.alias else model.name
+        # Skip duplicate model IDs
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        models_list.append({
+            "id": model_id,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": provider.name,
+            "permission": [],
+            "root": model.name,
+            "parent": None,
+        })
 
     return jsonify({
         "object": "list",
@@ -964,19 +961,39 @@ async def create_embeddings():
 
     # 6. 调用中间层
     try:
+        _start_time = time.time()
         if tracer:
             tracer.start(model_name, input_data=data)
             tracer.log_input(data)
+        resolved = _gateway_service.resolve_model(model_name, group_id, provider_id=provider_id)
+        resolved.provider_instance.tracer = tracer
         response = _gateway_service.embed(embedding_request, group_id, provider_id=provider_id, tracer=tracer)
+        _duration_ms = int((time.time() - _start_time) * 1000)
         if tracer:
             tracer.log_output(response.to_dict())
             tracer.set_metadata({
                 "request_id": g.request_id,
                 "group_id": group_id,
                 "user": user.username if user else None,
-                "model": model_name,
+                "provider": resolved.db_provider.name,
+                "duration_ms": _duration_ms,
             })
             tracer.end()
+        # Record usage
+        try:
+            from app.usage_service import record_usage
+            record_usage(
+                app=current_app._get_current_object(),
+                response=response,
+                db_model=resolved.db_model,
+                db_provider=resolved.db_provider,
+                api_key=api_key,
+                user=user,
+                request_model_name=model_name,
+                duration_ms=_duration_ms,
+            )
+        except Exception as _ue:
+            logger.warning(f"[usage] Failed to trigger usage recording for embeddings: {_ue}")
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         if tracer:

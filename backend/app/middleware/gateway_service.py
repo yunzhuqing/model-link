@@ -115,7 +115,18 @@ class GatewayService:
         )
 
         if group_id is not None:
-            query = query.filter(Provider.group_id == group_id)
+            from app.models import ModelShare
+            shared_model_ids = (
+                db.session.query(ModelShare.model_id)
+                .filter(ModelShare.target_group_id == group_id)
+                .subquery()
+            )
+            query = query.filter(
+                db.or_(
+                    Provider.group_id == group_id,
+                    Model.id.in_(shared_model_ids)
+                )
+            )
 
         if provider_id is not None:
             query = query.filter(Model.provider_id == provider_id)

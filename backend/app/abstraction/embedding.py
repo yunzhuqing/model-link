@@ -44,9 +44,15 @@ class EmbeddingData:
 
 @dataclass
 class EmbeddingUsage:
-    """Token usage info for embedding request."""
+    """Token usage info for embedding request.  Compatible with UsageInfo for record_usage."""
     prompt_tokens: int
     total_tokens: int
+    completion_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

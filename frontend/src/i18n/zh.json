@@ -298,7 +298,23 @@
       "featureFile": "文件",
       "featureWebSearch": "联网搜索",
       "featureThinking": "深度思考",
-      "featureEmbedding": "嵌入"
+      "featureEmbedding": "嵌入",
+      "actions": "操作",
+      "shareToGroup": "共享",
+      "sharedBadge": "共享自 {{group}}"
+    },
+    "shareModel": {
+      "title": "共享模型到其他分组",
+      "selectGroup": "选择目标分组",
+      "noGroups": "没有可用的分组",
+      "share": "共享到此分组",
+      "shared": "已共享",
+      "removeShare": "取消共享",
+      "fromGroup": "来自 {{group}}",
+      "sharing": "共享中...",
+      "shareSuccess": "模型共享成功",
+      "removeSuccess": "已取消共享",
+      "alreadyShared": "该模型已共享到此分组"
     },
     "statistics": {
       "title": "用量统计",
