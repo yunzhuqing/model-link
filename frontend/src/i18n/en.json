@@ -618,7 +618,16 @@
     "enable": "Enable",
     "disable": "Disable",
     "allRoles": "Roles",
-    "permissionsHint": "Permissions are system-global, shared across all groups. Root users are never restricted by permission toggles. When a permission is disabled, no user in that role can perform the corresponding action."
+    "addToRole": "Grant to {{role}}",
+    "removeFromRole": "Revoke from {{role}}",
+    "disabled": "Disabled",
+    "rootRoleDesc": "Full system access — root users bypass all permission checks",
+    "adminRoleDesc": "Group-level management — assign permissions to control admin capabilities",
+    "memberRoleDesc": "Basic user — selectively grant additional capabilities to members",
+    "noRolePermissions": "No permissions assigned yet",
+    "addPermission": "Add permission",
+    "allAssigned": "All permissions have been assigned",
+    "permissionsHint": "Permissions are system-global, shared across all groups. Check a permission to grant it to a role, uncheck to revoke. Use the toggle on the right to enable/disable a permission entirely. Root users are never restricted by permission checks."
   },
   "tagManager": {
     "pageTitle": "Tag Manager",

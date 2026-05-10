@@ -618,7 +618,16 @@
     "enable": "启用",
     "disable": "禁用",
     "allRoles": "角色",
-    "permissionsHint": "权限是系统全局的，所有分组共享相同的权限配置。Root 用户不受权限开关限制。当某权限被关闭时，该角色中的所有用户将无法执行相应操作。"
+    "addToRole": "授予 {{role}}",
+    "removeFromRole": "撤销 {{role}}",
+    "disabled": "已禁用",
+    "rootRoleDesc": "完全系统访问权限 — Root 用户不受任何权限检查限制",
+    "adminRoleDesc": "分组级别管理 — 通过分配权限控制 Admin 的能力范围",
+    "memberRoleDesc": "基础用户 — 按需选择性授予 Member 额外能力",
+    "noRolePermissions": "暂未分配权限",
+    "addPermission": "添加权限",
+    "allAssigned": "所有权限已全部分配",
+    "permissionsHint": "权限是系统全局的，所有分组共享相同的权限配置。勾选权限即授予对应角色，取消勾选即撤销。右侧开关可完全启用/禁用某个权限。Root 用户不受任何权限检查限制。"
   },
   "tagManager": {
     "pageTitle": "标签管理",

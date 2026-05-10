@@ -370,7 +370,7 @@ export default function GroupDetail() {
             </div>
           </div>
           {/* ProviderList handles all provider + model CRUD internally */}
-          <ProviderList groupId={parseInt(id!)} />
+          <ProviderList groupId={parseInt(id!)} currentRole={currentRole} permissions={myPermissions} />
         </div>
       )}
 

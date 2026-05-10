@@ -214,7 +214,7 @@ const defaultModelState = {
 
 // ── ModelCard ─────────────────────────────────────────────────────────────────
 
-const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit: () => void; onDelete: () => void; onToggle: () => void }) => {
+const ModelCard = ({ model, onEdit, onDelete, onToggle, canManage }: { model: Model; onEdit: () => void; onDelete: () => void; onToggle: () => void; canManage?: boolean }) => {
   const { t } = useTranslation();
   const sym = currencySymbol(model.currency);
   const hasTiers = model.pricing_tiers && model.pricing_tiers.length > 0 && !model.output_pricing;
@@ -317,6 +317,7 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
             {model.support_embedding && <FeatureBadge label={t('modelTemplates.features.embedding')} color="emerald" />}
           </div>
         </div>
+        {canManage !== false && (
         <div className="flex items-center space-x-1 ml-4">
           <button
             onClick={onToggle}
@@ -330,6 +331,7 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle }: { model: Model; onEdit
           <button onClick={onEdit} className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-lg transition-colors" title={t('provider.editModelTitle')}><Edit2 className="w-4 h-4" /></button>
           <button onClick={onDelete} className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors" title={t('provider.deleteModelTitle')}><Trash2 className="w-4 h-4" /></button>
         </div>
+        )}
       </div>
     </div>
   );
@@ -877,7 +879,7 @@ const ModelForm = ({
 
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all providers with a group selector. */
-const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
+const ProviderList = ({ groupId, currentRole, permissions }: { groupId?: number; currentRole?: string; permissions?: Record<string, boolean> } = {}) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [showProviderModal, setShowProviderModal] = useState(false);
@@ -920,6 +922,9 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
     },
     enabled: !groupId,
   });
+
+  // Permission: whether the current user can manage providers
+  const canManageProvider = permissions ? permissions['provider.manage'] === true : true;
 
   const resetNewProvider = () =>
     setNewProvider({
@@ -1154,6 +1159,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
               <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-sm font-medium mr-2">
                 {t('provider.modelsCount', { count: provider.models.length })}
               </span>
+              {canManageProvider && (<>
               {/* Toggle switch */}
               <button
                 onClick={() => toggleProviderMutation.mutate({ id: provider.id, is_active: !provider.is_active })}
@@ -1178,6 +1184,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
               >
                 <Trash2 className="w-4 h-4" />
               </button>
+              </>)}
               {expandedProvider === provider.id
                 ? <ChevronUp className="w-5 h-5 text-slate-400 ml-2" />
                 : <ChevronDown className="w-5 h-5 text-slate-400 ml-2" />}
@@ -1188,12 +1195,14 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
             <div className="p-5 bg-slate-50 border-t border-slate-200">
               <div className="flex justify-between items-center mb-4">
                 <h4 className="font-bold text-slate-700">{t('provider.modelsLabel')} ({provider.models.length})</h4>
+                {canManageProvider && (
                 <button
                   onClick={() => { setShowAddModel(provider.id); setEditingModel(null); }}
                   className="bg-blue-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-blue-600 transition-colors shadow-sm"
                 >
                   <Plus className="w-4 h-4 mr-2" /> {t('provider.addModel')}
                 </button>
+                )}
               </div>
 
               {showAddModel === provider.id && (
@@ -1229,6 +1238,7 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
                         onEdit={() => handleEditModel(model)}
                         onDelete={() => { if (confirm(t('provider.deleteModelConfirm'))) deleteModelMutation.mutate(model.id); }}
                         onToggle={() => toggleModelMutation.mutate({ id: model.id, is_active: !model.is_active })}
+                        canManage={canManageProvider}
                       />
                     )}
                   </div>
@@ -1263,12 +1273,14 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <p className="text-sm text-slate-500">{t('provider.providersCount', { count: providers?.length || 0 })}</p>
+            {canManageProvider && (
             <button
               onClick={openAddModal}
               className="bg-blue-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-blue-600 transition-colors shadow-sm text-sm"
             >
               <Plus className="w-4 h-4 mr-2" /> {t('provider.addProvider')}
             </button>
+            )}
           </div>
           {providerListContent}
         </div>
@@ -1286,12 +1298,14 @@ const ProviderList = ({ groupId }: { groupId?: number } = {}) => {
             <h1 className="text-2xl font-bold text-slate-800">{t('provider.providersAndModels')}</h1>
             <p className="text-slate-500 mt-1">{t('provider.manageProviders')}</p>
           </div>
+          {canManageProvider && (
           <button
             onClick={openAddModal}
             className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
           >
               <Plus className="w-4 h-4 mr-2" /> {t('provider.addProvider')}
             </button>
+          )}
         </div>
         {providerListContent}
       </div>

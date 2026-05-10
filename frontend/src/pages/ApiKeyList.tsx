@@ -33,6 +33,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [modelsSearchFilter, setModelsSearchFilter] = useState('');
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Edit key state (for embedded mode)
   const [editKeyName, setEditKeyName] = useState('');
@@ -111,6 +112,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
       setNewKeyExpires('');
       setNewKeyAllowedModels([]);
       setModelSearchInput('');
+      setCreateError(null);
+    },
+    onError: (err: any) => {
+      setCreateError(err.response?.data?.detail || '创建 API Key 失败');
     },
   });
 
@@ -326,9 +331,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   if (groupId !== undefined) {
     // Check if member can create keys (permission may be disabled by root)
     // permissions is undefined → no restrictions (loading or standalone)
-    const memberCanCreate = !isMember || permissions?.['apikey.manage'] === true;
-    const memberCanCopyOthers = !isMember || permissions?.['apikey.copy_others'] === true;
-    const memberCanEditOwn = !isMember || permissions?.['apikey.edit_own'] === true;
+    const canCreate = permissions ? permissions['apikey.create'] === true : true;
+    const canCopyOthers = permissions ? permissions['apikey.copy_others'] === true : !isMember;
+    const canEditOwn = permissions ? permissions['apikey.edit_own'] === true : true;
+    const canManage = permissions ? permissions['apikey.manage'] === true : !isMember;
 
     return (
       <>
@@ -343,7 +349,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
               <p className="text-sm text-slate-500">{apiKeys?.length || 0} keys</p>
             </div>
           </div>
-          {memberCanCreate && (
+          {canCreate && (
             <button
               onClick={() => setIsCreateModalOpen(true)}
               className="bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center hover:bg-emerald-600 transition-colors shadow-sm"
@@ -384,7 +390,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                         {visibleKeys.has(apiKey.id) ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
                   {/* Copy: for members, only allow copying own keys unless copy_others is enabled */}
-                  {((!isMember && memberCanCopyOthers) || apiKey.user_id === userId || (isMember && memberCanCopyOthers)) && (
+                  {(apiKey.user_id === userId || canCopyOthers) && (
                     <button onClick={() => handleCopyKey(apiKey.key)} className="text-slate-400 hover:text-slate-600">
                       {copiedKey === apiKey.key ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
                     </button>
@@ -406,7 +412,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 <Eye className="w-4 h-4" />
               </button>
               {/* Edit/Delete: for members, only allow editing/deleting own keys if edit_own is enabled */}
-              {(!isMember || (apiKey.user_id === userId && memberCanEditOwn)) && (
+              {(apiKey.user_id === userId ? canEditOwn : canManage) && (
                 <>
                   <button
                     onClick={() => handleEdit(apiKey)}
@@ -515,9 +521,16 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   <TagSelector value={newKeyTags} onChange={setNewKeyTags} />
                 </div>
               </div>
+              {createError && (
+                <div className="px-6 pb-2">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">
+                    {createError}
+                  </div>
+                </div>
+              )}
               <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
                 <button
-                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setNewKeyTags([]); setModelSearchInput(''); }}
+                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setNewKeyTags([]); setModelSearchInput(''); setCreateError(null); }}
                   className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
                 >
                   取消
@@ -884,6 +897,13 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 <TagSelector value={newKeyTags} onChange={setNewKeyTags} />
               </div>
             </div>
+            {createError && (
+              <div className="px-6 pb-2">
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">
+                  {createError}
+                </div>
+              </div>
+            )}
             <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
               <button
                 onClick={() => {
@@ -895,6 +915,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   setNewKeyAllowedModels([]);
                   setNewKeyTags([]);
                   setModelSearchInput('');
+                  setCreateError(null);
                 }}
                 className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
               >

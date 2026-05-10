@@ -347,12 +347,11 @@ async def create_api_key(current_user):
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
     
-    # Permission: members cannot create API keys unless member.apikey.create is enabled
+    # Permission: non-root users need apikey.create permission
     group_id = group.id
-    if not _is_admin_or_above_inner(group_id, current_user.id):
-        user_role = _get_role(group_id, current_user.id)
-        if not check_permission(user_role, 'apikey.create'):
-            return jsonify({'detail': 'Creating API keys is disabled for members in this group'}), 403
+    user_role = _get_role(group_id, current_user.id)
+    if user_role != 'root' and not check_permission(user_role, 'apikey.create'):
+        return jsonify({'detail': 'Creating API keys is disabled for your role'}), 403
     
     # Convert empty string to None for expires_at (empty string is not valid for timestamp)
     expires_at = data.get('expires_at')
@@ -389,15 +388,15 @@ async def update_api_key(current_user, api_key_id):
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
     
-    # Permission: admin/root can edit any; member can only edit own key with permission
+    # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
     group_id = api_key.group_id
+    user_role = _get_role(group_id, current_user.id)
     is_owner = api_key.user_id == current_user.id
-    if not is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
-        return jsonify({'detail': 'You can only edit your own API keys'}), 403
-    if is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
-        user_role = _get_role(group_id, current_user.id)
-        if not check_permission(user_role, 'apikey.edit_own'):
-            return jsonify({'detail': 'Editing own API keys is disabled for this group'}), 403
+    if user_role != 'root':
+        if not is_owner and not check_permission(user_role, 'apikey.manage'):
+            return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
+        if is_owner and not check_permission(user_role, 'apikey.edit_own'):
+            return jsonify({'detail': 'Editing own API keys is disabled for your role'}), 403
     
     data = await request.get_json()
     if 'name' in data:
@@ -765,15 +764,15 @@ async def delete_api_key(current_user, api_key_id):
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
     
-    # Permission: admin/root can delete any; member can only delete own key with permission
+    # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
     group_id = api_key.group_id
+    user_role = _get_role(group_id, current_user.id)
     is_owner = api_key.user_id == current_user.id
-    if not is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
-        return jsonify({'detail': 'You can only delete your own API keys'}), 403
-    if is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
-        user_role = _get_role(group_id, current_user.id)
-        if not check_permission(user_role, 'apikey.edit_own'):
-            return jsonify({'detail': 'Deleting own API keys is disabled for this group'}), 403
+    if user_role != 'root':
+        if not is_owner and not check_permission(user_role, 'apikey.manage'):
+            return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
+        if is_owner and not check_permission(user_role, 'apikey.edit_own'):
+            return jsonify({'detail': 'Deleting own API keys is disabled for your role'}), 403
     
     # Invalidate cache before deleting (need the raw key for cache lookup)
     try:
@@ -803,15 +802,15 @@ async def regenerate_api_key(current_user, api_key_id):
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
     
-    # Permission: admin/root can regenerate any; member can only regenerate own with permission
+    # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
     group_id = api_key.group_id
+    user_role = _get_role(group_id, current_user.id)
     is_owner = api_key.user_id == current_user.id
-    if not is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
-        return jsonify({'detail': 'You can only regenerate your own API keys'}), 403
-    if is_owner and not _is_admin_or_above_inner(group_id, current_user.id):
-        user_role = _get_role(group_id, current_user.id)
-        if not check_permission(user_role, 'apikey.edit_own'):
-            return jsonify({'detail': 'Regenerating own API keys is disabled for this group'}), 403
+    if user_role != 'root':
+        if not is_owner and not check_permission(user_role, 'apikey.manage'):
+            return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
+        if is_owner and not check_permission(user_role, 'apikey.edit_own'):
+            return jsonify({'detail': 'Regenerating own API keys is disabled for your role'}), 403
     
     # Invalidate cache for the old key before regenerating
     old_key = api_key.key
