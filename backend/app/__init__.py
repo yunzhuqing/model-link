@@ -4,11 +4,24 @@ Quart application factory for Model Link AI Gateway.
 import logging
 import logging.handlers
 import os
+import uuid
+from contextvars import ContextVar
 
 from quart import Quart, send_from_directory
 from quart_cors import cors as quart_cors_init
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+
+# ContextVar to hold the current request ID so it can be injected into log records.
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+class RequestIdFilter(logging.Filter):
+    """Logging filter that injects the current request_id into every log record."""
+
+    def filter(self, record):
+        record.request_id = request_id_var.get()
+        return True
 
 
 class LogFormatter(logging.Formatter):
@@ -17,7 +30,7 @@ class LogFormatter(logging.Formatter):
     def __init__(self):
         format_string = os.getenv(
             "LOG_FORMAT",
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "%(asctime)s [%(levelname)s] %(name)s [%(request_id)s]: %(message)s",
         )
         datefmt = os.getenv("LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S")
         super().__init__(format_string, datefmt=datefmt)
@@ -86,6 +99,7 @@ def _configure_logging() -> None:
     # that calls ``logging.getLogger("some-name")`` will see output.
     root_logger = logging.getLogger()
     root_logger.setLevel(numeric_level)
+    root_logger.addFilter(RequestIdFilter())
     for h in handlers:
         root_logger.addHandler(h)
 
@@ -188,6 +202,25 @@ def create_app(config=None):
         in teardown_appcontext to fail silently (RuntimeError caught), leaking
         DB connections until the QueuePool was exhausted.
         """
+        return response
+
+    @app.before_request
+    async def _assign_request_id():
+        """Extract X-Request-Id from incoming request headers or generate a new one."""
+        from quart import g, request
+        req_id = request.headers.get("X-Request-Id")
+        if not req_id:
+            req_id = str(uuid.uuid4())
+        g.request_id = req_id
+        request_id_var.set(req_id)
+
+    @app.after_request
+    async def _add_request_id_header(response):
+        """Include X-Request-Id in the response headers."""
+        from quart import g
+        req_id = getattr(g, "request_id", None)
+        if req_id:
+            response.headers["X-Request-Id"] = req_id
         return response
 
     # Remove Flask-SQLAlchemy's sync teardown handler and register async version

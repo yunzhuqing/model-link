@@ -549,6 +549,7 @@ async def _handle_request(adapter):
                         _api_key_group_name = api_key.group.name
                 except Exception:
                     pass
+            _request_id = g.request_id
 
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
@@ -586,6 +587,7 @@ async def _handle_request(adapter):
                 except Exception as e:
                     logger.error(f"[stream] Error during stream processing: {e}", exc_info=True)
                     if tracer:
+                        tracer.set_metadata({"request_id": _request_id})
                         tracer.end(error=e)
                     raise
                 finally:
@@ -625,6 +627,7 @@ async def _handle_request(adapter):
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
                     if tracer:
                         tracer.set_metadata({
+                            "request_id": _request_id,
                             "group_id": group_id,
                             "user": _user_name,
                             "provider": model_meta.get('provider_name'),
@@ -644,6 +647,7 @@ async def _handle_request(adapter):
             if tracer:
                 tracer.log_output(adapter.format_response(response))
                 tracer.set_metadata({
+                    "request_id": g.request_id,
                     "group_id": group_id,
                     "user": user.username if user else None,
                     "provider": resolved.db_provider.name,
@@ -671,16 +675,19 @@ async def _handle_request(adapter):
 
     except ProviderError as e:
         if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
@@ -951,17 +958,42 @@ async def create_embeddings():
     group_id = api_key.group_id if api_key else None
     provider_id = g.get('api_key_provider_id', None) if api_key else None
 
-    # 5. 调用中间层
+    # 5. 设置 tracer
+    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    tracer = create_tracer(monitoring_config)
+
+    # 6. 调用中间层
     try:
-        response = _gateway_service.embed(embedding_request, group_id, provider_id=provider_id)
+        if tracer:
+            tracer.start(model_name, input_data=data)
+            tracer.log_input(data)
+        response = _gateway_service.embed(embedding_request, group_id, provider_id=provider_id, tracer=tracer)
+        if tracer:
+            tracer.log_output(response.to_dict())
+            tracer.set_metadata({
+                "request_id": g.request_id,
+                "group_id": group_id,
+                "user": user.username if user else None,
+                "model": model_name,
+            })
+            tracer.end()
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
@@ -1040,9 +1072,16 @@ async def create_images():
     group_id = api_key.group_id if api_key else None
     provider_id = g.get('api_key_provider_id', None) if api_key else None
 
-    # 5. 调用中间层
+    # 5. 设置 tracer
+    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    tracer = create_tracer(monitoring_config)
+
+    # 6. 调用中间层
     _request_start_time = time.monotonic()
     try:
+        if tracer:
+            tracer.start(model_name, input_data=data)
+            tracer.log_input(data)
         result, chat_response, resolved = _gateway_service.generate_images(
             model_name=model_name,
             prompt=prompt,
@@ -1058,8 +1097,19 @@ async def create_images():
             aspect_ratio=aspect_ratio,
             resolution=resolution,
             provider_id=provider_id,
+            tracer=tracer,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
+        if tracer:
+            tracer.log_output(result)
+            tracer.set_metadata({
+                "request_id": g.request_id,
+                "group_id": group_id,
+                "user": user.username if user else None,
+                "provider": resolved.db_provider.name,
+                "duration_ms": _duration_ms,
+            })
+            tracer.end()
         # Record usage asynchronously (fire-and-forget)
         try:
             from app.usage_service import record_usage
@@ -1077,12 +1127,21 @@ async def create_images():
             logger.warning(f"[usage] Failed to trigger usage recording for image generation: {_ue}")
         return jsonify(result)
     except ModelNotFoundError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 
@@ -1168,9 +1227,16 @@ async def edit_images():
     group_id = api_key.group_id if api_key else None
     provider_id = g.get('api_key_provider_id', None) if api_key else None
 
-    # 5. 调用中间层
+    # 5. 设置 tracer
+    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    tracer = create_tracer(monitoring_config)
+
+    # 6. 调用中间层
     _request_start_time = time.monotonic()
     try:
+        if tracer:
+            tracer.start(model_name, input_data=data)
+            tracer.log_input(data)
         result, chat_response, resolved = _gateway_service.edit_images(
             model_name=model_name,
             prompt=prompt,
@@ -1187,8 +1253,19 @@ async def edit_images():
             user=user_id,
             group_id=group_id,
             provider_id=provider_id,
+            tracer=tracer,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
+        if tracer:
+            tracer.log_output(result)
+            tracer.set_metadata({
+                "request_id": g.request_id,
+                "group_id": group_id,
+                "user": user.username if user else None,
+                "provider": resolved.db_provider.name,
+                "duration_ms": _duration_ms,
+            })
+            tracer.end()
         # Record usage asynchronously (fire-and-forget)
         try:
             from app.usage_service import record_usage
@@ -1206,12 +1283,21 @@ async def edit_images():
             logger.warning(f"[usage] Failed to trigger usage recording for image editing: {_ue}")
         return jsonify(result)
     except ModelNotFoundError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except GatewayServiceError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message}), e.status_code
     except ProviderError as e:
+        if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
+            tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
 

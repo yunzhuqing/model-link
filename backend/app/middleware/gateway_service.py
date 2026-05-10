@@ -712,7 +712,7 @@ class GatewayService:
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500)
 
-    def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None) -> EmbeddingResponse:
+    def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None, tracer: Any = None) -> EmbeddingResponse:
         """
         执行嵌入请求。
 
@@ -739,6 +739,9 @@ class GatewayService:
         request.metadata['support_image'] = getattr(resolved.db_model, 'support_image', False)
         request.metadata['support_video'] = getattr(resolved.db_model, 'support_video', False)
         request.metadata['support_audio'] = getattr(resolved.db_model, 'support_audio', False)
+
+        # Attach tracer so providers can create child spans
+        resolved.provider_instance.tracer = tracer
 
         # 3. 检查模型是否标记为嵌入模型
         if not getattr(resolved.db_model, 'support_embedding', False):
@@ -783,6 +786,7 @@ class GatewayService:
         aspect_ratio: Optional[str] = None,
         resolution: Optional[str] = None,
         provider_id: Optional[int] = None,
+        tracer: Any = None,
     ) -> dict:
         """
         Execute image generation and return an OpenAI-compatible response.
@@ -858,7 +862,7 @@ class GatewayService:
         # Providers that support image generation (Volcengine, Bailian, Gemini,
         # …) will detect the metadata and call their image-gen API.
         try:
-            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id)
+            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -919,6 +923,7 @@ class GatewayService:
         user: Optional[str] = None,
         group_id: Optional[int] = None,
         provider_id: Optional[int] = None,
+        tracer: Any = None,
     ) -> dict:
         """
         Execute image editing and return an OpenAI-compatible response.
@@ -995,7 +1000,7 @@ class GatewayService:
         # Route through the standard chat pipeline (with resolved model info
         # for usage recording)
         try:
-            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id)
+            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:

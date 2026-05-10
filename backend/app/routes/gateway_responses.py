@@ -8,7 +8,7 @@ OpenAI Responses API 路由层
 
 此模块从 gateway.py 拆分而来，专门处理 Responses API 相关的路由。
 """
-from quart import Blueprint, request, jsonify, current_app
+from quart import Blueprint, request, jsonify, current_app, g
 from typing import Any, Dict, Optional
 import json
 import logging
@@ -81,6 +81,7 @@ def _run_background_response(
     tracer: Any = None,
     model_name: Optional[str] = None,
     request_data: Optional[Dict[str, Any]] = None,
+    request_id: Optional[str] = None,
 ):
     """
     Worker function executed in a background thread.
@@ -153,6 +154,7 @@ def _run_background_response(
                     tracer.log_output(adapter.format_response(response))
             except Exception:
                 if tracer:
+                    tracer.set_metadata({"request_id": request_id})
                     tracer.end(error=Exception("background generation error"))
                 raise
 
@@ -295,6 +297,7 @@ def _run_background_response(
 
             if tracer:
                 tracer.set_metadata({
+                    "request_id": request_id,
                     "group_id": group_id,
                     "user": user_name,
                     "provider": _pricing_snapshot.get('provider_name'),
@@ -305,6 +308,7 @@ def _run_background_response(
         except Exception as exc:
             if tracer:
                 try:
+                    tracer.set_metadata({"request_id": request_id})
                     tracer.end(error=exc)
                 except Exception:
                     pass
@@ -417,6 +421,7 @@ async def openai_responses():
                     _bg_api_key_group_name = api_key.group.name
             except Exception:
                 pass
+        _bg_request_id = g.request_id
 
         # Generate a stable response ID: "resp_" + 48 hex chars
         response_id = gen_id("resp")
@@ -455,6 +460,7 @@ async def openai_responses():
                 tracer=tracer,
                 model_name=model_name,
                 request_data=data,
+                request_id=_bg_request_id,
             ),
             daemon=True,
         )
@@ -498,6 +504,7 @@ async def openai_responses():
                         _api_key_group_name = api_key.group.name
                 except Exception:
                     pass
+            _request_id = g.request_id
 
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
@@ -533,6 +540,7 @@ async def openai_responses():
                         })
                 except Exception:
                     if tracer:
+                        tracer.set_metadata({"request_id": _request_id})
                         tracer.end(error=Exception("stream error"))
                     raise
                 finally:
@@ -568,6 +576,7 @@ async def openai_responses():
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
                     if tracer:
                         tracer.set_metadata({
+                            "request_id": _request_id,
                             "group_id": group_id,
                             "user": _user_name,
                             "provider": model_meta.get('provider_name'),
@@ -586,6 +595,7 @@ async def openai_responses():
             if tracer:
                 tracer.log_output(adapter.format_response(response))
                 tracer.set_metadata({
+                    "request_id": g.request_id,
                     "group_id": group_id,
                     "user": user.username if user else None,
                     "provider": resolved.db_provider.name,
@@ -615,16 +625,19 @@ async def openai_responses():
             return jsonify(formatted)
     except ProviderError as e:
         if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
+            tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
