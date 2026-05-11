@@ -4,6 +4,9 @@ Tag management routes.
 Root users can create, edit, and delete tag definitions (name/value pairs).
 Entities (Group, Provider, ApiKey) reference these tags in their tags JSON column.
 """
+import time
+import logging
+
 from quart import Blueprint, request, jsonify
 
 from app import db
@@ -11,6 +14,7 @@ from app.models import Tag, UserGroup
 from app.routes.users import token_required
 
 tags_bp = Blueprint("tags", __name__)
+logger = logging.getLogger(__name__)
 
 
 def _is_root_in_any_group(user_id: int) -> bool:
@@ -31,8 +35,16 @@ def _require_root(current_user):
 @token_required
 async def list_tags(current_user):
     """List all tag definitions."""
+    t0 = time.perf_counter()
     tags = db.session.query(Tag).order_by(Tag.name, Tag.value).all()
-    return jsonify([t.to_dict() for t in tags])
+    t1 = time.perf_counter()
+    result = [t.to_dict() for t in tags]
+    t2 = time.perf_counter()
+    logger.info(
+        "list_tags user=%s total=%.3fms db_query=%.3fms serialize=%.3fms count=%d",
+        current_user.username, (t2 - t0) * 1000, (t1 - t0) * 1000, (t2 - t1) * 1000, len(result),
+    )
+    return jsonify(result)
 
 
 @tags_bp.route("/tags/", methods=["POST"])

@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { groupsApi } from '../api/client';
 import type { Group, GroupCreate } from '../api/client';
 import TagSelector from '../components/TagSelector';
-import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database } from 'lucide-react';
+import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database, Tag } from 'lucide-react';
 
 export default function GroupList() {
   const { t } = useTranslation();
@@ -177,6 +177,23 @@ export default function GroupList() {
                 <span className="text-xl font-bold text-slate-800">{group.providers?.length || 0}</span>
               </div>
             </div>
+
+            {/* Tags */}
+            {group.tags && group.tags.length > 0 && (
+              <div className="mb-4">
+                <div className="flex items-center text-slate-400 mb-1.5">
+                  <Tag className="w-3 h-3 mr-1" />
+                  <span className="text-xs font-medium">{t('group.tags')}</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {group.tags.map((tag, idx) => (
+                    <span key={idx} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                      {tag.name}: {tag.value}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Footer */}
             <div className="pt-4 border-t border-slate-100 flex items-center justify-between">

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Plus, ChevronDown } from 'lucide-react';
+import { X, Plus, ChevronDown, Search } from 'lucide-react';
 import { tagsApi, type Tag } from '../api/client';
 
 interface TagEntry {
@@ -16,10 +16,12 @@ interface Props {
 export default function TagSelector({ value = [], onChange }: Props) {
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     tagsApi.list().then((res) => setAllTags(res.data)).catch(() => {});
@@ -33,6 +35,7 @@ export default function TagSelector({ value = [], onChange }: Props) {
         dropdownRef.current && !dropdownRef.current.contains(target)
       ) {
         setOpen(false);
+        setSearch('');
       }
     }
     document.addEventListener('mousedown', handleClick);
@@ -42,15 +45,27 @@ export default function TagSelector({ value = [], onChange }: Props) {
   const selectedKey = (t: TagEntry) => `${t.name}:${t.value}`;
   const tagKey = (t: Tag) => `${t.name}:${t.value}`;
 
-  const selectedSet = new Set(value.map(selectedKey));
-  const availableTags = allTags.filter((t) => !selectedSet.has(tagKey(t)));
+  const selectedSet = useMemo(() => new Set(value.map(selectedKey)), [value]);
 
-  // Group available tags by name for display
-  const grouped: Record<string, Tag[]> = {};
-  for (const t of availableTags) {
-    if (!grouped[t.name]) grouped[t.name] = [];
-    grouped[t.name].push(t);
-  }
+  const filteredTags = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    let available = allTags.filter((t) => !selectedSet.has(tagKey(t)));
+    if (q) {
+      available = available.filter(
+        (t) => t.name.toLowerCase().includes(q) || t.value.toLowerCase().includes(q)
+      );
+    }
+    return available;
+  }, [allTags, selectedSet, search]);
+
+  const grouped = useMemo(() => {
+    const g: Record<string, Tag[]> = {};
+    for (const t of filteredTags) {
+      if (!g[t.name]) g[t.name] = [];
+      g[t.name].push(t);
+    }
+    return g;
+  }, [filteredTags]);
 
   function toggleDropdown() {
     if (!open && buttonRef.current) {
@@ -59,9 +74,11 @@ export default function TagSelector({ value = [], onChange }: Props) {
         position: 'fixed',
         top: rect.bottom + 4,
         left: rect.left,
-        minWidth: rect.width,
+        width: Math.max(rect.width, 220),
+        maxWidth: 360,
         zIndex: 9999,
       });
+      setSearch('');
     }
     setOpen(!open);
   }
@@ -106,28 +123,43 @@ export default function TagSelector({ value = [], onChange }: Props) {
       </div>
 
       {open && createPortal(
-        <div ref={dropdownRef} style={dropdownStyle} className="max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
-          {Object.keys(grouped).length === 0 ? (
-            <div className="px-3 py-2 text-sm text-gray-400">No tags available</div>
-          ) : (
-            Object.entries(grouped).map(([name, tags]) => (
-              <div key={name}>
-                <div className="px-3 py-1 text-xs font-semibold text-gray-400 bg-gray-50 dark:bg-gray-750">
-                  {name}
-                </div>
-                {tags.map((tag) => (
-                  <button
-                    key={tag.id}
-                    type="button"
-                    onClick={() => addTag(tag)}
-                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
-                  >
-                    {tag.value}
-                  </button>
-                ))}
+        <div ref={dropdownRef} style={dropdownStyle} className="border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-gray-700">
+            <Search size={14} className="text-gray-400 shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tags..."
+              className="w-full text-sm bg-transparent border-none outline-none text-gray-700 dark:text-gray-300 placeholder-gray-400"
+            />
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {Object.keys(grouped).length === 0 ? (
+              <div className="px-3 py-2 text-sm text-gray-400">
+                {search ? 'No matching tags' : 'No tags available'}
               </div>
-            ))
-          )}
+            ) : (
+              Object.entries(grouped).map(([name, tags]) => (
+                <div key={name}>
+                  <div className="px-3 py-1 text-xs font-semibold text-gray-400 bg-gray-50 dark:bg-gray-750">
+                    {name}
+                  </div>
+                  {tags.map((tag) => (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => { addTag(tag); setSearch(''); }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                    >
+                      {tag.value}
+                    </button>
+                  ))}
+                </div>
+              ))
+            )}
+          </div>
         </div>,
         document.body
       )}

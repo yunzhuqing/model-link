@@ -5,6 +5,8 @@ from quart import Blueprint, request, jsonify
 from datetime import timedelta
 from functools import wraps
 import os
+import time
+import logging
 
 from app import db
 from app.models import User
@@ -12,6 +14,8 @@ from app.auth import verify_password, get_password_hash, create_access_token
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 users_bp = Blueprint('users', __name__)
 
@@ -44,16 +48,17 @@ def token_required(f):
     """Decorator to require JWT token for an endpoint."""
     @wraps(f)
     async def decorated(*args, **kwargs):
+        t0 = time.perf_counter()
         token = None
         auth_header = request.headers.get('Authorization')
-        
+
         if auth_header:
             if auth_header.startswith('Bearer '):
                 token = auth_header.split(' ')[1]
-        
+
         if not token:
             return jsonify({'detail': 'Not authenticated'}), 401
-        
+
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             username = payload.get('sub')
@@ -61,13 +66,19 @@ def token_required(f):
                 return jsonify({'detail': 'Invalid token'}), 401
         except JWTError:
             return jsonify({'detail': 'Invalid token'}), 401
-        
+
+        t1 = time.perf_counter()
         user = db.session.query(User).filter(User.username == username).first()
+        t2 = time.perf_counter()
         if user is None:
             return jsonify({'detail': 'User not found'}), 401
-        
+
+        logger.info(
+            "token_required user=%s jwt=%.3fms db_user=%.3fms",
+            username, (t1 - t0) * 1000, (t2 - t1) * 1000,
+        )
         return await f(current_user=user, *args, **kwargs)
-    
+
     return decorated
 
 
