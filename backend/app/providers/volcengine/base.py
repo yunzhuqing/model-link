@@ -24,7 +24,9 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 from app.utils import gen_id, json_loads
+from .embedding import execute_volcengine_multimodal_embed
 from .image_generation import (
     DoubaoImageProvider,
     get_support_output_format,
@@ -1067,6 +1069,24 @@ class VolcengineProvider(BaseProvider):
 
     def list_models(self) -> List[Dict[str, Any]]:
         return []
+
+    # ----------------------------------------------------------------
+    # Embedding Support
+    # ----------------------------------------------------------------
+
+    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        """
+        执行嵌入请求。
+
+        doubao-embedding-vision 系列模型通过 /embeddings/multimodal 端点
+        支持文本、图片、视频的多模态嵌入。纯文本输入同样走该端点。
+        """
+        return execute_volcengine_multimodal_embed(
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+            request=request,
+            tracer=self.tracer,
+        )
 
     # ----------------------------------------------------------------
     # Image Generation Support

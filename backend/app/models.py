@@ -991,6 +991,10 @@ class UsageRecord(db.Model):
     web_search_requests = db.Column(db.Integer, default=0)
     web_search_price_unit = db.Column(db.Numeric(20, 10), default=0)  # $ per search request
 
+    # ── 3D generation credits ──────────────────────────────────────────────
+    credits = db.Column(db.Numeric(20, 10), default=0)
+    credit_price_unit = db.Column(db.Numeric(20, 10), default=0)  # price per credit
+
     # ── Currency / exchange rate ────────────────────────────────────────────
     # Pricing currency of the model (e.g. "USD", "CNY"). Copied from Model.currency.
     currency = db.Column(db.String(10), nullable=True, default='USD')
@@ -1072,6 +1076,9 @@ class UsageRecord(db.Model):
             # Web search
             'web_search_requests': self.web_search_requests,
             'web_search_price_unit': self.web_search_price_unit,
+            # 3D credits
+            'credits': self.credits,
+            'credit_price_unit': self.credit_price_unit,
             # Currency / exchange rate
             'currency': self.currency or 'USD',
             # Billing

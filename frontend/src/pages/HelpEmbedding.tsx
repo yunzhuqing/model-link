@@ -18,6 +18,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'multimodal-object', label: '多模态（对象格式）' },
   { id: 'multimodal-array', label: '多模态（数组格式）' },
   { id: 'multimodal-messages', label: '多模态（messages 格式）' },
+  { id: 'doubao-embedding', label: 'Doubao 视觉嵌入' },
   { id: 'response-format', label: '响应格式' },
   { id: 'supported-models', label: '支持的模型' },
 ];
@@ -122,6 +123,29 @@ const MULTIMODAL_MESSAGES = `{
   ]
 }`;
 
+const DOUBAO_EMBEDDING = `{
+  "model": "doubao-embedding-vision",
+  "encoding_format": "float",
+  "input": [
+    {
+      "type": "video_url",
+      "video_url": {
+        "url": "https://ark-project.tos-cn-beijing.volces.com/doc_video/demo.mp4"
+      }
+    },
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "https://ark-project.tos-cn-beijing.volces.com/doc_image/demo.png"
+      }
+    },
+    {
+      "type": "text",
+      "text": "视频和图片里有什么"
+    }
+  ]
+}`;
+
 const curlPrefix = (baseUrl: string, body: string) =>
   `curl -X POST ${baseUrl}/v1/embeddings \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
 
@@ -154,12 +178,12 @@ const SUPPORTED_MODELS: ModelEntry[] = [
     description: '支持文本、图片、视频混合输入，生成融合多模态向量',
   },
   {
-    name: 'tongyi-embedding-vision-plus',
+    name: 'doubao-embedding-vision',
     type: '多模态',
     typeColor: 'bg-purple-100 text-purple-700',
-    description: '通义视觉嵌入模型，支持图文多模态向量生成',
+    description: '豆包视觉嵌入模型，支持文本、图片、视频多模态向量生成',
   },
-];
+  ];
 
 // ---------- sub-components ----------
 
@@ -427,6 +451,59 @@ export default function HelpEmbedding() {
             description="使用 messages 字段传入多模态内容，格式与 Chat Completions API 一致，适合从对话场景迁移。"
             jsonBody={MULTIMODAL_MESSAGES}
           />
+
+          <Section
+            id="doubao-embedding"
+            icon={<Layers className="w-5 h-5" />}
+            title="Doubao 视觉嵌入"
+            badge="多模态"
+            badgeColor="bg-purple-100 text-purple-700"
+            description="doubao-embedding-vision 使用 content block 数组格式传入文本、图片、视频，底层调用火山引擎 /embeddings/multimodal 端点，返回融合后的多模态向量。支持在线图片/视频 URL。"
+            jsonBody={DOUBAO_EMBEDDING}
+          >
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 space-y-2">
+              <p><strong>与通用多模态 Embedding 的差异：</strong></p>
+              <ul className="list-disc list-inside space-y-1">
+                <li><code>input</code> 直接传入 content block 数组，无需包裹在 <code>contents</code> 或 <code>content</code> 字段中</li>
+                <li>固定使用 <code>encoding_format: "float"</code>，返回 float 向量</li>
+                <li><code>dimensions</code> 为整数类型（非字符串），可选参数</li>
+                <li>单次请求生成一个融合向量，将所有输入（文本+图片+视频）合并为一个 embedding</li>
+              </ul>
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">参数说明</span>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                {[
+                  { name: 'model', required: true, desc: 'doubao-embedding-vision' },
+                  { name: 'input', required: true, desc: 'content block 数组' },
+                  { name: 'encoding_format', required: false, desc: '"float"（仅支持 float）' },
+                  { name: 'dimensions', required: false, desc: '向量维度（1024 或 2048）' },
+                  { name: 'type: text', required: false, desc: '文本块' },
+                  { name: 'type: image_url', required: false, desc: '图片 URL 块' },
+                  { name: 'type: video_url', required: false, desc: '视频 URL 块' },
+                ].map((p) => (
+                  <div key={p.name} className="bg-slate-50 rounded-lg p-3">
+                    <div className="flex items-center gap-1 mb-1">
+                      <code className="text-blue-600 font-semibold text-xs">{p.name}</code>
+                      {p.required && <span className="text-red-400 text-xs">*</span>}
+                    </div>
+                    <p className="text-slate-500 text-xs">{p.desc}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-600">
+              <strong>官方文档：</strong>
+              <a
+                href="https://www.volcengine.com/docs/82379/1409291?lang=zh"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 underline underline-offset-2 ml-1"
+              >
+                火山引擎多模态向量化 API 文档
+              </a>
+            </div>
+          </Section>
 
           {/* Response format */}
           <div id="response-format" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">

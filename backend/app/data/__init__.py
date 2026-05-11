@@ -14,6 +14,7 @@ from app.data.minimax_templates import MINIMAX_TEMPLATES
 from app.data.volcengine_templates import VOLCENGINE_TEMPLATES
 from app.data.byteplus_templates import BYTEPLUS_TEMPLATES
 from app.data.tencentvod_templates import TENCENTVOD_TEMPLATES
+from app.data.hunyuan_templates import HUNYUAN_TEMPLATES
 
 BUILTIN_TEMPLATES = (
     OPENAI_TEMPLATES
@@ -29,4 +30,5 @@ BUILTIN_TEMPLATES = (
     + VOLCENGINE_TEMPLATES
     + BYTEPLUS_TEMPLATES
     + TENCENTVOD_TEMPLATES
+    + HUNYUAN_TEMPLATES
 )

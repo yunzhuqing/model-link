@@ -29,15 +29,17 @@ interface OutputPricingTier {
 }
 
 interface OutputPricingCategory {
-  type: string;  // "per_image" | "per_token" | "per_second"
+  type: string;  // "per_image" | "per_token" | "per_second" | "per_credit"
   price: number;
   tiers?: OutputPricingTier[];
+  credits?: Record<string, any>;  // 3D credit rules per parameter
 }
 
 interface OutputPricing {
   image?: OutputPricingCategory;
   video?: OutputPricingCategory;
   audio?: OutputPricingCategory;
+  '3d'?: OutputPricingCategory;
 }
 
 interface Model {
@@ -272,15 +274,18 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle, canManage }: { model: Mo
           {/* Output Pricing display */}
           {model.output_pricing && (
             <div className="mt-4">
-              {(['image', 'video', 'audio'] as const).map((cat) => {
+              {(['image', 'video', 'audio', '3d'] as const).map((cat) => {
                 const catConfig = model.output_pricing?.[cat];
                 if (!catConfig) return null;
-                const catLabel = cat.charAt(0).toUpperCase() + cat.slice(1);
-                const typeLabel = catConfig.type === 'per_image' ? '/image' : catConfig.type === 'per_second' ? '/s' : '/M tokens';
+                const catLabel = cat === '3d' ? '3D' : cat.charAt(0).toUpperCase() + cat.slice(1);
+                const typeLabel = catConfig.type === 'per_image' ? '/image'
+                  : catConfig.type === 'per_second' ? '/s'
+                  : catConfig.type === 'per_credit' ? '/credit'
+                  : '/M tokens';
                 return (
                   <div key={cat} className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2">
                     <span className="text-blue-600 text-xs font-semibold block mb-1">
-                      {catLabel} Output — {catConfig.type === 'per_token' ? 'Per Token' : catConfig.type === 'per_image' ? 'Per Image' : 'Per Second'} ({model.currency || 'USD'})
+                      {catLabel} Output — {catConfig.type === 'per_token' ? 'Per Token' : catConfig.type === 'per_image' ? 'Per Image' : catConfig.type === 'per_second' ? 'Per Second' : 'Per Credit'} ({model.currency || 'USD'})
                     </span>
                     {catConfig.tiers && catConfig.tiers.length > 0 ? (
                       <div className="space-y-1">
@@ -296,6 +301,30 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle, canManage }: { model: Mo
                       </div>
                     ) : (
                       <span className="text-sm text-slate-600">{sym}{catConfig.price}{typeLabel}</span>
+                    )}
+                    {/* 3D credit rules breakdown */}
+                    {cat === '3d' && catConfig.credits && (
+                      <div className="mt-2 pt-2 border-t border-blue-200">
+                        <span className="text-xs font-medium text-slate-500 block mb-1">Credit Rules</span>
+                        <div className="space-y-0.5">
+                          {Object.entries(catConfig.credits).map(([key, val]) => {
+                            if (typeof val === 'object' && !Array.isArray(val)) {
+                              return (
+                                <div key={key} className="flex items-center gap-2 text-xs text-slate-600">
+                                  <span className="text-slate-500 min-w-[90px]">{key}:</span>
+                                  <span>{JSON.stringify(val)}</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={key} className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="text-slate-500 min-w-[90px]">{key}:</span>
+                                <span className="font-medium">{val} credits</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     )}
                   </div>
                 );
@@ -591,9 +620,9 @@ const ModelForm = ({
       {/* Output Pricing editor */}
       <div className="mb-4">
         <label className="block text-sm font-semibold text-slate-700 mb-2">
-          Output Pricing <span className="text-slate-400 font-normal text-xs">(optional — for image / video / audio generation models)</span>
+          Output Pricing <span className="text-slate-400 font-normal text-xs">(optional — for image / video / audio / 3D generation models)</span>
         </label>
-        {(['image', 'video', 'audio'] as const).map((category) => {
+        {(['image', 'video', 'audio', '3d'] as const).map((category) => {
           const typeOptions: Record<string, { value: string; label: string }[]> = {
             image: [
               { value: 'per_token', label: 'Per Token ($/M)' },
@@ -607,11 +636,16 @@ const ModelForm = ({
               { value: 'per_token', label: 'Per Token ($/M)' },
               { value: 'per_second', label: 'Per Second ($)' },
             ],
+            '3d': [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_credit', label: 'Per Credit ($)' },
+            ],
           };
           const tierResolutionHints: Record<string, string[]> = {
             image: ['512', '1K', '2K', '3K', '4K'],
             video: ['720p', '1080p', '2K', '4K'],
             audio: ['low', 'standard', 'high'],
+            '3d': [],
           };
           const op: OutputPricing = model.output_pricing ?? {};
           const cat: OutputPricingCategory | undefined = op[category];
@@ -625,7 +659,7 @@ const ModelForm = ({
               newOp[category] = { ...(cat ?? { type: typeOptions[category][0].value, price: 0 }), ...patch };
             }
             // If all categories removed, set output_pricing to null
-            const hasAny = newOp.image || newOp.video || newOp.audio;
+            const hasAny = newOp.image || newOp.video || newOp.audio || newOp['3d'];
             setModel({ ...model, output_pricing: hasAny ? newOp : null });
           };
 
@@ -645,7 +679,7 @@ const ModelForm = ({
                     }}
                     className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   />
-                  <span className="text-sm font-medium text-slate-700 capitalize">{category} Output Pricing</span>
+                  <span className="text-sm font-medium text-slate-700">{category === '3d' ? '3D' : category.charAt(0).toUpperCase() + category.slice(1)} Output Pricing</span>
                 </label>
               </div>
               {enabled && cat && (
@@ -665,7 +699,7 @@ const ModelForm = ({
                     </div>
                     <div>
                       <label className="block text-xs text-slate-500 mb-1">
-                        Base Price {cat.type === 'per_token' ? '($/M tokens)' : cat.type === 'per_image' ? '($ per image)' : '($ per second)'}
+                        Base Price {cat.type === 'per_token' ? '($/M tokens)' : cat.type === 'per_image' ? '($ per image)' : cat.type === 'per_second' ? '($ per second)' : '($ per credit)'}
                       </label>
                       <input
                         type="number"
@@ -800,6 +834,155 @@ const ModelForm = ({
                         </div>
                       ) : (
                         <p className="text-xs text-slate-400 italic">No tiers — base price applies to all resolutions.</p>
+                      )}
+                    </div>
+                  )}
+                  {/* 3D credit rules editor */}
+                  {category === '3d' && (
+                    <div className="mt-3 pt-3 border-t border-slate-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-xs font-medium text-slate-600">
+                          Credit Rules <span className="text-slate-400 font-normal">(cost per operation in credits)</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newCredits = { ...(cat.credits ?? {}), new_rule: 0 };
+                            updateCategory({ credits: newCredits });
+                          }}
+                          className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg hover:bg-blue-100 transition-colors"
+                        >
+                          + Add Rule
+                        </button>
+                      </div>
+                      {cat.credits && Object.keys(cat.credits).length > 0 ? (
+                        <div className="space-y-2">
+                          {Object.entries(cat.credits).map(([key, val], idx) => {
+                            const isObject = typeof val === 'object' && !Array.isArray(val);
+                            return (
+                              <div key={idx} className="bg-white p-2 rounded-lg border border-slate-200">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <input
+                                    type="text"
+                                    placeholder="Rule name"
+                                    className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                    value={key}
+                                    onChange={(e) => {
+                                      const newCredits = { ...(cat.credits ?? {}) };
+                                      delete newCredits[key];
+                                      newCredits[e.target.value || `rule_${idx}`] = val;
+                                      updateCategory({ credits: newCredits });
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newCredits = { ...(cat.credits ?? {}) };
+                                      delete newCredits[key];
+                                      updateCategory({ credits: Object.keys(newCredits).length > 0 ? newCredits : undefined });
+                                    }}
+                                    className="text-slate-400 hover:text-red-500 text-xs px-1 py-0.5 hover:bg-red-50 rounded"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                                {isObject ? (
+                                  <div className="space-y-1 ml-2">
+                                    {Object.entries(val as Record<string, number>).map(([subKey, subVal], si) => (
+                                      <div key={si} className="flex items-center gap-2">
+                                        <input
+                                          type="text"
+                                          placeholder="Option name"
+                                          className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                          value={subKey}
+                                          onChange={(e) => {
+                                            const inner = { ...(val as Record<string, number>) };
+                                            delete inner[subKey];
+                                            inner[e.target.value || `option_${si}`] = subVal;
+                                            const newCredits = { ...(cat.credits ?? {}) };
+                                            newCredits[key] = inner;
+                                            updateCategory({ credits: newCredits });
+                                          }}
+                                        />
+                                        <input
+                                          type="number"
+                                          className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                          value={subVal}
+                                          onChange={(e) => {
+                                            const inner = { ...(val as Record<string, number>) };
+                                            inner[subKey] = parseInt(e.target.value) || 0;
+                                            const newCredits = { ...(cat.credits ?? {}) };
+                                            newCredits[key] = inner;
+                                            updateCategory({ credits: newCredits });
+                                          }}
+                                        />
+                                        <span className="text-xs text-slate-400">credits</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const inner = { ...(val as Record<string, number>) };
+                                            delete inner[subKey];
+                                            const newCredits = { ...(cat.credits ?? {}) };
+                                            if (Object.keys(inner).length > 0) {
+                                              newCredits[key] = inner;
+                                            } else {
+                                              delete newCredits[key];
+                                            }
+                                            updateCategory({ credits: Object.keys(newCredits).length > 0 ? newCredits : undefined });
+                                          }}
+                                          className="text-slate-400 hover:text-red-500 text-xs"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ))}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const inner = { ...(val as Record<string, number>), new_option: 0 };
+                                        const newCredits = { ...(cat.credits ?? {}) };
+                                        newCredits[key] = inner;
+                                        updateCategory({ credits: newCredits });
+                                      }}
+                                      className="text-xs text-blue-500 hover:text-blue-600"
+                                    >
+                                      + Add option
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2 ml-2">
+                                    <input
+                                      type="number"
+                                      className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                      value={val as number}
+                                      onChange={(e) => {
+                                        const newCredits = { ...(cat.credits ?? {}) };
+                                        newCredits[key] = parseInt(e.target.value) || 0;
+                                        updateCategory({ credits: newCredits });
+                                      }}
+                                    />
+                                    <span className="text-xs text-slate-400">credits</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const inner = { ...(val as Record<string, number>) };
+                                        (inner as any).new_option = 0;
+                                        const newCredits = { ...(cat.credits ?? {}) };
+                                        newCredits[key] = inner;
+                                        updateCategory({ credits: newCredits });
+                                      }}
+                                      className="text-xs text-blue-500 hover:text-blue-600"
+                                    >
+                                      Convert to options
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">No credit rules — fixed price per operation.</p>
                       )}
                     </div>
                   )}

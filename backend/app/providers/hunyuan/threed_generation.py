@@ -62,6 +62,12 @@ HUNYUAN3D_API_URL = f"https://{HUNYUAN3D_API_HOST}/"
 HUNYUAN3D_API_VERSION = "2025-05-13"
 HUNYUAN3D_API_REGION = "ap-guangzhou"
 
+# Job 状态枚举
+STATUS_WAIT = "WAIT"
+STATUS_RUN = "RUN"
+STATUS_FAIL = "FAIL"
+STATUS_DONE = "DONE"
+
 # 轮询配置
 _POLL_INTERVAL_S = 3.0   # 每次轮询间隔（秒）
 _POLL_MAX_WAIT_S = 600   # 最大等待时间（秒）
@@ -78,6 +84,97 @@ _PRO_MODEL_MAP: Dict[str, Optional[str]] = {
     "hy-3d-3.1":          "3.0",   # hy-3d-3.1 → API Model=3.0
     "hunyuan-3d-pro":     None,    # 旧 Pro 模型，不传 Model 字段
 }
+
+# ── 积分消耗规则 ─────────────────────────────────────────────────────────
+# Pro 版本: 各参数积分叠加
+_PRO_GENERATE_TYPE_CREDITS = {
+    "Normal": 20,
+    "LowPoly": 25,
+    "Geometry": 15,
+    "Sketch": 25,
+}
+_PRO_MULTI_VIEW_CREDITS = 10       # MultiViewImages
+_PRO_PBR_CREDITS = 10              # EnablePBR
+_PRO_FACE_COUNT_CREDITS = 10       # FaceCount
+_PRO_RESULT_FORMAT_CREDITS = 5     # ResultFormat (non-OBJ)
+
+# Rapid 版本: 基础 + 可选 PBR
+_RAPID_BASE_CREDITS = 15           # 文本或图片输入
+_RAPID_PBR_CREDITS = 10            # EnablePBR
+
+
+def _calculate_credits(
+    model: str,
+    *,
+    enable_pbr: bool = False,
+    result_format: str = "OBJ",
+    generate_type: Optional[str] = None,
+    multi_view_images: Optional[List[Dict[str, Any]]] = None,
+    face_count: Optional[int] = None,
+    credit_rules: Optional[Dict[str, Any]] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    """Calculate credit consumption for a Hunyuan 3D request.
+
+    Credit rules are read from ``credit_rules`` (the ``output_pricing['3d']['credits']``
+    dict from the model config).  Falls back to hardcoded defaults when no rules are
+    provided.
+
+    Returns (total_credits, breakdown_dict) suitable for tracing.
+    """
+    is_pro = _is_pro_model(model)
+    breakdown: Dict[str, Any] = {"model": model, "model_type": "pro" if is_pro else "rapid"}
+    total = 0
+
+    rules = credit_rules or {}
+
+    if is_pro:
+        # GenerateType
+        gt = generate_type or "Normal"
+        gt_map = rules.get("generate_type", _PRO_GENERATE_TYPE_CREDITS)
+        gt_credits = gt_map.get(gt, 20) if isinstance(gt_map, dict) else 20
+        breakdown["generate_type"] = {"type": gt, "credits": gt_credits}
+        total += gt_credits
+
+        # MultiViewImages
+        if multi_view_images:
+            mv_credits = rules.get("multi_view_images", _PRO_MULTI_VIEW_CREDITS)
+            breakdown["multi_view_images"] = {"count": len(multi_view_images), "credits": mv_credits}
+            total += mv_credits
+
+        # EnablePBR
+        if enable_pbr:
+            pbr_credits = rules.get("enable_pbr", _PRO_PBR_CREDITS)
+            breakdown["enable_pbr"] = {"credits": pbr_credits}
+            total += pbr_credits
+
+        # FaceCount
+        if face_count is not None:
+            fc_credits = rules.get("face_count", _PRO_FACE_COUNT_CREDITS)
+            breakdown["face_count"] = {"value": face_count, "credits": fc_credits}
+            total += fc_credits
+
+        # ResultFormat (OBJ and GLB are free, other formats cost credits)
+        fmt = result_format.upper() if result_format else "OBJ"
+        if fmt not in ("OBJ", "GLB"):
+            rf_credits = rules.get("result_format_non_obj", _PRO_RESULT_FORMAT_CREDITS)
+            breakdown["result_format"] = {"format": fmt, "credits": rf_credits}
+            total += rf_credits
+        else:
+            breakdown["result_format"] = {"format": fmt, "credits": 0}
+    else:
+        # Rapid: base credits for input (text or image)
+        base_credits = rules.get("base", _RAPID_BASE_CREDITS)
+        breakdown["base"] = {"credits": base_credits}
+        total += base_credits
+
+        # EnablePBR
+        if enable_pbr:
+            pbr_credits = rules.get("enable_pbr", _RAPID_PBR_CREDITS)
+            breakdown["enable_pbr"] = {"credits": pbr_credits}
+            total += pbr_credits
+
+    breakdown["total"] = total
+    return total, breakdown
 
 
 # =============================================================================
@@ -272,10 +369,11 @@ def _submit_3d_job(
     generate_type: Optional[str] = None,
     polygon_type: Optional[str] = None,
     region: str = HUNYUAN3D_API_REGION,
+    credit_rules: Optional[Dict[str, Any]] = None,
     tracer: Any = None,
-) -> str:
+) -> Tuple[str, int, Dict[str, Any]]:
     """
-    Submit a Hunyuan 3D generation job and return the JobId.
+    Submit a Hunyuan 3D generation job and return (JobId, estimated_credits, credit_breakdown).
 
     API Version: 2025-05-13
     For Rapid models: SubmitHunyuanTo3DRapidJob
@@ -301,13 +399,24 @@ def _submit_3d_job(
         region:            API 区域
 
     Returns:
-        JobId string
+        Tuple of (JobId, estimated_credits, credit_breakdown_dict)
 
     Raises:
         RuntimeError: On API error
     """
     is_pro = _is_pro_model(model)
     action = "SubmitHunyuanTo3DProJob" if is_pro else "SubmitHunyuanTo3DRapidJob"
+
+    # Calculate estimated credits based on input parameters
+    estimated_credits, credit_breakdown = _calculate_credits(
+        model,
+        enable_pbr=enable_pbr,
+        result_format=result_format,
+        generate_type=generate_type,
+        multi_view_images=multi_view_images,
+        face_count=face_count,
+        credit_rules=credit_rules,
+    )
 
     body: Dict[str, Any] = {}
 
@@ -373,16 +482,15 @@ def _submit_3d_job(
 
     _span = None
     if tracer:
-        _span = tracer.start_child(model, model=model, provider_type="hunyuan", input_data=body, obs_type="span")
+        _span = tracer.start_child("submit-" + model, model=model, provider_type="hunyuan", input_data=body, obs_type="span")
         if _span:
-            _span.log_input(body)
+            _span.log_input({**body, "credit_breakdown": credit_breakdown})
     _error: Optional[Exception] = None
 
     try:
         response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
         response.raise_for_status()
         data = response.json()
-
         resp = data.get("Response", {})
         if "Error" in resp:
             err = resp["Error"]
@@ -398,12 +506,16 @@ def _submit_3d_job(
             )
 
         if _span:
-            _output: Dict[str, Any] = {"job_id": job_id}
+            _output: Dict[str, Any] = {
+                "job_id": job_id,
+                "estimated_credits": estimated_credits,
+                "credit_breakdown": credit_breakdown,
+            }
             _req_id = resp.get("RequestId", "")
             if _req_id:
                 _output["x-request-id"] = _req_id
             _span.log_output(_output)
-        return job_id
+        return job_id, estimated_credits, credit_breakdown
     except Exception as e:
         _error = e
         raise
@@ -421,24 +533,28 @@ def _poll_3d_job(
     secret_key: str,
     job_id: str,
     model: str,
+    estimated_credits: int = 0,
     region: str = HUNYUAN3D_API_REGION,
     poll_timeout: Optional[int] = None,
     tracer: Any = None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], int]:
     """
-    Poll the 3D job until it finishes, then extract result files.
+    Poll the 3D job until it finishes, then extract result files and credits.
 
     For Rapid models: QueryHunyuanTo3DRapidJob
     For Pro models:   QueryHunyuanTo3DProJob
 
     Args:
-        secret_id:  腾讯云 SecretId
-        secret_key: 腾讯云 SecretKey
-        job_id:     Submit 返回的 JobId
-        model:      模型名称
+        secret_id:        腾讯云 SecretId
+        secret_key:       腾讯云 SecretKey
+        job_id:           Submit 返回的 JobId
+        model:            模型名称
+        estimated_credits: 预估积分消耗（Rapid 模型无 API 返回值时使用）
 
     Returns:
-        List of 3d_generation_call content items, each with
+        Tuple of (result_items, credits_consumed). For Pro models credits_consumed
+        comes from ResultCreditConsumed; for Rapid models falls back to
+        estimated_credits.
         {"type": file_type, "url": ..., "preview_url": ...}
 
     Raises:
@@ -488,7 +604,15 @@ def _poll_3d_job(
                         _poll_output["x-request-id"] = _req_id
                     _span.log_output(_poll_output)
 
-                if status == "DONE":
+                if status == STATUS_DONE:
+                    if tracer:
+                        _done_span = tracer.start_child(
+                            f"{job_id}-done", model=job_id,
+                            provider_type="hunyuan", input_data=resp, obs_type="span",
+                        )
+                        if _done_span:
+                            _done_span.log_input(resp)
+                            _done_span.end()
                     error_code = resp.get("ErrorCode", "")
                     if error_code:
                         raise RuntimeError(
@@ -512,9 +636,23 @@ def _poll_3d_job(
                             f"{json.dumps(resp, ensure_ascii=False)}"
                         )
 
-                    return items
+                    api_credits = int(resp.get("ResultCreditConsumed", 0) or 0)
+                    final_credits = api_credits if api_credits > 0 else estimated_credits
+                    return items, final_credits
 
-                if status in ("FAILED", "FAIL", "ERROR"):
+                if status == STATUS_FAIL:
+                    if tracer:
+                        _fail_span = tracer.start_child(
+                            f"{job_id}-fail", model=job_id,
+                            provider_type="hunyuan", input_data=resp, obs_type="span",
+                        )
+                        if _fail_span:
+                            _fail_span.log_input(resp)
+                            _fail_span.end(error=RuntimeError(
+                                f"Hunyuan3D job {job_id} failed with status={status}: "
+                                f"ErrorCode={resp.get('ErrorCode', '')}, "
+                                f"ErrorMessage={resp.get('ErrorMessage', '')}"
+                            ))
                     raise RuntimeError(
                         f"Hunyuan3D job {job_id} failed with status={status}: "
                         f"ErrorCode={resp.get('ErrorCode', '')}, "
@@ -628,6 +766,10 @@ def execute_hunyuan3d_generation(
     generate_type: Optional[str] = metadata.get("generate_type") or None
     polygon_type: Optional[str] = metadata.get("polygon_type") or None
 
+    # Geometry 不支持 OBJ 格式，默认改为 GLB
+    if generate_type == "Geometry" and result_format.upper() == "OBJ":
+        result_format = "GLB"
+
     # Extract inputs from messages (single image URL/base64 or text prompt)
     image_url, image_base64, text_prompt = _extract_inputs(messages)
 
@@ -646,10 +788,16 @@ def execute_hunyuan3d_generation(
             _child_span.log_input(_request_data)
     _trace_error: Optional[Exception] = None
 
+    # Extract credit rules from model's output_pricing config
+    _credit_rules = (
+        metadata.get("output_pricing", {}).get("3d", {}).get("credits")
+        if isinstance(metadata.get("output_pricing"), dict) else None
+    )
+
     try:
         # Submit 3D job
         with httpx.Client(timeout=60) as client:
-            job_id = _submit_3d_job(
+            job_id, estimated_credits, _credit_breakdown = _submit_3d_job(
                 client=client,
                 secret_id=secret_id,
                 secret_key=secret_key,
@@ -665,14 +813,26 @@ def execute_hunyuan3d_generation(
                 generate_type=generate_type,
                 polygon_type=polygon_type,
                 region=region,
+                credit_rules=_credit_rules,
                 tracer=_child_span,
             )
 
         # Poll for result
-        result_items = _poll_3d_job(secret_id, secret_key, job_id, model, region=region, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+        result_items, credits_consumed = _poll_3d_job(
+            secret_id, secret_key, job_id, model,
+            estimated_credits=estimated_credits,
+            region=region, poll_timeout=metadata.get("timeout"), tracer=_child_span,
+        )
 
         if _child_span:
-            _child_span.log_output({"job_id": job_id, "result_count": len(result_items), "status": "succeeded"})
+            _child_span.log_output({
+                "job_id": job_id,
+                "result_count": len(result_items),
+                "credits_consumed": credits_consumed,
+                "estimated_credits": estimated_credits,
+                "credit_breakdown": _credit_breakdown,
+                "status": "succeeded",
+            })
     except Exception as e:
         _trace_error = e
         raise
@@ -714,6 +874,7 @@ def execute_hunyuan3d_generation(
             prompt_tokens=0,
             completion_tokens=len(result_items),
             total_tokens=len(result_items),
+            extra={"credits": credits_consumed, "credit_breakdown": _credit_breakdown},
         ),
         created=int(time.time()),
         provider="hunyuan",

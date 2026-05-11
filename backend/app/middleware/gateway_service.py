@@ -315,6 +315,9 @@ class GatewayService:
         if model_timeout:
             request.metadata['timeout'] = model_timeout
 
+        # 2.5.2. 传递 output_pricing 到请求元数据（供 3D 等 provider 计算积分消耗）
+        request.metadata['output_pricing'] = getattr(resolved.db_model, 'output_pricing', None)
+
         # 2.6. Convert image URLs to base64 if provider doesn't support online images
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
         if not support_online_image:

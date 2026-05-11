@@ -722,6 +722,9 @@ def _build_record(
     web_search_requests: int = extra.get('web_search_requests', 0) or 0
     web_search_price_unit: float = extra.get('web_search_price_unit', 0.0) or 0.0
 
+    credits: float = float(extra.get('credits', 0) or 0)
+    credit_price_unit: float = float(extra.get('credit_price_unit', 0.0) or 0.0)
+
     # ── Resolve output pricing from model config ──────────────────────────
     # If the model defines output_pricing, use it to set the price_unit
     # fields unless the provider already supplied a non-zero value via extra.
@@ -748,6 +751,12 @@ def _build_record(
         if output_audio_price_unit == 0.0:
             output_audio_price_unit = _resolve_output_price(
                 output_pricing.get('audio'), None)
+
+        # 3D generation: resolve credit price from model config if not set by provider
+        if credit_price_unit == 0.0:
+            td_config = output_pricing.get('3d')
+            if td_config and isinstance(td_config, dict):
+                credit_price_unit = float(td_config.get('price', 0.0) or 0.0)
 
     # ── Billing amounts ───────────────────────────────────────────────────
     # payable_amount = total cost before discount (in native currency)
@@ -783,6 +792,7 @@ def _build_record(
         + output_video_number * output_video_price_unit
         + output_audio_seconds * output_audio_price_unit
         + web_search_requests * web_search_price_unit
+        + credits * credit_price_unit
     )
     # Ensure discount is valid (coerce to float to handle decimal.Decimal from DB)
     effective_discount: float = float(discount) if discount and discount > 0 else 1.0
@@ -836,6 +846,9 @@ def _build_record(
         # Web search
         web_search_requests=web_search_requests,
         web_search_price_unit=web_search_price_unit,
+        # 3D credits
+        credits=credits,
+        credit_price_unit=credit_price_unit,
         # Duration
         duration_ms=duration_ms,
         # Currency / exchange rate

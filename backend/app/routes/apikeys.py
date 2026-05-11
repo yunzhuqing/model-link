@@ -463,15 +463,20 @@ async def get_api_key(current_user, api_key_id):
             return jsonify({'detail': 'API key not found'}), 404
         if current_user not in api_key.group.users:
             return jsonify({'detail': 'You do not have access to this API key'}), 403
+        if not _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
+            return jsonify({'detail': 'You do not have access to this API key'}), 403
         return jsonify(api_key.to_dict_with_group())
 
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    
+
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
-    
+
+    if not _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
+        return jsonify({'detail': 'You do not have access to this API key'}), 403
+
     return jsonify(api_key.to_dict_with_group())
 
 
@@ -706,6 +711,9 @@ async def get_api_key_detail(current_user, api_key_id):
         return jsonify({'detail': 'API key not found'}), 404
 
     if current_user not in api_key.group.users:
+        return jsonify({'detail': 'You do not have access to this API key'}), 403
+
+    if not _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
     key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()

@@ -17,6 +17,28 @@ interface PricingTier {
   cache_hit_price: number;
 }
 
+interface OutputPricingTier {
+  resolution: string;
+  quality?: string;
+  audio?: boolean;
+  reference_video?: boolean;
+  price: number;
+}
+
+interface OutputPricingCategory {
+  type: string;
+  price: number;
+  tiers?: OutputPricingTier[];
+  credits?: Record<string, any>;
+}
+
+interface OutputPricing {
+  image?: OutputPricingCategory;
+  video?: OutputPricingCategory;
+  audio?: OutputPricingCategory;
+  '3d'?: OutputPricingCategory;
+}
+
 interface ModelTemplate {
   id: number;
   label: string;
@@ -29,6 +51,7 @@ interface ModelTemplate {
   reasoning_effort: string | null;
   supported_image_formats: string | null;
   pricing_tiers: PricingTier[] | null;
+  output_pricing: OutputPricing | null;
   input_price: number;
   output_price: number;
   cache_creation_price: number;
@@ -65,6 +88,7 @@ const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
   reasoning_effort: '',
   supported_image_formats: '',
   pricing_tiers: null,
+  output_pricing: null,
   input_price: 0,
   output_price: 0,
   cache_creation_price: 0,
@@ -121,20 +145,60 @@ const FEATURE_I18N_MAP: Record<string, string> = {
 const ALL_TAB = '__ALL__';
 
 /* ─── Derive model family from template label ─── */
-function getModelFamily(label: string): string {
+function getModelFamilies(label: string): string[] {
+  const families: string[] = [];
   const lower = label.toLowerCase();
-  if (lower.startsWith('gpt-') || lower.startsWith('gpt ')) return 'GPT';
-  if (lower.startsWith('claude')) return 'Claude';
-  if (lower.startsWith('gemini')) return 'Gemini';
-  if (lower.startsWith('deepseek') || lower.includes('deepseek')) return 'DeepSeek';
-  if (lower.startsWith('kimi')) return 'Kimi';
-  if (lower.startsWith('glm')) return 'GLM';
-  if (lower.startsWith('qwen')) return 'Qwen';
-  if (lower.startsWith('minimax')) return 'MiniMax';
-  if (lower.startsWith('doubao')) return 'Doubao';
-  if (lower.includes('embedding')) return 'Embedding';
-  // Fallback: first word of label
-  return label.split(/[\s\-]/)[0];
+
+  // Embedding models also belong to their provider family
+  if (lower.includes('embedding')) {
+    families.push('Embedding');
+  }
+
+  // Image generation models
+  if (
+    lower.includes('seedream') ||
+    lower.includes('qwen-image') ||
+    (lower.startsWith('gemini') && lower.includes('image')) ||
+    lower.includes('z-image')
+  ) {
+    families.push('Image');
+  }
+
+  // 3D generation models
+  if (
+    lower.includes('hunyuan-3d') ||
+    lower.includes('seed3d')
+  ) {
+    families.push('3D');
+  }
+
+  // Video generation models
+  if (
+    lower.includes('seedance') ||
+    lower.includes('kling') ||
+    lower.includes('veo') ||
+    lower.includes('happyhorse')
+  ) {
+    families.push('Video');
+  }
+
+  // Provider-based classification
+  if (lower.startsWith('gpt-') || lower.startsWith('gpt ')) families.push('GPT');
+  else if (lower.startsWith('claude')) families.push('Claude');
+  else if (lower.startsWith('gemini')) families.push('Gemini');
+  else if (lower.startsWith('deepseek') || lower.includes('deepseek')) families.push('DeepSeek');
+  else if (lower.startsWith('kimi')) families.push('Kimi');
+  else if (lower.startsWith('glm')) families.push('GLM');
+  else if (lower.startsWith('qwen')) families.push('Qwen');
+  else if (lower.startsWith('minimax')) families.push('MiniMax');
+  else if (lower.startsWith('doubao')) families.push('Doubao');
+
+  // Fallback
+  if (families.length === 0) {
+    families.push(label.split(/[\s\-]/)[0]);
+  }
+
+  return families;
 }
 
 /* ─── Template form (shared by add & edit) ─── */
@@ -445,6 +509,379 @@ const TemplateForm = ({
         </div>
       </div>
 
+      {/* Output Pricing editor */}
+      <div>
+        <h3 className="text-sm font-semibold text-slate-700 mb-2">
+          Output Pricing <span className="text-slate-400 font-normal text-xs">(optional — for image / video / audio / 3D models)</span>
+        </h3>
+        {(['image', 'video', 'audio', '3d'] as const).map((category) => {
+          const typeOptions: Record<string, { value: string; label: string }[]> = {
+            image: [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_image', label: 'Per Image ($)' },
+            ],
+            video: [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_second', label: 'Per Second ($)' },
+            ],
+            audio: [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_second', label: 'Per Second ($)' },
+            ],
+            '3d': [
+              { value: 'per_token', label: 'Per Token ($/M)' },
+              { value: 'per_credit', label: 'Per Credit ($)' },
+            ],
+          };
+          const tierResolutionHints: Record<string, string[]> = {
+            image: ['512', '1K', '2K', '3K', '4K'],
+            video: ['720p', '1080p', '2K', '4K'],
+            audio: ['low', 'standard', 'high'],
+            '3d': [],
+          };
+          const op: OutputPricing = value.output_pricing ?? {};
+          const cat: OutputPricingCategory | undefined = op[category];
+          const enabled = !!cat;
+
+          const updateCategory = (patch: Partial<OutputPricingCategory> | null) => {
+            const newOp = { ...op };
+            if (patch === null) {
+              delete newOp[category];
+            } else {
+              newOp[category] = { ...(cat ?? { type: typeOptions[category][0].value, price: 0 }), ...patch };
+            }
+            const hasAny = newOp.image || newOp.video || newOp.audio || newOp['3d'];
+            set({ output_pricing: hasAny ? newOp : null });
+          };
+
+          return (
+            <div key={category} className="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-2">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        updateCategory({ type: typeOptions[category][0].value, price: 0 });
+                      } else {
+                        updateCategory(null);
+                      }
+                    }}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm font-medium text-slate-700">{category === '3d' ? '3D' : category.charAt(0).toUpperCase() + category.slice(1)} Output Pricing</span>
+                </label>
+              </div>
+              {enabled && cat && (
+                <div className="mt-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">Pricing Type</label>
+                      <select
+                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                        value={cat.type}
+                        onChange={(e) => updateCategory({ type: e.target.value })}
+                      >
+                        {typeOptions[category].map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">
+                        Base Price {cat.type === 'per_token' ? '($/M tokens)' : cat.type === 'per_image' ? '($ per image)' : cat.type === 'per_second' ? '($ per second)' : '($ per credit)'}
+                      </label>
+                      <input
+                        type="number"
+                        step="0.0001"
+                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                        value={cat.price}
+                        onChange={(e) => updateCategory({ price: parseFloat(e.target.value) || 0 })}
+                      />
+                    </div>
+                  </div>
+                  {/* Resolution tiers */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-medium text-slate-600">
+                        Resolution Tiers <span className="text-slate-400 font-normal">(override base price by resolution)</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newTier: OutputPricingTier = {
+                            resolution: tierResolutionHints[category][0] || '',
+                            price: cat.price,
+                            ...(category === 'image' ? { quality: '' } : {}),
+                            ...(category === 'video' ? { audio: false } : {}),
+                          };
+                          updateCategory({ tiers: [...(cat.tiers ?? []), newTier] });
+                        }}
+                        className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg hover:bg-blue-100 transition-colors"
+                      >
+                        + Add Tier
+                      </button>
+                    </div>
+                    {cat.tiers && cat.tiers.length > 0 ? (
+                      <div className="space-y-2">
+                        {cat.tiers.map((tier, idx) => (
+                          <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200">
+                            <div className="flex-1">
+                              <label className="block text-xs text-slate-400 mb-0.5">Resolution</label>
+                              <input
+                                type="text"
+                                placeholder={tierResolutionHints[category].join(', ')}
+                                className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                value={tier.resolution}
+                                onChange={(e) => {
+                                  const tiers = [...(cat.tiers ?? [])];
+                                  tiers[idx] = { ...tiers[idx], resolution: e.target.value };
+                                  updateCategory({ tiers });
+                                }}
+                              />
+                            </div>
+                            {category === 'image' && (
+                              <div className="flex-1">
+                                <label className="block text-xs text-slate-400 mb-0.5">Quality</label>
+                                <input
+                                  type="text"
+                                  placeholder="low, medium, high"
+                                  className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                  value={tier.quality || ''}
+                                  onChange={(e) => {
+                                    const tiers = [...(cat.tiers ?? [])];
+                                    tiers[idx] = { ...tiers[idx], quality: e.target.value || undefined };
+                                    updateCategory({ tiers });
+                                  }}
+                                />
+                              </div>
+                            )}
+                            {category === 'video' && (
+                              <div className="flex-shrink-0">
+                                <label className="block text-xs text-slate-400 mb-0.5">Audio</label>
+                                <label className="flex items-center space-x-1 cursor-pointer p-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!tier.audio}
+                                    onChange={(e) => {
+                                      const tiers = [...(cat.tiers ?? [])];
+                                      tiers[idx] = { ...tiers[idx], audio: e.target.checked };
+                                      updateCategory({ tiers });
+                                    }}
+                                    className="w-3 h-3 rounded border-slate-300 text-blue-600"
+                                  />
+                                  <span className="text-xs text-slate-600">Yes</span>
+                                </label>
+                              </div>
+                            )}
+                            {category === 'video' && (
+                              <div className="flex-shrink-0">
+                                <label className="block text-xs text-slate-400 mb-0.5">Ref Video</label>
+                                <label className="flex items-center space-x-1 cursor-pointer p-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!tier.reference_video}
+                                    onChange={(e) => {
+                                      const tiers = [...(cat.tiers ?? [])];
+                                      tiers[idx] = { ...tiers[idx], reference_video: e.target.checked };
+                                      updateCategory({ tiers });
+                                    }}
+                                    className="w-3 h-3 rounded border-slate-300 text-blue-600"
+                                  />
+                                  <span className="text-xs text-slate-600">Yes</span>
+                                </label>
+                              </div>
+                            )}
+                            <div className="flex-1">
+                              <label className="block text-xs text-slate-400 mb-0.5">
+                                Price {cat.type === 'per_token' ? '($/M)' : cat.type === 'per_image' ? '($)' : '($/s)'}
+                              </label>
+                              <input
+                                type="number"
+                                step="0.0001"
+                                className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                value={tier.price}
+                                onChange={(e) => {
+                                  const tiers = [...(cat.tiers ?? [])];
+                                  tiers[idx] = { ...tiers[idx], price: parseFloat(e.target.value) || 0 };
+                                  updateCategory({ tiers });
+                                }}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const tiers = (cat.tiers ?? []).filter((_, i) => i !== idx);
+                                updateCategory({ tiers: tiers.length > 0 ? tiers : undefined });
+                              }}
+                              className="text-slate-400 hover:text-red-500 text-xs mt-4 px-1 py-0.5 hover:bg-red-50 rounded"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 italic">No tiers — base price applies to all resolutions.</p>
+                    )}
+                  </div>
+                  {/* 3D credit rules editor */}
+                  {category === '3d' && (
+                    <div className="mt-3 pt-3 border-t border-slate-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-xs font-medium text-slate-600">
+                          Credit Rules <span className="text-slate-400 font-normal">(cost per operation in credits)</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newCredits = { ...(cat.credits ?? {}), new_rule: 0 };
+                            updateCategory({ credits: newCredits });
+                          }}
+                          className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg hover:bg-blue-100 transition-colors"
+                        >
+                          + Add Rule
+                        </button>
+                      </div>
+                      {cat.credits && Object.keys(cat.credits).length > 0 ? (
+                        <div className="space-y-2">
+                          {Object.entries(cat.credits).map(([key, val], idx) => {
+                            const isObject = typeof val === 'object' && !Array.isArray(val);
+                            return (
+                              <div key={idx} className="bg-white p-2 rounded-lg border border-slate-200">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <input
+                                    type="text"
+                                    placeholder="Rule name"
+                                    className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                    value={key}
+                                    onChange={(e) => {
+                                      const newCredits = { ...(cat.credits ?? {}) };
+                                      delete newCredits[key];
+                                      newCredits[e.target.value || `rule_${idx}`] = val;
+                                      updateCategory({ credits: newCredits });
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newCredits = { ...(cat.credits ?? {}) };
+                                      delete newCredits[key];
+                                      updateCategory({ credits: Object.keys(newCredits).length > 0 ? newCredits : undefined });
+                                    }}
+                                    className="text-slate-400 hover:text-red-500 text-xs px-1 py-0.5 hover:bg-red-50 rounded"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                                {isObject ? (
+                                  <div className="space-y-1 ml-2">
+                                    {Object.entries(val as Record<string, number>).map(([subKey, subVal], si) => (
+                                      <div key={si} className="flex items-center gap-2">
+                                        <input
+                                          type="text"
+                                          placeholder="Option name"
+                                          className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                          value={subKey}
+                                          onChange={(e) => {
+                                            const inner = { ...(val as Record<string, number>) };
+                                            delete inner[subKey];
+                                            inner[e.target.value || `option_${si}`] = subVal;
+                                            const newCredits = { ...(cat.credits ?? {}) };
+                                            newCredits[key] = inner;
+                                            updateCategory({ credits: newCredits });
+                                          }}
+                                        />
+                                        <input
+                                          type="number"
+                                          className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                          value={subVal}
+                                          onChange={(e) => {
+                                            const inner = { ...(val as Record<string, number>) };
+                                            inner[subKey] = parseInt(e.target.value) || 0;
+                                            const newCredits = { ...(cat.credits ?? {}) };
+                                            newCredits[key] = inner;
+                                            updateCategory({ credits: newCredits });
+                                          }}
+                                        />
+                                        <span className="text-xs text-slate-400">credits</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const inner = { ...(val as Record<string, number>) };
+                                            delete inner[subKey];
+                                            const newCredits = { ...(cat.credits ?? {}) };
+                                            if (Object.keys(inner).length > 0) {
+                                              newCredits[key] = inner;
+                                            } else {
+                                              delete newCredits[key];
+                                            }
+                                            updateCategory({ credits: Object.keys(newCredits).length > 0 ? newCredits : undefined });
+                                          }}
+                                          className="text-slate-400 hover:text-red-500 text-xs"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ))}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const inner = { ...(val as Record<string, number>), new_option: 0 };
+                                        const newCredits = { ...(cat.credits ?? {}) };
+                                        newCredits[key] = inner;
+                                        updateCategory({ credits: newCredits });
+                                      }}
+                                      className="text-xs text-blue-500 hover:text-blue-600"
+                                    >
+                                      + Add option
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2 ml-2">
+                                    <input
+                                      type="number"
+                                      className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                                      value={val as number}
+                                      onChange={(e) => {
+                                        const newCredits = { ...(cat.credits ?? {}) };
+                                        newCredits[key] = parseInt(e.target.value) || 0;
+                                        updateCategory({ credits: newCredits });
+                                      }}
+                                    />
+                                    <span className="text-xs text-slate-400">credits</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const inner = { ...(val as Record<string, number>) };
+                                        (inner as any).new_option = 0;
+                                        const newCredits = { ...(cat.credits ?? {}) };
+                                        newCredits[key] = inner;
+                                        updateCategory({ credits: newCredits });
+                                      }}
+                                      className="text-xs text-blue-500 hover:text-blue-600"
+                                    >
+                                      Convert to options
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">No credit rules — fixed price per operation.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
       {/* Actions */}
       <div className="flex space-x-3 pt-2 border-t border-slate-100">
         <button
@@ -570,6 +1007,64 @@ const TemplateCard = ({
             </div>
           )}
 
+          {/* Output Pricing display */}
+          {tpl.output_pricing && (
+            <div className="mt-3">
+              {(['image', 'video', 'audio', '3d'] as const).map((cat) => {
+                const catConfig = tpl.output_pricing?.[cat];
+                if (!catConfig) return null;
+                const catLabel = cat === '3d' ? '3D' : cat.charAt(0).toUpperCase() + cat.slice(1);
+                const typeLabel = catConfig.type === 'per_image' ? '/image'
+                  : catConfig.type === 'per_second' ? '/s'
+                  : catConfig.type === 'per_credit' ? '/credit'
+                  : '/M tokens';
+                return (
+                  <div key={cat} className="bg-blue-50 border border-blue-200 rounded-lg p-2 mb-1.5">
+                    <span className="text-blue-600 text-xs font-semibold block mb-1">
+                      {catLabel} Output — {catConfig.type === 'per_token' ? 'Per Token' : catConfig.type === 'per_image' ? 'Per Image' : catConfig.type === 'per_second' ? 'Per Second' : 'Per Credit'} ({tpl.currency || 'USD'})
+                    </span>
+                    {catConfig.tiers && catConfig.tiers.length > 0 ? (
+                      <div className="space-y-0.5">
+                        {catConfig.tiers.map((tier, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs text-slate-600">
+                            <span className="text-slate-500 min-w-[40px]">{tier.resolution}</span>
+                            {tier.quality && <span className="text-purple-500">{tier.quality}</span>}
+                            <span>${tier.price}{typeLabel}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-600">${catConfig.price}{typeLabel}</span>
+                    )}
+                    {cat === '3d' && catConfig.credits && (
+                      <div className="mt-1.5 pt-1.5 border-t border-blue-200">
+                        <span className="text-xs font-medium text-slate-500 block mb-0.5">Credit Rules</span>
+                        <div className="space-y-0.5">
+                          {Object.entries(catConfig.credits).map(([key, val]) => {
+                            if (typeof val === 'object' && !Array.isArray(val)) {
+                              return (
+                                <div key={key} className="flex items-center gap-2 text-xs text-slate-600">
+                                  <span className="text-slate-500 min-w-[80px]">{key}:</span>
+                                  <span>{JSON.stringify(val)}</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={key} className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="text-slate-500 min-w-[80px]">{key}:</span>
+                                <span className="font-medium">{val} credits</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Feature badges */}
           <div className="flex flex-wrap gap-1.5 mt-3">
             {FEATURES_KEYS.filter((key) => !!(tpl as any)[key]).map((key) => (
@@ -662,8 +1157,9 @@ export default function ModelTemplates() {
   const familyTabs = useMemo(() => {
     const countMap = new Map<string, number>();
     for (const tpl of templates) {
-      const family = getModelFamily(tpl.label);
-      countMap.set(family, (countMap.get(family) || 0) + 1);
+      for (const family of getModelFamilies(tpl.label)) {
+        countMap.set(family, (countMap.get(family) || 0) + 1);
+      }
     }
     // Sort families alphabetically
     const sorted = Array.from(countMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
@@ -674,7 +1170,7 @@ export default function ModelTemplates() {
   const filteredTemplates = useMemo(() => {
     let list = templates;
     if (activeTab !== ALL_TAB) {
-      list = list.filter((tpl) => getModelFamily(tpl.label) === activeTab);
+      list = list.filter((tpl) => getModelFamilies(tpl.label).includes(activeTab));
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();

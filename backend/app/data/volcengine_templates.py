@@ -82,6 +82,19 @@ VOLCENGINE_TEMPLATES = [
          support_kvcache=True, support_image=True, support_audio=False, support_video=True,
          support_file=False, support_web_search=False, support_tool_search=False,
          support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False),
+    # ── Volcengine Doubao Embedding Models ────────────────────────────────────
+    dict(label='Doubao-embedding-vision-251215', provider='Volcengine', name='doubao-embedding-vision-251215', alias='doubao-embedding-vision',
+         context_size=4096, input_size=4096, output_size=4096,
+         pricing_tiers=[
+             dict(label='Text input', context_size=4096, input_price=0.7, output_price=0, cache_hit_price=0),
+             dict(label='Image input', context_size=4096, input_price=1.8, output_price=0, cache_hit_price=0),
+         ],
+         input_price=0.7, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=120,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=True,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=True),
     # ── Volcengine Doubao Seedream Image Models ────────────────────────────────
     dict(
         label='Doubao-seedream-4-0-250828 (Volcengine)',
