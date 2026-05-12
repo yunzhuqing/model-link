@@ -20,6 +20,7 @@ from app.routes.permissions import (
     check_group_permission,
     require_permission,
     require_apikey_permission,
+    require_global_permission,
 )
 from app.group_service import (
     get_group_by_id,
@@ -60,15 +61,20 @@ async def list_groups(current_user):
 
 @apikeys_bp.route('/groups/', methods=['POST'])
 @token_required
+@require_global_permission('group.manage')
 async def create_group(current_user):
     """Create a new group."""
     from app.models import UserGroup
 
     data = await request.get_json()
 
+    if not data.get('name'):
+        return jsonify({'detail': 'Group name is required'}), 400
+
     group, err = _svc_create_group(
         name=data.get('name'),
         description=data.get('description'),
+        workspace_id=data.get('workspace_id'),
     )
     if err:
         return jsonify({'detail': err}), 400
@@ -80,7 +86,11 @@ async def create_group(current_user):
         role='root',
     )
     db.session.add(user_group)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'detail': str(e)}), 400
     db.session.refresh(group)
 
     return jsonify(group.to_dict()), 201

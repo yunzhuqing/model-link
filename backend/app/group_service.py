@@ -97,13 +97,13 @@ def invalidate_group_cache(group_id: int) -> None:
         logger.warning(f"Failed to invalidate group cache {group_id}: {e}")
 
 
-def create_group(name: str, description: str | None = None) -> tuple[Group | None, str | None]:
+def create_group(name: str, description: str | None = None, workspace_id: int | None = None) -> tuple[Group | None, str | None]:
     """Create a new group. Returns (group, error)."""
     existing = db.session.query(Group).filter(Group.name == name).first()
     if existing:
         return None, "Group with this name already exists"
 
-    group = Group(name=name, description=description)
+    group = Group(name=name, description=description, workspace_id=workspace_id)
     db.session.add(group)
     try:
         db.session.flush()
@@ -117,7 +117,7 @@ def create_group(name: str, description: str | None = None) -> tuple[Group | Non
 def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
     """Update group fields. Returns (group, error).
 
-    Accepted kwargs: name, description, monitoring_config, tags
+    Accepted kwargs: name, description, monitoring_config, tags, workspace_id
     """
     group = get_group_by_id(group_id)
     if not group:
@@ -150,6 +150,9 @@ def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
 
     if "tags" in kwargs:
         group.tags = kwargs["tags"]
+
+    if "workspace_id" in kwargs:
+        group.workspace_id = kwargs["workspace_id"]
 
     invalidate_group_cache(group_id)
     return group, None

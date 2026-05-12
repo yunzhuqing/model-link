@@ -2,24 +2,44 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { groupsApi } from '../api/client';
+import { groupsApi, permissionsApi } from '../api/client';
 import type { Group, GroupCreate } from '../api/client';
 import TagSelector from '../components/TagSelector';
-import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database, Tag } from 'lucide-react';
+import { useWorkspace } from '../contexts/WorkspaceContext';
+import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database, Tag, AlertTriangle } from 'lucide-react';
 
 export default function GroupList() {
   const { t } = useTranslation();
+  const { selectedWorkspace } = useWorkspace();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [formData, setFormData] = useState<GroupCreate & { tags?: { name: string; value: string }[] }>({ name: '', description: '', tags: [] });
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const extractError = (err: unknown): string => {
+    if (err && typeof err === 'object' && 'response' in err) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } };
+      return axiosErr.response?.data?.detail || String(err);
+    }
+    return String(err);
+  };
 
   const { data: groups, isLoading } = useQuery({
     queryKey: ['groups'],
     queryFn: async () => {
       const res = await groupsApi.list();
+      return res.data;
+    },
+  });
+
+  const { data: myPermissionsData } = useQuery({
+    queryKey: ['my-permissions'],
+    queryFn: async () => {
+      const res = await permissionsApi.myPermissions();
       return res.data;
     },
   });
@@ -30,6 +50,10 @@ export default function GroupList() {
       queryClient.invalidateQueries({ queryKey: ['groups'] });
       setIsCreateModalOpen(false);
       setFormData({ name: '', description: '' });
+      setCreateError(null);
+    },
+    onError: (err: unknown) => {
+      setCreateError(extractError(err));
     },
   });
 
@@ -40,6 +64,10 @@ export default function GroupList() {
       queryClient.invalidateQueries({ queryKey: ['groups'] });
       setIsEditModalOpen(false);
       setSelectedGroup(null);
+      setEditError(null);
+    },
+    onError: (err: unknown) => {
+      setEditError(extractError(err));
     },
   });
 
@@ -52,7 +80,10 @@ export default function GroupList() {
 
   const handleCreate = () => {
     if (!formData.name.trim()) return;
-    createMutation.mutate(formData);
+    createMutation.mutate({
+      ...formData,
+      workspace_id: selectedWorkspace?.id ?? undefined,
+    });
   };
 
   const handleUpdate = () => {
@@ -95,6 +126,8 @@ export default function GroupList() {
     );
   }
 
+  const canManageGroups = myPermissionsData?.permissions?.['group.manage'] === true;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -103,22 +136,25 @@ export default function GroupList() {
           <h1 className="text-2xl font-bold text-slate-800">{t('group.title')}</h1>
           <p className="text-slate-500 mt-1">{t('group.subtitle')}</p>
         </div>
+        {canManageGroups && (
         <button
           onClick={() => {
             setFormData({ name: '', description: '' });
+            setCreateError(null);
             setIsCreateModalOpen(true);
           }}
           className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
         >
           <Plus className="w-4 h-4 mr-2" /> {t('group.createGroup')}
         </button>
+        )}
       </div>
 
       {/* Groups Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {groups?.map((group) => (
-          <div 
-            key={group.id} 
+          <div
+            key={group.id}
             className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer group"
             onClick={() => navigate(`/groups/${group.id}`)}
           >
@@ -222,13 +258,19 @@ export default function GroupList() {
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-bold text-slate-800">{t('group.createGroup')}</h2>
                 <button
-                  onClick={() => setIsCreateModalOpen(false)}
+                  onClick={() => { setIsCreateModalOpen(false); setCreateError(null); }}
                   className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
+            {createError && (
+              <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-red-700">{createError}</p>
+              </div>
+            )}
             <div className="p-6 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.name')}</label>
@@ -263,6 +305,7 @@ export default function GroupList() {
                 onClick={() => {
                   setIsCreateModalOpen(false);
                   setFormData({ name: '', description: '', tags: [] });
+                  setCreateError(null);
                 }}
                 className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
               >
@@ -291,6 +334,7 @@ export default function GroupList() {
                   onClick={() => {
                     setIsEditModalOpen(false);
                     setSelectedGroup(null);
+                    setEditError(null);
                   }}
                   className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
                 >
@@ -298,6 +342,12 @@ export default function GroupList() {
                 </button>
               </div>
             </div>
+            {editError && (
+              <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-red-700">{editError}</p>
+              </div>
+            )}
             <div className="p-6 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.name')}</label>
@@ -325,11 +375,12 @@ export default function GroupList() {
                 />
               </div>
             </div>
-            <div className="p-6 border-t border-slate-200 flex justify-end space-x-3"> {/* Edit modal footer */}
+            <div className="p-6 border-t border-slate-200 flex justify-end space-x-3">
               <button
                 onClick={() => {
                   setIsEditModalOpen(false);
                   setSelectedGroup(null);
+                  setEditError(null);
                 }}
                 className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
               >

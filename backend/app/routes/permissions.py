@@ -244,6 +244,42 @@ def require_template_manage():
     return decorator
 
 
+def require_global_permission(permission_key: str):
+    """Decorator for routes that are not group-scoped (e.g. create group).
+
+    Resolves the user's best role across all groups (root > admin) and
+    checks the given system-level permission.
+
+    Usage::
+
+        @apikeys_bp.route('/groups/', methods=['POST'])
+        @token_required
+        @require_global_permission('group.manage')
+        async def create_group(current_user):
+            ...
+    """
+    def decorator(f):
+        @functools.wraps(f)
+        async def wrapper(current_user, *args, **kwargs):
+            best_role = None
+            for ug in current_user.group_associations:
+                if ug.role == "root":
+                    best_role = "root"
+                    break
+                if ug.role == "admin":
+                    best_role = "admin"
+
+            if best_role is None:
+                return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
+
+            if not check_permission(best_role, permission_key):
+                return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
+
+            return await f(current_user, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
 # ── List all permissions (system-level) ────────────────────────────────
 
 @permissions_bp.route("/permissions", methods=["GET"])
@@ -391,5 +427,35 @@ async def get_my_role(current_user, group_id):
         "group_id": group_id,
         "user_id": current_user.id,
         "role": role,
+        "permissions": perm_map,
+    })
+
+
+# ── Get my global permissions (highest role across all groups) ──
+
+@permissions_bp.route("/permissions/my-permissions", methods=["GET"])
+@token_required
+async def get_my_global_permissions(current_user):
+    """Return the current user's permissions based on their highest role across all groups."""
+    from app.models import UserGroup
+
+    best_role = None
+    for ug in current_user.group_associations:
+        if ug.role == "root":
+            best_role = "root"
+            break
+        if ug.role == "admin":
+            best_role = "admin"
+
+    if not best_role:
+        return jsonify({"permissions": {}, "role": None})
+
+    perms = db.session.query(Permission).all()
+    perm_map = {}
+    for p in perms:
+        perm_map[p.key] = check_permission(best_role, p.key)
+
+    return jsonify({
+        "role": best_role,
         "permissions": perm_map,
     })

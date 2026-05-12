@@ -94,6 +94,7 @@ export interface Group {
   id: number;
   name: string;
   description: string | null;
+  workspace_id?: number | null;
   monitoring_config?: MonitoringConfig | null;
   created_at: string;
   user_count?: number;
@@ -107,11 +108,13 @@ export interface Group {
 export interface GroupCreate {
   name: string;
   description?: string;
+  workspace_id?: number | null;
 }
 
 export interface GroupUpdate {
   name?: string;
   description?: string;
+  workspace_id?: number | null;
   monitoring_config?: MonitoringConfig | null;
   tags?: { name: string; value: string }[];
 }
@@ -210,6 +213,16 @@ export const groupsApi = {
     client.post(`/api/groups/${groupId}/users/${userId}`),
   removeUser: (groupId: number, userId: number) =>
     client.delete(`/api/groups/${groupId}/users/${userId}`),
+};
+
+export interface MyPermissions {
+  role: string | null;
+  permissions: Record<string, boolean>;
+}
+
+// Permission endpoints
+export const permissionsApi = {
+  myPermissions: () => client.get<MyPermissions>('/api/permissions/my-permissions'),
 };
 
 // Provider endpoints

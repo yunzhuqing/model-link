@@ -48,7 +48,6 @@
     "permissionsDesc": "Manage permission points for roles",
     "tags": "Tags",
     "tagsDesc": "Manage system tag definitions",
-    "workspace": "Workspace",
     "logout": "Logout",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar"
