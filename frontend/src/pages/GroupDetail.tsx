@@ -65,6 +65,17 @@ export default function GroupDetail() {
   const isAtLeastAdmin = isRoot || currentRole === 'admin';
   const canInvite = isAtLeastAdmin && myPermissions['member.invite'] !== false;
 
+  const ROLE_RANK: Record<string, number> = { root: 3, admin: 2, member: 1 };
+
+  const getAvailableRoles = (): string[] => {
+    if (currentRole === 'root') return ['root', 'admin', 'member'];
+    if (currentRole === 'admin') return ['admin', 'member'];
+    return ['member'];
+  };
+
+  const canModifyMember = (memberRole: string) =>
+    ROLE_RANK[memberRole] <= ROLE_RANK[currentRole];
+
   const { data: group, isLoading: groupLoading } = useQuery({
     queryKey: ['group', id],
     queryFn: async () => {
@@ -260,9 +271,9 @@ export default function GroupDetail() {
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}
                 >
-                  <option value="member">{t('group.roleMember')}</option>
-                  <option value="admin">{t('group.roleAdmin')}</option>
-                  <option value="root">{t('group.roleRoot')}</option>
+                  {getAvailableRoles().map((r) => (
+                    <option key={r} value={r}>{t(`group.role${r.charAt(0).toUpperCase() + r.slice(1)}`)}</option>
+                  ))}
                 </select>
               </div>
               <div className="flex space-x-3">
@@ -306,7 +317,7 @@ export default function GroupDetail() {
                   </div>
                 </div>
                 <div className="flex items-center space-x-2">
-                  {isRoot && (
+                  {isAtLeastAdmin && canModifyMember(member.role) && (
                     <>
                       {editingMemberRole === member.id ? (
                         <select
@@ -315,9 +326,9 @@ export default function GroupDetail() {
                           onChange={(e) => updateRoleMutation.mutate({ userId: member.id, role: e.target.value })}
                           onBlur={() => setEditingMemberRole(null)}
                         >
-                          <option value="member">{t('group.roleMember')}</option>
-                          <option value="admin">{t('group.roleAdmin')}</option>
-                          <option value="root">{t('group.roleRoot')}</option>
+                          {getAvailableRoles().map((r) => (
+                            <option key={r} value={r}>{t(`group.role${r.charAt(0).toUpperCase() + r.slice(1)}`)}</option>
+                          ))}
                         </select>
                       ) : (
                         <button

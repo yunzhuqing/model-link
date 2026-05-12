@@ -10,6 +10,7 @@ import logging
 
 from app import db
 from app.models import User
+from app.user_service import get_user_by_id, invalidate_user_cache
 from app.auth import verify_password, get_password_hash, create_access_token
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
@@ -61,22 +62,14 @@ def token_required(f):
 
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            username = payload.get('sub')
-            if username is None:
+            user_id = payload.get('user_id')
+            if user_id is None:
                 return jsonify({'detail': 'Invalid token'}), 401
         except JWTError:
             return jsonify({'detail': 'Invalid token'}), 401
-
-        t1 = time.perf_counter()
-        user = db.session.query(User).filter(User.username == username).first()
-        t2 = time.perf_counter()
+        user = get_user_by_id(user_id)
         if user is None:
             return jsonify({'detail': 'User not found'}), 401
-
-        logger.info(
-            "token_required user=%s jwt=%.3fms db_user=%.3fms",
-            username, (t1 - t0) * 1000, (t2 - t1) * 1000,
-        )
         return await f(current_user=user, *args, **kwargs)
 
     return decorated
@@ -163,5 +156,7 @@ async def delete_user(current_user, user_id):
     
     db.session.delete(user)
     db.session.commit()
-    
+
+    invalidate_user_cache(user_id)
+
     return '', 204

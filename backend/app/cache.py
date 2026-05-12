@@ -273,6 +273,7 @@ class CacheService:
     _API_KEY_PREFIX = "apikey:"
     _API_KEY_ID_PREFIX = "apikey_id:"
     _BUDGET_REMAINING_PREFIX = "budget_remaining:"
+    _USER_PREFIX = "user:"
 
     def __init__(self, backend: CacheBackend, api_key_ttl: Optional[int] = None):
         self._backend = backend
@@ -386,6 +387,20 @@ class CacheService:
     def invalidate_budget_remaining(self, api_key: str) -> None:
         """Remove the dedicated budget remaining cache key."""
         self._backend.delete(f"{self._BUDGET_REMAINING_PREFIX}{api_key}")
+
+    # ── User info ─────────────────────────────────────────────────────────
+
+    def get_user_info(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get cached user info by user ID. Returns None if not cached."""
+        return self._backend.get(f"{self._USER_PREFIX}{user_id}")
+
+    def set_user_info(self, user_id: int, info: Dict[str, Any], ttl: Optional[int] = None) -> None:
+        """Cache user info keyed by user ID."""
+        self._backend.set(f"{self._USER_PREFIX}{user_id}", info, ttl)
+
+    def invalidate_user_info(self, user_id: int) -> None:
+        """Remove cached user info by user ID."""
+        self._backend.delete(f"{self._USER_PREFIX}{user_id}")
 
     # ── Usage stats tracking ──────────────────────────────────────────────
 

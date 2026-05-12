@@ -204,7 +204,7 @@ export const apiKeysApi = {
 
 // Group endpoints
 export const groupsApi = {
-  list: () => client.get<Group[]>('/api/groups/'),
+  list: (search?: string) => client.get<Group[]>('/api/groups/', { params: search ? { search } : undefined }),
   get: (id: number) => client.get<Group>(`/api/groups/${id}`),
   create: (data: GroupCreate) => client.post<Group>('/api/groups/', data),
   update: (id: number, data: GroupUpdate) => client.put<Group>(`/api/groups/${id}`, data),

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -6,19 +6,56 @@ import { groupsApi, permissionsApi } from '../api/client';
 import type { Group, GroupCreate } from '../api/client';
 import TagSelector from '../components/TagSelector';
 import { useWorkspace } from '../contexts/WorkspaceContext';
-import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database, Tag, AlertTriangle } from 'lucide-react';
+import { Users, Plus, Edit2, Trash2, X, Key, User, Calendar, ChevronRight, Database, Tag, AlertTriangle, Search } from 'lucide-react';
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
+function getFirstChar(name: string): string {
+  const c = name.charAt(0);
+  if (/\d/.test(c)) return '#';
+  if (/[a-zA-Z]/.test(c)) return c.toUpperCase();
+  return c;
+}
+
+function groupByFirstChar(groups: Group[]): [string, Group[]][] {
+  const map = new Map<string, Group[]>();
+  for (const g of groups) {
+    const key = getFirstChar(g.name);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(g);
+  }
+  const entries = Array.from(map.entries());
+  entries.sort(([a], [b]) => {
+    if (a === '#') return -1;
+    if (b === '#') return 1;
+    return a.localeCompare(b);
+  });
+  return entries;
+}
 
 export default function GroupList() {
   const { t } = useTranslation();
   const { selectedWorkspace } = useWorkspace();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchText, setSearchText] = useState('');
+  const debouncedSearch = useDebounce(searchText.trim(), 300);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [formData, setFormData] = useState<GroupCreate & { tags?: { name: string; value: string }[] }>({ name: '', description: '', tags: [] });
   const [createError, setCreateError] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState<string | null>(null);
+  const sectionRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const extractError = (err: unknown): string => {
     if (err && typeof err === 'object' && 'response' in err) {
@@ -29,9 +66,9 @@ export default function GroupList() {
   };
 
   const { data: groups, isLoading } = useQuery({
-    queryKey: ['groups'],
+    queryKey: ['groups', debouncedSearch],
     queryFn: async () => {
-      const res = await groupsApi.list();
+      const res = await groupsApi.list(debouncedSearch || undefined);
       return res.data;
     },
   });
@@ -43,6 +80,36 @@ export default function GroupList() {
       return res.data;
     },
   });
+
+  const grouped = useMemo(() => groupByFirstChar(groups || []), [groups]);
+  const indexChars = useMemo(() => grouped.map(([c]) => c), [grouped]);
+
+  useEffect(() => {
+    if (!scrollContainerRef.current || indexChars.length === 0) return;
+    const container = scrollContainerRef.current;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting);
+        if (visible.length > 0) {
+          visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+          const char = visible[0].target.getAttribute('data-index');
+          if (char) setActiveIndex(char);
+        }
+      },
+      { root: container, rootMargin: '-20% 0px -70% 0px' },
+    );
+
+    sectionRefs.current.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [grouped, indexChars]);
+
+  const scrollToSection = (char: string) => {
+    const el = sectionRefs.current.get(char);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveIndex(char);
+    }
+  };
 
   const createMutation = useMutation({
     mutationFn: groupsApi.create,
@@ -129,126 +196,175 @@ export default function GroupList() {
   const canManageGroups = myPermissionsData?.permissions?.['group.manage'] === true;
 
   return (
-    <div className="space-y-6">
+    <div className="relative h-full flex flex-col">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center mb-6 px-6 pt-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">{t('group.title')}</h1>
           <p className="text-slate-500 mt-1">{t('group.subtitle')}</p>
         </div>
-        {canManageGroups && (
-        <button
-          onClick={() => {
-            setFormData({ name: '', description: '' });
-            setCreateError(null);
-            setIsCreateModalOpen(true);
-          }}
-          className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
-        >
-          <Plus className="w-4 h-4 mr-2" /> {t('group.createGroup')}
-        </button>
-        )}
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              className="pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all w-56"
+              placeholder={t('group.searchPlaceholder')}
+            />
+          </div>
+          {canManageGroups && (
+          <button
+            onClick={() => {
+              setFormData({ name: '', description: '' });
+              setCreateError(null);
+              setIsCreateModalOpen(true);
+            }}
+            className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg shadow-blue-500/25"
+          >
+            <Plus className="w-4 h-4 mr-2" /> {t('group.createGroup')}
+          </button>
+          )}
+        </div>
       </div>
 
-      {/* Groups Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {groups?.map((group) => (
-          <div
-            key={group.id}
-            className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer group"
-            onClick={() => navigate(`/groups/${group.id}`)}
-          >
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center space-x-3">
-                <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/25">
-                  <Users className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">{group.name}</h3>
-                </div>
-              </div>
-              <div className="flex space-x-1" onClick={(e) => e.stopPropagation()}>
-                <button
-                  onClick={() => openEditModal(group)}
-                  className="text-slate-400 hover:text-blue-600 p-1.5 hover:bg-blue-50 rounded-lg transition-colors"
-                  title={t('common.edit')}
-                >
-                  <Edit2 className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => handleDelete(group.id)}
-                  className="text-slate-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded-lg transition-colors"
-                  title={t('common.delete')}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <p className="text-slate-500 text-sm mb-4 min-h-[40px]">
-              {group.description || t('group.noDescription')}
-            </p>
-
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="bg-slate-50 rounded-xl p-3">
-                <div className="flex items-center text-slate-400 mb-1">
-                  <User className="w-3 h-3 mr-1" />
-                  <span className="text-xs font-medium">{t('group.users')}</span>
-                </div>
-                <span className="text-xl font-bold text-slate-800">{group.users?.length || 0}</span>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-3">
-                <div className="flex items-center text-slate-400 mb-1">
-                  <Key className="w-3 h-3 mr-1" />
-                  <span className="text-xs font-medium">{t('group.keys')}</span>
-                </div>
-                <span className="text-xl font-bold text-slate-800">{group.api_keys?.length || 0}</span>
-              </div>
-              <div className="bg-slate-50 rounded-xl p-3">
-                <div className="flex items-center text-slate-400 mb-1">
-                  <Database className="w-3 h-3 mr-1" />
-                  <span className="text-xs font-medium">{t('group.providers')}</span>
-                </div>
-                <span className="text-xl font-bold text-slate-800">{group.providers?.length || 0}</span>
-              </div>
-            </div>
-
-            {/* Tags */}
-            {group.tags && group.tags.length > 0 && (
-              <div className="mb-4">
-                <div className="flex items-center text-slate-400 mb-1.5">
-                  <Tag className="w-3 h-3 mr-1" />
-                  <span className="text-xs font-medium">{t('group.tags')}</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {group.tags.map((tag, idx) => (
-                    <span key={idx} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
-                      {tag.name}: {tag.value}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Footer */}
-            <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
-              <div className="flex items-center text-xs text-slate-500">
-                <Calendar className="w-3 h-3 mr-2" />
-                <span>{formatDate(group.created_at)}</span>
-              </div>
-              <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />
-            </div>
-          </div>
-        ))}
-        {groups?.length === 0 && (
-          <div className="col-span-full bg-white rounded-2xl border border-slate-200 p-12 text-center">
+      {/* Scrollable content with sections */}
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 pb-6">
+        {grouped.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
             <Users className="w-16 h-16 mx-auto mb-4 text-slate-300" />
             <p className="text-lg font-medium text-slate-700">{t('group.noGroups')}</p>
             <p className="text-sm text-slate-500 mt-2">{t('group.noGroupsHint')}</p>
           </div>
+        ) : (
+          grouped.map(([char, groupList]) => (
+            <div
+              key={char}
+              data-index={char}
+              ref={(el) => { if (el) sectionRefs.current.set(char, el); }}
+              className="mb-8"
+            >
+              <div className="sticky top-0 z-10 bg-slate-50/90 backdrop-blur-sm py-2 mb-4">
+                <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-sm font-bold shadow-lg shadow-blue-500/20">
+                  {char}
+                </div>
+                <span className="ml-3 text-sm text-slate-400 font-medium">{groupList.length} groups</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {groupList.map((group) => (
+                  <div
+                    key={group.id}
+                    className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer group"
+                    onClick={() => navigate(`/groups/${group.id}`)}
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/25">
+                          <Users className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">{group.name}</h3>
+                        </div>
+                      </div>
+                      {canManageGroups && (
+                      <div className="flex space-x-1" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => openEditModal(group)}
+                          className="text-slate-400 hover:text-blue-600 p-1.5 hover:bg-blue-50 rounded-lg transition-colors"
+                          title={t('common.edit')}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(group.id)}
+                          className="text-slate-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded-lg transition-colors"
+                          title={t('common.delete')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                      )}
+                    </div>
+
+                    <p className="text-slate-500 text-sm mb-4 min-h-[40px]">
+                      {group.description || t('group.noDescription')}
+                    </p>
+
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <div className="bg-slate-50 rounded-xl p-3">
+                        <div className="flex items-center text-slate-400 mb-1">
+                          <User className="w-3 h-3 mr-1" />
+                          <span className="text-xs font-medium">{t('group.users')}</span>
+                        </div>
+                        <span className="text-xl font-bold text-slate-800">{group.users?.length || 0}</span>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-3">
+                        <div className="flex items-center text-slate-400 mb-1">
+                          <Key className="w-3 h-3 mr-1" />
+                          <span className="text-xs font-medium">{t('group.keys')}</span>
+                        </div>
+                        <span className="text-xl font-bold text-slate-800">{group.api_keys?.length || 0}</span>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-3">
+                        <div className="flex items-center text-slate-400 mb-1">
+                          <Database className="w-3 h-3 mr-1" />
+                          <span className="text-xs font-medium">{t('group.providers')}</span>
+                        </div>
+                        <span className="text-xl font-bold text-slate-800">{group.providers?.length || 0}</span>
+                      </div>
+                    </div>
+
+                    {group.tags && group.tags.length > 0 && (
+                      <div className="mb-4">
+                        <div className="flex items-center text-slate-400 mb-1.5">
+                          <Tag className="w-3 h-3 mr-1" />
+                          <span className="text-xs font-medium">{t('group.tags')}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {group.tags.map((tag, idx) => (
+                            <span key={idx} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              {tag.name}: {tag.value}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                      <div className="flex items-center text-xs text-slate-500">
+                        <Calendar className="w-3 h-3 mr-2" />
+                        <span>{formatDate(group.created_at)}</span>
+                      </div>
+                      <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
         )}
       </div>
+
+      {/* Right-side Quick Index */}
+      {indexChars.length > 1 && (
+        <nav className="fixed right-3 top-1/2 -translate-y-1/2 z-30 flex flex-col items-center gap-0.5">
+          {indexChars.map((char) => (
+            <button
+              key={char}
+              onClick={() => scrollToSection(char)}
+              className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-bold transition-all duration-200 hover:scale-125 ${
+                activeIndex === char
+                  ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/30 scale-110'
+                  : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+              }`}
+            >
+              {char}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {/* Create Modal */}
       {isCreateModalOpen && (

@@ -31,6 +31,13 @@ from app.group_service import (
 
 apikeys_bp = Blueprint('apikeys', __name__)
 
+ROLE_RANK = {'root': 3, 'admin': 2, 'member': 1}
+
+
+def _role_rank(role: str) -> int:
+    """Return numeric rank for role comparison. Higher = more privileged."""
+    return ROLE_RANK.get(role, 0)
+
 
 def generate_api_key():
     """Generate a secure random API key with sk- prefix (OpenAI compatible)."""
@@ -42,11 +49,19 @@ def generate_api_key():
 @apikeys_bp.route('/groups/', methods=['GET'])
 @token_required
 async def list_groups(current_user):
-    """List all groups the current user belongs to, including the user's role."""
+    """List all groups the current user belongs to, including the user's role.
+
+    Query params:
+        search: Filter groups by name (case-insensitive partial match).
+    """
     from app.models import UserGroup
+
+    search = request.args.get('search', '').strip().lower()
 
     result = []
     for g in current_user.groups:
+        if search and search not in g.name.lower():
+            continue
         group_dict = g.to_dict()
         # Include the current user's role in this group
         ug = db.session.query(UserGroup).filter(
@@ -178,7 +193,7 @@ async def add_user_to_group(current_user, group_id, user_id):
 @require_permission('member.manage')
 async def remove_user_from_group(current_user, group_id, user_id):
     """Remove a user from a group. Admin or above only (controlled by member.manage permission)."""
-    from app.models import User
+    from app.models import User, UserGroup
 
     group = get_group_by_id(group_id)
     if not group:
@@ -190,6 +205,14 @@ async def remove_user_from_group(current_user, group_id, user_id):
 
     if user not in group.users:
         return jsonify({'detail': 'User is not a member of this group'}), 400
+
+    target_membership = db.session.query(UserGroup).filter(
+        UserGroup.group_id == group_id,
+        UserGroup.user_id == user_id
+    ).first()
+    current_role = _get_role(group_id, current_user.id)
+    if _role_rank(target_membership.role) > _role_rank(current_role):
+        return jsonify({'detail': 'Cannot remove a member with a higher role than your own'}), 403
 
     group.users.remove(user)
     db.session.commit()
@@ -216,7 +239,11 @@ async def invite_member(current_user, group_id):
     # Validate role
     if role not in ['root', 'admin', 'member']:
         return jsonify({'detail': 'Invalid role. Must be root, admin, or member'}), 400
-    
+
+    current_role = _get_role(group_id, current_user.id)
+    if _role_rank(role) > _role_rank(current_role):
+        return jsonify({'detail': 'Cannot assign a role higher than your own'}), 403
+
     if not email:
         return jsonify({'detail': 'Email is required'}), 400
     
@@ -269,14 +296,14 @@ async def update_member_role(current_user, group_id, user_id):
         return jsonify({'detail': 'User is not a member of this group'}), 400
     
     current_role = _get_role(group_id, current_user.id)
-    
-    # Only root can change another root's role
-    if user_group.role == 'root' and current_role != 'root':
-        return jsonify({'detail': 'Only root can change another root\'s role'}), 403
-    
-    # Admin cannot promote a member to root (only root can)
-    if new_role == 'root' and current_role != 'root':
-        return jsonify({'detail': 'Only root can promote members to root'}), 403
+
+    # Cannot modify someone with a higher role
+    if _role_rank(user_group.role) > _role_rank(current_role):
+        return jsonify({'detail': 'Cannot modify a member with a higher role than your own'}), 403
+
+    # Cannot assign a role higher than your own
+    if _role_rank(new_role) > _role_rank(current_role):
+        return jsonify({'detail': 'Cannot assign a role higher than your own'}), 403
     
     user_group.role = new_role
     db.session.commit()
