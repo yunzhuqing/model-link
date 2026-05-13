@@ -55,7 +55,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         reasoning_content = msg_data.get('reasoning_content')
         
         blocks = []
-        if 'tool_calls' in msg_data:
+        if msg_data.get('tool_calls'):
             for tc in msg_data['tool_calls']:
                 tc_id = tc.get('id')
                 func = tc.get('function', {})

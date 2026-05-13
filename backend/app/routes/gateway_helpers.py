@@ -61,6 +61,7 @@ def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dic
         "endpoint": endpoint,
         "status_code": status_code,
         "detail": detail,
+        "request_id": g.get('request_id', '-'),
     }
     if extra:
         log_data.update(extra)

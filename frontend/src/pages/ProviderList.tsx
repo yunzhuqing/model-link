@@ -131,6 +131,12 @@ interface ModelTemplate {
   support_online_image: boolean;
   support_online_video: boolean;
   support_embedding: boolean;
+  retirement_time: string | null;
+  is_retired: boolean;
+  rpm: number | null;
+  tpm: number | null;
+  discount: number;
+  timeout: number | null;
 }
 
 // ── Helpers & small components ────────────────────────────────────────────────
@@ -414,6 +420,11 @@ const ModelForm = ({
       support_online_image: tpl.support_online_image,
       support_online_video: tpl.support_online_video,
       support_embedding: tpl.support_embedding,
+      retirement_time: tpl.retirement_time,
+      rpm: tpl.rpm,
+      tpm: tpl.tpm,
+      discount: tpl.discount ?? 1.0,
+      timeout: tpl.timeout,
     });
   };
 
