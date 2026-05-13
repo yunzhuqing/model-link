@@ -554,6 +554,8 @@ async def create_api_key(current_user):
         workspace_id=group.workspace_id,
         unlimited_budget=False,
         budget=100.0,
+        rpm=data.get('rpm') or None,
+        tpm=data.get('tpm') or None,
     )
     db.session.add(api_key)
     db.session.flush()
@@ -628,6 +630,12 @@ async def update_api_key(current_user, api_key_id):
             current_budget = api_key.budget or 0.0
             api_key.budget = current_budget + add_amount
         # If val is None or '', don't change the budget (use unlimited_budget flag instead)
+    if 'rpm' in data:
+        val = data['rpm']
+        api_key.rpm = int(val) if val is not None and val != '' else None
+    if 'tpm' in data:
+        val = data['tpm']
+        api_key.tpm = int(val) if val is not None and val != '' else None
     
     db.session.commit()
     db.session.refresh(api_key)
@@ -642,6 +650,8 @@ async def update_api_key(current_user, api_key_id):
             cached_info['unlimited_budget'] = api_key.unlimited_budget
             cached_info['is_active'] = api_key.is_active
             cached_info['allowed_models'] = api_key.allowed_models or []
+            cached_info['rpm'] = api_key.rpm
+            cached_info['tpm'] = api_key.tpm
             cache.set_api_key_info(api_key.key, cached_info)
         else:
             cache.invalidate_api_key_by_id(api_key_id)

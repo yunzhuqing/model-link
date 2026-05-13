@@ -87,6 +87,9 @@ class RateLimiter:
     WSP_RPM_PREFIX = "ratelimit:wsp:rpm:"
     WSP_TPM_PREFIX = "ratelimit:wsp:tpm:"
     WSP_APIKEY_PREFIX = "ratelimit:wsp:apikey:"
+    # API-key-level keys
+    AK_RPM_PREFIX = "ratelimit:ak:rpm:"
+    AK_TPM_PREFIX = "ratelimit:ak:tpm:"
 
     def __init__(self, backend: CacheBackend):
         self._backend = backend
@@ -117,6 +120,12 @@ class RateLimiter:
         if provider_id is not None:
             suffix += f":{provider_id}"
         return f"{self.WS_APIKEY_PREFIX}{workspace_id}:{model_name}{suffix}:{_minute_key()}"
+
+    def _ak_rpm_key(self, api_key_id: int) -> str:
+        return f"{self.AK_RPM_PREFIX}{api_key_id}:{_minute_key()}"
+
+    def _ak_tpm_key(self, api_key_id: int) -> str:
+        return f"{self.AK_TPM_PREFIX}{api_key_id}:{_minute_key()}"
 
     # ── Per-apikey tracking (group-level) ─────────────────────────────────
 
@@ -208,23 +217,29 @@ class RateLimiter:
         workspace_tpm: Optional[int] = None,
         ws_provider_type: str = "",
         ws_provider_id: Optional[int] = None,
+        apikey_rpm: Optional[int] = None,
+        apikey_tpm: Optional[int] = None,
+        api_key_id: Optional[int] = None,
     ) -> RateLimitResult:
         """
-        Reserve RPM + TPM quota at both group and workspace layers.
+        Reserve RPM + TPM quota at group, workspace, and API-key layers.
 
         Layer 1 (group): uses model_id/group_id based keys with rpm_limit/tpm_limit.
         Layer 2 (workspace): uses workspace_id/model_name/provider_type/provider_id keys
                              with workspace_rpm/workspace_tpm.
+        Layer 3 (api-key): uses api_key_id based keys with apikey_rpm/apikey_tpm.
 
-        If workspace limits are exceeded, group-level reservations are rolled back.
+        If limits are exceeded at any layer, all prior reservations are rolled back.
         Returns RateLimitResult.allowed=False with detail if limits exhausted.
         """
         has_rpm = rpm_limit is not None and rpm_limit > 0
         has_tpm = tpm_limit is not None and tpm_limit > 0
         has_ws_rpm = workspace_id is not None and workspace_rpm is not None and workspace_rpm > 0
         has_ws_tpm = workspace_id is not None and workspace_tpm is not None and workspace_tpm > 0
+        has_ak_rpm = api_key_id is not None and apikey_rpm is not None and apikey_rpm > 0
+        has_ak_tpm = api_key_id is not None and apikey_tpm is not None and apikey_tpm > 0
 
-        if not has_rpm and not has_tpm and not has_ws_rpm and not has_ws_tpm:
+        if not has_rpm and not has_tpm and not has_ws_rpm and not has_ws_tpm and not has_ak_rpm and not has_ak_tpm:
             return RateLimitResult(allowed=True)
 
         retry_msg = f"Retry after {_seconds_until_next_minute()}s."
@@ -232,6 +247,8 @@ class RateLimiter:
         remaining_tpm = None
         ws_remaining_rpm = None
         ws_remaining_tpm = None
+        ak_remaining_rpm = None
+        ak_remaining_tpm = None
 
         # ── Layer 1: Group-level RPM ──────────────────────────────────
         rpm_key = self._rpm_key(model_id, group_id) if has_rpm else None
@@ -304,6 +321,60 @@ class RateLimiter:
             self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, tpm_delta=estimated_input_tokens,
                                          provider_type=ws_provider_type, provider_id=ws_provider_id)
 
+        # ── Layer 3: API-key-level RPM ──────────────────────────────────
+        ak_rpm_key = self._ak_rpm_key(api_key_id) if has_ak_rpm else None
+        if has_ak_rpm:
+            ak_remaining_rpm = self._decr_rpm(ak_rpm_key, apikey_rpm)
+            if ak_remaining_rpm is not None and ak_remaining_rpm < 0:
+                # Roll back workspace + group
+                if has_ws_tpm:
+                    self._incr_tpm(ws_tpm_key, workspace_tpm, estimated_input_tokens)
+                    self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, tpm_delta=-estimated_input_tokens,
+                                                 provider_type=ws_provider_type, provider_id=ws_provider_id)
+                if has_ws_rpm:
+                    self._incr_rpm(ws_rpm_key, workspace_rpm)
+                    self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, rpm_delta=-1,
+                                                 provider_type=ws_provider_type, provider_id=ws_provider_id)
+                if has_rpm:
+                    self._incr_rpm(rpm_key, rpm_limit)
+                    self._update_apikey_usage(model_id, group_id, apikey_preview, rpm_delta=-1)
+                if has_tpm:
+                    self._incr_tpm(tpm_key, tpm_limit, estimated_input_tokens)
+                    self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=-estimated_input_tokens)
+                return RateLimitResult(
+                    allowed=False,
+                    detail=f"API key RPM limit exceeded (limit: {apikey_rpm}/min). {retry_msg}",
+                    remaining_rpm=0,
+                )
+
+        # ── Layer 3: API-key-level TPM ──────────────────────────────────
+        ak_tpm_key = self._ak_tpm_key(api_key_id) if has_ak_tpm else None
+        if has_ak_tpm:
+            ak_remaining_tpm = self._decr_tpm(ak_tpm_key, apikey_tpm, estimated_input_tokens)
+            if ak_remaining_tpm is not None and ak_remaining_tpm < 0:
+                # Roll back api-key RPM + workspace + group
+                if has_ak_rpm:
+                    self._incr_rpm(ak_rpm_key, apikey_rpm)
+                if has_ws_tpm:
+                    self._incr_tpm(ws_tpm_key, workspace_tpm, estimated_input_tokens)
+                    self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, tpm_delta=-estimated_input_tokens,
+                                                 provider_type=ws_provider_type, provider_id=ws_provider_id)
+                if has_ws_rpm:
+                    self._incr_rpm(ws_rpm_key, workspace_rpm)
+                    self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, rpm_delta=-1,
+                                                 provider_type=ws_provider_type, provider_id=ws_provider_id)
+                if has_rpm:
+                    self._incr_rpm(rpm_key, rpm_limit)
+                    self._update_apikey_usage(model_id, group_id, apikey_preview, rpm_delta=-1)
+                if has_tpm:
+                    self._incr_tpm(tpm_key, tpm_limit, estimated_input_tokens)
+                    self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=-estimated_input_tokens)
+                return RateLimitResult(
+                    allowed=False,
+                    detail=f"API key TPM limit exceeded (limit: {apikey_tpm}/min). {retry_msg}",
+                    remaining_tpm=0.0,
+                )
+
         return RateLimitResult(
             allowed=True,
             remaining_rpm=remaining_rpm,
@@ -325,11 +396,13 @@ class RateLimiter:
         workspace_tpm: Optional[int] = None,
         ws_provider_type: str = "",
         ws_provider_id: Optional[int] = None,
+        apikey_tpm: Optional[int] = None,
+        api_key_id: Optional[int] = None,
     ) -> None:
         """
         Reconcile pre-estimated TPM with actual usage after the request.
 
-        Applies to both group-level and workspace-level TPM counters.
+        Applies to group-level, workspace-level, and API-key-level TPM counters.
         - If pre > actual: over-reserved → refund the difference.
         - If pre < actual: under-reserved → deduct the additional amount.
         """
@@ -358,6 +431,14 @@ class RateLimiter:
                 self._decr_tpm(ws_tpm_key, workspace_tpm, abs(delta))
                 self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, tpm_delta=abs(delta),
                                              provider_type=ws_provider_type, provider_id=ws_provider_id)
+
+        # ── API-key-level reconciliation ───────────────────────────────
+        if api_key_id is not None and apikey_tpm is not None and apikey_tpm > 0:
+            ak_tpm_key = self._ak_tpm_key(api_key_id)
+            if delta > 0:
+                self._incr_tpm(ak_tpm_key, apikey_tpm, delta)
+            else:
+                self._decr_tpm(ak_tpm_key, apikey_tpm, abs(delta))
 
     # ── Status query ─────────────────────────────────────────────────────
 

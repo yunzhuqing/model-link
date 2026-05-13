@@ -54,67 +54,38 @@ from app.routes.gateway_helpers import (
 gateway_bp = Blueprint('gateway', __name__)
 
 
-def _reconcile_tpm(rate_limiter, rate_limit_info, response) -> None:
-    """Reconcile pre-estimated TPM with actual input tokens from the response.
+def _reconcile_tpm(rate_limiter, rate_limit_info, actual_input_tokens: int = 0) -> None:
+    """Reconcile pre-estimated TPM with actual input tokens after the request.
 
     rate_limit_info = (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview,
-                       workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id)
+                       workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id,
+                       apikey_rpm, apikey_tpm, api_key_id)
     """
     if rate_limiter is None or rate_limit_info is None:
         return
+    if actual_input_tokens <= 0:
+        return
     try:
         model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, \
-            workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id = rate_limit_info
-        actual_input_tokens = 0
-        if response and response.usage:
-            actual_input_tokens = response.usage.prompt_tokens or 0
-        if actual_input_tokens > 0:
-            rate_limiter.reconcile(
-                model_id=model_id,
-                group_id=group_id,
-                tpm_limit=tpm_limit,
-                pre_estimated_tokens=estimated_tokens,
-                actual_input_tokens=actual_input_tokens,
-                apikey_preview=apikey_preview,
-                workspace_id=workspace_id,
-                model_name=model_name,
-                workspace_tpm=workspace_tpm,
-                ws_provider_type=ws_provider_type,
-                ws_provider_id=ws_provider_id,
-            )
+            workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id, \
+            apikey_rpm, apikey_tpm, api_key_id = rate_limit_info
+        rate_limiter.reconcile(
+            model_id=model_id,
+            group_id=group_id,
+            tpm_limit=tpm_limit,
+            pre_estimated_tokens=estimated_tokens,
+            actual_input_tokens=actual_input_tokens,
+            apikey_preview=apikey_preview,
+            workspace_id=workspace_id,
+            model_name=model_name,
+            workspace_tpm=workspace_tpm,
+            ws_provider_type=ws_provider_type,
+            ws_provider_id=ws_provider_id,
+            apikey_tpm=apikey_tpm,
+            api_key_id=api_key_id,
+        )
     except Exception as e:
         logger.warning(f"[rate_limiter] TPM reconciliation failed: {e}")
-
-
-def _reconcile_tpm_from_usage(rate_limiter, rate_limit_info, usage) -> None:
-    """Reconcile pre-estimated TPM with actual input tokens from a UsageInfo object.
-
-    Used for streaming responses where we get UsageInfo directly (not ChatResponse).
-    rate_limit_info = (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview,
-                       workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id)
-    """
-    if rate_limiter is None or rate_limit_info is None:
-        return
-    try:
-        model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, \
-            workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id = rate_limit_info
-        actual_input_tokens = usage.prompt_tokens if usage else 0
-        if actual_input_tokens > 0:
-            rate_limiter.reconcile(
-                model_id=model_id,
-                group_id=group_id,
-                tpm_limit=tpm_limit,
-                pre_estimated_tokens=estimated_tokens,
-                actual_input_tokens=actual_input_tokens,
-                apikey_preview=apikey_preview,
-                workspace_id=workspace_id,
-                model_name=model_name,
-                workspace_tpm=workspace_tpm,
-                ws_provider_type=ws_provider_type,
-                ws_provider_id=ws_provider_id,
-            )
-    except Exception as e:
-        logger.warning(f"[rate_limiter] TPM reconciliation (stream) failed: {e}")
 
 
 # ============== 统一请求处理 ==============
@@ -231,7 +202,12 @@ async def _handle_request(adapter):
                 ws_provider_type = ws_rl.provider_type
                 ws_provider_id_val = ws_rl.provider_id
 
-        has_any_limit = rpm_limit or tpm_limit or workspace_rpm or workspace_tpm
+        # API-key-level rate limits
+        apikey_rpm = getattr(api_key, 'rpm', None) if api_key else None
+        apikey_tpm = getattr(api_key, 'tpm', None) if api_key else None
+        api_key_id = api_key.id if api_key else None
+
+        has_any_limit = rpm_limit or tpm_limit or workspace_rpm or workspace_tpm or apikey_rpm or apikey_tpm
         if has_any_limit:
             # Estimate input tokens
             messages_list = data.get('messages', [])
@@ -260,6 +236,9 @@ async def _handle_request(adapter):
                 workspace_tpm=workspace_tpm,
                 ws_provider_type=ws_provider_type,
                 ws_provider_id=ws_provider_id_val,
+                apikey_rpm=apikey_rpm,
+                apikey_tpm=apikey_tpm,
+                api_key_id=api_key_id,
             )
             if not result.allowed:
                 _log_error("handle_request", 429, result.detail or 'Rate limit exceeded', {"model": model_name})
@@ -272,6 +251,7 @@ async def _handle_request(adapter):
                 estimated_tokens, apikey_preview,
                 workspace_id, model_name_for_ws, workspace_tpm,
                 ws_provider_type, ws_provider_id_val,
+                apikey_rpm, apikey_tpm, api_key_id,
             )
     except ModelNotFoundError:
         # Model not resolved for rate-limiting — skip rate limiting and let
@@ -347,7 +327,7 @@ async def _handle_request(adapter):
                 finally:
                     if last_usage is not None:
                         try:
-                            _reconcile_tpm_from_usage(rate_limiter, rate_limit_info, last_usage)
+                            _reconcile_tpm(rate_limiter, rate_limit_info, last_usage.prompt_tokens if last_usage else 0)
                         except Exception as _e:
                             logger.warning(f"[rate_limiter] Stream TPM reconciliation failed: {_e}")
                         try:
@@ -409,7 +389,7 @@ async def _handle_request(adapter):
                 })
                 tracer.end()
 
-            _reconcile_tpm(rate_limiter, rate_limit_info, response)
+            _reconcile_tpm(rate_limiter, rate_limit_info, response.usage.prompt_tokens if response and response.usage else 0)
 
             try:
                 from app.usagerecord.usage_service import record_usage

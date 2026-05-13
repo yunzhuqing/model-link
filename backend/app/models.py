@@ -281,7 +281,11 @@ class ApiKey(db.Model):
     # Unlimited budget flag — if True, no budget deduction is performed.
     # The API key can spend without limit regardless of the budget field.
     unlimited_budget = db.Column(db.Boolean, default=False, nullable=False)
-    
+
+    # API-key-level rate limits (null = no limit)
+    rpm = db.Column(db.Integer, nullable=True)
+    tpm = db.Column(db.Integer, nullable=True)
+
     # Workspace
     workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
     
@@ -312,6 +316,8 @@ class ApiKey(db.Model):
             'tags': self.tags or [],
             'budget': self.budget,
             'unlimited_budget': self.unlimited_budget,
+            'rpm': self.rpm,
+            'tpm': self.tpm,
         }
 
     def to_dict_simple(self):
