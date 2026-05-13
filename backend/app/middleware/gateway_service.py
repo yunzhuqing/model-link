@@ -56,8 +56,11 @@ class ModelNotFoundError(GatewayServiceError):
 
 class ProviderError(GatewayServiceError):
     """供应商错误"""
-    def __init__(self, message: str, status_code: int = 500, error_data: Optional[dict] = None):
+    def __init__(self, message: str, status_code: int = 500, error_data: Optional[dict] = None,
+                 provider_id: Optional[int] = None, provider_name: Optional[str] = None):
         self.error_data = error_data
+        self.provider_id = provider_id
+        self.provider_name = provider_name
         super().__init__(message, status_code)
 
 
@@ -344,13 +347,21 @@ class GatewayService:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
+                                     provider_id=resolved.db_provider.id,
+                                     provider_name=resolved.db_provider.name)
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
-            raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
+            raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
         except httpx.HTTPError as e:
-            raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
+            raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
         except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
 
     def stream_chat(
         self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
@@ -455,13 +466,21 @@ class GatewayService:
                 raise GatewayServiceError(str(e), status_code=400)
             except RuntimeError as e:
                 status_code, error_data = self._parse_provider_error(e)
-                raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+                raise ProviderError(str(e), status_code=status_code, error_data=error_data,
+                                    provider_id=resolved.db_provider.id,
+                                    provider_name=resolved.db_provider.name)
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
-                raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502)
+                raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
+                                    provider_id=resolved.db_provider.id,
+                                    provider_name=resolved.db_provider.name)
             except httpx.HTTPError as e:
-                raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502)
+                raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
+                                    provider_id=resolved.db_provider.id,
+                                    provider_name=resolved.db_provider.name)
             except Exception as e:
-                raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+                raise ProviderError(f"Provider error: {str(e)}", status_code=500,
+                                    provider_id=resolved.db_provider.id,
+                                    provider_name=resolved.db_provider.name)
 
         return _stream(), model_meta
 
@@ -722,9 +741,13 @@ class GatewayService:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
         except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
 
     def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None, tracer: Any = None) -> EmbeddingResponse:
         """
@@ -780,9 +803,13 @@ class GatewayService:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
         except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500)
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
+                                provider_id=resolved.db_provider.id,
+                                provider_name=resolved.db_provider.name)
 
     def generate_images(
         self,

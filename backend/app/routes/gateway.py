@@ -49,6 +49,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    _build_error_context,
 )
 
 gateway_bp = Blueprint('gateway', __name__)
@@ -108,32 +109,32 @@ async def _handle_request(adapter):
     # 1. 认证
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
-        _log_error("handle_request", status, error.get('detail', 'Not authenticated'))
+        _log_error("handle_request", status, error.get('detail', 'Not authenticated'), exc_info=True)
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     # 2. 获取请求数据
     data = await _parse_json_body()
 
     if not data:
-        _log_error("handle_request", 400, "Invalid or empty JSON request body")
+        _log_error("handle_request", 400, "Invalid or empty JSON request body", _build_error_context(api_key), exc_info=True)
         return jsonify(adapter.format_error_response('Invalid or empty JSON request body', 400)), 400
 
     model_name = data.get('model')
     if not model_name:
-        _log_error("handle_request", 400, "Model is required")
+        _log_error("handle_request", 400, "Model is required", _build_error_context(api_key), exc_info=True)
         return jsonify(adapter.format_error_response('Model is required', 400)), 400
 
     # 2.5. 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
-        _log_error("handle_request", 403, acl_error['detail'])
+        _log_error("handle_request", 403, acl_error['detail'], _build_error_context(api_key, model_name), exc_info=True)
         return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
 
     # 3. 使用适配器解析请求
     try:
         chat_request = adapter.parse_request(data)
     except Exception as e:
-        _log_error("handle_request", 400, f"Invalid request format: {e}")
+        _log_error("handle_request", 400, f"Invalid request format: {e}", _build_error_context(api_key, model_name), exc_info=True)
         return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
 
     # 4. 获取组 ID（用于访问控制）
@@ -241,7 +242,9 @@ async def _handle_request(adapter):
                 api_key_id=api_key_id,
             )
             if not result.allowed:
-                _log_error("handle_request", 429, result.detail or 'Rate limit exceeded', {"model": model_name})
+                rate_limit_extra = _build_error_context(api_key, model_name)
+                rate_limit_extra["rate_limit_detail"] = result.detail
+                _log_error("handle_request", 429, result.detail or 'Rate limit exceeded', rate_limit_extra)
                 return jsonify(adapter.format_error_response(
                     result.detail or 'Rate limit exceeded', 429
                 )), 429
@@ -411,19 +414,24 @@ async def _handle_request(adapter):
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
-        _log_error("handle_request", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
+        error_extra = _build_error_context(api_key, model_name,
+                                           provider_id=e.provider_id,
+                                           provider_name=e.provider_name)
+        if e.error_data:
+            error_extra["error_data"] = e.error_data
+        _log_error("handle_request", e.status_code, e.message, error_extra, exc_info=True)
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
-        _log_error("handle_request", e.status_code, e.message, {"model": model_name})
+        _log_error("handle_request", e.status_code, e.message, _build_error_context(api_key, model_name), exc_info=True)
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
-        _log_error("handle_request", e.status_code, e.message, {"model": model_name})
+        _log_error("handle_request", e.status_code, e.message, _build_error_context(api_key, model_name), exc_info=True)
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
 

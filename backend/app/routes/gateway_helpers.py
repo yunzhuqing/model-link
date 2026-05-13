@@ -47,14 +47,15 @@ async def _parse_json_body():
         return None
 
 
-def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None) -> None:
+def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None, exc_info: bool = False) -> None:
     """Log gateway errors with consistent format.
 
     Args:
         endpoint: The API endpoint name (e.g. 'chat_completions', 'embeddings')
         status_code: HTTP status code of the error response
         detail: Error detail message
-        extra: Optional additional context (e.g. model name, user info)
+        extra: Optional additional context (e.g. model name, api key info, user)
+        exc_info: If True, include exception stack trace in the log
     """
     log_data = {
         "endpoint": endpoint,
@@ -65,9 +66,42 @@ def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dic
         log_data.update(extra)
 
     if 500 <= status_code < 600:
-        logger.error(f"[gateway] {endpoint} error: {detail}", extra=log_data)
+        logger.error(f"[gateway] {endpoint} error: {detail}", extra=log_data, exc_info=exc_info)
     elif 400 <= status_code < 500:
-        logger.warning(f"[gateway] {endpoint} client error: {detail}", extra=log_data)
+        logger.error(f"[gateway] {endpoint} client error: {detail}", extra=log_data, exc_info=exc_info)
+
+
+def _build_error_context(api_key, model_name: Optional[str] = None,
+                        provider_id: Optional[int] = None,
+                        provider_name: Optional[str] = None) -> dict:
+    """Build a consistent error context dict with api_key and model info.
+
+    The API key value is truncated for security (first 8 chars only).
+
+    provider_id and provider_name, if given, represent the dynamically resolved
+    provider. If omitted, falls back to the API-key-suffix override from g.
+    """
+    ctx: dict = {}
+    if model_name:
+        ctx["model"] = model_name
+    if api_key:
+        ctx["apikey_preview"] = (api_key.key[:8] + "...") if api_key.key else "N/A"
+        ctx["apikey_name"] = api_key.name or "N/A"
+        ctx["apikey_id"] = api_key.id
+        if api_key.user_id:
+            ctx["user_id"] = api_key.user_id
+        if api_key.group_id:
+            ctx["group_id"] = api_key.group_id
+    # Resolved provider (explicit) takes precedence over API-key-suffix override
+    if provider_id is not None:
+        ctx["provider_id"] = provider_id
+        if provider_name:
+            ctx["provider_name"] = provider_name
+    else:
+        g_provider_id = g.get('api_key_provider_id', None)
+        if g_provider_id is not None:
+            ctx["provider_id"] = g_provider_id
+    return ctx
 
 
 def _check_allowed_models(api_key, model_name: str) -> Optional[dict]:
