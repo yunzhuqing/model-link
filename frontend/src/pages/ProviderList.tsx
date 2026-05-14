@@ -1406,11 +1406,7 @@ const ProviderList = ({ groupId, currentRole: _currentRole, permissions }: { gro
                   onSave={() => createModelMutation.mutate({ ...newModel, provider_id: provider.id })}
                   onCancel={() => { setShowAddModel(null); setNewModel(defaultModelState); }}
                   isLoading={createModelMutation.isPending}
-                  templates={filterTemplatesByProviderType(modelTemplates, provider.type).filter(
-                    (tpl) => !provider.models.some((m) =>
-                      m.name === tpl.name || m.name === tpl.alias || m.alias === tpl.name || (tpl.alias && m.alias === tpl.alias)
-                    )
-                  )}
+                  templates={filterTemplatesByProviderType(modelTemplates, provider.type)}
                 />
               )}
 

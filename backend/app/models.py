@@ -108,8 +108,8 @@ class WorkspaceRateLimit(db.Model):
     model_name = db.Column(db.String(100), nullable=False, index=True)       # Model name / alias used as key
     provider_type = db.Column(db.String(50), nullable=False, index=True)     # Provider type (e.g. "openai", "deepseek", "anthropic")
     provider_id = db.Column(db.Integer, db.ForeignKey("ml_providers.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL = shared for all accounts of this provider_type
-    rpm = db.Column(db.Integer, nullable=True, default=None)                 # Requests per minute (null = unlimited)
-    tpm = db.Column(db.Integer, nullable=True, default=None)                 # Tokens per minute (null = unlimited)
+    rpm = db.Column(db.BigInteger, nullable=True, default=None)                 # Requests per minute (null = unlimited)
+    tpm = db.Column(db.BigInteger, nullable=True, default=None)                 # Tokens per minute (null = unlimited)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -283,8 +283,8 @@ class ApiKey(db.Model):
     unlimited_budget = db.Column(db.Boolean, default=False, nullable=False)
 
     # API-key-level rate limits (null = no limit)
-    rpm = db.Column(db.Integer, nullable=True)
-    tpm = db.Column(db.Integer, nullable=True)
+    rpm = db.Column(db.BigInteger, nullable=True)
+    tpm = db.Column(db.BigInteger, nullable=True)
 
     # Workspace
     workspace_id = db.Column(db.Integer, db.ForeignKey("ml_workspaces.id"), nullable=True, index=True)
@@ -434,8 +434,8 @@ class ModelTemplate(db.Model):
     retirement_time = db.Column(db.DateTime, nullable=True, default=None)
 
     # Rate limits
-    rpm = db.Column(db.Integer, nullable=True, default=None)   # requests per minute (None = unlimited)
-    tpm = db.Column(db.Integer, nullable=True, default=None)   # tokens per minute (None = unlimited)
+    rpm = db.Column(db.BigInteger, nullable=True, default=None)   # requests per minute (None = unlimited)
+    tpm = db.Column(db.BigInteger, nullable=True, default=None)   # tokens per minute (None = unlimited)
 
     # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
     discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
@@ -555,8 +555,8 @@ class Model(db.Model):
     retirement_time = db.Column(db.DateTime, nullable=True, default=None)
 
     # Rate limits
-    rpm = db.Column(db.Integer, nullable=True, default=None)   # requests per minute (None = unlimited)
-    tpm = db.Column(db.Integer, nullable=True, default=None)   # tokens per minute (None = unlimited)
+    rpm = db.Column(db.BigInteger, nullable=True, default=None)   # requests per minute (None = unlimited)
+    tpm = db.Column(db.BigInteger, nullable=True, default=None)   # tokens per minute (None = unlimited)
 
     # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
     discount = db.Column(db.Numeric(10, 4), nullable=True, default=1)
