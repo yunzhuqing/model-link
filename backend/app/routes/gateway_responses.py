@@ -124,6 +124,17 @@ def _run_background_response(
     from flask.globals import _cv_app
     from flask.ctx import AppContext
     _token = _cv_app.set(AppContext(app))
+
+    # Propagate the originating request_id into the ContextVar so downstream
+    # helpers (logging filters, storage key namespacing, etc.) can read it
+    # even though Quart's `g` is unavailable in this thread.
+    _rid_token = None
+    if request_id:
+        try:
+            from app import request_id_var
+            _rid_token = request_id_var.set(request_id)
+        except Exception:
+            pass
     try:
         db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
         storage = get_storage_backend()
@@ -331,6 +342,12 @@ def _run_background_response(
             _bg_dao.mark_completed(db_url, response_id)
     finally:
         _cv_app.reset(_token)
+        if _rid_token is not None:
+            try:
+                from app import request_id_var
+                request_id_var.reset(_rid_token)
+            except Exception:
+                pass
 
 
 # ============== Responses API 端点 ==============

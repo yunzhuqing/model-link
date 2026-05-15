@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import client from '../api/client';
-import { Plus, Edit2, Trash2, ChevronDown, ChevronUp, X, Save, Database, Cpu, Link as LinkIcon } from 'lucide-react';
+import { Plus, Edit2, Trash2, ChevronDown, ChevronUp, X, Save, Database, Cpu, Link as LinkIcon, Check, Search } from 'lucide-react';
 import ProviderFormFields, { type ProviderFormData } from '../components/ProviderFormFields';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
@@ -381,6 +381,7 @@ const ModelForm = ({
   onCancel,
   isLoading,
   templates,
+  existingModels = [],
 }: {
   model: any;
   setModel: (m: any) => void;
@@ -388,9 +389,61 @@ const ModelForm = ({
   onCancel: () => void;
   isLoading: boolean;
   templates: ModelTemplate[];
+  existingModels?: { name: string; alias: string | null }[];
 }) => {
-  const templateProviders = Array.from(new Set(templates.map((t) => t.provider)));
   const [activeTpl, setActiveTpl] = useState<ModelTemplate | null>(null);
+  const [tplSearch, setTplSearch] = useState('');
+  const [tplOpen, setTplOpen] = useState(false);
+  const tplDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!tplOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (tplDropdownRef.current && !tplDropdownRef.current.contains(e.target as Node)) {
+        setTplOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [tplOpen]);
+
+  // Set of model names already added to this provider — used for the "added" badge
+  const addedNames = useMemo(
+    () => new Set(existingModels.map((m) => m.name.toLowerCase())),
+    [existingModels],
+  );
+
+  // Group + sort templates: by provider, then by label/name (case-insensitive)
+  const groupedTemplates = useMemo(() => {
+    const q = tplSearch.trim().toLowerCase();
+    const filtered = q
+      ? templates.filter(
+          (t) =>
+            t.label.toLowerCase().includes(q) ||
+            t.name.toLowerCase().includes(q) ||
+            (t.alias?.toLowerCase().includes(q) ?? false) ||
+            t.provider.toLowerCase().includes(q),
+        )
+      : templates;
+    const byProvider = new Map<string, ModelTemplate[]>();
+    for (const tpl of filtered) {
+      if (!byProvider.has(tpl.provider)) byProvider.set(tpl.provider, []);
+      byProvider.get(tpl.provider)!.push(tpl);
+    }
+    const sortedProviders = Array.from(byProvider.keys()).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    );
+    return sortedProviders.map((p) => ({
+      provider: p,
+      items: byProvider
+        .get(p)!
+        .slice()
+        .sort((a, b) =>
+          (a.label || a.name).localeCompare(b.label || b.name, undefined, { sensitivity: 'base' }),
+        ),
+    }));
+  }, [templates, tplSearch]);
 
   const applyTemplate = (tpl: ModelTemplate) => {
     setModel({
@@ -432,34 +485,87 @@ const ModelForm = ({
 
   return (
     <div className="bg-white p-5 rounded-xl border border-slate-200 mb-3">
-      {/* Template selector */}
-      <div className="mb-4 pb-4 border-b border-slate-100">
+      {/* Template selector — searchable dropdown with "added" indicator */}
+      <div className="mb-4 pb-4 border-b border-slate-100" ref={tplDropdownRef}>
         <label className="block text-sm font-medium text-slate-700 mb-2">
           Quick Fill from Template <span className="text-slate-400 font-normal">(optional)</span>
         </label>
-        <select
-          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-          value={activeTpl?.id ?? ''}
-          onChange={(e) => {
-            const id = parseInt(e.target.value);
-            if (isNaN(id)) { setActiveTpl(null); return; }
-            const tpl = templates.find((t) => t.id === id);
-            if (!tpl) return;
-            setActiveTpl(tpl);
-            applyTemplate(tpl);
-          }}
-        >
-          <option value="">— Select a template —</option>
-          {templateProviders.map((providerName) => (
-            <optgroup key={providerName} label={providerName}>
-              {templates
-                .filter((tpl) => tpl.provider === providerName)
-                .map((tpl) => (
-                  <option key={tpl.id} value={tpl.id}>{tpl.label}</option>
-                ))}
-            </optgroup>
-          ))}
-        </select>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setTplOpen((v) => !v)}
+            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-left flex items-center justify-between hover:bg-white focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+          >
+            <span className={activeTpl ? 'text-slate-800' : 'text-slate-400'}>
+              {activeTpl ? `${activeTpl.provider} / ${activeTpl.label}` : '— Select a template —'}
+            </span>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${tplOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {tplOpen && (
+            <div className="absolute z-20 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-80 overflow-hidden flex flex-col">
+              <div className="p-2 border-b border-slate-100 sticky top-0 bg-white">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    autoFocus
+                    type="text"
+                    value={tplSearch}
+                    onChange={(e) => setTplSearch(e.target.value)}
+                    placeholder="Search templates by name, alias, or provider…"
+                    className="w-full pl-8 pr-2 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  />
+                </div>
+              </div>
+              <div className="overflow-y-auto">
+                {groupedTemplates.length === 0 ? (
+                  <div className="px-3 py-6 text-center text-sm text-slate-400">No matching templates</div>
+                ) : (
+                  groupedTemplates.map(({ provider, items }) => (
+                    <div key={provider}>
+                      <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 bg-slate-50 sticky top-0">{provider}</div>
+                      {items.map((tpl) => {
+                        const added = addedNames.has(tpl.name.toLowerCase());
+                        const selected = activeTpl?.id === tpl.id;
+                        return (
+                          <button
+                            key={tpl.id}
+                            type="button"
+                            onClick={() => {
+                              setActiveTpl(tpl);
+                              applyTemplate(tpl);
+                              setTplOpen(false);
+                              setTplSearch('');
+                            }}
+                            className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between gap-2 hover:bg-blue-50 ${selected ? 'bg-blue-50' : ''}`}
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="truncate text-slate-700">{tpl.label}</span>
+                              {tpl.name !== tpl.label && (
+                                <span className="text-xs text-slate-400 truncate">({tpl.name})</span>
+                              )}
+                            </span>
+                            {added && (
+                              <span
+                                className="inline-flex items-center gap-1 text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0"
+                                title="Already added — adding again lets you set a different alias"
+                              >
+                                <Check className="w-3 h-3" /> Added
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <p className="mt-1.5 text-xs text-slate-400">
+          Models marked <span className="inline-flex items-center gap-0.5 text-emerald-600"><Check className="w-3 h-3" />Added</span> are already in this provider — you can add them again with a different alias.
+        </p>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -1407,6 +1513,7 @@ const ProviderList = ({ groupId, currentRole: _currentRole, permissions }: { gro
                   onCancel={() => { setShowAddModel(null); setNewModel(defaultModelState); }}
                   isLoading={createModelMutation.isPending}
                   templates={filterTemplatesByProviderType(modelTemplates, provider.type)}
+                  existingModels={provider.models}
                 />
               )}
 
@@ -1421,6 +1528,7 @@ const ProviderList = ({ groupId, currentRole: _currentRole, permissions }: { gro
                         onCancel={() => setEditingModel(null)}
                         isLoading={updateModelMutation.isPending}
                         templates={filterTemplatesByProviderType(modelTemplates, provider.type)}
+                        existingModels={provider.models.filter((m) => m.id !== model.id)}
                       />
                     ) : (
                       <ModelCard

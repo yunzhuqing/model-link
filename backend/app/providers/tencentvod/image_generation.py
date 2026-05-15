@@ -39,6 +39,96 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.utils import gen_id, json_loads
 from app.providers.image_size_utils import resolve_image_size
 
+import base64 as _base64
+import logging
+import os
+
+logger = logging.getLogger("gateway")
+
+_MIME_EXT = {
+    "image/jpeg": "jpg",
+    "image/jpg":  "jpg",
+    "image/png":  "png",
+    "image/gif":  "gif",
+    "image/webp": "webp",
+    "image/bmp":  "bmp",
+}
+
+
+def _resolve_request_id() -> str:
+    """
+    Best-effort lookup of the current request id, in priority order:
+
+    1. Quart's ``g.request_id`` — set by ``_assign_request_id`` before_request hook.
+    2. ``request_id_var`` ContextVar — populated for background-thread workers.
+    3. Fallback random id (only when the call happens completely outside any
+       request — should not occur in normal operation).
+    """
+    try:
+        from quart import g
+        rid = getattr(g, "request_id", None)
+        if rid:
+            return str(rid)
+    except Exception:
+        pass
+    try:
+        from app import request_id_var
+        rid = request_id_var.get()
+        if rid and rid != "-":
+            return str(rid)
+    except Exception:
+        pass
+    return gen_id("req")
+
+
+def _upload_base64_image_to_storage(
+    b64_data: str,
+    media_type: str,
+    index: int,
+) -> Optional[str]:
+    """
+    Upload a base64-encoded image to the configured storage backend and
+    return a publicly reachable URL that TencentVOD can fetch.
+
+    Storage keys are namespaced under the current ``request_id`` so all
+    reference images for one request share a common prefix — this makes
+    them easy to correlate with logs / traces and clean up later.
+
+    LocalStorageBackend.write_binary returns a relative path like
+    ``/v1/files/<key>`` which is not reachable from TencentCloud — in that
+    case the ``PUBLIC_BASE_URL`` environment variable is prepended to form
+    an absolute URL.  S3 backends already return a full URL and are passed
+    through unchanged.
+
+    Returns None on any failure (callers should skip the image and warn).
+    """
+    try:
+        from app.storage.factory import get_storage_backend
+        raw = _base64.b64decode(b64_data)
+        ext = _MIME_EXT.get((media_type or "").lower(), "jpg")
+        request_id = _resolve_request_id()
+        key = f"{request_id}_ref{index}.{ext}"
+        storage = get_storage_backend()
+        url = storage.write_binary(key, raw, media_type or "image/jpeg")
+    except Exception as exc:
+        logger.warning(
+            f"TencentVOD image_generation: failed to upload base64 image to storage: {exc}"
+        )
+        return None
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+
+    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    if not public_base:
+        logger.warning(
+            "TencentVOD image_generation: storage returned a relative URL "
+            f"({url!r}) but PUBLIC_BASE_URL is not set — TencentCloud cannot "
+            "fetch the image. Configure PUBLIC_BASE_URL or use an S3 backend."
+        )
+        return None
+    return f"{public_base}{url if url.startswith('/') else '/' + url}"
+
 
 # =============================================================================
 # 常量
@@ -760,6 +850,7 @@ def execute_tencentvod_image_generation(
     negative_prompt = metadata.get("negative_prompt", "")
     msg_file_urls: List[str] = []   # image URLs extracted from message content
     msg_file_ids: List[str] = []    # file IDs (non-URL strings) from message content
+    _ref_image_index = 0
 
     for msg in reversed(messages):
         role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
@@ -778,9 +869,17 @@ def execute_tencentvod_image_generation(
                             else:
                                 msg_file_ids.append(block.url)
                         elif block.type == ContentType.IMAGE_BASE64 and block.data:
-                            # Base64 images cannot be sent as FileId/Url to TencentVOD;
-                            # skip silently (or could upload to VOD first if needed).
-                            pass
+                            # TencentVOD only accepts public URLs for reference images.
+                            # Persist the base64 payload to storage and pass the
+                            # resulting URL through FileInfos.
+                            uploaded_url = _upload_base64_image_to_storage(
+                                block.data,
+                                block.media_type or "image/jpeg",
+                                _ref_image_index,
+                            )
+                            _ref_image_index += 1
+                            if uploaded_url:
+                                msg_file_urls.append(uploaded_url)
                     elif hasattr(block, "text") and block.text:
                         text_parts.append(block.text)
                 prompt = " ".join(text_parts)

@@ -146,10 +146,11 @@ def get_current_user_or_api_key():
     token = None
     if x_api_key:
         token = x_api_key
-    elif auth_header.startswith('Bearer '):
-        token = auth_header.split(' ')[1]
     else:
         token = auth_header
+
+    if token and token.lower().startswith('bearer '):
+        token = token[7:].strip()
 
     # Parse provider ID suffix from API key
     # Format: sk-xxxxxxxxx-{providerId}
