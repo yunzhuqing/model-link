@@ -19,6 +19,7 @@ def _get_client(config: dict):
         config["public_key"],
         config["secret_key"],
         config.get("endpoint", "https://cloud.langfuse.com"),
+        config.get("region", "cn"),
     )
     if key not in _client_pool:
         with _client_lock:

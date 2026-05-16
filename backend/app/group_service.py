@@ -22,10 +22,10 @@ def _cache_key(group_id: int) -> str:
     return f"{_GROUP_CACHE_PREFIX}{group_id}"
 
 
-def _validate_monitoring_config(config: dict) -> str | None:
-    """Validate a monitoring_config dict. Returns error string or None."""
+def _validate_monitoring_config_item(config: dict) -> str | None:
+    """Validate a single monitoring config dict. Returns error string or None."""
     if not isinstance(config, dict):
-        return "monitoring_config must be an object"
+        return "monitoring_config item must be an object"
     tracer_type = config.get("type")
     if not tracer_type:
         return "monitoring_config.type is required"
@@ -36,6 +36,21 @@ def _validate_monitoring_config(config: dict) -> str | None:
             return "monitoring_config.secret_key is required for langfuse"
     else:
         return f"Unknown monitoring type: {tracer_type}"
+    return None
+
+
+def _validate_monitoring_config(config: list | dict | None) -> str | None:
+    """Validate monitoring_config. Accepts list, legacy dict, or None."""
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return _validate_monitoring_config_item(config)
+    if not isinstance(config, list):
+        return "monitoring_config must be a list, object, or null"
+    for i, item in enumerate(config):
+        err = _validate_monitoring_config_item(item)
+        if err:
+            return f"monitoring_config[{i}]: {err}"
     return None
 
 
@@ -72,12 +87,22 @@ def get_group_config(group_id: int) -> dict | None:
     return data
 
 
-def get_group_monitoring_config(group_id: int) -> dict | None:
-    """Shortcut: return only monitoring_config for a group, or None."""
+def get_group_monitoring_config(group_id: int) -> list[dict] | None:
+    """Return monitoring_config for a group as a list, or None.
+
+    Normalizes legacy single-dict configs to a single-element list.
+    """
     config = get_group_config(group_id)
     if config is None:
         return None
-    return config.get("monitoring_config")
+    mc = config.get("monitoring_config")
+    if mc is None:
+        return None
+    if isinstance(mc, dict):
+        return [mc]
+    if isinstance(mc, list):
+        return mc
+    return None
 
 
 def get_group_by_id(group_id: int) -> Group | None:
@@ -140,13 +165,16 @@ def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
         mc = kwargs["monitoring_config"]
         if mc is None:
             group.monitoring_config = None
-        else:
-            existing = group.monitoring_config or {}
-            merged = {**existing, **mc}
-            err = _validate_monitoring_config(merged)
+        elif isinstance(mc, dict):
+            # Legacy single-object config
+            group.monitoring_config = [mc]
+        elif isinstance(mc, list):
+            err = _validate_monitoring_config(mc)
             if err:
                 return None, err
-            group.monitoring_config = merged
+            group.monitoring_config = mc
+        else:
+            return None, "monitoring_config must be a list, object, or null"
 
     if "tags" in kwargs:
         group.tags = kwargs["tags"]

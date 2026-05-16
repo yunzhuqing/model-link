@@ -86,6 +86,7 @@ export interface ApiKeyModelsResponse {
 export interface MonitoringConfig {
   type: string;
   endpoint?: string;
+  region?: string;
   public_key?: string;
   secret_key?: string;
 }
@@ -95,7 +96,7 @@ export interface Group {
   name: string;
   description: string | null;
   workspace_id?: number | null;
-  monitoring_config?: MonitoringConfig | null;
+  monitoring_config?: MonitoringConfig[] | null;
   created_at: string;
   user_count?: number;
   api_key_count?: number;
@@ -115,7 +116,7 @@ export interface GroupUpdate {
   name?: string;
   description?: string;
   workspace_id?: number | null;
-  monitoring_config?: MonitoringConfig | null;
+  monitoring_config?: MonitoringConfig[] | null;
   tags?: { name: string; value: string }[];
 }
 

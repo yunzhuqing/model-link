@@ -19,7 +19,7 @@ interface Group {
   id: number;
   name: string;
   description: string;
-  monitoring_config?: MonitoringConfigType | null;
+  monitoring_config?: MonitoringConfigType[] | null;
   created_at: string;
   users?: Member[];
 }
@@ -420,7 +420,7 @@ export default function GroupDetail() {
       {activeTab === 'monitoring' && (
         <MonitoringConfig
           groupId={parseInt(id!)}
-          monitoringConfig={group?.monitoring_config}
+          monitoringConfigs={group?.monitoring_config}
         />
       )}
     </div>
