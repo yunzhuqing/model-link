@@ -175,6 +175,6 @@ def _do_sync(app) -> None:
                 logger.info(f"[usage_sync] Incrementally synced {updated_count} API key(s) usage stats to DB")
 
     except Exception as exc:
-        logger.error(f"[usage_sync] DB sync error: {exc}")
+        logger.error(f"[usage_sync] DB sync error: {exc}", exc_info=True)
     finally:
         engine.dispose()

@@ -510,6 +510,36 @@ async def list_workspaces(current_user):
     return jsonify([ws.to_dict() for ws in workspaces])
 
 
+@providers_bp.route('/workspaces/<int:workspace_id>/users', methods=['GET'])
+@token_required
+async def list_workspace_users(current_user, workspace_id):
+    """List users in a workspace (members of any group within the workspace). Supports ?search= query."""
+    from app.models import Workspace, User, UserGroup, Group
+
+    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if not ws:
+        return jsonify({'detail': 'Workspace not found'}), 404
+
+    search = request.args.get('search', '').strip()
+
+    query = (
+        db.session.query(User)
+        .join(UserGroup, UserGroup.user_id == User.id)
+        .join(Group, Group.id == UserGroup.group_id)
+        .filter(Group.workspace_id == workspace_id)
+        .distinct()
+    )
+
+    if search:
+        pattern = f'%{search}%'
+        query = query.filter(
+            db.or_(User.username.ilike(pattern), User.email.ilike(pattern))
+        )
+
+    users = query.limit(20).all()
+    return jsonify([{'id': u.id, 'username': u.username, 'email': u.email} for u in users])
+
+
 @providers_bp.route('/workspaces/<int:workspace_id>/rate-limits', methods=['GET'])
 @token_required
 async def get_workspace_rate_limits(current_user, workspace_id):

@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import {
   ArrowLeft, Edit2, Trash2, Key, Database,
-  Users, UserPlus, Mail, BarChart3, Cpu, List, Gauge, Activity,
+  Users, UserPlus, Search, BarChart3, Cpu, List, Gauge, Activity,
 } from 'lucide-react';
 import ProviderList from './ProviderList';
 import ApiKeyList from './ApiKeyList';
@@ -19,6 +19,7 @@ interface Group {
   id: number;
   name: string;
   description: string;
+  workspace_id?: number;
   monitoring_config?: MonitoringConfigType[] | null;
   created_at: string;
   users?: Member[];
@@ -39,9 +40,12 @@ export default function GroupDetail() {
 
   const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage' | 'rateLimits' | 'monitoring'>('statistics');
   const [showInviteMember, setShowInviteMember] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteSearch, setInviteSearch] = useState('');
+  const [searchResults, setSearchResults] = useState<Member[]>([]);
+  const [searching, setSearching] = useState(false);
   const [inviteRole, setInviteRole] = useState<'root' | 'admin' | 'member'>('member');
   const [editingMemberRole, setEditingMemberRole] = useState<number | null>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Queries ─────────────────────────────────────────────────────────────────
 
@@ -109,7 +113,8 @@ export default function GroupDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['group', id] });
       setShowInviteMember(false);
-      setInviteEmail('');
+      setInviteSearch('');
+      setSearchResults([]);
       setInviteRole('member');
     },
   });
@@ -137,6 +142,42 @@ export default function GroupDetail() {
       default: return 'bg-slate-100 text-slate-600 border-slate-200';
     }
   };
+
+  const handleInviteSearch = (value: string) => {
+    setInviteSearch(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+
+    if (!value.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    if (!group?.workspace_id) return;
+
+    searchTimerRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await client.get(`/api/workspaces/${group.workspace_id}/users`, {
+          params: { search: value.trim() },
+        });
+        const memberIds = (group.users || []).map((m) => m.id);
+        setSearchResults((res.data as Member[]).filter((u) => !memberIds.includes(u.id)));
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+  };
+
+  const selectUser = (user: Member) => {
+    setInviteSearch(user.email);
+    setSearchResults([]);
+  };
+
+  const sortedUsers = useMemo(() => {
+    return [...(group?.users || [])].sort((a, b) => ROLE_RANK[b.role] - ROLE_RANK[a.role]);
+  }, [group?.users]);
 
   // ── Loading / Not Found ──────────────────────────────────────────────────────
 
@@ -250,18 +291,46 @@ export default function GroupDetail() {
           {showInviteMember && (
             <div className="bg-slate-50 p-4 rounded-xl mb-4">
               <div className="flex gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.emailLabel')}</label>
+                <div className="flex-1 relative">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">{t('group.searchMember')}</label>
                   <div className="relative">
-                    <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
-                      type="email"
-                      placeholder={t('group.emailPlaceholder')}
+                      type="text"
+                      placeholder={t('group.searchMemberPlaceholder')}
                       className="w-full pl-10 p-3 bg-white border border-slate-200 rounded-xl text-sm"
-                      value={inviteEmail}
-                      onChange={(e) => setInviteEmail(e.target.value)}
+                      value={inviteSearch}
+                      onChange={(e) => handleInviteSearch(e.target.value)}
+                      autoFocus
                     />
                   </div>
+                  {/* Search results dropdown */}
+                  {(searchResults.length > 0 || searching) && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                      {searching ? (
+                        <div className="p-3 text-sm text-slate-400">{t('common.searching')}</div>
+                      ) : (
+                        searchResults.map((user) => (
+                          <button
+                            key={user.id}
+                            type="button"
+                            className="w-full px-4 py-3 text-left hover:bg-slate-50 flex items-center space-x-3 border-b border-slate-100 last:border-b-0"
+                            onClick={() => selectUser(user)}
+                          >
+                            <div className="w-8 h-8 bg-gradient-to-br from-violet-500 to-purple-600 rounded-full flex items-center justify-center flex-shrink-0">
+                              <span className="text-white font-semibold text-xs">
+                                {(user.username || user.email).charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-slate-700 truncate">{user.username}</div>
+                              <div className="text-xs text-slate-400 truncate">{user.email}</div>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="mt-4">
@@ -278,14 +347,14 @@ export default function GroupDetail() {
               </div>
               <div className="flex space-x-3">
                 <button
-                  onClick={() => inviteMemberMutation.mutate({ email: inviteEmail, role: inviteRole })}
-                  disabled={!inviteEmail || inviteMemberMutation.isPending}
+                  onClick={() => inviteMemberMutation.mutate({ email: inviteSearch, role: inviteRole })}
+                  disabled={!inviteSearch || inviteMemberMutation.isPending}
                   className="bg-violet-500 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-600 disabled:bg-slate-300"
                 >
                   {inviteMemberMutation.isPending ? t('group.inviting') : t('group.sendInvite')}
                 </button>
                 <button
-                  onClick={() => { setShowInviteMember(false); setInviteEmail(''); setInviteRole('member'); }}
+                  onClick={() => { setShowInviteMember(false); setInviteSearch(''); setSearchResults([]); setInviteRole('member'); }}
                   className="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm hover:bg-slate-300"
                 >
                   {t('common.cancel')}
@@ -298,7 +367,7 @@ export default function GroupDetail() {
           )}
 
           <div className="space-y-3">
-            {group?.users?.map((member) => (
+            {sortedUsers.map((member) => (
               <div key={member.id} className="bg-slate-50 p-4 rounded-xl flex items-center justify-between">
                 <div className="flex items-center space-x-4">
                   <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-full flex items-center justify-center">
