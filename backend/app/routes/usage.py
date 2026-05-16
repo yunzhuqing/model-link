@@ -731,3 +731,61 @@ async def get_summary():
         "by_api_key": by_api_key,
         "time_series": time_series,
     })
+
+
+# ── Sync control endpoint ────────────────────────────────────────────────────
+
+@usage_bp.route('/api/usage/sync', methods=['POST'])
+async def control_sync():
+    """
+    Start or stop the usage sync service manually.
+
+    Body: {"action": "start"} or {"action": "stop"}
+
+    Requires JWT authentication.
+    """
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    data = await request.get_json()
+    if not data or 'action' not in data:
+        return jsonify({"detail": "Missing 'action' field. Use 'start' or 'stop'."}), 400
+
+    action = data['action'].lower()
+    if action not in ('start', 'stop'):
+        return jsonify({"detail": "Invalid action. Use 'start' or 'stop'."}), 400
+
+    from quart import current_app
+    from app.usagerecord.sync_service import start_usage_sync, stop_usage_sync
+
+    if action == 'start':
+        start_usage_sync(current_app)
+        return jsonify({"status": "ok", "message": "Usage sync service started"})
+    else:
+        stop_usage_sync()
+        return jsonify({"status": "ok", "message": "Usage sync service stopped"})
+
+
+@usage_bp.route('/api/usage/sync/run', methods=['POST'])
+async def run_sync_once():
+    """
+    Trigger a single usage sync run immediately.
+
+    Requires JWT authentication.
+    """
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    from quart import current_app
+    from app.usagerecord.sync_service import _do_sync
+
+    try:
+        _do_sync(current_app)
+        return jsonify({"status": "ok", "message": "Sync completed"})
+    except Exception as e:
+        logger.error(f"[usage_sync] Manual sync error: {e}", exc_info=True)
+        return jsonify({"status": "error", "detail": str(e)}), 500

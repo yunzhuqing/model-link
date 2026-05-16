@@ -612,6 +612,8 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
                         image_count=int(getattr(record, 'output_image_number', 0) or 0),
                         video_count=int(getattr(record, 'output_video_number', 0) or 0),
                         audio_seconds=float(getattr(record, 'output_audio_seconds', 0.0) or 0.0),
+                        web_search_requests=int(getattr(record, 'web_search_requests', 0) or 0),
+                        credits=float(getattr(record, 'credits', 0.0) or 0.0),
                     )
                 except Exception as _ce:
                     logger.debug(f"[cache] Failed to update cache after usage record: {_ce}")

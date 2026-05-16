@@ -416,6 +416,8 @@ class CacheService:
         image_count: int = 0,
         video_count: int = 0,
         audio_seconds: float = 0.0,
+        web_search_requests: int = 0,
+        credits: float = 0.0,
     ) -> None:
         """
         Atomically increment usage stats fields in the cached API key info.
@@ -442,6 +444,10 @@ class CacheService:
             self._backend.incr_float(cache_key, "total_video_count", float(video_count))
         if audio_seconds > 0:
             self._backend.incr_float(cache_key, "total_audio_seconds", audio_seconds)
+        if web_search_requests > 0:
+            self._backend.incr_float(cache_key, "total_web_search_requests", float(web_search_requests))
+        if credits > 0:
+            self._backend.incr_float(cache_key, "total_credits", credits)
 
     # ── Utility ───────────────────────────────────────────────────────────
 
@@ -499,6 +505,8 @@ class CacheService:
             'total_image_count': getattr(api_key_obj, 'total_image_count', 0) or 0,
             'total_video_count': getattr(api_key_obj, 'total_video_count', 0) or 0,
             'total_audio_seconds': getattr(api_key_obj, 'total_audio_seconds', 0.0) or 0.0,
+            'total_web_search_requests': getattr(api_key_obj, 'total_web_search_requests', 0) or 0,
+            'total_credits': getattr(api_key_obj, 'total_credits', 0.0) or 0.0,
         }
 
 

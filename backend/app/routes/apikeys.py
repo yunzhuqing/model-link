@@ -621,7 +621,15 @@ async def update_api_key(current_user, api_key_id):
     if 'tags' in data:
         api_key.tags = data['tags'] if data['tags'] else None
     if 'unlimited_budget' in data:
-        api_key.unlimited_budget = bool(data['unlimited_budget'])
+        new_unlimited = bool(data['unlimited_budget'])
+        if new_unlimited and not api_key.unlimited_budget:
+            # Turning ON unlimited budget: zero out all active budget records
+            db.session.query(ApiKeyBudget).filter(
+                ApiKeyBudget.api_key_id == api_key_id,
+                ApiKeyBudget.remaining > 0,
+            ).update({ApiKeyBudget.remaining: 0.0})
+            api_key.last_synced_remaining = 0.0
+        api_key.unlimited_budget = new_unlimited
     if 'budget' in data:
         val = data['budget']
         if val is not None and val != '':
