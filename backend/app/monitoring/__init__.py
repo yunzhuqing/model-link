@@ -37,14 +37,27 @@ def _create_single_tracer(config: dict) -> BaseTracer | None:
 
 
 def _select_config(configs: list[dict]) -> dict | None:
-    """Select the config matching ``MODEL_LINK_REGION``, or the first entry."""
+    """Select the config matching region (from MODEL_LINK_REGION or APP_ENV_NAME), or the first entry."""
     if not configs:
         return None
-    region = os.getenv("MODEL_LINK_REGION", "cn")
-    if region:
-        for cfg in configs:
-            if cfg.get("region") == region:
-                return cfg
+
+    # 1. 优先从 MODEL_LINK_REGION 获取
+    region = os.getenv("MODEL_LINK_REGION")
+    if not region:  # 为空或 None
+        # 2. 从 APP_ENV_NAME 解析区域
+        app_env = os.getenv("APP_ENV_NAME", "")
+        if "_" in app_env:
+            suffix = app_env.rsplit("_", 1)[-1]
+            if suffix in ("cn", "sg", "us", "kr", "in"):
+                region = suffix
+        # 3. 仍未获取到区域则默认 cn
+        if not region:
+            region = "cn"
+
+    # 匹配 configs 中的 region 字段
+    for cfg in configs:
+        if cfg.get("region") == region:
+            return cfg
     return configs[0]
 
 
