@@ -59,6 +59,7 @@ from app.routes.gateway import (
     _gateway_service,
     _log_error,
 )
+from app.routes.gateway_helpers import G_API_KEY_PROVIDER_ID
 
 gateway_responses_bp = Blueprint('gateway_responses', __name__)
 
@@ -82,6 +83,7 @@ def _run_background_response(
     model_name: Optional[str] = None,
     request_data: Optional[Dict[str, Any]] = None,
     request_id: Optional[str] = None,
+    provider_id: Optional[int] = None,
 ):
     """
     Worker function executed in a background thread.
@@ -160,7 +162,7 @@ def _run_background_response(
                 tracer.log_input(request_data or data)
             _bg_start_time = time.monotonic()
             try:
-                response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
+                response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
                 if tracer:
                     tracer.log_output(adapter.format_response(response))
             except Exception:
@@ -212,7 +214,7 @@ def _run_background_response(
                 # At this point chat_request.model has already been mutated by
                 # GatewayService.chat() to the real (non-alias) model name, so
                 # resolve_model() will find it by name.
-                resolved = _gateway_service.resolve_model(chat_request.model, group_id)
+                resolved = _gateway_service.resolve_model(chat_request.model, group_id, provider_id=provider_id)
                 provider_instance = resolved.provider_instance
                 # Update pricing snapshot with re-resolved model data
                 _pricing_snapshot['provider_id'] = resolved.db_provider.id if resolved.db_provider else None
@@ -419,6 +421,7 @@ async def openai_responses():
     if is_background:
         group_id = api_key.group_id if api_key else None
         apikey_value = api_key.key if api_key else None
+        provider_id_override = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
         # Create tracer for background request
         monitoring_config = get_group_monitoring_config(group_id) if group_id else None
@@ -478,6 +481,7 @@ async def openai_responses():
                 model_name=model_name,
                 request_data=data,
                 request_id=_bg_request_id,
+                provider_id=provider_id_override,
             ),
             daemon=True,
         )
@@ -494,6 +498,7 @@ async def openai_responses():
 
     # 4. 同步路径：直接处理（不再重新认证，复用已读取的数据）
     group_id = api_key.group_id if api_key else None
+    provider_id_override = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     try:
         chat_request = adapter.parse_request(data)
@@ -527,7 +532,7 @@ async def openai_responses():
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
-            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer)
+            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
             _app = current_app._get_current_object()
 
             def _resp_chunks_with_usage():
@@ -606,7 +611,7 @@ async def openai_responses():
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
 
-            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer)
+            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
 
             if tracer:

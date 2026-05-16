@@ -50,6 +50,7 @@ from app.routes.gateway_helpers import (
     _log_error,
     _check_allowed_models,
     _build_error_context,
+    G_API_KEY_PROVIDER_ID,
 )
 
 gateway_bp = Blueprint('gateway', __name__)
@@ -141,7 +142,7 @@ async def _handle_request(adapter):
     group_id = api_key.group_id if api_key else None
 
     # 4.1. 获取 API Key 指定的供应商 ID（通过 sk-xxx-{providerId} 后缀）
-    provider_id = g.get('api_key_provider_id', None) if api_key else None
+    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 4.5. 限流检查 — RPM / TPM 预扣 (group-level + workspace-level)
     rate_limiter = None

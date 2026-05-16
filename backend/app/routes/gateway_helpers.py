@@ -24,6 +24,9 @@ from app.utils import json_loads
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 
+# Key on `flask.g` carrying the provider_id parsed from `sk-xxx-{providerId}`.
+G_API_KEY_PROVIDER_ID = "api_key_provider_id"
+
 # Global service instance shared across all gateway modules
 _gateway_service = GatewayService()
 
@@ -101,7 +104,7 @@ def _build_error_context(api_key, model_name: Optional[str] = None,
         if provider_name:
             ctx["provider_name"] = provider_name
     else:
-        g_provider_id = g.get('api_key_provider_id', None)
+        g_provider_id = g.get(G_API_KEY_PROVIDER_ID, None)
         if g_provider_id is not None:
             ctx["provider_id"] = g_provider_id
     return ctx
@@ -161,7 +164,7 @@ def get_current_user_or_api_key():
     if _m:
         token = _m.group(1)
         provider_id_override = int(_m.group(2))
-        g.api_key_provider_id = provider_id_override
+        setattr(g, G_API_KEY_PROVIDER_ID, provider_id_override)
 
     # Try cache first for API key authentication
     from app.cache import get_cache

@@ -27,6 +27,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    G_API_KEY_PROVIDER_ID,
 )
 
 images_bp = Blueprint('images', __name__)
@@ -104,7 +105,7 @@ async def create_images():
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
-    provider_id = g.get('api_key_provider_id', None) if api_key else None
+    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 5. 设置 tracer
     monitoring_config = get_group_monitoring_config(group_id) if group_id else None
@@ -258,7 +259,7 @@ async def edit_images():
 
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
-    provider_id = g.get('api_key_provider_id', None) if api_key else None
+    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 5. 设置 tracer
     monitoring_config = get_group_monitoring_config(group_id) if group_id else None

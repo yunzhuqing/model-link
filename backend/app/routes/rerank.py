@@ -22,6 +22,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    G_API_KEY_PROVIDER_ID,
 )
 
 rerank_bp = Blueprint('rerank', __name__)
@@ -114,9 +115,12 @@ async def create_rerank():
     # 4. 获取组 ID（用于访问控制）
     group_id = api_key.group_id if api_key else None
 
+    # 4.1. 获取 API Key 指定的供应商 ID（通过 sk-xxx-{providerId} 后缀）
+    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
+
     # 5. 调用中间层
     try:
-        response = _gateway_service.rerank(rerank_request, group_id)
+        response = _gateway_service.rerank(rerank_request, group_id, provider_id=provider_id)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         _log_error("rerank", e.status_code, e.message, {"model": model_name})

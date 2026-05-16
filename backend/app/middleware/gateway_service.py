@@ -705,13 +705,15 @@ class GatewayService:
 
             message.content = new_blocks
 
-    def rerank(self, request: RerankRequest, group_id: Optional[int] = None) -> RerankResponse:
+    def rerank(self, request: RerankRequest, group_id: Optional[int] = None,
+               provider_id: Optional[int] = None) -> RerankResponse:
         """
         执行 Rerank 请求。
 
         Args:
             request: Rerank 请求对象
             group_id: 可选的组 ID（用于访问控制）
+            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             Rerank 响应对象
@@ -722,7 +724,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id, user_id=None)
+        resolved = self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
