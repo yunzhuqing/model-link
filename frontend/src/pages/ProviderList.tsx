@@ -1387,6 +1387,7 @@ const ProviderList = ({ groupId, currentRole: _currentRole, permissions }: { gro
                 : setNewProvider({ ...newProvider, ...updated, group_id: groupId ?? newProvider.group_id })
             }
             groups={groupId === undefined ? (groups ?? []) : undefined}
+            providerId={editingProvider?.id}
           />
           <div className="mt-6 flex space-x-3 pt-4 border-t border-slate-200">
             <button

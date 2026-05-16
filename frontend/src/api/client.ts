@@ -232,6 +232,8 @@ export const providersApi = {
   create: (data: ProviderCreate) => client.post<Provider>('/api/providers/', data),
   update: (id: number, data: Partial<ProviderCreate>) =>
     client.put<Provider>(`/api/providers/${id}`, data),
+  revealKey: (id: number) =>
+    client.get<{ api_key: string }>(`/api/providers/${id}/reveal-key`),
   delete: (id: number) => client.delete(`/api/providers/${id}`),
   addModel: (providerId: number, data: ModelCreate) =>
     client.post<Model>(`/api/providers/${providerId}/models`, data),

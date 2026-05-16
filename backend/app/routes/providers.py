@@ -170,7 +170,7 @@ async def update_provider(current_user, provider_id):
         provider.type = data['type']
     if 'description' in data:
         provider.description = data['description']
-    if 'api_key' in data and data['api_key'] != '***':
+    if 'api_key' in data and data['api_key'] != Provider._mask_api_key(provider.api_key):
         provider.api_key = data['api_key']
     if 'base_url' in data:
         provider.base_url = data['base_url']
@@ -196,8 +196,19 @@ async def update_provider(current_user, provider_id):
 
     db.session.commit()
     db.session.refresh(provider)
-    
+
     return jsonify(provider.to_dict())
+
+
+@providers_bp.route('/providers/<int:provider_id>/reveal-key', methods=['GET'])
+@token_required
+@require_provider_permission('provider.manage')
+async def reveal_provider_key(current_user, provider_id):
+    """Return the full (unmasked) api_key for a provider. Requires provider.manage."""
+    provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        return jsonify({'detail': 'Provider not found'}), 404
+    return jsonify({'api_key': provider.api_key or ''})
 
 
 @providers_bp.route('/providers/<int:provider_id>', methods=['DELETE'])

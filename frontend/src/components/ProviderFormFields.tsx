@@ -7,7 +7,10 @@
  * onChange      – called whenever a field changes; receives the full updated object
  * groups        – if provided, renders a "Group" selector (used by ProviderList)
  */
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { providersApi } from '../api/client';
 import TagSelector from './TagSelector';
 
 interface Group {
@@ -32,13 +35,37 @@ interface Props {
   data: ProviderFormData;
   onChange: (updated: ProviderFormData) => void;
   groups?: Group[];
+  providerId?: number;
 }
 
-export default function ProviderFormFields({ data, onChange, groups }: Props) {
+export default function ProviderFormFields({ data, onChange, groups, providerId }: Props) {
   const { t } = useTranslation();
   const set = (partial: Partial<ProviderFormData>) => onChange({ ...data, ...partial });
   const setExtra = (partial: Record<string, any>) =>
     set({ extra_config: { ...data.extra_config, ...partial } });
+
+  const [revealed, setRevealed] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+
+  const handleToggleReveal = async () => {
+    if (revealed) {
+      setRevealed(false);
+      return;
+    }
+    if (providerId === undefined) return;
+    setRevealError(null);
+    setRevealing(true);
+    try {
+      const res = await providersApi.revealKey(providerId);
+      set({ api_key: res.data.api_key });
+      setRevealed(true);
+    } catch (e: any) {
+      setRevealError(e?.response?.data?.detail || e?.message || 'Failed to reveal');
+    } finally {
+      setRevealing(false);
+    }
+  };
 
   return (
     <>
@@ -141,13 +168,35 @@ export default function ProviderFormFields({ data, onChange, groups }: Props) {
                 onChange={(e) => set({ api_key: e.target.value })}
               />
             ) : (
-              <input
-                type="password"
-                placeholder="sk-..."
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-                value={data.api_key}
-                onChange={(e) => set({ api_key: e.target.value })}
-              />
+              <div className="relative">
+                <input
+                  type={revealed ? 'text' : 'password'}
+                  placeholder="sk-..."
+                  className="w-full p-3 pr-12 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                  value={data.api_key}
+                  onChange={(e) => set({ api_key: e.target.value })}
+                />
+                {providerId !== undefined && (
+                  <button
+                    type="button"
+                    onClick={handleToggleReveal}
+                    disabled={revealing}
+                    title={revealed ? 'Hide' : 'Reveal full API key'}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {revealing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : revealed ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+            {revealError && (
+              <p className="text-xs text-red-500 mt-1">{revealError}</p>
             )}
           </div>
         )}

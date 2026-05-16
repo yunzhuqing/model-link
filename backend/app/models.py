@@ -356,13 +356,22 @@ class Provider(db.Model):
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
     group = db.relationship("Group", back_populates="providers")
 
+    @staticmethod
+    def _mask_api_key(raw_key):
+        """Return a masked preview: first 5 + '...' + last 4. Short keys are fully masked."""
+        if not raw_key:
+            return None
+        if len(raw_key) <= 9:
+            return '*' * len(raw_key)
+        return raw_key[:5] + '...' + raw_key[-4:]
+
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
             'type': self.type,
             'description': self.description,
-            'api_key': '***' if self.api_key else None,  # Don't expose API key
+            'api_key': self._mask_api_key(self.api_key),  # Masked preview; use /reveal-key for full value
             'base_url': self.base_url,
             'group_id': self.group_id,
             'authorization': self.authorization or 'Authorization',

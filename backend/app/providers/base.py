@@ -207,9 +207,9 @@ class BaseProvider(ABC):
         Returns:
             错误信息，如果验证通过返回 None
         """
-        if not request.messages:
+        if not request.messages and not request.system:
             return "Messages are required"
-        
+
         if not request.model:
             return "Model is required"
         

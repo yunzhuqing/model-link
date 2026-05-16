@@ -66,10 +66,12 @@ def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dic
     if extra:
         log_data.update(extra)
 
+    extra_str = " ".join(f"{k}={v}" for k, v in log_data.items())
+
     if 500 <= status_code < 600:
-        logger.error(f"[gateway] {endpoint} error: {detail}", extra=log_data, exc_info=exc_info)
+        logger.error(f"[gateway] {endpoint} error: {detail} | {extra_str}", exc_info=exc_info)
     elif 400 <= status_code < 500:
-        logger.error(f"[gateway] {endpoint} client error: {detail}", extra=log_data, exc_info=exc_info)
+        logger.error(f"[gateway] {endpoint} client error: {detail} | {extra_str}", exc_info=exc_info)
 
 
 def _build_error_context(api_key, model_name: Optional[str] = None,
