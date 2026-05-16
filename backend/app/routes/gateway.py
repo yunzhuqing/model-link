@@ -323,7 +323,8 @@ async def _handle_request(adapter):
                             "usage": last_usage.to_dict() if last_usage else None,
                         })
                 except Exception as e:
-                    logger.error(f"[stream] Error during stream processing: {e}", exc_info=True)
+                    _log_error("handle_request", 500, f"Stream processing error: {e}",
+                               {"model": model_name, "group_id": _api_key_group_id}, exc_info=True)
                     if tracer:
                         tracer.set_metadata({"request_id": _request_id})
                         tracer.end(error=e)
