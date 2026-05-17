@@ -58,6 +58,38 @@ def _is_root(group_id: int, user_id: int) -> bool:
     return _get_role(group_id, user_id) == "root"
 
 
+def _is_admin_or_above(group_id: int, user_id: int) -> bool:
+    """Check if user is admin or root in the given group."""
+    role = _get_role(group_id, user_id)
+    return role in ('admin', 'root')
+
+
+def require_api_key_access(f):
+    """Decorator: verify the current user can access the API key (owner or admin+ in group).
+
+    Usage::
+
+        @apikeys_bp.route('/apikeys/<int:api_key_id>/policies', methods=['GET'])
+        @token_required
+        @require_api_key_access
+        async def list_policies(current_user, api_key_id):
+            ...
+    """
+    @functools.wraps(f)
+    async def wrapper(current_user, api_key_id, *args, **kwargs):
+        api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+        if not api_key:
+            return jsonify({"detail": "API key not found"}), 404
+
+        if api_key.user_id != current_user.id and (
+            not api_key.group_id or not _is_admin_or_above(api_key.group_id, current_user.id)
+        ):
+            return jsonify({"detail": "Access denied"}), 403
+
+        return await f(current_user, api_key_id, *args, **kwargs)
+    return wrapper
+
+
 def _is_admin_or_above_inner(group_id: int, user_id: int) -> bool:
     """Check if user is admin or root in a specific group. (Used by providers.py)"""
     role = _get_role(group_id, user_id)

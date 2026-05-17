@@ -21,6 +21,7 @@ from app.routes.permissions import (
     require_permission,
     require_apikey_permission,
     require_global_permission,
+    require_api_key_access,
 )
 from app.group_service import (
     get_group_by_id,
@@ -1175,15 +1176,9 @@ async def delete_budget(current_user, api_key_id, budget_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/policies', methods=['GET'])
 @token_required
+@require_api_key_access
 async def list_policies(current_user, api_key_id):
     """List all policies for an API key."""
-    api_key = db.session.get(ApiKey, api_key_id)
-    if not api_key:
-        return jsonify({'detail': 'API key not found'}), 404
-
-    if not _user_can_access_api_key(current_user, api_key):
-        return jsonify({'detail': 'Access denied'}), 403
-
     policies = db.session.query(ApiKeyPolicy).filter(
         ApiKeyPolicy.api_key_id == api_key_id
     ).all()
@@ -1192,15 +1187,9 @@ async def list_policies(current_user, api_key_id):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/policies/<policy_type>', methods=['PUT'])
 @token_required
+@require_api_key_access
 async def upsert_policy(current_user, api_key_id, policy_type):
     """Create or update a policy for an API key."""
-    api_key = db.session.get(ApiKey, api_key_id)
-    if not api_key:
-        return jsonify({'detail': 'API key not found'}), 404
-
-    if not _user_can_access_api_key(current_user, api_key):
-        return jsonify({'detail': 'Access denied'}), 403
-
     data = await request.get_json()
     if not data:
         return jsonify({'detail': 'Request body is required'}), 400
@@ -1230,15 +1219,9 @@ async def upsert_policy(current_user, api_key_id, policy_type):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>/policies/<policy_type>', methods=['DELETE'])
 @token_required
+@require_api_key_access
 async def delete_policy(current_user, api_key_id, policy_type):
     """Delete a policy for an API key."""
-    api_key = db.session.get(ApiKey, api_key_id)
-    if not api_key:
-        return jsonify({'detail': 'API key not found'}), 404
-
-    if not _user_can_access_api_key(current_user, api_key):
-        return jsonify({'detail': 'Access denied'}), 403
-
     policy = db.session.query(ApiKeyPolicy).filter(
         ApiKeyPolicy.api_key_id == api_key_id,
         ApiKeyPolicy.policy_type == policy_type,

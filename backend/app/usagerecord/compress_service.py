@@ -189,19 +189,22 @@ def _compress_single_key(session, storage, ak, config: dict) -> dict:
     per_hour = int(config.get("per_hour", 60))
 
     with get_cache().key_lock(key_hash):
-        minute_deleted = _compress_by_granularity(
+        minute_deleted, minute_last_id = _compress_by_granularity(
             session, storage, key_hash, last_compress, last_stat, per_minute, "minute"
         )
-        hour_deleted = _compress_by_granularity(
+        hour_deleted, hour_last_id = _compress_by_granularity(
             session, storage, key_hash, last_compress, last_stat, per_hour, "hour"
         )
-        ak.last_compress_id = last_stat
+        new_compress_id = max(minute_last_id, hour_last_id)
+        if new_compress_id > last_compress:
+            ak.last_compress_id = new_compress_id
 
     total_deleted = minute_deleted + hour_deleted
     if total_deleted > 0:
         logger.info(
             f"[compress] key_hash={key_hash[:12]}... "
-            f"last_compress_id={last_compress}→{last_stat} "
+            f"last_compress_id={last_compress}→{ak.last_compress_id} "
+            f"last_stat_id={last_stat} "
             f"per_minute={per_minute} per_hour={per_hour} "
             f"minute_compressed={minute_deleted} hour_compressed={hour_deleted} "
             f"total_compressed={total_deleted}"
@@ -209,7 +212,7 @@ def _compress_single_key(session, storage, ak, config: dict) -> dict:
 
     return {
         "key_hash": key_hash[:12],
-        "last_compress_id": last_compress,
+        "last_compress_id": ak.last_compress_id,
         "last_stat_id": last_stat,
         "per_minute": per_minute,
         "per_hour": per_hour,
@@ -220,25 +223,48 @@ def _compress_single_key(session, storage, ak, config: dict) -> dict:
 
 
 def _compress_by_granularity(session, storage, key_hash: str, last_compress_id: int,
-                              last_stat_id: int, limit: int, granularity: str) -> int:
+                              last_stat_id: int, limit: int, granularity: str):
     """Compress records grouped by (provider_id, model_name, time_bucket).
 
     Only touches records in (last_compress_id, last_stat_id] (synced but not yet compressed).
+    Merges excess records into the first record of each batch via UPDATE (no new rows),
+    ensuring the bucket ends up with at most *limit* records.
+
+    Returns (total_deleted, last_processed_id) — last_processed_id is the max
+    UsageRecord.id that was part of any processed batch.
     """
     from app.models import UsageRecord
-    from sqlalchemy import func, text
+    from sqlalchemy import func
+
+    BATCH_SIZE = 100
 
     if limit <= 0:
         return 0
 
+    # Build DB-appropriate time-bucket expression
+    db_url = str(session.get_bind().engine.url)
+    if 'postgresql' in db_url:
+        bucket_expr = func.date_trunc(granularity, UsageRecord.created_at)
+    elif 'sqlite' in db_url:
+        if granularity == 'minute':
+            bucket_expr = func.strftime('%Y-%m-%dT%H:%M:00', UsageRecord.created_at)
+        else:
+            bucket_expr = func.strftime('%Y-%m-%dT%H:00:00', UsageRecord.created_at)
+    else:
+        # MySQL / MariaDB
+        if granularity == 'minute':
+            bucket_expr = func.date_format(UsageRecord.created_at, '%Y-%m-%dT%H:%i:00')
+        else:
+            bucket_expr = func.date_format(UsageRecord.created_at, '%Y-%m-%dT%H:00:00')
+
     # Find bucket groups with excess records, grouped by provider_id + model_name
-    bucket_expr = text(f"DATE_TRUNC('{granularity}', created_at)")
     subq = (
         session.query(
             UsageRecord.provider_id,
             UsageRecord.model_name,
             bucket_expr.label("bucket"),
             func.count(UsageRecord.id).label("cnt"),
+            func.min(UsageRecord.id).label("min_id"),
         )
         .filter(
             UsageRecord.api_key_hash == key_hash,
@@ -252,123 +278,114 @@ def _compress_by_granularity(session, storage, key_hash: str, last_compress_id: 
     )
 
     total_deleted = 0
+    last_processed_id = 0
 
     for row in subq:
         provider_id = row.provider_id
         model_name = row.model_name
         bucket = row.bucket
-        excess = row.cnt - limit
+        excess = row.cnt - limit  # Number of oldest records to compress
 
-        # Get the excess records (oldest first) to merge
-        excess_records = (
-            session.query(UsageRecord)
-            .filter(
-                UsageRecord.api_key_hash == key_hash,
-                UsageRecord.compressed_count == 1,
-                UsageRecord.id > last_compress_id,
-                UsageRecord.id <= last_stat_id,
-                UsageRecord.provider_id == provider_id,
-                UsageRecord.model_name == model_name,
-                bucket_expr == bucket,
+        while excess > 0:
+            batch_size = min(BATCH_SIZE, excess)
+
+            # Fetch a batch of the oldest records in this bucket
+            batch = (
+                session.query(UsageRecord)
+                .filter(
+                    UsageRecord.api_key_hash == key_hash,
+                    UsageRecord.compressed_count == 1,
+                    UsageRecord.id > last_compress_id,
+                    UsageRecord.id <= last_stat_id,
+                    UsageRecord.provider_id == provider_id,
+                    UsageRecord.model_name == model_name,
+                    bucket_expr == bucket,
+                )
+                .order_by(UsageRecord.id.asc())
+                .limit(batch_size)
+                .all()
             )
-            .order_by(UsageRecord.id.asc())
-            .limit(excess)
-            .all()
-        )
 
-        if not excess_records:
-            continue
+            if not batch:
+                break
 
-        # ── Build merged record ──
-        merged = _build_merged_record(excess_records, key_hash, bucket)
-        session.add(merged)
-        session.flush()  # Get merged.id
+            last_processed_id = max(last_processed_id, batch[-1].id)
 
-        # ── Archive original records to storage ──
-        originals_json = json.dumps(
-            [r.to_dict() for r in excess_records], default=str
-        )
-        try:
-            storage.write(f"usage/{merged.id}/records.json", originals_json)
-        except Exception as exc:
-            logger.warning(f"[compress] Storage write failed for merged_id={merged.id}: {exc}")
+            # ── Archive originals before mutation ──
+            originals_json = json.dumps(
+                [r.to_dict() for r in batch], default=str
+            )
+            target_id = batch[0].id
+            try:
+                storage.write(f"usage/{target_id}/records.json", originals_json)
+            except Exception as exc:
+                logger.warning(f"[compress] Storage write failed for target_id={target_id}: {exc}")
 
-        # ── Delete original records ──
-        ids_to_delete = [r.id for r in excess_records]
-        session.query(UsageRecord).filter(UsageRecord.id.in_(ids_to_delete)).delete(
-            synchronize_session=False
-        )
+            # ── Merge batch into the first record (UPDATE in-place) ──
+            _merge_into_record(batch[0], batch[1:])
 
-        total_deleted += len(ids_to_delete)
+            # ── Delete the other records (NOT batch[0]) ──
+            ids_to_delete = [r.id for r in batch[1:]]
+            if ids_to_delete:
+                session.query(UsageRecord).filter(
+                    UsageRecord.id.in_(ids_to_delete)
+                ).delete(synchronize_session=False)
 
-    return total_deleted
+            total_deleted += len(ids_to_delete)
+            excess -= batch_size
+
+    return total_deleted, last_processed_id
 
 
-def _build_merged_record(records, key_hash: str, bucket):
-    """Merge a list of UsageRecord rows into a single aggregated row."""
-    from app.models import UsageRecord
+def _merge_into_record(target, others: list) -> None:
+    """Merge *others* into *target* in-place. Target is mutated, others are not.
 
-    latest = records[-1]  # Most recent record for identity fields
+    Numeric fields are summed. compressed_count accumulates. Bucket identity fields
+    (provider, model, time) are preserved from target.
+    """
+    all_records = [target] + others
+    latest = others[-1] if others else target
 
-    merged = UsageRecord(
-        # Identity
-        user_name=latest.user_name,
-        user_id=latest.user_id,
-        group_id=latest.group_id,
-        group_name=latest.group_name,
-        api_key_hash=key_hash,
-        api_key_preview=latest.api_key_preview,
-        api_key_name=latest.api_key_name,
-        # Provider / Model (preserved from group key)
-        model_name=latest.model_name,
-        provider_id=latest.provider_id,
-        provider_name=latest.provider_name,
-        # Summed numeric fields
-        input_tokens=sum(r.input_tokens or 0 for r in records),
-        output_tokens=sum(r.output_tokens or 0 for r in records),
-        reasoning_tokens=sum(r.reasoning_tokens or 0 for r in records),
-        cache_creation_tokens=sum(r.cache_creation_tokens or 0 for r in records),
-        cache_5m_creation_tokens=sum(r.cache_5m_creation_tokens or 0 for r in records),
-        cache_1h_creation_tokens=sum(r.cache_1h_creation_tokens or 0 for r in records),
-        cache_tokens=sum(r.cache_tokens or 0 for r in records),
-        output_image_number=sum(r.output_image_number or 0 for r in records),
-        output_image_tokens=sum(r.output_image_tokens or 0 for r in records),
-        output_video_number=sum(r.output_video_number or 0 for r in records),
-        output_video_tokens=sum(r.output_video_tokens or 0 for r in records),
-        output_video_seconds=sum(r.output_video_seconds or 0 for r in records),
-        output_audio_tokens=sum(r.output_audio_tokens or 0 for r in records),
-        output_audio_seconds=sum(r.output_audio_seconds or 0 for r in records),
-        web_search_requests=sum(r.web_search_requests or 0 for r in records),
-        credits=sum(r.credits or 0 for r in records),
-        # Billing
-        payable_amount=sum(float(r.payable_amount or 0) for r in records),
-        actual_amount=sum(float(r.actual_amount or 0) for r in records),
-        actual_amount_usd=sum(float(r.actual_amount_usd or 0) for r in records),
-        # Price units — use latest record's values
-        input_price_unit=latest.input_price_unit,
-        output_price_unit=latest.output_price_unit,
-        cache_creation_price_unit=latest.cache_creation_price_unit,
-        cache_5m_creation_price_unit=latest.cache_5m_creation_price_unit,
-        cache_1h_creation_price_unit=latest.cache_1h_creation_price_unit,
-        cache_token_price_unit=latest.cache_token_price_unit,
-        output_image_price_unit=latest.output_image_price_unit,
-        output_video_price_unit=latest.output_video_price_unit,
-        output_audio_price_unit=latest.output_audio_price_unit,
-        web_search_price_unit=latest.web_search_price_unit,
-        credit_price_unit=latest.credit_price_unit,
-        # Currency
-        currency=latest.currency,
-        exchange_rate=latest.exchange_rate,
-        discount=latest.discount,
-        # Metadata
-        compressed_count=len(records),
-        created_at=bucket,
-        duration_ms=None,
-        # Resolution/aspect set to NULL
-        output_image_resolution=None,
-        output_image_aspect=None,
-        output_video_resolution=None,
-        output_video_aspect=None,
+    # Sum numeric fields
+    target.input_tokens = sum(r.input_tokens or 0 for r in all_records)
+    target.output_tokens = sum(r.output_tokens or 0 for r in all_records)
+    target.reasoning_tokens = sum(r.reasoning_tokens or 0 for r in all_records)
+    target.cache_creation_tokens = sum(r.cache_creation_tokens or 0 for r in all_records)
+    target.cache_5m_creation_tokens = sum(r.cache_5m_creation_tokens or 0 for r in all_records)
+    target.cache_1h_creation_tokens = sum(r.cache_1h_creation_tokens or 0 for r in all_records)
+    target.cache_tokens = sum(r.cache_tokens or 0 for r in all_records)
+    target.output_image_number = sum(r.output_image_number or 0 for r in all_records)
+    target.output_image_tokens = sum(r.output_image_tokens or 0 for r in all_records)
+    target.output_video_number = sum(r.output_video_number or 0 for r in all_records)
+    target.output_video_tokens = sum(r.output_video_tokens or 0 for r in all_records)
+    target.output_video_seconds = sum(r.output_video_seconds or 0 for r in all_records)
+    target.output_audio_tokens = sum(r.output_audio_tokens or 0 for r in all_records)
+    target.output_audio_seconds = sum(r.output_audio_seconds or 0 for r in all_records)
+    target.web_search_requests = sum(r.web_search_requests or 0 for r in all_records)
+    target.credits = sum(r.credits or 0 for r in all_records)
+    target.payable_amount = sum(float(r.payable_amount or 0) for r in all_records)
+    target.actual_amount = sum(float(r.actual_amount or 0) for r in all_records)
+    target.actual_amount_usd = sum(float(r.actual_amount_usd or 0) for r in all_records)
+    target.compressed_count = (target.compressed_count or 1) + sum(
+        r.compressed_count or 1 for r in others
     )
-
-    return merged
+    # Use latest record's price/currency fields
+    target.input_price_unit = latest.input_price_unit
+    target.output_price_unit = latest.output_price_unit
+    target.cache_creation_price_unit = latest.cache_creation_price_unit
+    target.cache_5m_creation_price_unit = latest.cache_5m_creation_price_unit
+    target.cache_1h_creation_price_unit = latest.cache_1h_creation_price_unit
+    target.cache_token_price_unit = latest.cache_token_price_unit
+    target.output_image_price_unit = latest.output_image_price_unit
+    target.output_video_price_unit = latest.output_video_price_unit
+    target.output_audio_price_unit = latest.output_audio_price_unit
+    target.web_search_price_unit = latest.web_search_price_unit
+    target.credit_price_unit = latest.credit_price_unit
+    target.currency = latest.currency
+    target.exchange_rate = latest.exchange_rate
+    target.discount = latest.discount
+    target.duration_ms = None
+    target.output_image_resolution = None
+    target.output_image_aspect = None
+    target.output_video_resolution = None
+    target.output_video_aspect = None
