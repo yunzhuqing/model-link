@@ -75,6 +75,8 @@ _TENCENTVOD_VIDEO_MODEL_PREFIXES = (
     "veo-",        # Veo video models routed via TencentVOD (ModelName=GV)
     "gv-",         # GV video models (ModelName=GV, short alias)
     "hy-video-",   # Hunyuan video models
+    "viduq",       # Vidu video models (ModelName=Vidu)
+    "pixverse-",   # Pixverse video models (ModelName=Pixverse)
 )
 
 
@@ -91,6 +93,8 @@ def is_tencentvod_video_model(model: str) -> bool:
       - veo-3.1-fast-generate-001 → GV, 3.1-fast
       - gv-3.1-fast          → GV, 3.1-fast
       - hy-video-v1.0        → Hunyuan, 1.0
+      - pixverse-v6          → Pixverse, V6.0
+      - pixverse-c1          → Pixverse, C1
 
     Args:
         model: Model name (case-insensitive)
@@ -146,6 +150,16 @@ _VIDEO_MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     "veo-3.1-fast-generate-001":    ("GV", "3.1-fast"),
     # ── Hunyuan video models ────────────────────────────────────────────────
     "hy-video-v1.0":          ("Hunyuan", "1.0"),
+    # ── Vidu video models (ModelName=Vidu) ──────────────────────────────────
+    "viduq3-mix":             ("Vidu", "q3-mix"),
+    "viduq3-pro":             ("Vidu", "q3-pro"),
+    "viduq3-turbo":           ("Vidu", "q3-turbo"),
+    "viduq3":                 ("Vidu", "q3"),
+    # ── Pixverse video models (ModelName=Pixverse) ─────────────────────────
+    "pixverse-v6":            ("Pixverse", "V6.0"),
+    "pixverse-c1":            ("Pixverse", "C1"),
+    # ── Hunyuan 3D models (3d_generation with SceneType=3d_scene via video gen) ──
+    "hunyuan-3d-2.0":         ("Hunyuan", "3d_2.0"),
 }
 
 
@@ -211,6 +225,7 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
        - ``veo-X.Y[-qualifier]-generate-NNN`` → ("GV", _parse_veo_version(...))
        - ``gv-X.Y`` → ("GV", "X.Y")
        - ``hy-video-vX.Y`` → ("Hunyuan", "X.Y")
+       - ``viduq*`` → ("Vidu", model)
     3. Generic split on last "-" when suffix is version-like
     4. Fallback: (model, "latest")
 
@@ -244,6 +259,22 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
     if key.startswith("hy-video-v"):
         return "Hunyuan", model[len("hy-video-v"):]
 
+    # 2e. viduq* → Vidu
+    if key.startswith("viduq"):
+        return "Vidu", model
+
+    # 2f. pixverse-vX / pixverse-cX → Pixverse
+    if key.startswith("pixverse-"):
+        suffix = model[len("pixverse-"):].lower()  # v6, c1
+        if suffix.startswith("v"):
+            ver = suffix[1:]
+            return "Pixverse", f"V{ver}.0" if ver.isdigit() else f"V{ver}"
+        return "Pixverse", suffix.upper()
+
+    # 2g. hunyuan-3d-X.Y → Hunyuan
+    if key.startswith("hunyuan-3d-"):
+        return "Hunyuan", model[len("hunyuan-3d-"):]
+
     # 3. Legacy heuristic: split on last "-" when suffix is version-like
     parts = model.rsplit("-", 1)
     if len(parts) == 2 and parts[1].replace(".", "").isdigit():
@@ -274,8 +305,8 @@ def _create_aigc_video_task(
     enhance_prompt: str = "",
     file_infos: Optional[List[Dict[str, Any]]] = None,
     last_frame_url: str = "",
-    last_frame_file_id: str = "",
     session_id: str = "",
+    scene_type: str = "",
     tracer: Any = None,
 ) -> str:
     """
@@ -298,8 +329,8 @@ def _create_aigc_video_task(
         enhance_prompt:     是否增强 Prompt ("Enabled" | "")
         file_infos:         参考图片/视频列表
         last_frame_url:     尾帧图片 URL
-        last_frame_file_id: 尾帧图片 FileId
         session_id:         会话 ID（可选）
+        scene_type:         3D 场景类型（"3d_scene" | ""）
 
     Returns:
         TaskId string
@@ -325,10 +356,11 @@ def _create_aigc_video_task(
     if session_id:
         body["SessionId"] = session_id
 
+    if scene_type:
+        body["SceneType"] = scene_type
+
     # Last-frame image (尾帧)
-    if last_frame_file_id:
-        body["LastFrameFileId"] = last_frame_file_id
-    elif last_frame_url:
+    if last_frame_url:
         body["LastFrameUrl"] = last_frame_url
 
     # Reference images / videos
@@ -519,88 +551,149 @@ def _poll_video_task(
 
 
 # =============================================================================
-# 参考文件信息构建
+# 参考文件信息构建（role-aware）
 # =============================================================================
 
-def _build_file_infos(
-    messages,
-    reference_images: Optional[List[str]] = None,
-    reference_videos: Optional[List[str]] = None,
-    reference_image_ids: Optional[List[Dict[str, str]]] = None,
-) -> List[Dict[str, Any]]:
+def _build_file_infos_from_map(
+    file_id_media_map: Dict[str, Any],
+    model_name: str,
+    prompt: str,
+) -> Tuple[List[Dict[str, Any]], str, str]:
     """
-    Build the FileInfos list for CreateAigcVideoTask from all available sources:
+    Build FileInfos, LastFrameUrl and determine prompt var usage from file_id_media_map.
 
-    1. ``reference_images`` — plain image URLs / FileIds from tool metadata
-    2. ``reference_videos`` — plain video URLs / FileIds from tool metadata
-    3. ``reference_image_ids`` — list of ``{"file_id": alias, "url": url}`` dicts
-       carrying the TencentVOD ObjectId alias (e.g. for {{woman}} prompt refs)
-    4. Content blocks (IMAGE_URL / VIDEO_URL) extracted from user messages
+    Role handling:
+      - ``first_frame``   → FileInfos (first frame reference)
+      - ``last_frame``    → LastFrameUrl (separate API field)
+      - ``reference_image`` / ``reference_video`` / ``reference_audio``
+                          → FileInfos with Usage="Reference"
+      - No role (default):
+          - 1 image only                 → FileInfos (first frame)
+          - 2 images, both image type    → first image → FileInfos, second → LastFrameUrl
+          - >2 or mixed types            → FileInfos
+
+    If prompt contains ``{{file_id}}`` vars, all FileInfos items matching those vars
+    get Usage="Reference".
 
     Args:
-        messages:            List of Message objects
-        reference_images:    URL or FileId strings for reference images
-        reference_videos:    URL or FileId strings for reference videos
-        reference_image_ids: List of {"file_id": alias, "url": url} dicts
+        file_id_media_map: {file_id: {type, url, role}} from responses_adapter
+        model_name:       TencentVOD ModelName (Kling, GV, Vidu, Hunyuan)
+        prompt:           User prompt text (to check for {{var}} usage)
 
     Returns:
-        FileInfos list ready for the API request
+        (file_infos, last_frame_url, updated_prompt)
     """
     file_infos: List[Dict[str, Any]] = []
+    last_frame_url = ""
     seen_urls: set = set()
 
-    def _add_image(url_or_id: str, object_id: str = "") -> None:
-        if url_or_id.startswith("http"):
-            if url_or_id in seen_urls:
-                return
-            seen_urls.add(url_or_id)
-            item: Dict[str, Any] = {"Type": "Url", "Category": "Image", "Url": url_or_id}
-            if object_id:
-                item["ObjectId"] = object_id
-            file_infos.append(item)
-        else:
-            item = {"FileId": url_or_id, "Category": "Image"}
-            if object_id:
-                item["ObjectId"] = object_id
-            file_infos.append(item)
+    # ── Classify media items ──
+    first_frame_items: List[Dict[str, Any]] = []
+    last_frame_item: Optional[Dict[str, Any]] = None
+    reference_items: List[Dict[str, Any]] = []
+    unclassified: List[Dict[str, Any]] = []
 
-    def _add_video(url_or_id: str) -> None:
-        if url_or_id.startswith("http"):
-            if url_or_id in seen_urls:
-                return
-            seen_urls.add(url_or_id)
-            file_infos.append({"Type": "Url", "Category": "Video", "Url": url_or_id})
-        else:
-            file_infos.append({"FileId": url_or_id, "Category": "Video"})
-
-    # 1. Explicit reference images with optional ObjectId alias
-    for item in (reference_image_ids or []):
-        _add_image(item.get("url", ""), item.get("file_id", ""))
-
-    # 2. Plain reference image list
-    for img in (reference_images or []):
-        _add_image(img)
-
-    # 3. Plain reference video list
-    for vid in (reference_videos or []):
-        _add_video(vid)
-
-    # 4. Content blocks from user messages
-    for msg in messages:
-        role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
-        if role != "user":
+    for fid, info in (file_id_media_map or {}).items():
+        url = info.get("url", "")
+        media_type = info.get("type", "")  # image / video / audio
+        role = info.get("role", "")
+        if not url:
             continue
-        if not isinstance(msg.content, list):
-            continue
-        for block in msg.content:
-            if not hasattr(block, "type"):
-                continue
-            if block.type == ContentType.IMAGE_URL and block.url:
-                _add_image(block.url)
-            elif block.type == ContentType.VIDEO_URL and block.url:
-                _add_video(block.url)
 
-    return file_infos
+        item = {"file_id": fid, "url": url, "type": media_type, "role": role}
+
+        if role == "first_frame":
+            first_frame_items.append(item)
+        elif role == "last_frame":
+            last_frame_item = item
+        elif role in ("reference_image", "reference_video", "reference_audio"):
+            reference_items.append(item)
+        else:
+            unclassified.append(item)
+
+    # ── Default rule: 2 images without roles → first=first_frame, second=last_frame ──
+    if not first_frame_items and not last_frame_item and not reference_items:
+        image_only = [u for u in unclassified if u["type"] == "image"]
+        if len(image_only) == 2:
+            first_frame_items.append(image_only[0])
+            last_frame_item = image_only[1]
+            unclassified = [u for u in unclassified if u["type"] != "image"]
+        elif len(image_only) == 1:
+            first_frame_items.append(image_only[0])
+            unclassified = [u for u in unclassified if u["type"] != "image"]
+        elif unclassified:
+            # Mixed types: all go to FileInfos
+            pass
+
+    # Remaining unclassified → treat as reference
+    reference_items.extend(unclassified)
+
+    # ── Detect {{file_id}} vars in prompt ──
+    import re as _re2
+    var_fids: set = set(_re2.findall(r"\{\{([^}]+)\}\}", prompt))
+
+    # ── Build FileInfos ──
+    def _push_image(fid: str, url: str, usage: str = "") -> None:
+        if url in seen_urls:
+            return
+        seen_urls.add(url)
+        item: Dict[str, Any] = {"Type": "Url", "Category": "Image", "Url": url}
+        if fid:
+            item["ObjectId"] = fid
+        if usage:
+            item["Usage"] = usage
+        file_infos.append(item)
+
+    def _push_video(fid: str, url: str, usage: str = "") -> None:
+        if url in seen_urls:
+            return
+        seen_urls.add(url)
+        item: Dict[str, Any] = {"Type": "Url", "Category": "Video", "Url": url}
+        if fid:
+            item["ObjectId"] = fid
+        if usage:
+            item["Usage"] = usage
+        file_infos.append(item)
+
+    def _push_audio(fid: str, url: str, usage: str = "") -> None:
+        if url in seen_urls:
+            return
+        seen_urls.add(url)
+        item: Dict[str, Any] = {"Type": "Url", "Category": "Audio", "Url": url}
+        if fid:
+            item["ObjectId"] = fid
+        if usage:
+            item["Usage"] = usage
+        file_infos.append(item)
+
+    # First frame images → FileInfos
+    for item in first_frame_items:
+        _push_image(item["file_id"], item["url"],
+                    usage="Reference" if item["file_id"] in var_fids else "FirstFrame")
+
+    # Reference items → FileInfos with Usage=Reference
+    for item in reference_items:
+        fid = item["file_id"]
+        usage = "Reference" if fid in var_fids else ""
+        if item["type"] == "image":
+            _push_image(fid, item["url"], usage)
+        elif item["type"] == "video":
+            _push_video(fid, item["url"], usage)
+        elif item["type"] == "audio":
+            _push_audio(fid, item["url"], usage)
+
+    # Last frame → LastFrameUrl
+    if last_frame_item:
+        last_frame_url = last_frame_item["url"]
+
+    # ── Variable format conversion per model ──
+    if var_fids:
+        if model_name == "Kling":
+            prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"<<<\1>>>", prompt)
+        elif model_name == "Vidu":
+            prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"@\1", prompt)
+
+    return file_infos, last_frame_url, prompt
 
 
 # =============================================================================
@@ -662,14 +755,42 @@ def execute_tencentvod_video_generation(
                 prompt = msg.content
             break
 
-    # Convert {{variable}} placeholders to Kling's <<<variable>>> ObjectId reference format.
-    # The Kling API uses <<<objectid>>> syntax to reference images by their ObjectId.
-    # Our interface uses {{file_id}} syntax (matching the file_id field on input_image blocks).
-    import re as _re
-    prompt = _re.sub(r"\{\{([^}]+)\}\}", r"<<<\1>>>", prompt)
-
     if not prompt:
         raise RuntimeError("TencentVOD video generation: no prompt found in user messages")
+
+    # ── Build FileInfos from file_id_media_map (role-aware) ──────────────────
+    file_id_media_map: Dict[str, Any] = metadata.get("file_id_media_map") or {}
+    file_infos, last_frame_url, prompt = _build_file_infos_from_map(
+        file_id_media_map, model_name, prompt
+    )
+
+    # ── Fallback: scan message content blocks when file_id_media_map is empty ──
+    # Handles the case where /v1/responses input blocks have no file_id set.
+    if not file_id_media_map:
+        fallback_map: Dict[str, Any] = {}
+        idx = 0
+        for msg in messages:
+            role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
+            if role != "user":
+                continue
+            if not isinstance(msg.content, list):
+                continue
+            for block in msg.content:
+                if not hasattr(block, "type"):
+                    continue
+                if block.type == ContentType.IMAGE_URL and block.url:
+                    fallback_map[f"_img_{idx}"] = {"type": "image", "url": block.url, "role": getattr(block, "role", "") or ""}
+                    idx += 1
+                elif block.type == ContentType.VIDEO_URL and block.url:
+                    fallback_map[f"_vid_{idx}"] = {"type": "video", "url": block.url, "role": getattr(block, "role", "") or ""}
+                    idx += 1
+                elif block.type == ContentType.AUDIO_URL and block.url:
+                    fallback_map[f"_aud_{idx}"] = {"type": "audio", "url": block.url, "role": getattr(block, "role", "") or ""}
+                    idx += 1
+        if fallback_map:
+            file_infos, last_frame_url, prompt = _build_file_infos_from_map(
+                fallback_map, model_name, prompt
+            )
 
     # ── Video-specific parameters ──────────────────────────────────────────
     # Size → AspectRatio + Resolution
@@ -685,26 +806,27 @@ def execute_tencentvod_video_generation(
         if not resolution:
             resolution = derived_res
 
+    # Pixverse: image-to-video does not support aspect_ratio.
+    # C1 reference object editing keeps aspect_ratio+resolution; V6 clears aspect_ratio.
+    if model_name == "Pixverse" and file_infos:
+        usages = {fi.get("Usage", "") for fi in file_infos}
+        if "Reference" not in usages or model_version != "C1":
+            aspect_ratio = ""
+
     seconds = str(metadata.get("seconds") or "")
-    audio_generation = str(metadata.get("audio_generation") or "")
+
+    # Parse generate_audio: True → Enabled, False → Disabled
+    generate_audio = metadata.get("generate_audio")
+    audio_generation = "Enabled" if generate_audio else "Disabled" if generate_audio is not None else ""
+
     person_generation = str(metadata.get("person_generation") or "")
     enhance_prompt = str(metadata.get("enhance_prompt") or "")
     session_id = str(metadata.get("session_id") or "")
-    last_frame_url = str(metadata.get("last_frame_url") or "")
-    last_frame_file_id = str(metadata.get("last_frame_file_id") or "")
 
-    # Reference images / videos
-    reference_images: List[str] = list(metadata.get("reference_images") or [])
-    reference_videos: List[str] = list(metadata.get("reference_videos") or [])
-    # Structured image refs with ObjectId alias (from video_generation tool parsing)
-    reference_image_ids: List[Dict[str, str]] = list(metadata.get("reference_image_ids") or [])
-
-    file_infos = _build_file_infos(
-        messages,
-        reference_images=reference_images,
-        reference_videos=reference_videos,
-        reference_image_ids=reference_image_ids,
-    )
+    # Determine SceneType for 3D models
+    scene_type = ""
+    if model.lower().startswith("hunyuan-3d-"):
+        scene_type = "3d_scene"
 
     # ── Tracing ────────────────────────────────────────────────────────────
     _request_data: Dict[str, Any] = {"model": model, "model_version": model_version, "prompt": prompt}
@@ -735,8 +857,8 @@ def execute_tencentvod_video_generation(
                 enhance_prompt=enhance_prompt,
                 file_infos=file_infos or None,
                 last_frame_url=last_frame_url,
-                last_frame_file_id=last_frame_file_id,
                 session_id=session_id,
+                scene_type=scene_type,
                 tracer=_child_span,
             )
 
@@ -752,6 +874,14 @@ def execute_tencentvod_video_generation(
         if _child_span:
             _child_span.end(error=_trace_error)
 
+    # For 3D models, rename item types and use 3d_ response ID prefix
+    if scene_type == "3d_scene":
+        for item in video_items:
+            item["type"] = "3d_generation_call"
+        response_id = gen_id("3d")
+    else:
+        response_id = gen_id("vid")
+
     message = Message(
         role=MessageRole.ASSISTANT,
         content=json.dumps(video_items, ensure_ascii=False),
@@ -759,8 +889,22 @@ def execute_tencentvod_video_generation(
 
     video_count = max(len(video_items), 1)
 
+    usage_extra: Dict[str, Any]
+    if scene_type == "3d_scene":
+        usage_extra = {
+            'output_count': video_count,
+        }
+    else:
+        usage_extra = {
+            'output_video_number': video_count,
+            'output_video_resolution': resolution or '720p',
+            'output_video_aspect': aspect_ratio or '16:9',
+            'output_video_seconds': float(seconds) if seconds else 5.0,
+            'output_video_audio': audio_generation.lower() == 'enabled' if audio_generation else None,
+        }
+
     return ChatResponse(
-        id=gen_id("vid"),
+        id=response_id,
         model=model,
         choices=[ChatChoice(
             index=0,
@@ -771,13 +915,7 @@ def execute_tencentvod_video_generation(
             prompt_tokens=0,
             completion_tokens=video_count,
             total_tokens=video_count,
-            extra={
-                'output_video_number': video_count,
-                'output_video_resolution': resolution or '720p',
-                'output_video_aspect': aspect_ratio or '16:9',
-                'output_video_seconds': float(seconds) if seconds else 5.0,
-                'output_video_audio': audio_generation.lower() == 'enabled' if audio_generation else None,
-            },
+            extra=usage_extra,
         ),
         created=int(time.time()),
         provider="tencentvod",
@@ -837,9 +975,10 @@ def stream_video_generation(
         event_type=StreamEventType.CONTENT_DELTA,
     )
 
-    # Emit one video_generation_call item per video
+    # Emit one item per result (video_generation_call or 3d_generation_call)
     for i, vid in enumerate(videos):
         result = vid.get("result", "")
+        item_type = vid.get("type", "video_generation_call")
         call_id = f"{response_id}-{i}" if i > 0 else response_id
         output_index = i
 
@@ -847,7 +986,7 @@ def stream_video_generation(
             "type": "response.output_item.added",
             "output_index": output_index,
             "item": {
-                "type": "video_generation_call",
+                "type": item_type,
                 "id": call_id,
                 "status": "generating",
                 "result": None,
@@ -857,7 +996,7 @@ def stream_video_generation(
             "type": "response.output_item.done",
             "output_index": output_index,
             "item": {
-                "type": "video_generation_call",
+                "type": item_type,
                 "id": call_id,
                 "status": "completed",
                 "result": result,
@@ -886,7 +1025,7 @@ def stream_video_generation(
 
     output_items = [
         {
-            "type": "video_generation_call",
+            "type": vid.get("type", "video_generation_call"),
             "id": (f"{response_id}-{i}" if i > 0 else response_id),
             "status": "completed",
             "result": vid.get("result", ""),

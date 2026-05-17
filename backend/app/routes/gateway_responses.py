@@ -46,9 +46,6 @@ from app.middleware.gateway_service import (
 # 导入适配器
 from app.adapters.responses_adapter import OpenAIResponsesAdapter, _apply_b64_json_to_image_output, _save_image_data_uris_to_storage, _strip_internal_fields
 
-# 导入供应商相关
-from app.providers.hunyuan.threed_generation import is_hunyuan3d_model
-from app.providers.volcengine.threed_generation import is_seed3d_model
 from app.storage import get_storage_backend
 from app.utils import gen_id
 
@@ -388,15 +385,14 @@ async def openai_responses():
 
     is_background = bool(data.get('background', False))
 
-    # Check if this is a 3D generation request (hunyuan model or 3d_generation tool).
+    # Check if this is a 3D generation request (3d_generation tool present).
     # 3D generation is a long-running async task and ONLY supports background=true.
     _tools = data.get('tools', [])
     _has_3d_tool = any(
         isinstance(t, dict) and t.get('type') == '3d_generation'
         for t in _tools
     )
-    _is_3d_model = is_hunyuan3d_model(model_name) or is_seed3d_model(model_name)
-    if (_is_3d_model or _has_3d_tool) and not is_background:
+    if _has_3d_tool and not is_background:
         _log_error("responses", 400, "3D generation requires background=true")
         return jsonify(adapter.format_error_response(
             '3D generation only supports asynchronous mode. '

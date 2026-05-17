@@ -212,6 +212,13 @@ class TencentVODProvider(OpenAIProvider):
             "supports_vision": True,
             "is_video_model": True,
         },
+        "hunyuan-3d-2.0": {
+            "description": "混元 3D 2.0 — image_generation(3d_panorama) / 3d_generation(3d_scene)",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_image_model": True,
+            "is_3d_model": True,
+        },
     }
 
     def __init__(self, config: ProviderConfig):
@@ -300,6 +307,10 @@ class TencentVODProvider(OpenAIProvider):
         """Check if the request contains a video_generation tool."""
         return has_video_generation_tool(request)
 
+    def _has_3d_generation_tool(self, request: ChatRequest) -> bool:
+        """Check if the request contains a 3d_generation tool."""
+        return bool(request.metadata.get("_3d_generation"))
+
     def _get_sub_app_id(self, request: ChatRequest) -> Optional[int]:
         """
         Resolve SubAppId from request metadata or provider extra_config.
@@ -336,9 +347,10 @@ class TencentVODProvider(OpenAIProvider):
         执行对话/图像生成/视频生成请求
 
         优先级:
-        1. 如果模型是视频生成模型或请求包含 video_generation 工具 → 视频生成路径
-        2. 如果模型是图像生成模型或请求包含 image_generation 工具 → 图像生成路径
-        3. 否则走 OpenAI 兼容格式的对话路径
+        1. 如果请求包含 3d_generation 工具 → 视频生成路径 (3d_scene)
+        2. 如果模型是视频生成模型或请求包含 video_generation 工具 → 视频生成路径
+        3. 如果模型是图像生成模型或请求包含 image_generation 工具 → 图像生成路径
+        4. 否则走 OpenAI 兼容格式的对话路径
 
         Args:
             request: 对话请求对象
@@ -349,6 +361,16 @@ class TencentVODProvider(OpenAIProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        if self._has_3d_generation_tool(request):
+            return execute_tencentvod_video_generation(
+                api_key=self._get_image_api_key(),
+                model=request.model,
+                messages=request.messages,
+                metadata=request.metadata,
+                sub_app_id=self._get_sub_app_id(request),
+                tracer=self.tracer,
+            )
 
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
             return execute_tencentvod_video_generation(
@@ -380,9 +402,10 @@ class TencentVODProvider(OpenAIProvider):
         执行流式对话/图像生成/视频生成请求
 
         优先级:
-        1. 如果模型是视频生成模型或请求包含 video_generation 工具 → 视频生成路径
-        2. 如果模型是图像生成模型或请求包含 image_generation 工具 → 图像生成路径
-        3. 否则走 OpenAI 兼容格式的流式对话路径
+        1. 如果请求包含 3d_generation 工具 → 视频生成路径 (3d_scene)
+        2. 如果模型是视频生成模型或请求包含 video_generation 工具 → 视频生成路径
+        3. 如果模型是图像生成模型或请求包含 image_generation 工具 → 图像生成路径
+        4. 否则走 OpenAI 兼容格式的流式对话路径
 
         Args:
             request: 对话请求对象
@@ -393,6 +416,10 @@ class TencentVODProvider(OpenAIProvider):
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
+
+        if self._has_3d_generation_tool(request):
+            yield from stream_video_generation(self.chat, request)
+            return
 
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
             yield from stream_video_generation(self.chat, request)

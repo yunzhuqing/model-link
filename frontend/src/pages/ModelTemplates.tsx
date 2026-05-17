@@ -167,7 +167,8 @@ function getModelFamilies(label: string): string[] {
   // 3D generation models
   if (
     lower.includes('hunyuan-3d') ||
-    lower.includes('seed3d')
+    lower.includes('seed3d') ||
+    lower.includes('hunyuan-3d')
   ) {
     families.push('3D');
   }
@@ -177,6 +178,8 @@ function getModelFamilies(label: string): string[] {
     lower.includes('seedance') ||
     lower.includes('kling') ||
     lower.includes('veo') ||
+    lower.includes('viduq') ||
+    lower.includes('pixverse') ||
     lower.includes('happyhorse')
   ) {
     families.push('Video');

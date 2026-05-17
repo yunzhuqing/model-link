@@ -157,8 +157,9 @@ _POLL_MAX_WAIT_S = 300   # 最大等待时间（秒）
 _TENCENTVOD_IMAGE_MODEL_PREFIXES = (
     "gem-",
     "mingmou-",
-    "hy-image-", # Hunyuan image models
-    "gpt-image-", # GPT Image models (e.g. gpt-image-2)
+    "hy-image-",    # Hunyuan image models
+    "gpt-image-",   # GPT Image models (e.g. gpt-image-2)
+    "hunyuan-3d-",  # Hunyuan 3D models (image_generation → 3d_panorama)
 )
 
 
@@ -227,6 +228,8 @@ _MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     # Default version (low quality); actual version is resolved dynamically
     # based on the ``quality`` metadata parameter.
     "gpt-image-2":                     ("OG", "image2_low"),
+    # ── Hunyuan 3D models (image_generation with SceneType=3d_panorama) ─────
+    "hunyuan-3d-2.0":                 ("Hunyuan", "3d_2.0"),
 }
 
 # =============================================================================
@@ -539,6 +542,7 @@ def _create_aigc_image_task(
     file_urls: Optional[List[str]] = None,
     session_id: str = "",
     enhance_prompt: str = "",
+    scene_type: str = "",
     tracer: Any = None,
 ) -> str:
     """
@@ -559,6 +563,7 @@ def _create_aigc_image_task(
         file_urls:       参考图片的 URL 列表
         session_id:      会话 ID（可选）
         enhance_prompt:  是否增强 Prompt（"Enabled" | ""）
+        scene_type:      3D 场景类型（"3d_panorama" | ""）
 
     Returns:
         TaskId string
@@ -583,6 +588,9 @@ def _create_aigc_image_task(
 
     if session_id:
         body["SessionId"] = session_id
+
+    if scene_type:
+        body["SceneType"] = scene_type
 
     # 参考图片
     file_infos: List[Dict[str, Any]] = []
@@ -912,6 +920,11 @@ def execute_tencentvod_image_generation(
     session_id = metadata.get("session_id", "")
     enhance_prompt = metadata.get("enhance_prompt", "")
 
+    # Determine SceneType for 3D models
+    scene_type = ""
+    if model.lower().startswith("hunyuan-3d-"):
+        scene_type = "3d_panorama"
+
     # ── Tracing ────────────────────────────────────────────────────────────
     _request_data: Dict[str, Any] = {"model": model, "model_version": model_version, "prompt": prompt}
     _child_span = None
@@ -939,6 +952,7 @@ def execute_tencentvod_image_generation(
                 file_urls=file_urls or None,
                 session_id=session_id,
                 enhance_prompt=enhance_prompt,
+                scene_type=scene_type,
                 tracer=_child_span,
             )
 
