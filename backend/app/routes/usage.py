@@ -768,6 +768,40 @@ async def control_sync():
         return jsonify({"status": "ok", "message": "Usage sync service stopped"})
 
 
+# ── Compress control endpoint ─────────────────────────────────────────────────
+
+@usage_bp.route('/api/usage/compress', methods=['POST'])
+async def run_compress():
+    """
+    Trigger usage record compression manually.
+
+    Body (optional): {"api_key_id": 123}  — compress only this key; omit for all.
+
+    Requires JWT authentication.
+    """
+    try:
+        _require_jwt()
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 401
+
+    data = await request.get_json() or {}
+    api_key_id = data.get('api_key_id')
+
+    from quart import current_app
+    from app.usagerecord.compress_service import _do_compress, _compress_key_for_api_key
+
+    try:
+        if api_key_id is not None:
+            result = _compress_key_for_api_key(current_app, int(api_key_id))
+            return jsonify({"status": "ok", **result})
+        else:
+            deleted = _do_compress(current_app)
+            return jsonify({"status": "ok", "total_compressed": deleted})
+    except Exception as e:
+        logger.error(f"[compress] Manual compress error: {e}", exc_info=True)
+        return jsonify({"status": "error", "detail": str(e)}), 500
+
+
 @usage_bp.route('/api/usage/sync/run', methods=['POST'])
 async def run_sync_once():
     """
@@ -784,7 +818,7 @@ async def run_sync_once():
     from app.usagerecord.sync_service import _do_sync
 
     try:
-        _do_sync(current_app)
+        _do_sync(current_app, 60)
         return jsonify({"status": "ok", "message": "Sync completed"})
     except Exception as e:
         logger.error(f"[usage_sync] Manual sync error: {e}", exc_info=True)

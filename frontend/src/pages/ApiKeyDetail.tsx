@@ -14,6 +14,7 @@ import UsageRecordsTable from '../components/UsageRecordsTable';
 import DailyCostByModelChart from './ApiKeyDetail/DailyCostByModelChart';
 import BudgetBars from './ApiKeyDetail/BudgetBars';
 import BudgetEditModal from './ApiKeyDetail/BudgetEditModal';
+import CompressionSettingsModal from './ApiKeyDetail/CompressionSettingsModal';
 import { fmtNum, fmtCost, fmtDate } from './ApiKeyDetail/utils';
 
 /* ── Component ─────────────────────────────────────────────────────────── */
@@ -25,6 +26,7 @@ const ApiKeyDetail = () => {
   const [activeTab, setActiveTab] = useState<'overview' | 'models' | 'model_usage' | 'usage'>('overview');
   const [costDays, setCostDays] = useState(7);
   const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [showCompressModal, setShowCompressModal] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['apiKeyDetail', id],
@@ -229,6 +231,42 @@ const ApiKeyDetail = () => {
             onEdit={() => setShowBudgetModal(true)}
             canManageBudget={canManageBudget}
           />
+
+          {/* Compression Settings Card */}
+          {(() => {
+            const compressPolicy = data.policies?.find(p => p.policy_type === 'compress') || null;
+            return (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                <div className="flex items-center space-x-2 mb-3">
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-400 to-cyan-600 flex items-center justify-center shadow-lg shadow-cyan-200/50">
+                    <Gauge className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-800">记录压缩</h3>
+                </div>
+                {compressPolicy ? (
+                  <div className="text-sm">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${compressPolicy.enabled ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {compressPolicy.enabled ? '已启用' : '已禁用'}
+                    </span>
+                    {compressPolicy.enabled && (
+                      <div className="mt-2 text-xs text-slate-500 space-y-1">
+                        <div>每分钟: {compressPolicy.config?.per_minute ?? '-'}</div>
+                        <div>每小时: {compressPolicy.config?.per_hour ?? '-'}</div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">未配置</p>
+                )}
+                <button
+                  onClick={() => setShowCompressModal(true)}
+                  className="mt-3 text-xs font-medium text-indigo-500 hover:text-indigo-700 transition-colors"
+                >
+                  设置 →
+                </button>
+              </div>
+            );
+          })()}
 
           {/* Token Stats */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 relative overflow-hidden">
@@ -638,6 +676,15 @@ const ApiKeyDetail = () => {
           budgets={data.budgets || []}
           onClose={() => setShowBudgetModal(false)}
           permissions={permissions}
+        />
+      )}
+
+      {/* ── Compression Settings Modal ───────────────────────────────────── */}
+      {showCompressModal && (
+        <CompressionSettingsModal
+          apiKeyId={data.id}
+          policy={data.policies?.find(p => p.policy_type === 'compress') || null}
+          onClose={() => setShowCompressModal(false)}
         />
       )}
     </div>

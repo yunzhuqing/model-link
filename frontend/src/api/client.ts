@@ -201,6 +201,12 @@ export const apiKeysApi = {
   delete: (id: number) => client.delete(`/api/apikeys/${id}`),
   regenerate: (id: number) => client.post<ApiKey>(`/api/apikeys/${id}/regenerate`),
   getModels: (id: number) => client.get<ApiKeyModelsResponse>(`/api/apikeys/${id}/models`),
+  // Policy endpoints
+  listPolicies: (apiKeyId: number) => client.get(`/api/apikeys/${apiKeyId}/policies`),
+  upsertPolicy: (apiKeyId: number, policyType: string, data: { enabled?: boolean; config?: Record<string, any> }) =>
+    client.put(`/api/apikeys/${apiKeyId}/policies/${policyType}`, data),
+  deletePolicy: (apiKeyId: number, policyType: string) =>
+    client.delete(`/api/apikeys/${apiKeyId}/policies/${policyType}`),
 };
 
 // Group endpoints

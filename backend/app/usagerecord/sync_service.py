@@ -21,15 +21,13 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("usage_sync")
 
 _stop_event = threading.Event()
 _sync_thread = None
 _sync_lock = threading.Lock()
-_last_sync_time: Optional[datetime] = None
 
 
 def start_usage_sync(app) -> None:
@@ -85,7 +83,7 @@ def _sync_loop(app, interval: float) -> None:
             if not is_leader():
                 logger.info("[usage_sync] This node is no longer the leader. Stopping sync loop.")
                 break
-            _do_sync(app)
+            _do_sync(app, interval)
         except Exception as exc:
             logger.error(f"[usage_sync] Sync error: {exc}")
 
@@ -94,11 +92,12 @@ def _sync_loop(app, interval: float) -> None:
     logger.info("[usage_sync] Sync loop terminated.")
 
 
-def _do_sync(app) -> None:
+def _do_sync(app, interval: float = 60) -> None:
     """
     Perform one sync cycle with incremental aggregation:
 
-      1. Find API keys that have recent usage (active keys only).
+      1. Find API keys that have usage records within the lookback window
+         (now - interval).
       2. For each active key, aggregate ONLY new records since its last sync
          position (id > last_stat_id), not the entire history.
       3. ADD incremental values to the existing cumulative counters.
@@ -109,8 +108,6 @@ def _do_sync(app) -> None:
     This avoids full-table scans over ml_usage_records — only keys with
     new activity are touched, and only new rows are summed.
     """
-    global _last_sync_time
-
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from sqlalchemy.pool import NullPool
@@ -134,11 +131,11 @@ def _do_sync(app) -> None:
 
             cache = get_cache()
             now = datetime.now(timezone.utc)
+            since = now - timedelta(seconds=interval)
 
-            # ── Step 1: find active api_key_hashes since last sync time ──
-            hash_max_id = get_active_key_hashes(session, since=_last_sync_time)
+            # ── Step 1: find active api_key_hashes within the lookback window ──
+            hash_max_id = get_active_key_hashes(session, since=since)
             if not hash_max_id:
-                _last_sync_time = now
                 return
 
             # ── Step 2: load all API keys ──
@@ -159,27 +156,42 @@ def _do_sync(app) -> None:
                 if last_stat >= current_max:
                     continue
 
-                # ── Step 3: aggregate ONLY new records ──
-                delta = compute_delta(session, key_hash, last_stat, current_max)
-                if delta is None:
-                    continue
+                with get_cache().key_lock(key_hash):
+                    # Re-read last_stat in case compress updated it while we waited
+                    delta = compute_delta(session, key_hash, last_stat, current_max)
+                    if delta is None:
+                        continue
 
-                # ── Step 4: ADD incremental values to cumulative counters ──
-                apply_delta_to_apikey(ak, delta)
-                ak.last_stat_id = current_max
-                updated_count += 1
+                    # ── Step 4: ADD incremental values to cumulative counters ──
+                    last_remaining_before = ak.last_synced_remaining
+                    apply_delta_to_apikey(ak, delta)
+                    ak.last_stat_id = current_max
+                    updated_count += 1
 
-                # ── Update cache with new cumulative values ──
-                apply_delta_to_cache(cache, ak.key, ak)
+                    # ── Update cache with new cumulative values ──
+                    apply_delta_to_cache(cache, ak.key, ak)
 
-                # ── Step 5: reconcile budget records ──
-                _reconcile_budget_for_key(session, ak, key_hash, delta)
+                    # ── Step 5: reconcile budget records ──
+                    _reconcile_budget_for_key(session, ak, key_hash, delta)
+
+                    logger.info(
+                        f"[usage_sync] key={ak.name}(id={ak.id}) "
+                        f"last_stat_id={last_stat}→{current_max} "
+                        f"Δreq={delta['request_count']} "
+                        f"Δin={delta['input_tokens']} Δout={delta['output_tokens']} "
+                        f"Δreason={delta['reasoning_tokens']} "
+                        f"Δcost=${delta['total_cost_usd']:.6f} "
+                        f"Δimg={delta['total_image_count']} Δvid={delta['total_video_count']} "
+                        f"Δaudio={delta['total_audio_seconds']:.2f}s "
+                        f"Δweb={delta['total_web_search_requests']} "
+                        f"Δcredits={delta['total_credits']:.4f} "
+                        f"total_cost=${ak.total_cost_usd:.6f} "
+                        f"budget_rem(last_sync)={last_remaining_before}→{ak.last_synced_remaining}"
+                    )
 
             if updated_count > 0:
                 session.commit()
                 logger.info(f"[usage_sync] Incrementally synced {updated_count} API key(s) usage stats to DB")
-
-            _last_sync_time = now
 
     except Exception as exc:
         logger.error(f"[usage_sync] DB sync error: {exc}", exc_info=True)

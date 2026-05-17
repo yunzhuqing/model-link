@@ -283,6 +283,10 @@ def create_app(config=None):
     register_on_leader(lambda: _start_usage_sync(app))
     register_on_lost_leader(_stop_usage_sync)
 
+    from app.usagerecord.compress_service import start_compress_service as _start_compress, stop_compress_service as _stop_compress
+    register_on_leader(lambda: _start_compress(app))
+    register_on_lost_leader(_stop_compress)
+
     _start_election()
 
     # Register blueprints

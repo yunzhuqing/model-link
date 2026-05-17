@@ -267,6 +267,8 @@ class ApiKey(db.Model):
 
     # Incremental sync position — the max UsageRecord.id covered by the last sync cycle
     last_stat_id = db.Column(db.BigInteger, default=0, nullable=False)
+    # Incremental compress position — the max UsageRecord.id covered by the last compress cycle
+    last_compress_id = db.Column(db.BigInteger, default=0, nullable=False)
     # Snapshot of total remaining budget at the time of the last sync (sum of all budget records)
     last_synced_remaining = db.Column(db.Float, nullable=True, default=None)
 
@@ -322,6 +324,7 @@ class ApiKey(db.Model):
             'unlimited_budget': self.unlimited_budget,
             'rpm': self.rpm,
             'tpm': self.tpm,
+            'policies': [p.to_dict() for p in self.policies] if self.policies else [],
         }
 
     def to_dict_simple(self):
@@ -714,6 +717,41 @@ class ApiKeyBudget(db.Model):
         }
 
 
+class ApiKeyPolicy(db.Model):
+    """Per-API-key policy/config table — extensible for multiple policy types.
+
+    policy_type examples:
+      - "compress"     → config: {"per_minute": 100, "per_hour": 1000}
+      - "budget_alert" → config: {"threshold": 10.0, "channels": ["email"], ...}
+    """
+    __tablename__ = "ml_api_key_policies"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    api_key_id = db.Column(db.Integer, db.ForeignKey("ml_api_keys.id", ondelete="CASCADE"), nullable=False, index=True)
+    policy_type = db.Column(db.String(50), nullable=False)
+    enabled = db.Column(db.Boolean, default=True, nullable=False)
+    config = db.Column(db.JSON, nullable=False, default={})
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    api_key = db.relationship("ApiKey", backref="policies")
+
+    __table_args__ = (
+        db.UniqueConstraint('api_key_id', 'policy_type', name='uq_api_key_policy_type'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'api_key_id': self.api_key_id,
+            'policy_type': self.policy_type,
+            'enabled': self.enabled,
+            'config': self.config,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class Permission(db.Model):
     """
     System-level permission model — global permission points apply to all groups.
@@ -1035,6 +1073,9 @@ class UsageRecord(db.Model):
     # actual_amount_usd: actual cost in USD = actual_amount / exchange_rate
     actual_amount_usd = db.Column(db.Numeric(20, 10), nullable=True, default=0)
 
+    # Compressed record count — 1 = single original record, >1 = merged from N records
+    compressed_count = db.Column(db.Integer, default=1)
+
     # ── Timestamp ──────────────────────────────────────────────────────────
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
@@ -1106,6 +1147,8 @@ class UsageRecord(db.Model):
             'actual_amount': self.actual_amount,
             # Duration
             'duration_ms': self.duration_ms,
+            # Compression
+            'compressed_count': self.compressed_count,
             # Timestamp
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

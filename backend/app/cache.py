@@ -26,6 +26,7 @@ Configuration (environment variables):
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -78,6 +79,14 @@ class CacheBackend(ABC):
         Returns the new value, or None if the key doesn't exist.
         """
 
+    @abstractmethod
+    def acquire_lock(self, key: str, ttl: int = 30) -> bool:
+        """Acquire a distributed lock. Returns True if acquired, False otherwise."""
+
+    @abstractmethod
+    def release_lock(self, key: str) -> None:
+        """Release a distributed lock."""
+
 
 # ── Memory backend ───────────────────────────────────────────────────────────
 
@@ -90,6 +99,7 @@ class MemoryCacheBackend(CacheBackend):
 
     def __init__(self, default_ttl: int = 300):
         self._store: Dict[str, tuple] = {}  # key → (value_dict, expire_timestamp)
+        self._locks: Dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
         self._default_ttl = default_ttl
 
@@ -159,6 +169,25 @@ class MemoryCacheBackend(CacheBackend):
             new_val = float(value or 0) + amount
             self._store[key] = (new_val, expires_at)
             return new_val
+
+    # ── Distributed lock (in-process) ───────────────────────────────────────
+
+    def acquire_lock(self, key: str, ttl: int = 30) -> bool:
+        with self._lock:
+            if key in self._locks:
+                return False
+            lock = threading.Lock()
+            acquired = lock.acquire(blocking=False)
+            if acquired:
+                self._locks[key] = lock
+                return True
+            return False
+
+    def release_lock(self, key: str) -> None:
+        with self._lock:
+            lock = self._locks.pop(key, None)
+            if lock is not None:
+                lock.release()
 
 
 # ── Redis backend ─────────────────────────────────────────────────────────────
@@ -258,6 +287,24 @@ class RedisCacheBackend(CacheBackend):
             return None
         result = self._client.incrbyfloat(rk, amount)
         return float(result)
+
+    # ── Distributed lock (Redis) ────────────────────────────────────────────
+
+    _LOCK_PREFIX = "lock:"
+
+    def _lock_key(self, key: str) -> str:
+        return f"{self._prefix}{self._LOCK_PREFIX}{key}"
+
+    def acquire_lock(self, key: str, ttl: int = 30) -> bool:
+        """Acquire a distributed lock using SET NX EX."""
+        rk = self._lock_key(key)
+        token = os.urandom(16).hex()
+        return bool(self._client.set(rk, token, nx=True, ex=ttl))
+
+    def release_lock(self, key: str) -> None:
+        """Release a distributed lock using DEL (best-effort)."""
+        rk = self._lock_key(key)
+        self._client.delete(rk)
 
 
 # ── Cache service (high-level API) ────────────────────────────────────────────
@@ -508,6 +555,20 @@ class CacheService:
             'total_web_search_requests': getattr(api_key_obj, 'total_web_search_requests', 0) or 0,
             'total_credits': getattr(api_key_obj, 'total_credits', 0.0) or 0.0,
         }
+
+
+# ── Distributed key lock (for sync/compress coordination) ────────────────────
+
+    @contextlib.contextmanager
+    def key_lock(self, key: str, ttl: int = 30):
+        """Acquire a distributed lock for *key*, blocking until acquired."""
+        lock_name = f"key_sync:{key}"
+        while not self._backend.acquire_lock(lock_name, ttl):
+            time.sleep(0.1)
+        try:
+            yield
+        finally:
+            self._backend.release_lock(lock_name)
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

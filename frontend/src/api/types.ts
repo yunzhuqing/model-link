@@ -62,6 +62,16 @@ export interface TimeSeriesByModel {
   total_cost_usd: number;
 }
 
+export interface ApiKeyPolicy {
+  id: number;
+  api_key_id: number;
+  policy_type: string;
+  enabled: boolean;
+  config: Record<string, any>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface ApiKeyDetailData {
   id: number;
   key: string;
@@ -94,4 +104,5 @@ export interface ApiKeyDetailData {
   budget_info: BudgetInfo;
   budgets?: BudgetRecord[];
   total_budget_remaining?: number;
+  policies?: ApiKeyPolicy[];
 }

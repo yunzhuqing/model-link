@@ -11,7 +11,7 @@ from datetime import datetime
 import secrets
 
 from app import db
-from app.models import ApiKey, ApiKeyBudget
+from app.models import ApiKey, ApiKeyBudget, ApiKeyPolicy
 from app.routes.users import token_required
 from app.models import check_permission
 from app.routes.permissions import (
@@ -1168,4 +1168,85 @@ async def delete_budget(current_user, api_key_id, budget_id):
     except Exception:
         pass
 
+    return '', 204
+
+
+# ── API Key Policy CRUD ──────────────────────────────────────────────────────
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/policies', methods=['GET'])
+@token_required
+async def list_policies(current_user, api_key_id):
+    """List all policies for an API key."""
+    api_key = db.session.get(ApiKey, api_key_id)
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+
+    if not _user_can_access_api_key(current_user, api_key):
+        return jsonify({'detail': 'Access denied'}), 403
+
+    policies = db.session.query(ApiKeyPolicy).filter(
+        ApiKeyPolicy.api_key_id == api_key_id
+    ).all()
+    return jsonify([p.to_dict() for p in policies])
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/policies/<policy_type>', methods=['PUT'])
+@token_required
+async def upsert_policy(current_user, api_key_id, policy_type):
+    """Create or update a policy for an API key."""
+    api_key = db.session.get(ApiKey, api_key_id)
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+
+    if not _user_can_access_api_key(current_user, api_key):
+        return jsonify({'detail': 'Access denied'}), 403
+
+    data = await request.get_json()
+    if not data:
+        return jsonify({'detail': 'Request body is required'}), 400
+
+    policy = db.session.query(ApiKeyPolicy).filter(
+        ApiKeyPolicy.api_key_id == api_key_id,
+        ApiKeyPolicy.policy_type == policy_type,
+    ).first()
+
+    if policy:
+        if 'enabled' in data:
+            policy.enabled = bool(data['enabled'])
+        if 'config' in data:
+            policy.config = data['config']
+    else:
+        policy = ApiKeyPolicy(
+            api_key_id=api_key_id,
+            policy_type=policy_type,
+            enabled=data.get('enabled', True),
+            config=data.get('config', {}),
+        )
+        db.session.add(policy)
+
+    db.session.commit()
+    return jsonify(policy.to_dict())
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/policies/<policy_type>', methods=['DELETE'])
+@token_required
+async def delete_policy(current_user, api_key_id, policy_type):
+    """Delete a policy for an API key."""
+    api_key = db.session.get(ApiKey, api_key_id)
+    if not api_key:
+        return jsonify({'detail': 'API key not found'}), 404
+
+    if not _user_can_access_api_key(current_user, api_key):
+        return jsonify({'detail': 'Access denied'}), 403
+
+    policy = db.session.query(ApiKeyPolicy).filter(
+        ApiKeyPolicy.api_key_id == api_key_id,
+        ApiKeyPolicy.policy_type == policy_type,
+    ).first()
+
+    if not policy:
+        return jsonify({'detail': 'Policy not found'}), 404
+
+    db.session.delete(policy)
+    db.session.commit()
     return '', 204

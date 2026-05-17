@@ -34,6 +34,7 @@ interface UsageRecord {
   discount: number;
   actual_amount: number;
   currency?: string;
+  compressed_count?: number;
   created_at: string;
 }
 
@@ -167,7 +168,14 @@ export default function UsageRecordsTable({ groupId, apiKeyHash }: Props) {
                 {(data?.records ?? []).map((r) => (
                   <tr key={r.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-3 py-2.5 text-slate-500 whitespace-nowrap text-xs">{fmtDate(r.created_at)}</td>
-                    <td className="px-3 py-2.5 text-slate-800 font-medium max-w-[140px] truncate">{r.model_name || '—'}</td>
+                    <td className="px-3 py-2.5 max-w-[140px] truncate">
+                      <span className="text-slate-800 font-medium">{r.model_name || '—'}</span>
+                      {(r.compressed_count && r.compressed_count > 1) && (
+                        <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-bold" title={`Merged from ${r.compressed_count} records`}>
+                          ×{r.compressed_count}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap max-w-[100px] truncate">{r.provider_name || '—'}</td>
                     <td className="px-3 py-2.5">
                       <p className="text-slate-700 text-xs font-medium">{r.api_key_name || '—'}</p>

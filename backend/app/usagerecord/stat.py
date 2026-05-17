@@ -8,7 +8,7 @@ from app.models import UsageRecord
 # Fields aggregated from UsageRecord for incremental sync.
 # Each tuple is (field_name, aggregate_expression).
 AGG_FIELDS = [
-    ("request_count",            func.count(UsageRecord.id)),
+    ("request_count",       func.coalesce(func.sum(UsageRecord.compressed_count), 0)),
     ("input_tokens",             func.coalesce(func.sum(UsageRecord.input_tokens), 0)),
     ("output_tokens",            func.coalesce(func.sum(UsageRecord.output_tokens), 0)),
     ("reasoning_tokens",         func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0)),
