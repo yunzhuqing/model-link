@@ -158,8 +158,6 @@ _VIDEO_MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     # ── Pixverse video models (ModelName=Pixverse) ─────────────────────────
     "pixverse-v6":            ("Pixverse", "V6.0"),
     "pixverse-c1":            ("Pixverse", "C1"),
-    # ── Hunyuan 3D models (3d_generation with SceneType=3d_scene via video gen) ──
-    "hunyuan-3d-2.0":         ("Hunyuan", "3d_2.0"),
 }
 
 
@@ -271,10 +269,6 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
             return "Pixverse", f"V{ver}.0" if ver.isdigit() else f"V{ver}"
         return "Pixverse", suffix.upper()
 
-    # 2g. hunyuan-3d-X.Y → Hunyuan
-    if key.startswith("hunyuan-3d-"):
-        return "Hunyuan", model[len("hunyuan-3d-"):]
-
     # 3. Legacy heuristic: split on last "-" when suffix is version-like
     parts = model.rsplit("-", 1)
     if len(parts) == 2 and parts[1].replace(".", "").isdigit():
@@ -306,7 +300,6 @@ def _create_aigc_video_task(
     file_infos: Optional[List[Dict[str, Any]]] = None,
     last_frame_url: str = "",
     session_id: str = "",
-    scene_type: str = "",
     tracer: Any = None,
 ) -> str:
     """
@@ -330,7 +323,6 @@ def _create_aigc_video_task(
         file_infos:         参考图片/视频列表
         last_frame_url:     尾帧图片 URL
         session_id:         会话 ID（可选）
-        scene_type:         3D 场景类型（"3d_scene" | ""）
 
     Returns:
         TaskId string
@@ -355,9 +347,6 @@ def _create_aigc_video_task(
 
     if session_id:
         body["SessionId"] = session_id
-
-    if scene_type:
-        body["SceneType"] = scene_type
 
     # Last-frame image (尾帧)
     if last_frame_url:
@@ -823,11 +812,6 @@ def execute_tencentvod_video_generation(
     enhance_prompt = str(metadata.get("enhance_prompt") or "")
     session_id = str(metadata.get("session_id") or "")
 
-    # Determine SceneType for 3D models
-    scene_type = ""
-    if model.lower().startswith("hunyuan-3d-"):
-        scene_type = "3d_scene"
-
     # ── Tracing ────────────────────────────────────────────────────────────
     _request_data: Dict[str, Any] = {"model": model, "model_version": model_version, "prompt": prompt}
     _child_span = None
@@ -858,7 +842,6 @@ def execute_tencentvod_video_generation(
                 file_infos=file_infos or None,
                 last_frame_url=last_frame_url,
                 session_id=session_id,
-                scene_type=scene_type,
                 tracer=_child_span,
             )
 
@@ -874,14 +857,6 @@ def execute_tencentvod_video_generation(
         if _child_span:
             _child_span.end(error=_trace_error)
 
-    # For 3D models, rename item types and use 3d_ response ID prefix
-    if scene_type == "3d_scene":
-        for item in video_items:
-            item["type"] = "3d_generation_call"
-        response_id = gen_id("3d")
-    else:
-        response_id = gen_id("vid")
-
     message = Message(
         role=MessageRole.ASSISTANT,
         content=json.dumps(video_items, ensure_ascii=False),
@@ -889,22 +864,8 @@ def execute_tencentvod_video_generation(
 
     video_count = max(len(video_items), 1)
 
-    usage_extra: Dict[str, Any]
-    if scene_type == "3d_scene":
-        usage_extra = {
-            'output_count': video_count,
-        }
-    else:
-        usage_extra = {
-            'output_video_number': video_count,
-            'output_video_resolution': resolution or '720p',
-            'output_video_aspect': aspect_ratio or '16:9',
-            'output_video_seconds': float(seconds) if seconds else 5.0,
-            'output_video_audio': audio_generation.lower() == 'enabled' if audio_generation else None,
-        }
-
     return ChatResponse(
-        id=response_id,
+        id=gen_id("vid"),
         model=model,
         choices=[ChatChoice(
             index=0,
@@ -915,7 +876,13 @@ def execute_tencentvod_video_generation(
             prompt_tokens=0,
             completion_tokens=video_count,
             total_tokens=video_count,
-            extra=usage_extra,
+            extra={
+                'output_video_number': video_count,
+                'output_video_resolution': resolution or '720p',
+                'output_video_aspect': aspect_ratio or '16:9',
+                'output_video_seconds': float(seconds) if seconds else 5.0,
+                'output_video_audio': audio_generation.lower() == 'enabled' if audio_generation else None,
+            },
         ),
         created=int(time.time()),
         provider="tencentvod",
@@ -975,10 +942,9 @@ def stream_video_generation(
         event_type=StreamEventType.CONTENT_DELTA,
     )
 
-    # Emit one item per result (video_generation_call or 3d_generation_call)
+    # Emit one video_generation_call item per video
     for i, vid in enumerate(videos):
         result = vid.get("result", "")
-        item_type = vid.get("type", "video_generation_call")
         call_id = f"{response_id}-{i}" if i > 0 else response_id
         output_index = i
 
@@ -986,7 +952,7 @@ def stream_video_generation(
             "type": "response.output_item.added",
             "output_index": output_index,
             "item": {
-                "type": item_type,
+                "type": "video_generation_call",
                 "id": call_id,
                 "status": "generating",
                 "result": None,
@@ -996,7 +962,7 @@ def stream_video_generation(
             "type": "response.output_item.done",
             "output_index": output_index,
             "item": {
-                "type": item_type,
+                "type": "video_generation_call",
                 "id": call_id,
                 "status": "completed",
                 "result": result,
@@ -1025,7 +991,7 @@ def stream_video_generation(
 
     output_items = [
         {
-            "type": vid.get("type", "video_generation_call"),
+            "type": "video_generation_call",
             "id": (f"{response_id}-{i}" if i > 0 else response_id),
             "status": "completed",
             "result": vid.get("result", ""),

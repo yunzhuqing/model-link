@@ -46,6 +46,12 @@ from .video_generation import (
     execute_tencentvod_video_generation,
     stream_video_generation,
 )
+from .threed_generation import (
+    is_tencentvod_3d_model,
+    has_3d_generation_tool,
+    execute_tencentvod_3d_generation,
+    stream_3d_generation,
+)
 
 
 class TencentVODProvider(OpenAIProvider):
@@ -309,7 +315,7 @@ class TencentVODProvider(OpenAIProvider):
 
     def _has_3d_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request contains a 3d_generation tool."""
-        return bool(request.metadata.get("_3d_generation"))
+        return has_3d_generation_tool(request)
 
     def _get_sub_app_id(self, request: ChatRequest) -> Optional[int]:
         """
@@ -363,7 +369,7 @@ class TencentVODProvider(OpenAIProvider):
             raise ValueError(error)
 
         if self._has_3d_generation_tool(request):
-            return execute_tencentvod_video_generation(
+            return execute_tencentvod_3d_generation(
                 api_key=self._get_image_api_key(),
                 model=request.model,
                 messages=request.messages,
@@ -418,7 +424,7 @@ class TencentVODProvider(OpenAIProvider):
             raise ValueError(error)
 
         if self._has_3d_generation_tool(request):
-            yield from stream_video_generation(self.chat, request)
+            yield from stream_3d_generation(self.chat, request)
             return
 
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
