@@ -196,6 +196,19 @@ class Group(db.Model):
         back_populates="source_group", cascade="all, delete-orphan"
     )
 
+    @staticmethod
+    def _sanitize_monitoring_config(mc):
+        """Strip secret_key from monitoring config before returning to client."""
+        if mc is None:
+            return None
+        items = [mc] if isinstance(mc, dict) else mc
+        result = []
+        for item in items:
+            item = dict(item)
+            item.pop('secret_key', None)
+            result.append(item)
+        return result
+
     def to_dict(self):
         # Include role information with users
         user_list = []
@@ -211,7 +224,7 @@ class Group(db.Model):
             'name': self.name,
             'description': self.description,
             'workspace_id': self.workspace_id,
-            'monitoring_config': self.monitoring_config,
+            'monitoring_config': self._sanitize_monitoring_config(self.monitoring_config),
             'tags': self.tags or [],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'users': user_list,
@@ -225,7 +238,7 @@ class Group(db.Model):
             'name': self.name,
             'description': self.description,
             'workspace_id': self.workspace_id,
-            'monitoring_config': self.monitoring_config,
+            'monitoring_config': self._sanitize_monitoring_config(self.monitoring_config),
             'tags': self.tags or [],
             'created_at': self.created_at.isoformat() if self.created_at else None
         }

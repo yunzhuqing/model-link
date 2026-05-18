@@ -167,14 +167,28 @@ def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
             group.monitoring_config = None
         elif isinstance(mc, dict):
             # Legacy single-object config
-            group.monitoring_config = [mc]
+            mc = [mc]
         elif isinstance(mc, list):
+            pass  # keep as-is
+        else:
+            return None, "monitoring_config must be a list, object, or null"
+
+        if mc is not None:
+            # Merge existing secret_key for items that don't provide one
+            existing = group.monitoring_config
+            if isinstance(existing, dict):
+                existing = [existing]
+            existing = existing or []
+            for i, item in enumerate(mc):
+                if not item.get('secret_key') and i < len(existing):
+                    old_item = existing[i] if isinstance(existing[i], dict) else {}
+                    if old_item.get('secret_key'):
+                        item['secret_key'] = old_item['secret_key']
+
             err = _validate_monitoring_config(mc)
             if err:
                 return None, err
             group.monitoring_config = mc
-        else:
-            return None, "monitoring_config must be a list, object, or null"
 
     if "tags" in kwargs:
         group.tags = kwargs["tags"]

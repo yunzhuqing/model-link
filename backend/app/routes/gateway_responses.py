@@ -265,7 +265,11 @@ def _run_background_response(
                         f"(upstream status: {upstream_status!r})"
                     )
 
-            formatted = adapter.format_response(response)
+            formatted = adapter.format_response(
+                response,
+                parallel_tool_calls=chat_request.parallel_tool_calls,
+                metadata=chat_request.metadata.get('_user_metadata'),
+            )
             # Save any data URIs from image generation to storage,
             # replacing them with storage URLs in the stored output.
             _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
@@ -484,11 +488,17 @@ async def openai_responses():
         thread.start()
 
         # Return 202 immediately with the response ID and current status
+        user_metadata = data.get('metadata')
+        if not isinstance(user_metadata, dict):
+            user_metadata = None
         return jsonify({
             "id": response_id,
             "object": "response",
-            "status": "in_progress",
+            "created_at": int(time.time()),
             "model": model_name,
+            "status": "in_progress",
+            "parallel_tool_calls": bool(data.get('parallel_tool_calls', False)),
+            "metadata": user_metadata,
             "background": True,
         }), 202
 
@@ -635,7 +645,11 @@ async def openai_responses():
                 )
             except Exception as _ue:
                 logger.warning(f"[usage] Failed to trigger usage recording for responses: {_ue}")
-            formatted = adapter.format_response(response)
+            formatted = adapter.format_response(
+                response,
+                parallel_tool_calls=chat_request.parallel_tool_calls,
+                metadata=chat_request.metadata.get('_user_metadata'),
+            )
             _save_image_data_uris_to_storage(formatted.get('output', []), get_storage_backend(), formatted.get('id', ''))
             if formatted.get('response_format') == 'b64_json':
                 _apply_b64_json_to_image_output(formatted.get('output', []), storage=get_storage_backend())
@@ -696,6 +710,20 @@ async def get_response(response_id: str):
 
     record_status = bg_record.get("status", "")
 
+    # Helper to extract parallel_tool_calls and metadata from the stored input
+    def _extract_response_fields() -> tuple:
+        try:
+            storage = get_storage_backend()
+            raw = storage.read(bg_record.get("input_key")) if bg_record.get("input_key") else None
+            if raw:
+                data = json_loads(raw)
+                ptc = bool(data.get('parallel_tool_calls', False))
+                um = data.get('metadata')
+                return ptc, um if isinstance(um, dict) else None
+        except Exception:
+            pass
+        return False, None
+
     if record_status == "completed":
         # Read the output via the configured storage backend
         storage = get_storage_backend()
@@ -750,22 +778,28 @@ async def get_response(response_id: str):
             return obj
 
         error_obj = _normalise_error(error_raw)
+        ptc, um = _extract_response_fields()
         return jsonify({
             "id": bg_record["response_id"],
             "object": "response",
-            "status": "failed",
-            "model": bg_record.get("model", ""),
-            "error": error_obj,
             "created_at": int(created_at.timestamp()) if created_at else None,
+            "model": bg_record.get("model", ""),
+            "status": "failed",
+            "parallel_tool_calls": ptc,
+            "metadata": um,
+            "error": error_obj,
         }), 200
 
     # Still in_progress (or queued)
     created_at = bg_record.get("created_at")
+    ptc, um = _extract_response_fields()
     return jsonify({
         "id": bg_record["response_id"],
         "object": "response",
-        "status": record_status,
-        "model": bg_record.get("model", ""),
-        "background": True,
         "created_at": int(created_at.timestamp()) if created_at else None,
+        "model": bg_record.get("model", ""),
+        "status": record_status,
+        "parallel_tool_calls": ptc,
+        "metadata": um,
+        "background": True,
     }), 200

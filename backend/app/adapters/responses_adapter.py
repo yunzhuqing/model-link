@@ -720,6 +720,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
         metadata = self._collect_metadata(
             data, data.get('reasoning'), img_meta, vid_meta)
 
+        # 5.5. Capture parallel_tool_calls and user-facing metadata
+        parallel_tool_calls = data.get('parallel_tool_calls')
+        if parallel_tool_calls is not None:
+            parallel_tool_calls = bool(parallel_tool_calls)
+        user_metadata = data.get('metadata')
+        if user_metadata is not None and isinstance(user_metadata, dict):
+            metadata['_user_metadata'] = user_metadata
+
         # 6. Assemble ChatRequest
         return ChatRequest(
             messages=messages,
@@ -737,10 +745,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
             user=data.get('user'),
             session_id=data.get('session_id'),
             reasoning_effort=reasoning_effort,
+            parallel_tool_calls=parallel_tool_calls,
             metadata=metadata,
         )
 
-    def format_response(self, response: ChatResponse) -> dict:
+    def format_response(self, response: ChatResponse,
+                        parallel_tool_calls: Optional[bool] = None,
+                        metadata: Optional[dict] = None) -> dict:
         """
         将 ChatResponse 转换为 OpenAI Responses API 格式。
 
@@ -994,6 +1005,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
             'output': output,
             'usage': usage_dict,
         }
+        result['parallel_tool_calls'] = bool(parallel_tool_calls)
+        result['metadata'] = metadata if isinstance(metadata, dict) else None
         if is_image_generation:
             result['response_format'] = response.usage.extra.get('_response_format', 'b64_json')
         return result

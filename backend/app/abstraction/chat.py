@@ -117,6 +117,7 @@ class ChatRequest:
     user: Optional[str] = None
     session_id: Optional[str] = None  # 会话 ID，用于 tracer 追踪整个会话
     reasoning_effort: Optional[str] = None  # 推理力度: "none"(默认), "low", "medium", "high"
+    parallel_tool_calls: Optional[bool] = None  # 是否允许并行工具调用
     metadata: Dict[str, Any] = field(default_factory=dict)  # 额外参数
     
     def get_system_message(self) -> Optional[str]:

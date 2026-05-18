@@ -33,6 +33,18 @@ from app.routes.gateway_helpers import (
 images_bp = Blueprint('images', __name__)
 
 
+def _error_response(message, code="request_failed", param="", status_code=500):
+    """Return a standardized error response for image endpoints."""
+    return jsonify({
+        "error": {
+            "message": message,
+            "type": "one_api_error",
+            "param": param,
+            "code": code,
+        }
+    }), status_code
+
+
 # ============== Images Generations API ==============
 
 @images_bp.route('/v1/images/generations', methods=['POST'])
@@ -67,29 +79,29 @@ async def create_images():
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
         _log_error("images_generations", status, error.get('detail', 'Not authenticated'))
-        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+        return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
     # 2. 获取请求数据
     data = await _parse_json_body()
     if not data:
         _log_error("images_generations", 400, "Invalid or empty JSON request body")
-        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+        return _error_response('Invalid or empty JSON request body', code="invalid_request", status_code=400)
 
     model_name = data.get('model')
     if not model_name:
         _log_error("images_generations", 400, "Model is required")
-        return jsonify({'detail': 'Model is required'}), 400
+        return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
     prompt = data.get('prompt')
     if not prompt:
         _log_error("images_generations", 400, "Prompt is required")
-        return jsonify({'detail': 'Prompt is required'}), 400
+        return _error_response('Prompt is required', code="invalid_request", param="prompt", status_code=400)
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
         _log_error("images_generations", 403, acl_error['detail'])
-        return jsonify({'detail': acl_error['detail']}), 403
+        return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
     # 3. 提取参数
     images = data.get('images')
@@ -165,19 +177,19 @@ async def create_images():
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message}), e.status_code
+        return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message}), e.status_code
+        return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
+        return _error_response(e.message, code="provider_error", status_code=e.status_code)
 
 
 # ============== Images Edits API ==============
@@ -220,29 +232,29 @@ async def edit_images():
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
         _log_error("images_edits", status, error.get('detail', 'Not authenticated'))
-        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+        return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
     # 2. 获取请求数据
     data = await _parse_json_body()
     if not data:
         _log_error("images_edits", 400, "Invalid or empty JSON request body")
-        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+        return _error_response('Invalid or empty JSON request body', code="invalid_request", status_code=400)
 
     model_name = data.get('model')
     if not model_name:
         _log_error("images_edits", 400, "Model is required")
-        return jsonify({'detail': 'Model is required'}), 400
+        return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
     prompt = data.get('prompt')
     if not prompt:
         _log_error("images_edits", 400, "Prompt is required")
-        return jsonify({'detail': 'Prompt is required'}), 400
+        return _error_response('Prompt is required', code="invalid_request", param="prompt", status_code=400)
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
         _log_error("images_edits", 403, acl_error['detail'])
-        return jsonify({'detail': acl_error['detail']}), 403
+        return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
     # 3. 提取参数
     images = data.get('images')
@@ -320,19 +332,19 @@ async def edit_images():
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message}), e.status_code
+        return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message}), e.status_code
+        return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
+        return _error_response(e.message, code="provider_error", status_code=e.status_code)
 
 
 # ============== File Serving API ==============

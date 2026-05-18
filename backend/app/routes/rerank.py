@@ -28,6 +28,17 @@ from app.routes.gateway_helpers import (
 rerank_bp = Blueprint('rerank', __name__)
 
 
+def _error_response(message, code="request_failed", param="", status_code=500):
+    return jsonify({
+        "error": {
+            "message": message,
+            "type": "one_api_error",
+            "param": param,
+            "code": code,
+        }
+    }), status_code
+
+
 @rerank_bp.route('/v1/rerank', methods=['POST'])
 async def create_rerank():
     """
@@ -73,34 +84,34 @@ async def create_rerank():
     user, api_key, error, status = get_current_user_or_api_key()
     if error:
         _log_error("rerank", status, error.get('detail', 'Not authenticated'))
-        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+        return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
     # 2. 获取请求数据
     data = await _parse_json_body()
     if not data:
         _log_error("rerank", 400, "Invalid or empty JSON request body")
-        return jsonify({'detail': 'Invalid or empty JSON request body'}), 400
+        return _error_response('Invalid or empty JSON request body', code="invalid_request", status_code=400)
 
     model_name = data.get('model')
     if not model_name:
         _log_error("rerank", 400, "Model is required")
-        return jsonify({'detail': 'Model is required'}), 400
+        return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
     query = data.get('query')
     if not query:
         _log_error("rerank", 400, '"query" is required')
-        return jsonify({'detail': '"query" is required'}), 400
+        return _error_response('"query" is required', code="invalid_request", param="query", status_code=400)
 
     documents = data.get('documents')
     if not documents or not isinstance(documents, list):
         _log_error("rerank", 400, '"documents" must be a non-empty list')
-        return jsonify({'detail': '"documents" must be a non-empty list'}), 400
+        return _error_response('"documents" must be a non-empty list', code="invalid_request", param="documents", status_code=400)
 
     # 检查 API Key 的 allowed_models 限制
     acl_error = _check_allowed_models(api_key, model_name)
     if acl_error:
         _log_error("rerank", 403, acl_error['detail'])
-        return jsonify({'detail': acl_error['detail']}), 403
+        return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
     # 3. 构建 Rerank 请求
     rerank_request = RerankRequest(
@@ -124,10 +135,10 @@ async def create_rerank():
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         _log_error("rerank", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message}), e.status_code
+        return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         _log_error("rerank", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message}), e.status_code
+        return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         _log_error("rerank", e.status_code, e.message, {"model": model_name})
-        return jsonify({'detail': e.message, 'error': e.error_data}), e.status_code
+        return _error_response(e.message, code="provider_error", status_code=e.status_code)
