@@ -50,6 +50,8 @@ export interface ApiKey {
   allowed_models: string[];
   tags?: { name: string; value: string }[];
   group?: { id: number; name: string; description: string | null; created_at: string | null };
+  rpm?: number | null;
+  tpm?: number | null;
 }
 
 export interface ApiKeyCreate {
@@ -59,6 +61,8 @@ export interface ApiKeyCreate {
   expires_at?: string;
   allowed_models?: string[];
   tags?: { name: string; value: string }[];
+  rpm?: number | null;
+  tpm?: number | null;
 }
 
 export interface ApiKeyUpdate {
@@ -68,6 +72,8 @@ export interface ApiKeyUpdate {
   expires_at?: string;
   allowed_models?: string[];
   tags?: { name: string; value: string }[];
+  rpm?: number | null;
+  tpm?: number | null;
 }
 
 export interface ApiKeyModelsResponse {

@@ -33,7 +33,15 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Any, Dict, Optional
+
+
+def _json_default(obj):
+    """Handle non-JSON-serializable types like Decimal from DB drivers."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 logger = logging.getLogger("cache")
 
@@ -221,7 +229,7 @@ class RedisCacheBackend(CacheBackend):
     def set(self, key: str, value: Dict[str, Any], ttl: Optional[int] = None) -> None:
         effective_ttl = ttl if ttl is not None else self._default_ttl
         rk = self._key(key)
-        raw = json.dumps(value)
+        raw = json.dumps(value, default=_json_default)
         if effective_ttl > 0:
             self._client.setex(rk, effective_ttl, raw)
         else:

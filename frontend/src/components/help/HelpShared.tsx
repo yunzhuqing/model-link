@@ -132,7 +132,7 @@ export function TableOfContents({ items, accentColor = 'cyan' }: { items: TocIte
 
   return (
     <aside className="w-52 flex-shrink-0 hidden xl:block">
-      <div className="sticky top-0">
+      <div className="sticky top-0 max-h-screen overflow-y-auto">
         <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3 px-1">本页内容</p>
         <nav className="space-y-0.5">
           {items.map((item) => (

@@ -27,6 +27,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const [newKeyExpires, setNewKeyExpires] = useState('');
   const [newKeyAllowedModels, setNewKeyAllowedModels] = useState<string[]>([]);
   const [newKeyTags, setNewKeyTags] = useState<{ name: string; value: string }[]>([]);
+  const [newKeyRpm, setNewKeyRpm] = useState('');
+  const [newKeyTpm, setNewKeyTpm] = useState('');
   const [modelSearchInput, setModelSearchInput] = useState('');
   const [editAllowedModels, setEditAllowedModels] = useState<string[]>([]);
   const [editModelSearchInput, setEditModelSearchInput] = useState('');
@@ -40,6 +42,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const [editKeyDescription, setEditKeyDescription] = useState('');
   const [editKeyExpires, setEditKeyExpires] = useState('');
   const [editKeyTags, setEditKeyTags] = useState<{ name: string; value: string }[]>([]);
+  const [editKeyRpm, setEditKeyRpm] = useState('');
+  const [editKeyTpm, setEditKeyTpm] = useState('');
 
   const apiKeysQueryKey = groupId ? ['api-keys', 'group', String(groupId)] : ['apiKeys'];
 
@@ -111,6 +115,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
       setNewKeyGroupId(groupId);
       setNewKeyExpires('');
       setNewKeyAllowedModels([]);
+      setNewKeyTags([]);
+      setNewKeyRpm('');
+      setNewKeyTpm('');
       setModelSearchInput('');
       setCreateError(null);
     },
@@ -176,6 +183,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
       expires_at: newKeyExpires || undefined,
       allowed_models: newKeyAllowedModels.length > 0 ? newKeyAllowedModels : undefined,
       tags: newKeyTags.length > 0 ? newKeyTags : undefined,
+      rpm: newKeyRpm ? Number(newKeyRpm) : null,
+      tpm: newKeyTpm ? Number(newKeyTpm) : null,
     });
   };
 
@@ -206,6 +215,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     setEditKeyExpires(apiKey.expires_at ? apiKey.expires_at.slice(0, 16) : '');
     setEditAllowedModels(apiKey.allowed_models || []);
     setEditKeyTags((apiKey as any).tags || []);
+    setEditKeyRpm(apiKey.rpm != null ? String(apiKey.rpm) : '');
+    setEditKeyTpm(apiKey.tpm != null ? String(apiKey.tpm) : '');
     setEditModelSearchInput('');
     setIsEditModalOpen(true);
   };
@@ -520,6 +531,28 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
                   <TagSelector value={newKeyTags} onChange={setNewKeyTags} />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">RPM 限制（可选）</label>
+                    <input
+                      type="number"
+                      value={newKeyRpm}
+                      onChange={(e) => setNewKeyRpm(e.target.value)}
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      placeholder="不限制"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">TPM 限制（可选）</label>
+                    <input
+                      type="number"
+                      value={newKeyTpm}
+                      onChange={(e) => setNewKeyTpm(e.target.value)}
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      placeholder="不限制"
+                    />
+                  </div>
+                </div>
               </div>
               {createError && (
                 <div className="px-6 pb-2">
@@ -530,7 +563,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
               )}
               <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
                 <button
-                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setNewKeyTags([]); setModelSearchInput(''); setCreateError(null); }}
+                  onClick={() => { setIsCreateModalOpen(false); setNewKeyName(''); setNewKeyDescription(''); setNewKeyExpires(''); setNewKeyAllowedModels([]); setNewKeyTags([]); setNewKeyRpm(''); setNewKeyTpm(''); setModelSearchInput(''); setCreateError(null); }}
                   className="px-5 py-2.5 text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
                 >
                   取消
@@ -602,6 +635,28 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
                   <TagSelector value={editKeyTags} onChange={setEditKeyTags} />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">RPM 限制（可选）</label>
+                    <input
+                      type="number"
+                      value={editKeyRpm}
+                      onChange={(e) => setEditKeyRpm(e.target.value)}
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      placeholder="不限制"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">TPM 限制（可选）</label>
+                    <input
+                      type="number"
+                      value={editKeyTpm}
+                      onChange={(e) => setEditKeyTpm(e.target.value)}
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      placeholder="不限制"
+                    />
+                  </div>
+                </div>
               </div>
               <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
                 <button
@@ -620,6 +675,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                         expires_at: editKeyExpires || undefined,
                         allowed_models: editAllowedModels,
                         tags: editKeyTags.length > 0 ? editKeyTags : undefined,
+                        rpm: editKeyRpm ? Number(editKeyRpm) : null,
+                        tpm: editKeyTpm ? Number(editKeyTpm) : null,
                       },
                     });
                   }}
@@ -896,6 +953,28 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
                 <TagSelector value={newKeyTags} onChange={setNewKeyTags} />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">RPM 限制（可选）</label>
+                  <input
+                    type="number"
+                    value={newKeyRpm}
+                    onChange={(e) => setNewKeyRpm(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    placeholder="不限制"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">TPM 限制（可选）</label>
+                  <input
+                    type="number"
+                    value={newKeyTpm}
+                    onChange={(e) => setNewKeyTpm(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    placeholder="不限制"
+                  />
+                </div>
+              </div>
             </div>
             {createError && (
               <div className="px-6 pb-2">
@@ -914,6 +993,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   setNewKeyExpires('');
                   setNewKeyAllowedModels([]);
                   setNewKeyTags([]);
+                  setNewKeyRpm('');
+                  setNewKeyTpm('');
                   setModelSearchInput('');
                   setCreateError(null);
                 }}
@@ -988,6 +1069,28 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
                 <TagSelector value={editKeyTags} onChange={setEditKeyTags} />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">RPM 限制（可选）</label>
+                  <input
+                    type="number"
+                    value={editKeyRpm}
+                    onChange={(e) => setEditKeyRpm(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    placeholder="不限制"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">TPM 限制（可选）</label>
+                  <input
+                    type="number"
+                    value={editKeyTpm}
+                    onChange={(e) => setEditKeyTpm(e.target.value)}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    placeholder="不限制"
+                  />
+                </div>
+              </div>
             </div>
             <div className="p-6 border-t border-slate-200 flex justify-end space-x-3 flex-shrink-0">
               <button
@@ -1006,6 +1109,8 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                       expires_at: editKeyExpires || undefined,
                       allowed_models: editAllowedModels,
                       tags: editKeyTags.length > 0 ? editKeyTags : undefined,
+                      rpm: editKeyRpm ? Number(editKeyRpm) : null,
+                      tpm: editKeyTpm ? Number(editKeyTpm) : null,
                     },
                   });
                 }}
