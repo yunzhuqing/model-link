@@ -34,9 +34,6 @@ def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
     if provider.type != 'tencentvod':
         return
 
-    if provider.api_key:
-        return
-
     extra = provider.extra_config or {}
     secret_id = extra.get('secret_id', '').strip()
     secret_key = extra.get('secret_key', '').strip()
