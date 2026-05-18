@@ -6,6 +6,8 @@ import { SeedanceSection } from '../components/help/HelpVideo_Seedance';
 import { VeoSection } from '../components/help/HelpVideo_Veo';
 import { KlingSection } from '../components/help/HelpVideo_Kling';
 import { HappyhorseSection } from '../components/help/HelpVideo_Happyhorse';
+import { ViduSection } from '../components/help/HelpVideo_Vidu';
+import { PixVerseSection } from '../components/help/HelpVideo_Pixverse';
 
 // ---------- TOC ----------
 
@@ -32,6 +34,18 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'happyhorse-i2v', label: '　├ 图生视频', indent: true },
   { id: 'happyhorse-r2v', label: '　├ 参考图生视频', indent: true },
   { id: 'happyhorse-video-edit', label: '　└ 视频编辑', indent: true },
+  { id: 'vidu', label: 'Vidu 模型' },
+  { id: 'vidu-t2v', label: '　├ 文生视频', indent: true },
+  { id: 'vidu-i2v', label: '　├ 图生视频', indent: true },
+  { id: 'vidu-multimodal', label: '　├ 多模态引用', indent: true },
+  { id: 'vidu-params', label: '　├ 参数说明', indent: true },
+  { id: 'vidu-pricing', label: '　└ 收费标准', indent: true },
+  { id: 'pixverse', label: 'PixVerse 模型' },
+  { id: 'pixverse-t2v', label: '　├ 文生视频', indent: true },
+  { id: 'pixverse-i2v', label: '　├ 图生视频', indent: true },
+  { id: 'pixverse-ref-edit', label: '　├ 参考对象编辑', indent: true },
+  { id: 'pixverse-params', label: '　├ 参数说明', indent: true },
+  { id: 'pixverse-pricing', label: '　└ 收费标准', indent: true },
 ];
 
 // ---------- Page ----------
@@ -98,6 +112,8 @@ export default function HelpVideoGeneration() {
                 { label: 'Gemini Veo',       color: 'bg-blue-100 text-blue-700' },
                 { label: 'VertexAI Veo',     color: 'bg-green-100 text-green-700' },
                 { label: 'Happyhorse',       color: 'bg-pink-100 text-pink-700' },
+                { label: 'Vidu (生数)',      color: 'bg-purple-100 text-purple-700' },
+                { label: 'PixVerse (爱诗)',  color: 'bg-rose-100 text-rose-700' },
               ].map(s => (
                 <span key={s.label} className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${s.color}`}>{s.label}</span>
               ))}
@@ -119,6 +135,12 @@ export default function HelpVideoGeneration() {
 
         {/* ======== Happyhorse ======== */}
         <HappyhorseSection />
+
+        {/* ======== Vidu ======== */}
+        <ViduSection />
+
+        {/* ======== PixVerse ======== */}
+        <PixVerseSection />
       </div>
 
       {/* TOC sidebar */}

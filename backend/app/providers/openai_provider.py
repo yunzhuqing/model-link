@@ -137,7 +137,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         ))
     
     tools = []
-    for tool_data in data.get('tools', []):
+    for tool_data in (data.get('tools') or []):
         func = tool_data.get('function', tool_data)
         name = func.get('name', '')
         description = func.get('description', '')
