@@ -156,8 +156,8 @@ _VIDEO_MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     "viduq3-turbo":           ("Vidu", "q3-turbo"),
     "viduq3":                 ("Vidu", "q3"),
     # ── Pixverse video models (ModelName=Pixverse) ─────────────────────────
-    "pixverse-v6":            ("Pixverse", "V6.0"),
-    "pixverse-c1":            ("Pixverse", "C1"),
+    "pixverse-v6":            ("PixVerse", "v6"),
+    "pixverse-c1":            ("PixVerse", "c1"),
 }
 
 
@@ -266,8 +266,8 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
         suffix = model[len("pixverse-"):].lower()  # v6, c1
         if suffix.startswith("v"):
             ver = suffix[1:]
-            return "Pixverse", f"V{ver}.0" if ver.isdigit() else f"V{ver}"
-        return "Pixverse", suffix.upper()
+            return "PixVerse", f"V{ver}.0" if ver.isdigit() else f"V{ver}"
+        return "PixVerse", suffix.upper()
 
     # 3. Legacy heuristic: split on last "-" when suffix is version-like
     parts = model.rsplit("-", 1)
@@ -679,8 +679,8 @@ def _build_file_infos_from_map(
     if var_fids:
         if model_name == "Kling":
             prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"<<<\1>>>", prompt)
-        elif model_name == "Vidu":
-            prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"@\1", prompt)
+        elif model_name == "Vidu" or model_name == "PixVerse":
+            prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"@\1 ", prompt)
 
     return file_infos, last_frame_url, prompt
 
