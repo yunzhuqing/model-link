@@ -569,6 +569,7 @@ class VolcengineProvider(BaseProvider):
         image_format = request.metadata.get('image_format', 'png')
         seed = request.metadata.get('seed')
         watermark = request.metadata.get('watermark', False)
+        req_timeout = request.metadata.get('timeout')
 
         return self.execute_image_generation(
             model=request.model,
@@ -580,6 +581,7 @@ class VolcengineProvider(BaseProvider):
             seed=seed,
             watermark=watermark,
             reference_images=reference_images if reference_images else None,
+            timeout=req_timeout,
         )
 
     @staticmethod
@@ -1119,6 +1121,7 @@ class VolcengineProvider(BaseProvider):
         seed: Optional[int] = None,
         watermark: bool = False,
         reference_images: Optional[List[str]] = None,
+        timeout: Optional[int] = None,
     ) -> ChatResponse:
         """
         Execute image generation request directly.
@@ -1162,6 +1165,7 @@ class VolcengineProvider(BaseProvider):
                 watermark=watermark,
                 reference_images=reference_images,
                 support_output_format=get_support_output_format(model),
+                timeout=timeout,
             )
             
             images = image_provider.parse_image_response(response_data)

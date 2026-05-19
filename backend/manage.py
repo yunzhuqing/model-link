@@ -45,6 +45,11 @@ def create_app():
         "pool_recycle": int(os.getenv("SQLALCHEMY_POOL_RECYCLE", 1800)),
         "pool_pre_ping": os.getenv("SQLALCHEMY_POOL_PRE_PING", "true").lower()
         == "true",
+        "connect_args": {
+            "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", 10)),
+            "read_timeout": int(os.getenv("DB_READ_TIMEOUT", 30)),
+            "write_timeout": int(os.getenv("DB_WRITE_TIMEOUT", 30)),
+        },
     }
 
     db.init_app(app)

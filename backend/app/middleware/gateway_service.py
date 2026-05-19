@@ -14,8 +14,11 @@
 from typing import Any, Optional, Generator, Tuple, Callable, List
 from dataclasses import dataclass
 import hashlib
+import logging
 import random
+import time
 import httpx
+from sqlalchemy.exc import OperationalError
 
 from app import db
 from app.utils import json_loads
@@ -67,6 +70,52 @@ class ProviderError(GatewayServiceError):
 # Internal metadata keys set by the gateway service.
 # These are used for internal logic and should NOT be sent to upstream provider APIs.
 INTERNAL_METADATA_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning', 'timeout'})
+
+logger = logging.getLogger(__name__)
+
+# Error codes that indicate a transient database error worth retrying.
+_TRANSIENT_DB_ERROR_CODES = frozenset({2013})  # 2013 = Lost connection during query
+
+
+def _retry_db_query(query_fn, max_retries=2):
+    """Execute a database query with retries on transient connection errors.
+
+    On OperationalError with a transient code, the broken session is removed
+    and a fresh connection is obtained on the next attempt.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return query_fn()
+        except OperationalError as exc:
+            last_exc = exc
+            code = getattr(exc.orig, 'args', None)
+            if code:
+                code = code[0] if isinstance(code, (list, tuple)) else code
+                if code not in _TRANSIENT_DB_ERROR_CODES:
+                    raise
+            elif not _is_connection_lost(exc):
+                raise
+            logger.warning(
+                "Transient DB error (attempt %d/%d): %s. Retrying...",
+                attempt + 1, max_retries + 1, exc
+            )
+            db.session.remove()
+            if attempt < max_retries:
+                time.sleep(0.1 * (attempt + 1))
+        except Exception:
+            raise
+    raise last_exc
+
+
+def _is_connection_lost(exc: OperationalError) -> bool:
+    """Check if an OperationalError looks like a lost-connection error."""
+    msg = str(exc).lower()
+    return any(phrase in msg for phrase in (
+        'lost connection', 'server has gone away',
+        'connection refused', 'connection reset',
+        'broken pipe', 'connection timed out',
+    ))
 
 
 class GatewayService:
@@ -135,7 +184,7 @@ class GatewayService:
             query = query.filter(Model.provider_id == provider_id)
 
         # Fetch ALL matching models (across all providers)
-        all_models: List[Model] = query.all()
+        all_models: List[Model] = _retry_db_query(query.all)
 
         if not all_models:
             raise ModelNotFoundError(model_name)

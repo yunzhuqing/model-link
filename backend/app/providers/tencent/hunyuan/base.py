@@ -19,7 +19,7 @@ API 文档:
 import time
 from typing import Any, Dict, Generator, List, Optional
 
-from ..base import BaseProvider, ProviderConfig, ProviderCapability
+from ...base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from .threed_generation import (

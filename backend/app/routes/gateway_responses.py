@@ -326,6 +326,12 @@ def _run_background_response(
                     tracer.end(error=exc)
                 except Exception:
                     pass
+            # Ensure the DB session is cleaned up even on error paths;
+            # db.session.remove() at line 194 only runs on the success path.
+            try:
+                db.session.remove()
+            except Exception:
+                pass
             logger.exception(f"[background] Error processing {response_id!r}: {exc}")
             final_error = str(exc)
 

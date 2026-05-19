@@ -968,7 +968,7 @@ def execute_tencentvod_image_generation(
         )
 
         image_count = max(len(image_items), 1)
-        response_format = metadata.get("response_format", "url")
+        response_format = metadata.get("response_format", "b64_json")
 
         return ChatResponse(
             id=gen_id("img"),

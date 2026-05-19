@@ -43,7 +43,7 @@ def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
         return
 
     try:
-        from app.providers.tencentvod.image_generation import (
+        from app.providers.tencent.vod.image_generation import (
             create_aigc_api_token,
             describe_aigc_api_tokens,
         )

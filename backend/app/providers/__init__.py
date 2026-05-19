@@ -14,9 +14,9 @@ from .moonshot_provider import MoonshotProvider
 from .glm_provider import GLMProvider
 from .minimax_provider import MiniMaxProvider
 from .gemini import GeminiProvider
-from .tencentvod import TencentVODProvider
+from .tencent.vod import TencentVODProvider
 from .vllm_provider import VLLMProvider
-from .hunyuan import HunyuanProvider
+from .tencent.hunyuan import HunyuanProvider
 from .byteplus import BytePlusProvider
 from .deepseek_provider import DeepSeekProvider
 from .openai_chatcompletions_compt_provider import OpenAIChatCompletionsCompatProvider

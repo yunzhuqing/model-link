@@ -66,6 +66,7 @@ class DoubaoImageProvider:
         reference_images: Optional[List[str]] = None,
         watermark: bool = False,
         support_output_format: bool = True,
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         调用豆包图像生成 API
@@ -83,6 +84,7 @@ class DoubaoImageProvider:
             reference_images: 参考图像 URL 列表（用于图生图）
             watermark: 是否添加水印
             support_output_format: 是否支持 output_format 参数（5.0+支持，4.x 不支持）
+            timeout: 请求超时时间（秒），None 则使用默认 300 秒
 
         Returns:
             包含生成图像结果的字典
@@ -137,7 +139,7 @@ class DoubaoImageProvider:
         _trace_error: Optional[Exception] = None
 
         try:
-            with httpx.Client(timeout=300) as client:
+            with httpx.Client(timeout=timeout or 300) as client:
                 response = client.post(
                     f"{self.base_url}/images/generations",
                     json=request_body,

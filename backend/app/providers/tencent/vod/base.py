@@ -29,8 +29,8 @@ import time
 import uuid
 from typing import Any, Dict, Generator, List, Optional
 
-from ..openai_provider import OpenAIProvider
-from ..base import ProviderConfig, ProviderCapability
+from ...openai_provider import OpenAIProvider
+from ...base import ProviderConfig, ProviderCapability
 from app.utils import REASONING_EFFORT_LOW
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk

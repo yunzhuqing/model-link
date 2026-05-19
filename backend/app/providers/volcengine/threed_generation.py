@@ -447,7 +447,7 @@ def _poll_3d_task(
                 time.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
-            f"Seed3D 3D task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
+            f"Seed3D 3D task {task_id} timed out after {max_wait}s"
         )
     except Exception as e:
         _error = e

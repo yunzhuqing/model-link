@@ -662,7 +662,7 @@ def _poll_3d_job(
                 time.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
-            f"Hunyuan3D job {job_id} timed out after {_POLL_MAX_WAIT_S}s"
+            f"Hunyuan3D job {job_id} timed out after {max_wait}s"
         )
     except Exception as e:
         _error = e
