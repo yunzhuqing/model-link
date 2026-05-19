@@ -451,6 +451,32 @@ def _strip_internal_fields(output: list) -> None:
                 item.pop(f, None)
 
 
+def _extract_video_erase_metadata(tool_data: dict, file_id_media_map: dict) -> dict:
+    """Extract video_erase tool params → metadata dict."""
+    meta = {'_video_erase': True}
+
+    template_id = tool_data.get('template_id')
+    if template_id is not None:
+        meta['template_id'] = template_id
+    model = tool_data.get('model')
+    if model:
+        meta['erase_model'] = model
+    erase_type = tool_data.get('erase_type')
+    if erase_type:
+        meta['erase_type'] = erase_type
+    erase_method = tool_data.get('erase_method')
+    if erase_method:
+        meta['erase_method'] = erase_method
+    area = tool_data.get('area')
+    if area:
+        meta['area'] = area
+
+    if file_id_media_map:
+        meta['file_id_media_map'] = file_id_media_map
+
+    return meta
+
+
 def _extract_3d_gen_metadata(tool_data: dict, data: dict) -> dict:
     """Extract 3d_generation tool params → metadata dict."""
     meta = {'_3d_generation': True}
@@ -507,6 +533,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         'function_call':          (_handle_function_call_item, False),
         'image_generation_call':  (_handle_generation_call_item, True),
         'video_generation_call':  (_handle_generation_call_item, True),
+        'video_erase_call':       (_handle_generation_call_item, True),
         '3d_generation_call':     (_handle_generation_call_item, True),
         'function_call_output':   (_handle_function_call_output_item, False),
     }
@@ -547,6 +574,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         tools = []
         img_meta: dict = {}
         vid_meta: dict = {}
+        erase_meta: dict = {}
 
         for tool_data in _safe_list(data.get('tools')):
             ttype = tool_data.get('type', 'function')
@@ -555,6 +583,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 tools.append(_parse_function_tool_def(tool_data))
             elif ttype == 'web_search_preview':
                 pass  # pass through as metadata
+            elif ttype == 'video_erase':
+                erase_meta.update(_extract_video_erase_metadata(tool_data, file_id_media_map))
             elif ttype == 'video_generation':
                 vid_meta.update(_extract_video_gen_metadata(tool_data, file_id_media_map))
             elif ttype == 'image_generation':
@@ -562,7 +592,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             elif ttype == '3d_generation':
                 vid_meta.update(_extract_3d_gen_metadata(tool_data, data))
 
-        return tools, img_meta, vid_meta
+        return tools, img_meta, vid_meta, erase_meta
 
     @staticmethod
     def _resolve_reasoning_effort(data: dict) -> Optional[str]:
@@ -587,7 +617,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
     @staticmethod
     def _collect_metadata(data: dict, reasoning: Optional[dict],
-                          img_meta: dict, vid_meta: dict) -> dict:
+                          img_meta: dict, vid_meta: dict,
+                          erase_meta: Optional[dict] = None) -> dict:
         """Collect extra parameters and merge tool metadata into ChatRequest.metadata."""
         _KNOWN = {
             'model', 'input', 'instructions', 'temperature', 'top_p',
@@ -603,6 +634,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
             metadata.update(img_meta)
         if vid_meta:
             metadata.update(vid_meta)
+        if erase_meta:
+            metadata.update(erase_meta)
 
         raw_tools = data.get('tools', [])
         if raw_tools:
@@ -711,14 +744,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
         file_id_media_map = self._build_file_id_media_map(data)
 
         # 3. Parse tools
-        tools, img_meta, vid_meta = self._parse_tools(data, file_id_media_map)
+        tools, img_meta, vid_meta, erase_meta = self._parse_tools(data, file_id_media_map)
 
         # 4. Resolve reasoning effort
         reasoning_effort = self._resolve_reasoning_effort(data)
 
         # 5. Collect metadata (extra params + tool metadata)
         metadata = self._collect_metadata(
-            data, data.get('reasoning'), img_meta, vid_meta)
+            data, data.get('reasoning'), img_meta, vid_meta, erase_meta)
 
         # 5.5. Capture parallel_tool_calls and user-facing metadata
         parallel_tool_calls = data.get('parallel_tool_calls')
@@ -870,11 +903,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if isinstance(item, dict):
                     status = item.get("status", "completed")
                     result = item.get("result", "")
+                    item_type = item.get("type", "video_generation_call")
                 else:
                     status = "completed"
                     result = str(item)
+                    item_type = "video_generation_call"
                 output.append({
-                    "type": "video_generation_call",
+                    "type": item_type,
                     "id": call_id,
                     "status": status,
                     "result": result,

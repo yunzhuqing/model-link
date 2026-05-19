@@ -17,6 +17,7 @@ from .gemini import GeminiProvider
 from .tencent.vod import TencentVODProvider
 from .vllm_provider import VLLMProvider
 from .tencent.hunyuan import HunyuanProvider
+from .tencent.mps import MPSProvider
 from .byteplus import BytePlusProvider
 from .deepseek_provider import DeepSeekProvider
 from .openai_chatcompletions_compt_provider import OpenAIChatCompletionsCompatProvider
@@ -27,7 +28,7 @@ __all__ = [
     'OpenAIProvider', 'AzureProvider', 'AnthropicProvider', 'BailianProvider',
     'VolcengineProvider', 'VertexAIProvider', 'MoonshotProvider', 'GLMProvider',
     'MiniMaxProvider', 'GeminiProvider', 'TencentVODProvider', 'VLLMProvider',
-    'HunyuanProvider', 'BytePlusProvider', 'DeepSeekProvider',
+    'HunyuanProvider', 'MPSProvider', 'BytePlusProvider', 'DeepSeekProvider',
     'OpenAIChatCompletionsCompatProvider', 'OpenAIResponsesCompatProvider',
 ]
 
@@ -46,6 +47,7 @@ PROVIDER_REGISTRY = {
     'tencentvod': TencentVODProvider,
     'vllm': VLLMProvider,
     'hunyuan': HunyuanProvider,
+    'tencentmps': MPSProvider,
     'byteplus': BytePlusProvider,
     'deepseek': DeepSeekProvider,
     'openai_chatcompletions_compt': OpenAIChatCompletionsCompatProvider,

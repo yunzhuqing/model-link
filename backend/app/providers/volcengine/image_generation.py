@@ -139,7 +139,8 @@ class DoubaoImageProvider:
         _trace_error: Optional[Exception] = None
 
         try:
-            with httpx.Client(timeout=timeout or 300) as client:
+            read_timeout = timeout or 300
+            with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=read_timeout, write=30.0, pool=15.0)) as client:
                 response = client.post(
                     f"{self.base_url}/images/generations",
                     json=request_body,

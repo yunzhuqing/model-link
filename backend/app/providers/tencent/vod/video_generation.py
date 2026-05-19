@@ -622,13 +622,16 @@ def _build_file_infos_from_map(
     var_fids: set = set(_re2.findall(r"\{\{([^}]+)\}\}", prompt))
 
     # ── Build FileInfos ──
+    # PixVerse expects fid in "Text" field, all other models use "ObjectId"
+    _fid_key: str = "Text" if model_name == "PixVerse" else "ObjectId"
+
     def _push_image(fid: str, url: str, usage: str = "") -> None:
         if url in seen_urls:
             return
         seen_urls.add(url)
         item: Dict[str, Any] = {"Type": "Url", "Category": "Image", "Url": url}
         if fid:
-            item["ObjectId"] = fid
+            item[_fid_key] = fid
         if usage:
             item["Usage"] = usage
         file_infos.append(item)
@@ -639,7 +642,7 @@ def _build_file_infos_from_map(
         seen_urls.add(url)
         item: Dict[str, Any] = {"Type": "Url", "Category": "Video", "Url": url}
         if fid:
-            item["ObjectId"] = fid
+            item[_fid_key] = fid
         if usage:
             item["Usage"] = usage
         file_infos.append(item)
@@ -650,7 +653,7 @@ def _build_file_infos_from_map(
         seen_urls.add(url)
         item: Dict[str, Any] = {"Type": "Url", "Category": "Audio", "Url": url}
         if fid:
-            item["ObjectId"] = fid
+            item[_fid_key] = fid
         if usage:
             item["Usage"] = usage
         file_infos.append(item)
