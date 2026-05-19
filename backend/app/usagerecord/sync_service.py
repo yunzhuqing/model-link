@@ -233,8 +233,10 @@ def _reconcile_budget_for_key(session, ak, key_hash: str, delta: dict) -> None:
     db_remaining = sum(float(b.remaining or 0) for b in budgets)
     delta_cost = delta.get('total_cost_usd', 0.0)
 
-    if ak.last_synced_remaining is not None:
+    if ak.last_synced_remaining is not None and ak.last_synced_remaining > 0 and db_remaining <= ak.last_synced_remaining:
         # ── Normal incremental case ──
+        # Only valid when last_synced_remaining is a meaningful baseline and
+        # no budget was added since the last sync (db_remaining <= last_synced_remaining).
         calculated_remaining = ak.last_synced_remaining - delta_cost
         if calculated_remaining < 0:
             calculated_remaining = 0.0
