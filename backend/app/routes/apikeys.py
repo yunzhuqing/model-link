@@ -631,6 +631,8 @@ async def update_api_key(current_user, api_key_id):
             ).update({ApiKeyBudget.remaining: 0.0})
             api_key.last_synced_remaining = 0.0
         api_key.unlimited_budget = new_unlimited
+        # Reset budget to 0 when toggling unlimited_budget (both on and off)
+        api_key.budget = 0.0
     if 'budget' in data:
         val = data['budget']
         if val is not None and val != '':

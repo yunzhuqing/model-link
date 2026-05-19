@@ -473,17 +473,17 @@ def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None
                 remaining_to_deduct = round(remaining_to_deduct - budget_remaining, 6)
                 budget.remaining = 0.0
 
-        # Also update ApiKey.budget (total remaining) for backward compat
-        if ak.budget is not None:
-            ak.budget = max(round(ak.budget - amount_usd, 6), 0.0)
-
-        session.commit()
+        # Sync ApiKey.budget to match the sum of remaining amounts across all
+        # budget records, so it always reflects the authoritative total.
+        total_remaining = sum(float(b.remaining or 0) for b in budgets)
+        ak.budget = max(round(total_remaining, 6), 0.0)
     except Exception as exc:
-        logger.debug(f"[budget] Failed to deduct budget records: {exc}")
+        logger.warning(f"[budget] Failed to deduct budget records, rolling back: {exc}")
         try:
             session.rollback()
         except Exception:
             pass
+        raise
 
 
 class _UsageOnlyResponse:
@@ -582,7 +582,7 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
     try:
         with Session(engine) as session:
             session.add(record)
-            session.commit()
+            # Don't commit yet — budget deduction must be in the same transaction
 
             # ── Sync budget deduction + usage stats to cache ──────────────
             if api_key_raw:
@@ -595,11 +595,14 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
                     cached_info = cache.get_api_key_info(api_key_raw)
                     is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
                     if actual_usd > 0 and not is_unlimited:
-                        # Deduct from dedicated budget remaining key via BudgetManager
+                        # Deduct from DB budget records first (oldest first),
+                        # then sync the cache so cache and DB stay consistent.
+                        _deduct_budget_records(session, api_key_raw, actual_usd)
                         from app.budget_manager import get_budget_manager
                         get_budget_manager().deduct(api_key_raw, actual_usd)
-                        # Also deduct from budget records in DB (oldest first)
-                        _deduct_budget_records(session, api_key_raw, actual_usd)
+
+                    # Commit both the usage record and budget deduction atomically
+                    session.commit()
 
                     # Increment real-time usage stats in cache
                     cache.increment_usage_stats(
@@ -617,6 +620,8 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
                     )
                 except Exception as _ce:
                     logger.debug(f"[cache] Failed to update cache after usage record: {_ce}")
+            else:
+                session.commit()
     finally:
         engine.dispose()
 

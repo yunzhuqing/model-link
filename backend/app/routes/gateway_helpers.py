@@ -184,11 +184,14 @@ def get_current_user_or_api_key():
             except (ValueError, TypeError):
                 pass
 
-        is_unlimited = cached_info.get('unlimited_budget', True)
+        is_unlimited = cached_info.get('unlimited_budget', False)
         if not is_unlimited:
             from app.budget_manager import get_budget_manager
             budget_remaining = get_budget_manager().get_remaining(token)
-            if budget_remaining is not None and float(budget_remaining) <= 0:
+            if budget_remaining is None:
+                logger.warning(f"Budget remaining is None for API key with unlimited_budget=False, blocking request")
+                return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
+            if float(budget_remaining) <= 0:
                 return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
 
         api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
@@ -238,8 +241,10 @@ def get_current_user_or_api_key():
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get('sub')
         if not username:
+            logger.warning(f"Invalid token (no sub): {token}")
             return None, None, {'detail': 'Invalid token'}, 401
     except JWTError:
+        logger.warning(f"Invalid token or API key: {token}")
         return None, None, {'detail': 'Invalid token or API key'}, 401
 
     user = db.session.query(User).filter(User.username == username).first()
