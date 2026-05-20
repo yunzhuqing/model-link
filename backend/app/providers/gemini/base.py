@@ -616,7 +616,7 @@ class GeminiProvider(BaseProvider):
                     res = str(meta.get('resolution', ''))
                     from app.providers.image_size_utils import resolve_image_size
                     resolved_aspect, resolved_tier = resolve_image_size(
-                        model=request.model, size=size, aspect_ratio=ar,
+                        size=size, aspect_ratio=ar,
                         resolution=res,
                     )
                     if resolved_tier:

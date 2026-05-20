@@ -31,7 +31,7 @@ from .image_generation import (
     DoubaoImageProvider,
     get_support_output_format,
 )
-from .image_size_utils import resolve_seedream_size
+from app.providers.image_size_utils import resolve_image_size
 from .video_generation import (
     is_seedance_video_model,
     execute_seedance_video_generation,
@@ -1200,7 +1200,7 @@ class VolcengineProvider(BaseProvider):
             generated_images = api_usage.get("generated_images", len(image_call_items) if image_call_items else 1)
 
             # Derive aspect ratio and resolution tier from size string
-            img_aspect, img_tier = resolve_seedream_size(size)
+            img_aspect, img_tier = resolve_image_size(size=size)
             img_extra: Dict[str, Any] = {
                 'output_image_number': generated_images,
                 'output_image_resolution': img_tier or size,

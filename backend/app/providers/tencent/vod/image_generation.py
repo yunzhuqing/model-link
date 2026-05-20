@@ -942,7 +942,6 @@ def execute_tencentvod_image_generation(
     #      b. "W:H"  → used as aspect_ratio, resolution derived from table
     #      c. "1K" / "2K" / "4K" / "512" → quality tier, look up resolution
     aspect_ratio, resolution = resolve_image_size(
-        model=model,
         size=str(metadata.get("size", "") or ""),
         aspect_ratio=str(metadata.get("aspect_ratio", "") or ""),
         resolution=str(metadata.get("resolution", "") or ""),

@@ -67,6 +67,7 @@ from urllib.request import urlopen
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.providers.image_size_utils import resolve_image_size, resolve_pixel_size
 from app.utils import gen_id, json_loads
 
 
@@ -100,53 +101,6 @@ QWEN_IMAGE_MODELS: List[QwenImageConfig] = [
         description="快速文生图模型，仅支持文本输入，使用 aspect_ratio 尺寸参数",
     ),
 ]
-
-# ── Z-Image Turbo aspect_ratio → size 映射表 ──────────────────────────
-# 三档分辨率：1K, 1.5K, 2K（命名取 max dimension 概值）
-Z_IMAGE_SIZE_TABLE: Dict[str, Dict[str, str]] = {
-    # ── 1K 档 ──────────────────────────────────────────────────
-    '1K': {
-        '1:1':  '1024*1024',
-        '2:3':  '832*1248',
-        '3:2':  '1248*832',
-        '3:4':  '864*1152',
-        '4:3':  '1152*864',
-        '7:9':  '896*1152',
-        '9:7':  '1152*896',
-        '9:16': '720*1280',
-        '9:21': '576*1344',
-        '16:9': '1280*720',
-        '21:9': '1344*576',
-    },
-    # ── 1.5K 档 ───────────────────────────────────────────────
-    '1.5K': {
-        '1:1':  '1280*1280',
-        '2:3':  '1024*1536',
-        '3:2':  '1536*1024',
-        '3:4':  '1104*1472',
-        '4:3':  '1472*1104',
-        '7:9':  '1120*1440',
-        '9:7':  '1440*1120',
-        '9:16': '864*1536',
-        '9:21': '720*1680',
-        '16:9': '1536*864',
-        '21:9': '1680*720',
-    },
-    # ── 2K 档 ──────────────────────────────────────────────────
-    '2K': {
-        '1:1':  '1536*1536',
-        '2:3':  '1248*1872',
-        '3:2':  '1872*1248',
-        '3:4':  '1296*1728',
-        '4:3':  '1728*1296',
-        '7:9':  '1344*1728',
-        '9:7':  '1728*1344',
-        '9:16': '1152*2048',
-        '9:21': '864*2016',
-        '16:9': '2048*1152',
-        '21:9': '2016*864',
-    },
-}
 
 # Dashscope 多模态生成 API 端点
 QWEN_IMAGE_API_URL = (
@@ -185,66 +139,24 @@ def _resolve_z_image_size(metadata: dict) -> Optional[str]:
     """
     Resolve the Dashscope size parameter for z-image-turbo from request metadata.
 
-    Z-Image Turbo uses aspect_ratio + resolution tier to determine the exact
-    pixel size. The resolution tiers are: 1K, 1.5K, 2K.
-
-    Resolution logic:
-    1. If 'size' is an exact pixel value (e.g. "1536*1536") → use directly
-    2. If 'size' is a tier label (e.g. "2K") + 'aspect_ratio' → look up table
-    3. If 'size' is a tier label without aspect_ratio → use 1:1 at that tier
-    4. If only 'aspect_ratio' is set → use 1K at that ratio
-    5. Default → "1024*1024" (1K, 1:1)
+    Uses the unified image size table via resolve_pixel_size().
 
     Args:
         metadata: Request metadata dict
 
     Returns:
-        Dashscope-format size string (WxH with * separator), or None if
-        no z-image size resolution applies
+        Dashscope-format size string (WxH with * separator), or default "1024*1024".
     """
     size = str(metadata.get('size', '') or '').strip()
-    # 'resolution' is an alias for tier label (e.g. "1K", "1.5K", "2K")
     resolution = str(metadata.get('resolution', '') or '').strip()
-    if resolution and not size:
-        size = resolution
     aspect_ratio = str(metadata.get('aspect_ratio', '') or '').strip()
 
-    # 1. If size is already an exact pixel value → normalize format
-    if size and ('*' in size or 'x' in size.lower()):
-        return size.replace('x', '*').replace('X', '*')
+    # If resolution is set but size is not, treat resolution as the size/tier
+    if resolution and not size:
+        size = resolution
 
-    # 2. size is a tier label + aspect_ratio → look up
-    if size and aspect_ratio:
-        tier = size.upper()
-        # Normalize tier naming
-        if tier == '1.5K' or tier == '1K+':
-            tier = '1.5K'
-        table = Z_IMAGE_SIZE_TABLE.get(tier)
-        if table and aspect_ratio in table:
-            return table[aspect_ratio]
-        # Fallback: try 1K, 1.5K, 2K in order
-        for t in ('1K', '1.5K', '2K'):
-            t_table = Z_IMAGE_SIZE_TABLE.get(t)
-            if t_table and aspect_ratio in t_table:
-                return t_table[aspect_ratio]
-
-    # 3. size is a tier label only → default to 1:1 at that tier
-    if size:
-        tier = size.upper()
-        if tier == '1.5K' or tier == '1K+':
-            tier = '1.5K'
-        table = Z_IMAGE_SIZE_TABLE.get(tier)
-        if table and '1:1' in table:
-            return table['1:1']
-
-    # 4. aspect_ratio only → default 1K at that ratio
-    if aspect_ratio:
-        table = Z_IMAGE_SIZE_TABLE.get('1K', {})
-        if aspect_ratio in table:
-            return table[aspect_ratio]
-
-    # 5. Default → 1K 1:1
-    return '1024*1024'
+    resolved = resolve_pixel_size(size=size, aspect_ratio=aspect_ratio, resolution=resolution, sep="*")
+    return resolved or "1024*1024"
 
 
 def has_image_generation_tool(request: ChatRequest) -> bool:

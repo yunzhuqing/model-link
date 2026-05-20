@@ -100,6 +100,7 @@ class AzureProvider(OpenAIProvider):
     
     # Models that must use the Responses API (/v1/responses) instead of Chat Completions
     RESPONSES_API_MODELS = {
+        "gpt-5.5", "gpt-5.5-pro",
         "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4",
         "gpt-5.3-chat", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2",
         "gpt-5.2-chat", "gpt-5.1-codex-max", "gpt-5.1", "gpt-5.1-chat",
