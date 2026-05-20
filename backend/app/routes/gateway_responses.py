@@ -151,12 +151,47 @@ def _run_background_response(
             adapter = OpenAIResponsesAdapter()
             chat_request = adapter.parse_request(data)
 
+            # Inject a hook so providers that create async tasks can persist
+            # the task_id immediately — before entering their poll loop.
+            # If the process crashes mid-poll, the resync service can still
+            # query the upstream provider using this task_id.
+            def _on_task_created(task_id: str) -> None:
+                try:
+                    _bg_dao.update_task_metadata(
+                        db_url=db_url,
+                        response_id=response_id,
+                        task_id=task_id,
+                    )
+                except Exception:
+                    pass  # Best-effort; resync will retry later
+
+            def _on_model_resolved(resolved) -> None:
+                """Persist provider_id immediately after model resolution."""
+                try:
+                    _bg_dao.update_task_metadata(
+                        db_url=db_url,
+                        response_id=response_id,
+                        provider_id=resolved.db_provider.id if resolved.db_provider else None,
+                    )
+                except Exception:
+                    pass  # Best-effort
+
+            chat_request.metadata['_on_task_created'] = _on_task_created
+            chat_request.metadata['_on_model_resolved'] = _on_model_resolved
+
             # ── LLM / video generation call ────────────────────────────────
             # chat() uses db.session for model resolution; the actual
             # provider API call may be long-running.
             if tracer:
                 tracer.start(model_name or data.get('model', ''), input_data=request_data or data, session_id=chat_request.session_id)
                 tracer.log_input(request_data or data)
+                tracer.set_metadata({
+                    "request_id": request_id,
+                    "group_id": group_id,
+                    "user": user_name,
+                    "model_name": model_name,
+                    "api_key_name": api_key_name,
+                })
             _bg_start_time = time.monotonic()
             try:
                 response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
@@ -164,9 +199,26 @@ def _run_background_response(
                     tracer.log_output(adapter.format_response(response))
             except Exception:
                 if tracer:
-                    tracer.set_metadata({"request_id": request_id})
+                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
                     tracer.end(error=Exception("background generation error"))
                 raise
+
+            # Persist task metadata immediately after chat() returns, so the resync
+            # service can query provider status even if this thread later crashes.
+            try:
+                _provider_task_id = None
+                if response.usage and response.usage.extra:
+                    _provider_task_id = response.usage.extra.get('_task_id')
+                _bg_dao.update_task_metadata(
+                    db_url=db_url,
+                    response_id=response_id,
+                    task_id=_provider_task_id,
+                    provider_id=resolved.db_provider.id if resolved.db_provider else None,
+                    session_id=chat_request.session_id,
+                    request_id=request_id,
+                )
+            except Exception as _meta_exc:
+                logger.warning(f"[background] Failed to update task metadata for {response_id!r}: {_meta_exc}")
 
             # Eagerly extract all ORM data we need for usage recording,
             # then release the DB session so the connection returns to the
@@ -206,6 +258,16 @@ def _run_background_response(
             if upstream_status in _PENDING_STATUSES:
                 upstream_response_id = response.id
                 upstream_model = response.model
+
+                # Store upstream response ID as task_id for resync
+                try:
+                    _bg_dao.update_task_metadata(
+                        db_url=db_url,
+                        response_id=response_id,
+                        task_id=upstream_response_id,
+                    )
+                except Exception as _meta_exc:
+                    logger.warning(f"[background] Failed to store upstream task_id for {response_id!r}: {_meta_exc}")
 
                 # Re-resolve the provider so we can call get_response() on it.
                 # At this point chat_request.model has already been mutated by
@@ -311,18 +373,15 @@ def _run_background_response(
 
             if tracer:
                 tracer.set_metadata({
-                    "request_id": request_id,
-                    "group_id": group_id,
-                    "user": user_name,
-                    "provider": _pricing_snapshot.get('provider_name'),
                     "duration_ms": _bg_duration_ms,
+                    "response_id": response.id if response else None,
                 })
                 tracer.end()
 
         except Exception as exc:
             if tracer:
                 try:
-                    tracer.set_metadata({"request_id": request_id})
+                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
                     tracer.end(error=exc)
                 except Exception:
                     pass
@@ -469,6 +528,8 @@ async def openai_responses():
             model=model_name,
             input_key=input_key,
             output_key=output_key,
+            request_id=_bg_request_id,
+            provider_id=provider_id_override,
         )
 
         # Launch the background worker thread
@@ -543,6 +604,13 @@ async def openai_responses():
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
+                tracer.set_metadata({
+                    "request_id": _request_id,
+                    "group_id": group_id,
+                    "user": _user_name,
+                    "model_name": model_name,
+                    "api_key_name": _api_key_name,
+                })
 
             chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
             _app = current_app._get_current_object()
@@ -574,7 +642,7 @@ async def openai_responses():
                         })
                 except Exception:
                     if tracer:
-                        tracer.set_metadata({"request_id": _request_id})
+                        tracer.set_metadata({"request_id": _request_id, "model_name": model_name, "api_key_name": _api_key_name})
                         tracer.end(error=Exception("stream error"))
                     raise
                 finally:
@@ -609,12 +677,6 @@ async def openai_responses():
                         except Exception as _ue:
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
                     if tracer:
-                        tracer.set_metadata({
-                            "request_id": _request_id,
-                            "group_id": group_id,
-                            "user": _user_name,
-                            "provider": model_meta.get('provider_name'),
-                        })
                         tracer.end()
 
             return adapter.create_stream_response(_resp_chunks_with_usage(), model_name)
@@ -622,6 +684,13 @@ async def openai_responses():
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
+                tracer.set_metadata({
+                    "request_id": g.request_id,
+                    "group_id": group_id,
+                    "user": user.username if user else None,
+                    "model_name": model_name,
+                    "api_key_name": api_key.name if api_key else None,
+                })
 
             response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
@@ -629,11 +698,8 @@ async def openai_responses():
             if tracer:
                 tracer.log_output(adapter.format_response(response))
                 tracer.set_metadata({
-                    "request_id": g.request_id,
-                    "group_id": group_id,
-                    "user": user.username if user else None,
-                    "provider": resolved.db_provider.name,
                     "duration_ms": _resp_duration_ms,
+                    "response_id": response.id if response else None,
                 })
                 tracer.end()
 
@@ -663,19 +729,19 @@ async def openai_responses():
             return jsonify(formatted)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
@@ -809,3 +875,32 @@ async def get_response(response_id: str):
         "metadata": um,
         "background": True,
     }), 200
+
+
+@gateway_responses_bp.route('/v1/test/background-resync', methods=['POST'])
+async def test_background_resync():
+    """
+    Test endpoint: manually trigger one background resync cycle.
+
+    Calls _do_resync() synchronously and returns a summary of what happened.
+    Only for development/debugging use.
+    """
+    import asyncio
+    from app.usagerecord.background_resync_service import _do_resync
+
+    t0 = time.time()
+    try:
+        await asyncio.to_thread(_do_resync, current_app)
+        elapsed = round(time.time() - t0, 3)
+        return jsonify({
+            "status": "ok",
+            "message": f"Resync cycle completed in {elapsed}s — check server logs for details",
+        }), 200
+    except Exception as exc:
+        elapsed = round(time.time() - t0, 3)
+        logger.error(f"[test_resync] Resync failed after {elapsed}s: {exc}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": str(exc),
+            "elapsed_s": elapsed,
+        }), 500

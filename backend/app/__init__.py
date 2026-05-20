@@ -292,6 +292,10 @@ def create_app(config=None):
     register_on_leader(lambda: _start_compress(app))
     register_on_lost_leader(_stop_compress)
 
+    from app.usagerecord.background_resync_service import start_background_resync as _start_bg_resync, stop_background_resync as _stop_bg_resync
+    register_on_leader(lambda: _start_bg_resync(app))
+    register_on_lost_leader(_stop_bg_resync)
+
     _start_election()
 
     # Register blueprints

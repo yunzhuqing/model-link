@@ -44,8 +44,8 @@ from .image_generation import (
     _POLL_INTERVAL_S,
     _POLL_MAX_WAIT_S,
     _build_auth_headers,
-    _describe_task_detail,
     _parse_api_key,
+    check_tencentvod_task_status,
 )
 
 
@@ -186,56 +186,58 @@ def _poll_3d_task(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
-            while time.time() < deadline:
-                resp = _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
+        while time.time() < deadline:
+            resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
+            if not resp:
+                time.sleep(_POLL_INTERVAL_S)
+                continue
 
-                aigc_task = resp.get("AigcVideoTask") or {}
-                status = resp.get("Status") or aigc_task.get("Status", "")
+            aigc_task = resp.get("AigcVideoTask") or {}
+            status = resp.get("Status") or aigc_task.get("Status", "")
 
-                if status == "FINISH":
-                    err_code = aigc_task.get("ErrCode", 0)
-                    if err_code != 0:
-                        raise RuntimeError(
-                            f"TencentVOD 3D task failed "
-                            f"(ErrCode={err_code}): {aigc_task.get('Message', '')}"
-                        )
+            if status == "FINISH":
+                err_code = aigc_task.get("ErrCode", 0)
+                if err_code != 0:
+                    raise RuntimeError(
+                        f"TencentVOD 3D task failed "
+                        f"(ErrCode={err_code}): {aigc_task.get('Message', '')}"
+                    )
 
-                    output = aigc_task.get("Output") or {}
-                    items: List[Dict[str, Any]] = []
+                output = aigc_task.get("Output") or {}
+                items: List[Dict[str, Any]] = []
 
-                    # Pattern 1: single FileUrl
-                    file_url = output.get("FileUrl", "")
-                    if file_url:
+                # Pattern 1: single FileUrl
+                file_url = output.get("FileUrl", "")
+                if file_url:
+                    items.append({
+                        "type": "3d_generation_call",
+                        "status": "completed",
+                        "content": [{"url": file_url}],
+                    })
+
+                # Pattern 2: FileInfos array
+                for fi in (output.get("FileInfos") or []):
+                    url = fi.get("FileUrl", "")
+                    if url:
                         items.append({
                             "type": "3d_generation_call",
                             "status": "completed",
-                            "content": [{"url": file_url}],
+                            "content": [{"url": url}],
                         })
 
-                    # Pattern 2: FileInfos array
-                    for fi in (output.get("FileInfos") or []):
-                        url = fi.get("FileUrl", "")
-                        if url:
-                            items.append({
-                                "type": "3d_generation_call",
-                                "status": "completed",
-                                "content": [{"url": url}],
-                            })
-
-                    if not items:
-                        raise RuntimeError(
-                            f"TencentVOD 3D task {task_id} finished but no FileUrl found"
-                        )
-
-                    return items
-
-                if status in ("FAIL", "ABORTED"):
+                if not items:
                     raise RuntimeError(
-                        f"TencentVOD 3D task {task_id} failed with status={status}"
+                        f"TencentVOD 3D task {task_id} finished but no FileUrl found"
                     )
 
-                time.sleep(_POLL_INTERVAL_S)
+                return items
+
+            if status in ("FAIL", "ABORTED"):
+                raise RuntimeError(
+                    f"TencentVOD 3D task {task_id} failed with status={status}"
+                )
+
+            time.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"TencentVOD 3D task {task_id} timed out after {max_wait}s"
@@ -313,6 +315,10 @@ def execute_tencentvod_3d_generation(
                 tracer=_child_span,
             )
 
+        hook = metadata.get('_on_task_created')
+        if hook:
+            hook(task_id)
+
         items = _poll_3d_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
 
         if _child_span:
@@ -341,7 +347,7 @@ def execute_tencentvod_3d_generation(
             prompt_tokens=0,
             completion_tokens=1,
             total_tokens=1,
-            extra={'output_count': 1},
+            extra={'_task_id': task_id, 'output_count': 1},
         ),
         created=int(time.time()),
         provider="tencentvod",

@@ -129,6 +129,13 @@ async def create_images():
         if tracer:
             tracer.start(model_name, input_data=data)
             tracer.log_input(data)
+            tracer.set_metadata({
+                "request_id": g.request_id,
+                "group_id": group_id,
+                "user": user.username if user else None,
+                "model_name": model_name,
+                "api_key_name": api_key.name if api_key else None,
+            })
         result, chat_response, resolved = _gateway_service.generate_images(
             model_name=model_name,
             prompt=prompt,
@@ -150,10 +157,6 @@ async def create_images():
         if tracer:
             tracer.log_output(result)
             tracer.set_metadata({
-                "request_id": g.request_id,
-                "group_id": group_id,
-                "user": user.username if user else None,
-                "provider": resolved.db_provider.name,
                 "duration_ms": _duration_ms,
             })
             tracer.end()
@@ -174,19 +177,19 @@ async def create_images():
         return jsonify(result)
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="provider_error", status_code=e.status_code)
@@ -283,6 +286,13 @@ async def edit_images():
         if tracer:
             tracer.start(model_name, input_data=data)
             tracer.log_input(data)
+            tracer.set_metadata({
+                "request_id": g.request_id,
+                "group_id": group_id,
+                "user": user.username if user else None,
+                "model_name": model_name,
+                "api_key_name": api_key.name if api_key else None,
+            })
         result, chat_response, resolved = _gateway_service.edit_images(
             model_name=model_name,
             prompt=prompt,
@@ -305,10 +315,6 @@ async def edit_images():
         if tracer:
             tracer.log_output(result)
             tracer.set_metadata({
-                "request_id": g.request_id,
-                "group_id": group_id,
-                "user": user.username if user else None,
-                "provider": resolved.db_provider.name,
                 "duration_ms": _duration_ms,
             })
             tracer.end()
@@ -329,19 +335,19 @@ async def edit_images():
         return jsonify(result)
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="provider_error", status_code=e.status_code)

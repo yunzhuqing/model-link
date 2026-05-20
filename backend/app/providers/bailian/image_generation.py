@@ -420,7 +420,8 @@ def execute_qwen_image_generation(
     _trace_error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=300) as client:
+        http_timeout = int(metadata.get("timeout", 300) or 300)
+        with httpx.Client(timeout=http_timeout) as client:
             response = client.post(
                 QWEN_IMAGE_API_URL,
                 json=request_body,
@@ -449,7 +450,9 @@ def execute_qwen_image_generation(
                 f"{json.dumps(response_data, ensure_ascii=False)}"
             )
 
-        return _parse_qwen_image_response(response_data, model, metadata)
+        return _parse_qwen_image_response(response_data, model, metadata,
+                                       request_id=response_data.get('request_id')
+                                                 or response.headers.get('x-request-id', ''))
 
     except RuntimeError:
         _trace_error = sys.exc_info()[1]
@@ -492,7 +495,7 @@ def _resolution_tier(width: int, height: int) -> str:
         return "4K"
 
 
-def _parse_qwen_image_response(data: Dict[str, Any], model: str, metadata: Optional[dict] = None) -> ChatResponse:
+def _parse_qwen_image_response(data: Dict[str, Any], model: str, metadata: Optional[dict] = None, request_id: str = "") -> ChatResponse:
     """
     Parse Dashscope multimodal generation response into ChatResponse.
 
@@ -558,6 +561,7 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str, metadata: Optio
                 'output_image_resolution': img_resolution,
                 'output_image_aspect': img_aspect,
                 '_response_format': (metadata or {}).get('response_format', 'url'),
+                '_task_id': request_id,
             },
         ),
         created=int(time.time()),

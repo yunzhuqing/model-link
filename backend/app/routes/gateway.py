@@ -292,6 +292,13 @@ async def _handle_request(adapter):
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
+                tracer.set_metadata({
+                    "request_id": _request_id,
+                    "group_id": group_id,
+                    "user": _user_name,
+                    "model_name": model_name,
+                    "api_key_name": _api_key_name,
+                })
 
             chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
 
@@ -326,7 +333,7 @@ async def _handle_request(adapter):
                     _log_error("handle_request", 500, f"Stream processing error: {e}",
                                {"model": model_name, "group_id": _api_key_group_id}, exc_info=True)
                     if tracer:
-                        tracer.set_metadata({"request_id": _request_id})
+                        tracer.set_metadata({"request_id": _request_id, "model_name": model_name, "api_key_name": _api_key_name})
                         tracer.end(error=e)
                     raise
                 finally:
@@ -365,12 +372,6 @@ async def _handle_request(adapter):
                         except Exception as _ue:
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
                     if tracer:
-                        tracer.set_metadata({
-                            "request_id": _request_id,
-                            "group_id": group_id,
-                            "user": _user_name,
-                            "provider": model_meta.get('provider_name'),
-                        })
                         tracer.end()
 
             return adapter.create_stream_response(_chunks_with_usage_recording(), model_name)
@@ -379,6 +380,13 @@ async def _handle_request(adapter):
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
+                tracer.set_metadata({
+                    "request_id": g.request_id,
+                    "group_id": group_id,
+                    "user": user.username if user else None,
+                    "model_name": model_name,
+                    "api_key_name": api_key.name if api_key else None,
+                })
 
             response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
@@ -386,10 +394,6 @@ async def _handle_request(adapter):
             if tracer:
                 tracer.log_output(adapter.format_response(response))
                 tracer.set_metadata({
-                    "request_id": g.request_id,
-                    "group_id": group_id,
-                    "user": user.username if user else None,
-                    "provider": resolved.db_provider.name,
                     "duration_ms": _duration_ms,
                 })
                 tracer.end()
@@ -414,7 +418,7 @@ async def _handle_request(adapter):
 
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         error_extra = _build_error_context(api_key, model_name,
                                            provider_id=e.provider_id,
@@ -425,13 +429,13 @@ async def _handle_request(adapter):
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, _build_error_context(api_key, model_name), exc_info=True)
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
             tracer.end(error=e)
         _log_error("handle_request", e.status_code, e.message, _build_error_context(api_key, model_name), exc_info=True)
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code

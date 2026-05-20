@@ -704,6 +704,41 @@ def _describe_task_detail(
     return resp
 
 
+# =============================================================================
+# API 调用: 查询任务状态 (单次, 供轮询和 resync 共用)
+# =============================================================================
+
+def check_tencentvod_task_status(
+    secret_id: str,
+    secret_key: str,
+    task_id: str,
+    sub_app_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    单次查询 TencentVOD 任务状态 (DescribeTaskDetail)。
+
+    Args:
+        secret_id:  腾讯云 SecretId
+        secret_key: 腾讯云 SecretKey
+        task_id:    任务 ID
+        sub_app_id: 点播子应用 ID（可选）
+
+    Returns:
+        Full Response dict from the API (包含 Status, AigcImageTask/AigcVideoTask 等)
+        网络错误时返回空 dict {}
+    """
+    try:
+        with httpx.Client(timeout=30) as client:
+            return _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
+    except Exception as exc:
+        logger.warning(f"TencentVOD DescribeTaskDetail error for {task_id}: {exc}")
+        return {}
+
+
+# =============================================================================
+# API 调用: 任务轮询 (Image)
+# =============================================================================
+
 def _poll_task(
     secret_id: str,
     secret_key: str,
@@ -739,58 +774,60 @@ def _poll_task(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
-            poll_count = 0
-            while time.time() < deadline:
-                resp = _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
+        poll_count = 0
+        while time.time() < deadline:
+            resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
+            if not resp:
+                time.sleep(_POLL_INTERVAL_S)
+                continue
 
-                # Extract the AigcImageTask sub-object
-                aigc_task = resp.get("AigcImageTask") or {}
-                status = resp.get("Status") or aigc_task.get("Status", "")
-                poll_count += 1
+            # Extract the AigcImageTask sub-object
+            aigc_task = resp.get("AigcImageTask") or {}
+            status = resp.get("Status") or aigc_task.get("Status", "")
+            poll_count += 1
 
-                if _span:
-                    _poll_output: Dict[str, Any] = {
-                        "task_id": task_id,
-                        "status": status,
-                        "poll_count": poll_count,
-                    }
-                    _req_id = resp.get("RequestId", "")
-                    if _req_id:
-                        _poll_output["x-request-id"] = _req_id
-                    _span.log_output(_poll_output)
+            if _span:
+                _poll_output: Dict[str, Any] = {
+                    "task_id": task_id,
+                    "status": status,
+                    "poll_count": poll_count,
+                }
+                _req_id = resp.get("RequestId", "")
+                if _req_id:
+                    _poll_output["x-request-id"] = _req_id
+                _span.log_output(_poll_output)
 
-                if status == "FINISH":
-                    # Check for task-level error
-                    err_code = aigc_task.get("ErrCode", 0)
-                    if err_code != 0:
-                        raise RuntimeError(
-                            f"TencentVOD image task failed "
-                            f"(ErrCode={err_code}): {aigc_task.get('Message', '')}"
-                        )
-
-                    output = aigc_task.get("Output") or {}
-                    file_infos = output.get("FileInfos") or []
-                    image_items: List[Dict[str, Any]] = []
-                    for fi in file_infos:
-                        url = fi.get("FileUrl", "")
-                        if url:
-                            image_items.append({
-                                "type": "image_generation_call",
-                                "status": "completed",
-                                "result": url,
-                            })
-                    return image_items
-
-                if status in ("FAIL", "ABORTED"):
+            if status == "FINISH":
+                # Check for task-level error
+                err_code = aigc_task.get("ErrCode", 0)
+                if err_code != 0:
                     raise RuntimeError(
-                        f"TencentVOD image task {task_id} failed with status={status}"
+                        f"TencentVOD image task failed "
+                        f"(ErrCode={err_code}): {aigc_task.get('Message', '')}"
                     )
 
-                time.sleep(_POLL_INTERVAL_S)
+                output = aigc_task.get("Output") or {}
+                file_infos = output.get("FileInfos") or []
+                image_items: List[Dict[str, Any]] = []
+                for fi in file_infos:
+                    url = fi.get("FileUrl", "")
+                    if url:
+                        image_items.append({
+                            "type": "image_generation_call",
+                            "status": "completed",
+                            "result": url,
+                        })
+                return image_items
+
+            if status in ("FAIL", "ABORTED"):
+                raise RuntimeError(
+                    f"TencentVOD image task {task_id} failed with status={status}"
+                )
+
+            time.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
-            f"TencentVOD image task {task_id} timed out after {_POLL_MAX_WAIT_S}s"
+            f"TencentVOD image task {task_id} timed out after {max_wait}s"
         )
     except Exception as e:
         _error = e
@@ -956,6 +993,10 @@ def execute_tencentvod_image_generation(
                 tracer=_child_span,
             )
 
+        hook = metadata.get('_on_task_created')
+        if hook:
+            hook(task_id)
+
         # Poll for result
         image_items = _poll_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
 
@@ -983,6 +1024,7 @@ def execute_tencentvod_image_generation(
                 completion_tokens=image_count,
                 total_tokens=image_count,
                 extra={
+                    '_task_id': task_id,
                     'output_image_number': image_count,
                     'output_image_resolution': resolution or None,
                     'output_image_aspect': aspect_ratio or None,

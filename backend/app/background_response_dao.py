@@ -117,6 +117,10 @@ def create_record(
     input_key: str,
     output_key: str,
     status: str = "in_progress",
+    task_id: Optional[str] = None,
+    provider_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> None:
     """
     插入一条新的 BackgroundResponse 记录。
@@ -129,11 +133,17 @@ def create_record(
         input_key:   存储输入 payload 的 key
         output_key:  存储输出结果的 key
         status:      初始状态，默认 "in_progress"
+        task_id:     供应商任务 ID（可为 None）
+        provider_id: 供应商 ID（可为 None）
+        session_id:  会话 ID（可为 None）
+        request_id:  请求 ID（可为 None）
     """
     sql = _sa_text(
         "INSERT INTO ml_background_responses "
-        "(response_id, apikey, model, status, input_key, output_key, created_at) "
-        "VALUES (:response_id, :apikey, :model, :status, :input_key, :output_key, :created_at)"
+        "(response_id, apikey, model, status, input_key, output_key, "
+        "task_id, provider_id, session_id, request_id, created_at) "
+        "VALUES (:response_id, :apikey, :model, :status, :input_key, :output_key, "
+        ":task_id, :provider_id, :session_id, :request_id, :created_at)"
     )
     _execute_with_retry(db_url, sql, {
         "response_id": response_id,
@@ -142,6 +152,10 @@ def create_record(
         "status": status,
         "input_key": input_key,
         "output_key": output_key,
+        "task_id": task_id,
+        "provider_id": provider_id,
+        "session_id": session_id,
+        "request_id": request_id,
         "created_at": datetime.utcnow(),
     })
 
@@ -150,6 +164,8 @@ def mark_completed(db_url: str, response_id: str) -> None:
     """
     将 BackgroundResponse 记录标记为 completed。
 
+    只在状态仍为 in_progress 时更新，避免覆盖已完成的记录。
+
     Args:
         db_url:      数据库 URL
         response_id: 响应唯一 ID
@@ -157,7 +173,7 @@ def mark_completed(db_url: str, response_id: str) -> None:
     sql = _sa_text(
         "UPDATE ml_background_responses "
         "SET status='completed', completed_at=:completed_at "
-        "WHERE response_id=:response_id"
+        "WHERE response_id=:response_id AND status = 'in_progress'"
     )
     _execute_with_retry(db_url, sql, {
         "completed_at": datetime.utcnow(),
@@ -169,6 +185,8 @@ def mark_failed(db_url: str, response_id: str, error: str) -> None:
     """
     将 BackgroundResponse 记录标记为 failed 并记录错误信息。
 
+    只在状态仍为 in_progress 时更新，避免覆盖已完成的记录。
+
     Args:
         db_url:      数据库 URL
         response_id: 响应唯一 ID
@@ -177,7 +195,7 @@ def mark_failed(db_url: str, response_id: str, error: str) -> None:
     sql = _sa_text(
         "UPDATE ml_background_responses "
         "SET status='failed', completed_at=:completed_at, error=:error "
-        "WHERE response_id=:response_id"
+        "WHERE response_id=:response_id AND status = 'in_progress'"
     )
     _execute_with_retry(db_url, sql, {
         "completed_at": datetime.utcnow(),
@@ -199,8 +217,85 @@ def get_record(db_url: str, response_id: str) -> Optional[Dict[str, Any]]:
     """
     sql = _sa_text(
         "SELECT response_id, apikey, model, status, input_key, output_key, "
-        "error, created_at, completed_at "
+        "error, task_id, provider_id, session_id, request_id, created_at, completed_at "
         "FROM ml_background_responses "
         "WHERE response_id=:response_id"
     )
     return _query_one(db_url, sql, {"response_id": response_id})
+
+
+def update_task_metadata(
+    db_url: str,
+    response_id: str,
+    task_id: Optional[str] = None,
+    provider_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> None:
+    """
+    更新 BackgroundResponse 记录的供应商任务元数据。
+
+    用于在后台线程获取到 task_id 后立即持久化，即使后续处理崩溃，
+    resync 服务也能用 task_id 去供应商查询状态。
+
+    Args:
+        db_url:      数据库 URL
+        response_id: 响应唯一 ID
+        task_id:     供应商任务 ID
+        provider_id: 供应商 ID
+        session_id:  会话 ID
+        request_id:  请求 ID
+    """
+    sql = _sa_text(
+        "UPDATE ml_background_responses "
+        "SET task_id = COALESCE(:task_id, task_id), "
+        "    provider_id = COALESCE(:provider_id, provider_id), "
+        "    session_id = COALESCE(:session_id, session_id), "
+        "    request_id = COALESCE(:request_id, request_id) "
+        "WHERE response_id = :response_id"
+    )
+    _execute_with_retry(db_url, sql, {
+        "response_id": response_id,
+        "task_id": task_id,
+        "provider_id": provider_id,
+        "session_id": session_id,
+        "request_id": request_id,
+    })
+
+
+def find_stale_in_progress_records(
+    db_url: str,
+    min_age_minutes: int = 10,
+    limit: int = 100,
+):
+    """
+    查询所有超过 min_age_minutes 分钟仍处于 in_progress 状态的记录。
+
+    Args:
+        db_url:          数据库 URL
+        min_age_minutes: 最小超时时间（分钟）
+        limit:           最大返回条数
+
+    Returns:
+        记录字典列表，按 created_at 升序排列
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.utcnow() - timedelta(minutes=min_age_minutes)
+    sql = _sa_text(
+        "SELECT response_id, task_id, model, apikey, status, "
+        "provider_id, session_id, request_id, created_at, completed_at, error "
+        "FROM ml_background_responses "
+        "WHERE status = 'in_progress' AND created_at < :cutoff "
+        "ORDER BY created_at ASC "
+        "LIMIT :limit"
+    )
+    engine = None
+    try:
+        engine = _make_engine(db_url)
+        with engine.connect() as conn:
+            rows = conn.execute(sql, {"cutoff": cutoff, "limit": limit}).mappings().all()
+            return [dict(row) for row in rows]
+    finally:
+        if engine is not None:
+            engine.dispose()

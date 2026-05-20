@@ -45,7 +45,7 @@ def start_usage_sync(app) -> None:
             return  # Already running
         _stop_event.clear()
 
-    interval = float(os.getenv("USAGE_SYNC_INTERVAL", "60"))
+    interval = float(os.getenv("USAGE_SYNC_INTERVAL", "600"))
     logger.info(f"[usage_sync] Starting usage sync service (interval={interval}s)")
 
     _sync_thread = threading.Thread(

@@ -29,7 +29,7 @@ def start_compress_service(app) -> None:
             return
         _stop_event.clear()
 
-    interval = float(os.getenv("USAGE_COMPRESS_INTERVAL", "300"))
+    interval = float(os.getenv("USAGE_COMPRESS_INTERVAL", "600"))
     logger.info(f"[compress] Starting compress service (interval={interval}s)")
 
     _compress_thread = threading.Thread(

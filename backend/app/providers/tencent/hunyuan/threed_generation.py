@@ -525,6 +525,80 @@ def _submit_3d_job(
 
 
 # =============================================================================
+# API 调用: Query 3D Job 状态查询 (单次, 供轮询和 resync 共用)
+# =============================================================================
+
+def check_hunyuan3d_job_status(
+    secret_id: str,
+    secret_key: str,
+    job_id: str,
+    action: str,
+    region: str = HUNYUAN3D_API_REGION,
+) -> Dict[str, Any]:
+    """
+    单次查询 Hunyuan3D 任务状态。
+
+    Args:
+        secret_id:  腾讯云 SecretId
+        secret_key: 腾讯云 SecretKey
+        job_id:     Submit 返回的 JobId
+        action:     API 动作（QueryHunyuanTo3DProJob 或 QueryHunyuanTo3DRapidJob）
+        region:     区域，默认 ap-guangzhou
+
+    Returns:
+        Response dict (包含 Status, ResultFile3Ds, Error 等字段)
+        HTTP 错误或非匹配的 JobId 返回空 dict {}
+    """
+    body = {"JobId": job_id}
+    payload_str = json.dumps(body, ensure_ascii=False)
+    headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
+    try:
+        with httpx.Client(timeout=60) as client:
+            response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            resp = data.get("Response", {})
+            if "Error" in resp:
+                err = resp["Error"]
+                raise RuntimeError(
+                    f"Hunyuan3D {action} error "
+                    f"(code={err.get('Code')}): {err.get('Message')}"
+                )
+            if resp.get("JobId") != job_id:
+                return {}
+            return resp
+    except Exception as exc:
+        logger.warning(f"Hunyuan3D {action} query error for {job_id}: {exc}")
+        return {}
+
+
+def check_any_hunyuan3d_job_status(
+    secret_id: str,
+    secret_key: str,
+    job_id: str,
+    model: str = "",
+    region: str = HUNYUAN3D_API_REGION,
+) -> Dict[str, Any]:
+    """
+    查询 Hunyuan3D Job 状态。
+
+    如果提供了 model 参数，直接使用对应的 action 查询。
+    否则依次尝试 Rapid 和 Pro。
+
+    返回匹配到的 Response dict，匹配不到返回空 dict。
+    """
+    if model:
+        action = "QueryHunyuanTo3DProJob" if _is_pro_model(model) else "QueryHunyuanTo3DRapidJob"
+        return check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+
+    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob"):
+        resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+        if resp:
+            return resp
+    return {}
+
+
+# =============================================================================
 # API 调用: Query 3D Job (轮询)
 # =============================================================================
 
@@ -571,95 +645,75 @@ def _poll_3d_job(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
-            poll_count = 0
-            while time.time() < deadline:
-                body = {"JobId": job_id}
-                payload_str = json.dumps(body, ensure_ascii=False)
-                headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
+        poll_count = 0
+        while time.time() < deadline:
+            resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+            if not resp:
+                time.sleep(_POLL_INTERVAL_S)
+                continue
 
-                response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+            status = resp.get("Status", "")
+            poll_count += 1
 
-                resp = data.get("Response", {})
-                if "Error" in resp:
-                    err = resp["Error"]
-                    raise RuntimeError(
-                        f"Hunyuan3D {action} error "
-                        f"(code={err.get('Code')}): {err.get('Message')}"
+            if _span:
+                _span.log_output({"job_id": job_id, "status": status, "poll_count": poll_count})
+
+            if status == STATUS_DONE:
+                if tracer:
+                    _done_span = tracer.start_child(
+                        f"{job_id}-done", model=job_id,
+                        provider_type="hunyuan", input_data=resp, obs_type="span",
                     )
-
-                status = resp.get("Status", "")
-                poll_count += 1
-
-                if _span:
-                    _poll_output: Dict[str, Any] = {
-                        "job_id": job_id,
-                        "status": status,
-                        "poll_count": poll_count,
-                    }
-                    _req_id = resp.get("RequestId", "")
-                    if _req_id:
-                        _poll_output["x-request-id"] = _req_id
-                    _span.log_output(_poll_output)
-
-                if status == STATUS_DONE:
-                    if tracer:
-                        _done_span = tracer.start_child(
-                            f"{job_id}-done", model=job_id,
-                            provider_type="hunyuan", input_data=resp, obs_type="span",
-                        )
-                        if _done_span:
-                            _done_span.log_input(resp)
-                            _done_span.end()
-                    error_code = resp.get("ErrorCode", "")
-                    if error_code:
-                        raise RuntimeError(
-                            f"Hunyuan3D job {job_id} failed: "
-                            f"ErrorCode={error_code}, "
-                            f"ErrorMessage={resp.get('ErrorMessage', '')}"
-                        )
-
-                    result_files = resp.get("ResultFile3Ds") or []
-                    items: List[Dict[str, Any]] = []
-                    for f in result_files:
-                        items.append({
-                            "type": f.get("Type", "OBJ"),
-                            "url": f.get("Url", ""),
-                            "preview_url": f.get("PreviewImageUrl", ""),
-                        })
-
-                    if not items:
-                        raise RuntimeError(
-                            f"Hunyuan3D job {job_id} finished but no ResultFile3Ds found: "
-                            f"{json.dumps(resp, ensure_ascii=False)}"
-                        )
-
-                    api_credits = int(resp.get("ResultCreditConsumed", 0) or 0)
-                    final_credits = api_credits if api_credits > 0 else estimated_credits
-                    return items, final_credits
-
-                if status == STATUS_FAIL:
-                    if tracer:
-                        _fail_span = tracer.start_child(
-                            f"{job_id}-fail", model=job_id,
-                            provider_type="hunyuan", input_data=resp, obs_type="span",
-                        )
-                        if _fail_span:
-                            _fail_span.log_input(resp)
-                            _fail_span.end(error=RuntimeError(
-                                f"Hunyuan3D job {job_id} failed with status={status}: "
-                                f"ErrorCode={resp.get('ErrorCode', '')}, "
-                                f"ErrorMessage={resp.get('ErrorMessage', '')}"
-                            ))
+                    if _done_span:
+                        _done_span.log_input(resp)
+                        _done_span.end()
+                error_code = resp.get("ErrorCode", "")
+                if error_code:
                     raise RuntimeError(
-                        f"Hunyuan3D job {job_id} failed with status={status}: "
-                        f"ErrorCode={resp.get('ErrorCode', '')}, "
+                        f"Hunyuan3D job {job_id} failed: "
+                        f"ErrorCode={error_code}, "
                         f"ErrorMessage={resp.get('ErrorMessage', '')}"
                     )
 
-                time.sleep(_POLL_INTERVAL_S)
+                result_files = resp.get("ResultFile3Ds") or []
+                items: List[Dict[str, Any]] = []
+                for f in result_files:
+                    items.append({
+                        "type": f.get("Type", "OBJ"),
+                        "url": f.get("Url", ""),
+                        "preview_url": f.get("PreviewImageUrl", ""),
+                    })
+
+                if not items:
+                    raise RuntimeError(
+                        f"Hunyuan3D job {job_id} finished but no ResultFile3Ds found: "
+                        f"{json.dumps(resp, ensure_ascii=False)}"
+                    )
+
+                api_credits = int(resp.get("ResultCreditConsumed", 0) or 0)
+                final_credits = api_credits if api_credits > 0 else estimated_credits
+                return items, final_credits
+
+            if status == STATUS_FAIL:
+                if tracer:
+                    _fail_span = tracer.start_child(
+                        f"{job_id}-fail", model=job_id,
+                        provider_type="hunyuan", input_data=resp, obs_type="span",
+                    )
+                    if _fail_span:
+                        _fail_span.log_input(resp)
+                        _fail_span.end(error=RuntimeError(
+                            f"Hunyuan3D job {job_id} failed with status={status}: "
+                            f"ErrorCode={resp.get('ErrorCode', '')}, "
+                            f"ErrorMessage={resp.get('ErrorMessage', '')}"
+                        ))
+                raise RuntimeError(
+                    f"Hunyuan3D job {job_id} failed with status={status}: "
+                    f"ErrorCode={resp.get('ErrorCode', '')}, "
+                    f"ErrorMessage={resp.get('ErrorMessage', '')}"
+                )
+
+            time.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"Hunyuan3D job {job_id} timed out after {max_wait}s"
@@ -817,6 +871,10 @@ def execute_hunyuan3d_generation(
                 tracer=_child_span,
             )
 
+        hook = metadata.get('_on_task_created')
+        if hook:
+            hook(job_id)
+
         # Poll for result
         result_items, credits_consumed = _poll_3d_job(
             secret_id, secret_key, job_id, model,
@@ -874,7 +932,7 @@ def execute_hunyuan3d_generation(
             prompt_tokens=0,
             completion_tokens=len(result_items),
             total_tokens=len(result_items),
-            extra={"credits": credits_consumed, "credit_breakdown": _credit_breakdown},
+            extra={"_task_id": job_id, "credits": credits_consumed, "credit_breakdown": _credit_breakdown},
         ),
         created=int(time.time()),
         provider="hunyuan",

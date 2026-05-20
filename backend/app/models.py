@@ -40,6 +40,10 @@ class BackgroundResponse(db.Model):
     output_key = db.Column(db.String(500), nullable=True)     # File path for output response
     error = db.Column(db.Text, nullable=True)                 # Error message if failed
     model = db.Column(db.String(100), nullable=True)          # Model name from the request
+    task_id = db.Column(db.String(200), nullable=True)        # Provider's external task ID for status sync
+    provider_id = db.Column(db.Integer, nullable=True)        # Provider ID from ml_providers
+    session_id = db.Column(db.String(100), nullable=True)     # Client session ID for tracer correlation
+    request_id = db.Column(db.String(64), nullable=True)      # Original X-Request-Id
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime, nullable=True)
 

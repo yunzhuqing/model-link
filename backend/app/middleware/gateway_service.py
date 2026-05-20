@@ -356,6 +356,21 @@ class GatewayService:
         # 1. 解析模型
         resolved = self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
 
+        # Record provider info on tracer immediately after resolution
+        if tracer:
+            tracer.set_metadata({
+                "provider_id": resolved.db_provider.id if resolved.db_provider else None,
+                "provider": resolved.db_provider.name if resolved.db_provider else None,
+            })
+
+        # Allow callers to hook into model resolution (e.g. persist provider_id)
+        _on_model_resolved = request.metadata.get('_on_model_resolved')
+        if _on_model_resolved:
+            try:
+                _on_model_resolved(resolved)
+            except Exception:
+                pass
+
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
 
@@ -444,6 +459,21 @@ class GatewayService:
         """
         # 1. Resolve model (DB access)
         resolved = self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
+
+        # Record provider info on tracer immediately after resolution
+        if tracer:
+            tracer.set_metadata({
+                "provider_id": resolved.db_provider.id if resolved.db_provider else None,
+                "provider": resolved.db_provider.name if resolved.db_provider else None,
+            })
+
+        # Allow callers to hook into model resolution (e.g. persist provider_id)
+        _on_model_resolved = request.metadata.get('_on_model_resolved')
+        if _on_model_resolved:
+            try:
+                _on_model_resolved(resolved)
+            except Exception:
+                pass
 
         # 2. Replace with real model name
         request.model = resolved.real_model_name
@@ -819,6 +849,13 @@ class GatewayService:
         """
         # 1. 解析模型
         resolved = self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
+
+        # Record provider info on tracer immediately after resolution
+        if tracer:
+            tracer.set_metadata({
+                "provider_id": resolved.db_provider.id if resolved.db_provider else None,
+                "provider": resolved.db_provider.name if resolved.db_provider else None,
+            })
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name

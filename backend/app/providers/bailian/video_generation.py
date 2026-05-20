@@ -474,13 +474,58 @@ def _build_video_request_body(
 
 
 # =============================================================================
+# 任务状态查询 (单次, 供轮询和 resync 共用)
+# =============================================================================
+
+def check_happyhorse_task_status(
+    api_key: str,
+    task_id: str,
+    domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    单次查询 Bailian/Dashscope 视频任务状态。
+
+    Args:
+        api_key:  Dashscope API Key
+        task_id:  任务 ID
+        domain:   可选的 Dashscope 域名覆盖
+
+    Returns:
+        完整的 API 响应 JSON dict，包含 output.task_status 等字段
+        网络错误时返回 {"output": {"task_status": "UNKNOWN"}}
+    """
+    if domain:
+        task_query_url = f"{domain.rstrip('/')}/api/v1/tasks"
+    else:
+        task_query_url = _resolve_task_query_url(None)
+    url = f"{task_query_url}/{task_id}"
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "Task query error (status=%s): %s",
+                    response.status_code,
+                    response.text,
+                )
+                return {"output": {"task_status": TASK_STATUS_UNKNOWN}}
+            return response.json()
+    except httpx.RequestError as e:
+        logger.warning("Task query network error: %s", e)
+        return {"output": {"task_status": TASK_STATUS_UNKNOWN}}
+
+
+# =============================================================================
 # 任务轮询
 # =============================================================================
 
 def _poll_task(
     api_key: str,
     task_id: str,
-    task_query_url: str,
+    task_query_url: str,  # kept for backward compat, unused since check_happyhorse_task_status resolves URL
     timeout: int = _POLL_MAX_WAIT_S,
     poll_interval: int = _POLL_INTERVAL_S,
     tracer: Any = None,
@@ -504,7 +549,6 @@ def _poll_task(
         RuntimeError: If API returns an unexpected error
     """
     start_time = time.time()
-    url = f"{task_query_url}/{task_id}"
 
     _span = None
     if tracer:
@@ -512,62 +556,38 @@ def _poll_task(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=30) as client:
-            poll_count = 0
-            while True:
-                elapsed = time.time() - start_time
-                if elapsed > timeout:
-                    raise TimeoutError(
-                        f"Video generation task {task_id} timed out after {timeout}s"
-                    )
+        poll_count = 0
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(
+                    f"Video generation task {task_id} timed out after {timeout}s"
+                )
 
-                try:
-                    response = client.get(
-                        url,
-                        headers={"Authorization": f"Bearer {api_key}"},
-                    )
+            result = check_happyhorse_task_status(api_key, task_id)
+            output = result.get("output", {})
+            task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
+            poll_count += 1
 
-                    if response.status_code >= 400:
-                        logger.warning(
-                            "Task query error (status=%s): %s",
-                            response.status_code,
-                            response.text,
-                        )
-                        time.sleep(poll_interval)
-                        continue
+            if _span:
+                _poll_output: Dict[str, Any] = {
+                    "task_id": task_id,
+                    "task_status": task_status,
+                    "elapsed": elapsed,
+                    "poll_count": poll_count,
+                }
+                _span.log_output(_poll_output)
 
-                    result = response.json()
-                    output = result.get("output", {})
-                    task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
-                    poll_count += 1
+            if task_status in TASK_TERMINAL_STATUSES:
+                return result
 
-                    if _span:
-                        _poll_output: Dict[str, Any] = {
-                            "task_id": task_id,
-                            "task_status": task_status,
-                            "elapsed": elapsed,
-                            "poll_count": poll_count,
-                        }
-                        _x_req_id = response.headers.get("x-request-id", "")
-                        if _x_req_id:
-                            _poll_output["x-request-id"] = _x_req_id
-                        _span.log_output(_poll_output)
-
-                    if task_status in TASK_TERMINAL_STATUSES:
-                        return result
-
-                    # Still PENDING or RUNNING, continue polling
-                    logger.debug(
-                        "Task %s status: %s, elapsed: %.1fs",
-                        task_id,
-                        task_status,
-                        elapsed,
-                    )
-                    time.sleep(poll_interval)
-
-                except httpx.RequestError as e:
-                    logger.warning("Task query network error: %s", e)
-                    time.sleep(poll_interval)
+            logger.debug(
+                "Task %s status: %s, elapsed: %.1fs",
+                task_id,
+                task_status,
+                elapsed,
+            )
+            time.sleep(poll_interval)
     except Exception as e:
         _error = e
         raise
@@ -666,6 +686,10 @@ def execute_happyhorse_video_generation(
                     task_id,
                     task_status,
                 )
+
+                hook = metadata.get('_on_task_created')
+                if hook:
+                    hook(task_id)
 
                 # If task is already completed synchronously (rare but possible)
                 if task_status == TASK_STATUS_SUCCEEDED:
@@ -828,6 +852,7 @@ def _build_success_response(
         dur = 0.0
 
     extra = _build_video_usage_extra(output, metadata)
+    extra['_task_id'] = task_id
     # Override duration from extra (already normalized)
     dur = float(extra.get("output_video_seconds", dur) or 0.0)
 
@@ -899,7 +924,8 @@ def _build_failure_response(
         created=int(time.time()),
         model=model,
         choices=[choice],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                       extra={"_task_id": task_id}),
         provider="bailian",
     )
 
@@ -943,7 +969,8 @@ def _build_canceled_response(
         created=int(time.time()),
         model=model,
         choices=[choice],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                       extra={"_task_id": task_id}),
         provider="bailian",
     )
 
@@ -983,7 +1010,8 @@ def _build_timeout_response(
         created=int(time.time()),
         model=model,
         choices=[choice],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                        extra={"_task_id": task_id}),
         provider="bailian",
     )
 
