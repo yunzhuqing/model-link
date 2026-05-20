@@ -54,6 +54,18 @@ from .threed_generation import (
 )
 
 
+import base64
+
+def _safe_b64decode(s: str) -> bytes:
+    """Decode a base64 string, stripping data URI prefix if present."""
+    # Strip data URI prefix: "data:mime/type;base64,XXXX"
+    if s.startswith("data:") and "," in s:
+        s = s.split(",", 1)[1]
+    s = s.replace('-', '+').replace('_', '/')
+    s += '=' * ((4 - len(s) % 4) % 4)
+    return base64.b64decode(s)
+
+
 class TencentVODProvider(OpenAIProvider):
     """
     腾讯云点播 AI 供应商实现
@@ -273,27 +285,47 @@ class TencentVODProvider(OpenAIProvider):
 
         而非 OpenAI 标准的 ``video_url`` / ``file_url`` 嵌套格式。
         图片数据仍使用 OpenAI 标准格式。
+
+        Tencent VOD 只支持真实 URL，不支持 data URI。因此 base64 数据
+        需要先上传到 storage 获取 URL。
         """
         from app.abstraction.messages import ContentType
 
         if block.type == ContentType.VIDEO_URL:
             return {"type": "file", "file_url": block.url or ""}
         elif block.type == ContentType.VIDEO_BASE64:
-            media_type = block.media_type or "video/mp4"
             return {
                 "type": "file",
-                "file_url": f"data:{media_type};base64,{block.data or ''}"
+                "file_url": self._upload_base64_to_storage(
+                    block.data, block.media_type or "video/mp4"
+                )
             }
         elif block.type == ContentType.FILE_URL:
             return {"type": "file", "file_url": block.url or ""}
         elif block.type == ContentType.FILE_BASE64:
-            media_type = block.media_type or "application/octet-stream"
             return {
                 "type": "file",
-                "file_url": f"data:{media_type};base64,{block.data or ''}"
+                "file_url": self._upload_base64_to_storage(
+                    block.data, block.media_type or "application/octet-stream"
+                )
             }
         # 其他类型（图片、音频、文本等）使用标准 OpenAI 格式
         return super()._content_block_to_openai(block)
+
+    def _upload_base64_to_storage(self, data: str, media_type: str) -> str:
+        """将 base64 数据上传到 storage 并返回可访问的 URL。
+
+        Tencent VOD 只支持真实 URL，不支持 data URI，因此 base64 数据
+        必须先上传到配置的 storage backend 获取 URL。
+        """
+        import uuid
+        from app.storage.factory import get_storage_backend
+
+        raw = _safe_b64decode(data)
+        ext = media_type.split("/")[-1] if "/" in media_type else "bin"
+        key = f"tencent_vod/{uuid.uuid4().hex}.{ext}"
+        storage = get_storage_backend()
+        return storage.write_binary(key, raw, media_type)
 
     # ==================== 图像/视频生成检测 ====================
 

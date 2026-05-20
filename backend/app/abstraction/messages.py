@@ -62,6 +62,7 @@ class ContentBlock:
     is_error: bool = False
     cache_control: Optional[Dict[str, Any]] = None  # Anthropic prompt caching: e.g. {"type": "ephemeral"}
     video_fps: Optional[str] = None  # FPS for video_url inputs (doubao, etc.)
+    filename: Optional[str] = None  # filename for file content blocks (e.g. "document.pdf")
     
     @classmethod
     def from_text(cls, text: str) -> 'ContentBlock':
@@ -104,9 +105,9 @@ class ContentBlock:
         return cls(type=ContentType.FILE_URL, url=url)
     
     @classmethod
-    def from_file_base64(cls, data: str, media_type: str = "application/octet-stream") -> 'ContentBlock':
+    def from_file_base64(cls, data: str, media_type: str = "application/octet-stream", filename: Optional[str] = None) -> 'ContentBlock':
         """从 Base64 文件创建内容块"""
-        return cls(type=ContentType.FILE_BASE64, data=data, media_type=media_type)
+        return cls(type=ContentType.FILE_BASE64, data=data, media_type=media_type, filename=filename)
     
     @classmethod
     def from_tool_call(cls, tool_call_id: str, tool_name: str, arguments: Dict[str, Any]) -> 'ContentBlock':
@@ -164,13 +165,14 @@ class Message:
                 'input_image': 'image_url',
                 'input_audio': 'audio_url',
                 'input_file': 'file_url',
+                'file': 'file_base64',
             }
             content_type_str = _type_map.get(content_type_str, content_type_str)
             try:
                 content_type = ContentType(content_type_str)
             except ValueError:
                 content_type = ContentType.TEXT
-            
+
             # Extract url: may be in 'url', or 'image_url' (string or dict)
             url = item.get('url')
             if not url:
@@ -179,6 +181,21 @@ class Message:
                     url = image_url_val
                 elif isinstance(image_url_val, dict):
                     url = image_url_val.get('url')
+
+            # Extract file-related fields from 'file' sub-object (OpenAI format)
+            data = item.get('data')
+            filename = item.get('filename')
+            file_obj = item.get('file', {})
+            if isinstance(file_obj, dict):
+                if file_obj.get('file_data'):
+                    data = file_obj['file_data']
+                if file_obj.get('filename'):
+                    filename = file_obj['filename']
+                # file_id → treat as file_url type
+                if file_obj.get('file_id'):
+                    url = file_obj['file_id']
+                    if content_type == ContentType.FILE_BASE64:
+                        content_type = ContentType.FILE_URL
 
             # Extract tool_call_id: may be 'tool_call_id', 'id', or 'tool_use_id' (Anthropic format)
             tool_call_id = item.get('tool_call_id') or item.get('tool_use_id') or item.get('id')
@@ -205,7 +222,8 @@ class Message:
                 text=item.get('text'),
                 url=url,
                 media_type=item.get('media_type'),
-                data=item.get('data'),
+                data=data,
+                filename=filename,
                 role=item.get('role'),
                 tool_call_id=tool_call_id,
                 tool_name=item.get('tool_name') or item.get('name') or item.get('function', {}).get('name'),

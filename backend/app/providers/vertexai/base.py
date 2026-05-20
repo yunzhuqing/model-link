@@ -133,6 +133,13 @@ def _log_to_file(data: Any, prefix: str, publisher: str) -> str:
 _thought_signature_cache: Dict[str, str] = {}
 
 
+def _strip_data_uri(s: str) -> str:
+    """Strip 'data:mime/type;base64,' prefix if present, returning raw base64."""
+    if s.startswith("data:") and "," in s:
+        return s.split(",", 1)[1]
+    return s
+
+
 class VertexAIProvider(BaseProvider):
     """
     Google Vertex AI 供应商实现
@@ -500,7 +507,7 @@ class VertexAIProvider(BaseProvider):
         elif block.type == ContentType.IMAGE_URL:
             result = {"type": "image", "source": {"type": "url", "url": block.url}}
         elif block.type == ContentType.IMAGE_BASE64:
-            result = {"type": "image", "source": {"type": "base64", "media_type": block.media_type or "image/jpeg", "data": block.data}}
+            result = {"type": "image", "source": {"type": "base64", "media_type": block.media_type or "image/jpeg", "data": _strip_data_uri(block.data or "")}}
         elif block.type == ContentType.TOOL_CALL:
             result = {"type": "tool_use", "id": block.tool_call_id, "name": block.tool_name, "input": block.tool_arguments or {}}
         elif block.type == ContentType.TOOL_RESULT:
@@ -509,7 +516,7 @@ class VertexAIProvider(BaseProvider):
             if block.type == ContentType.FILE_URL:
                 result = {"type": "document", "source": {"type": "url", "url": block.url}}
             else:
-                result = {"type": "document", "source": {"type": "base64", "media_type": block.media_type or "application/pdf", "data": block.data}}
+                result = {"type": "document", "source": {"type": "base64", "media_type": block.media_type or "application/pdf", "data": _strip_data_uri(block.data or "")}}
         else:
             result = {"type": "text", "text": block.text or ""}
         # Attach cache_control if present
@@ -826,19 +833,19 @@ class VertexAIProvider(BaseProvider):
         elif block.type == ContentType.IMAGE_URL:
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "image/jpeg"}}
         elif block.type == ContentType.IMAGE_BASE64:
-            return {"inlineData": {"data": block.data, "mimeType": block.media_type or "image/jpeg"}}
+            return {"inlineData": {"data": _strip_data_uri(block.data or ""), "mimeType": block.media_type or "image/jpeg"}}
         elif block.type == ContentType.VIDEO_URL:
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "video/mp4"}}
         elif block.type == ContentType.VIDEO_BASE64:
-            return {"inlineData": {"data": block.data, "mimeType": block.media_type or "video/mp4"}}
+            return {"inlineData": {"data": _strip_data_uri(block.data or ""), "mimeType": block.media_type or "video/mp4"}}
         elif block.type == ContentType.AUDIO_URL:
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "audio/mp3"}}
         elif block.type == ContentType.AUDIO_BASE64:
-            return {"inlineData": {"data": block.data, "mimeType": block.media_type or "audio/mp3"}}
+            return {"inlineData": {"data": _strip_data_uri(block.data or ""), "mimeType": block.media_type or "audio/mp3"}}
         elif block.type == ContentType.FILE_URL:
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.FILE_BASE64:
-            return {"inlineData": {"data": block.data, "mimeType": block.media_type or "application/octet-stream"}}
+            return {"inlineData": {"data": _strip_data_uri(block.data or ""), "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.TOOL_CALL:
             # Note: Vertex AI does not accept "id" in functionCall when sending request
             fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
