@@ -480,11 +480,14 @@ class VertexAIProvider(BaseProvider):
     def _message_to_anthropic(self, message: Message) -> Dict[str, Any]:
         """将 Message 转换为 Anthropic 格式"""
         result = {"role": message.role.value}
-        
+
         if isinstance(message.content, str):
             result["content"] = message.content or "(empty)"
         elif isinstance(message.content, list):
-            result["content"] = [self._content_block_to_anthropic(b) for b in message.content]
+            blocks = [self._content_block_to_anthropic(b) for b in message.content]
+            # Vertex AI requires text content blocks to be non-empty
+            blocks = [b for b in blocks if not (b.get("type") == "text" and not b.get("text"))]
+            result["content"] = blocks if blocks else "(empty)"
         else:
             result["content"] = "(empty)"
         return result
