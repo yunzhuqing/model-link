@@ -109,11 +109,19 @@ def parse_openai_request(data: dict) -> ChatRequest:
                         file_id = file_obj.get('file_id')
                         filename = file_obj.get('filename')
                         if file_data:
-                            blocks.append(ContentBlock.from_file_base64(
-                                file_data,
-                                item.get('media_type') or 'application/octet-stream',
-                                filename=filename
-                            ))
+                            # file_data may be "data:mime/type;base64,XXXX" or raw base64
+                            if file_data.startswith("data:") and "," in file_data:
+                                header, b64 = file_data.split(",", 1)
+                                media = header.replace("data:", "").replace(";base64", "")
+                                blocks.append(ContentBlock.from_file_base64(
+                                    b64, media, filename=filename
+                                ))
+                            else:
+                                blocks.append(ContentBlock.from_file_base64(
+                                    file_data,
+                                    item.get('media_type') or 'application/octet-stream',
+                                    filename=filename
+                                ))
                         elif file_id:
                             blocks.append(ContentBlock.from_file_url(file_id))
                         # no else: fall through to file_url handling below
