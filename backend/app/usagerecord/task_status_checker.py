@@ -52,9 +52,9 @@ def _map_tencent_status(task_status: str, err_code: int = 0) -> TaskStatus:
     return TaskStatus.RUNNING
 
 
-def _map_hunyuan3d_status(status: str) -> TaskStatus:
+def _map_hunyuan3d_status(status: str, error_code: str = "") -> TaskStatus:
     if status == "DONE":
-        return TaskStatus.COMPLETED
+        return TaskStatus.COMPLETED if not error_code else TaskStatus.FAILED
     if status == "FAIL":
         return TaskStatus.FAILED
     return TaskStatus.RUNNING
@@ -197,7 +197,7 @@ def resolve_and_check_task_status(
             resp = check_any_hunyuan3d_job_status(secret_id, secret_key, task_id, model=model, region=region)
             if not resp:
                 return TaskStatus.UNKNOWN
-            return _map_hunyuan3d_status(resp.get("Status", ""))
+            return _map_hunyuan3d_status(resp.get("Status", ""), resp.get("ErrorCode", ""))
         except Exception as exc:
             logger.error(f"[task_status] Hunyuan3D check error for {task_id}: {exc}", exc_info=True)
             return TaskStatus.UNKNOWN

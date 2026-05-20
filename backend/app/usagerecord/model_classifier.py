@@ -18,8 +18,8 @@ class ModelCategory(Enum):
 
 CATEGORY_MIN_AGE_MINUTES = {
     ModelCategory.IMAGE: 10,
-    ModelCategory.VIDEO: 20,
-    ModelCategory.THREED: 10,
+    ModelCategory.VIDEO: 30,
+    ModelCategory.THREED: 40,
     ModelCategory.TEXT: 9999,  # never sync
 }
 

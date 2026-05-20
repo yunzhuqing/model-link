@@ -564,8 +564,6 @@ def check_hunyuan3d_job_status(
                     f"Hunyuan3D {action} error "
                     f"(code={err.get('Code')}): {err.get('Message')}"
                 )
-            if resp.get("JobId") != job_id:
-                return {}
             return resp
     except Exception as exc:
         logger.warning(f"Hunyuan3D {action} query error for {job_id}: {exc}")
@@ -589,7 +587,9 @@ def check_any_hunyuan3d_job_status(
     """
     if model:
         action = "QueryHunyuanTo3DProJob" if _is_pro_model(model) else "QueryHunyuanTo3DRapidJob"
-        return check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+        resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+        if resp:
+            return resp
 
     for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob"):
         resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
