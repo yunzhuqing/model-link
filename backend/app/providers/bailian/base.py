@@ -248,8 +248,9 @@ class BailianProvider(OpenAIProvider):
 
         model_has_thinking = 'thinking' in request.model.lower()
         has_reasoning_effort = bool(request.reasoning_effort)
+        is_minimax = 'minimax' in request.model.lower()
 
-        if model_has_thinking or has_reasoning_effort:
+        if is_minimax or model_has_thinking or has_reasoning_effort:
             data["enable_thinking"] = True
             if not has_reasoning_effort:
                 data["reasoning_effort"] = "medium"

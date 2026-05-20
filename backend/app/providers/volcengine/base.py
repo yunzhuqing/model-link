@@ -309,7 +309,11 @@ class VolcengineProvider(BaseProvider):
     def _convert_content(self, message: Message) -> Any:
         """Convert message content to Responses API format."""
         if isinstance(message.content, str):
-            return message.content
+            if message.content:
+                return message.content
+            if message.role == MessageRole.ASSISTANT:
+                return [{"type": "output_text", "text": "(empty)"}]
+            return "(empty)"
 
         # Use "output_text" for assistant messages, "input_text" for others
         text_type = "output_text" if message.role == MessageRole.ASSISTANT else "input_text"
@@ -341,9 +345,17 @@ class VolcengineProvider(BaseProvider):
                 else:
                     parts.append({"type": "input_text", "text": str(block.text or block.data or "")})
 
-            return parts if parts else ""
+            if parts:
+                return parts
+            if message.role == MessageRole.ASSISTANT:
+                return [{"type": "output_text", "text": "(empty)"}]
+            return "(empty)"
 
-        return message.content or ""
+        if message.content:
+            return message.content
+        if message.role == MessageRole.ASSISTANT:
+            return [{"type": "output_text", "text": "(empty)"}]
+        return "(empty)"
 
     def _tool_to_responses(self, tool: ToolDefinition) -> Dict[str, Any]:
         """Convert ToolDefinition to Responses API format.

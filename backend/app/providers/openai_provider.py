@@ -418,7 +418,7 @@ class OpenAIProvider(BaseProvider):
             result["reasoning_content"] = message.reasoning_content
         
         if isinstance(message.content, str):
-            result["content"] = message.content
+            result["content"] = message.content or "(empty)"
         elif isinstance(message.content, list):
             from app.abstraction.messages import ContentType
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
@@ -430,7 +430,7 @@ class OpenAIProvider(BaseProvider):
             # content 只包含文本和其他类型（图片、视频等），不包含 tool_call
             if text_blocks and not other_blocks and not tool_call_blocks:
                 # 只有文本块，使用字符串格式
-                result["content"] = " ".join(b.text or "" for b in text_blocks)
+                result["content"] = " ".join(b.text or "" for b in text_blocks) or "(empty)"
             elif text_blocks or other_blocks:
                 # 有文本或其他类型（图片等），使用数组格式
                 content_parts = []
@@ -440,7 +440,7 @@ class OpenAIProvider(BaseProvider):
                     content_parts.append(self._content_block_to_openai(b))
                 result["content"] = content_parts
             # 如果只有 tool_call_blocks，content 不设置（保持 None/null）
-            
+
             # 单独处理 tool_calls
             if tool_call_blocks:
                 result["tool_calls"] = [
@@ -454,7 +454,10 @@ class OpenAIProvider(BaseProvider):
                     }
                     for b in tool_call_blocks
                 ]
-        
+        else:
+            # content 为 None 时设置默认空字符串，兼容只有 role 没有 content 的 assistant 消息
+            result["content"] = "(empty)"
+
         return result
     
     def _content_block_to_openai(self, block) -> Dict[str, Any]:

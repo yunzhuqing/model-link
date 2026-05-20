@@ -482,11 +482,11 @@ class VertexAIProvider(BaseProvider):
         result = {"role": message.role.value}
         
         if isinstance(message.content, str):
-            result["content"] = message.content
+            result["content"] = message.content or "(empty)"
         elif isinstance(message.content, list):
             result["content"] = [self._content_block_to_anthropic(b) for b in message.content]
         else:
-            result["content"] = ""
+            result["content"] = "(empty)"
         return result
 
     def _content_block_to_anthropic(self, block: ContentBlock) -> Dict[str, Any]:
@@ -802,14 +802,14 @@ class VertexAIProvider(BaseProvider):
 
         parts = []
         if isinstance(message.content, str):
-            parts.append({"text": message.content})
+            parts.append({"text": message.content or "(empty)"})
         elif isinstance(message.content, list):
             for block in message.content:
                 part = self._content_block_to_gemini(block, call_id_to_name)
                 if part:
                     parts.append(part)
         else:
-            parts.append({"text": ""})
+            parts.append({"text": "(empty)"})
 
         return {"role": role, "parts": parts} if parts else None
 
@@ -819,7 +819,7 @@ class VertexAIProvider(BaseProvider):
             call_id_to_name = {}
 
         if block.type == ContentType.TEXT:
-            return {"text": block.text or ""}
+            return {"text": block.text or "(empty)"}
         elif block.type == ContentType.IMAGE_URL:
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "image/jpeg"}}
         elif block.type == ContentType.IMAGE_BASE64:
@@ -1099,7 +1099,7 @@ class VertexAIProvider(BaseProvider):
             result["name"] = message.name
 
         if isinstance(message.content, str):
-            result["content"] = message.content
+            result["content"] = message.content or "(empty)"
         elif isinstance(message.content, list):
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
             tool_call_blocks = [b for b in message.content if b.type == ContentType.TOOL_CALL]
@@ -1108,9 +1108,9 @@ class VertexAIProvider(BaseProvider):
             # For tool result blocks, extract text content
             tool_result_blocks = [b for b in message.content if b.type == ContentType.TOOL_RESULT]
             if tool_result_blocks and not text_blocks and not other_blocks:
-                result["content"] = " ".join(b.tool_result or "" for b in tool_result_blocks)
+                result["content"] = " ".join(b.tool_result or "" for b in tool_result_blocks) or "(empty)"
             elif text_blocks and not other_blocks:
-                result["content"] = " ".join(b.text or "" for b in text_blocks)
+                result["content"] = " ".join(b.text or "" for b in text_blocks) or "(empty)"
             elif text_blocks or other_blocks:
                 content_parts = []
                 for b in text_blocks:
@@ -1130,7 +1130,7 @@ class VertexAIProvider(BaseProvider):
                     "function": {"name": b.tool_name, "arguments": b.tool_arguments if isinstance(b.tool_arguments, str) else json.dumps(b.tool_arguments or {}, ensure_ascii=False)}
                 } for b in tool_call_blocks]
         else:
-            result["content"] = ""
+            result["content"] = "(empty)"
 
         return result
 
