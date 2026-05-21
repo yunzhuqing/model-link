@@ -19,7 +19,7 @@ import { fmtNum, fmtCost, fmtDate } from './ApiKeyDetail/utils';
 import { Search } from 'lucide-react';
 
 /** Fuzzy match: search each token against model name / alias / provider */
-function fuzzyMatchModel(query: string, model: { name: string; alias?: string; provider_name?: string }): boolean {
+function fuzzyMatchModel(query: string, model: { name: string; alias?: string | null; provider_name?: string | null }): boolean {
   const q = query.toLowerCase().trim();
   if (!q) return true;
   // Direct substring match (case-insensitive)
