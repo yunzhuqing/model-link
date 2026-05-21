@@ -5,6 +5,7 @@ Provides OpenAI-compatible image generation, image editing, and file serving
 endpoints.
 """
 from quart import Blueprint, request, jsonify, current_app, g, send_file
+import asyncio
 import logging
 import mimetypes
 import os
@@ -27,6 +28,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    _call_in_app_ctx,
     G_API_KEY_PROVIDER_ID,
 )
 
@@ -124,6 +126,7 @@ async def create_images():
     tracer = create_tracer(monitoring_config)
 
     # 6. 调用中间层
+    _app = current_app._get_current_object()
     _request_start_time = time.monotonic()
     try:
         if tracer:
@@ -136,22 +139,25 @@ async def create_images():
                 "model_name": model_name,
                 "api_key_name": api_key.name if api_key else None,
             })
-        result, chat_response, resolved = _gateway_service.generate_images(
-            model_name=model_name,
-            prompt=prompt,
-            images=images,
-            n=n,
-            size=size,
-            response_format=response_format,
-            output_format=output_format,
-            quality=quality,
-            style=style,
-            user=user_id,
-            group_id=group_id,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-            provider_id=provider_id,
-            tracer=tracer,
+        result, chat_response, resolved = await asyncio.to_thread(
+            lambda: _call_in_app_ctx(
+                _app, _gateway_service.generate_images,
+                model_name=model_name,
+                prompt=prompt,
+                images=images,
+                n=n,
+                size=size,
+                response_format=response_format,
+                output_format=output_format,
+                quality=quality,
+                style=style,
+                user=user_id,
+                group_id=group_id,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                provider_id=provider_id,
+                tracer=tracer,
+            )
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         if tracer:
@@ -281,6 +287,7 @@ async def edit_images():
     tracer = create_tracer(monitoring_config)
 
     # 6. 调用中间层
+    _app = current_app._get_current_object()
     _request_start_time = time.monotonic()
     try:
         if tracer:
@@ -293,23 +300,26 @@ async def edit_images():
                 "model_name": model_name,
                 "api_key_name": api_key.name if api_key else None,
             })
-        result, chat_response, resolved = _gateway_service.edit_images(
-            model_name=model_name,
-            prompt=prompt,
-            images=images,
-            mask=mask,
-            n=n,
-            size=size,
-            response_format=response_format,
-            output_format=output_format,
-            quality=quality,
-            background=background,
-            input_fidelity=input_fidelity,
-            moderation=moderation,
-            user=user_id,
-            group_id=group_id,
-            provider_id=provider_id,
-            tracer=tracer,
+        result, chat_response, resolved = await asyncio.to_thread(
+            lambda: _call_in_app_ctx(
+                _app, _gateway_service.edit_images,
+                model_name=model_name,
+                prompt=prompt,
+                images=images,
+                mask=mask,
+                n=n,
+                size=size,
+                response_format=response_format,
+                output_format=output_format,
+                quality=quality,
+                background=background,
+                input_fidelity=input_fidelity,
+                moderation=moderation,
+                user=user_id,
+                group_id=group_id,
+                provider_id=provider_id,
+                tracer=tracer,
+            )
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         if tracer:

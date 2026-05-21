@@ -4,7 +4,8 @@ Rerank API route module.
 Provides the /v1/rerank endpoint compatible with the vLLM rerank API format.
 Supports both text-only and multimodal rerank models.
 """
-from quart import Blueprint, request, jsonify, g
+from quart import Blueprint, request, jsonify, current_app, g
+import asyncio
 import logging
 
 logger = logging.getLogger("gateway")
@@ -22,6 +23,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    _call_in_app_ctx,
     G_API_KEY_PROVIDER_ID,
 )
 
@@ -130,8 +132,11 @@ async def create_rerank():
     provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 5. 调用中间层
+    _app = current_app._get_current_object()
     try:
-        response = _gateway_service.rerank(rerank_request, group_id, provider_id=provider_id)
+        response = await asyncio.to_thread(
+            _call_in_app_ctx, _app, _gateway_service.rerank, rerank_request, group_id, provider_id=provider_id
+        )
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         _log_error("rerank", e.status_code, e.message, {"model": model_name})

@@ -5,14 +5,16 @@ Endpoints:
   GET /api/usage/records  - Paginated list of raw usage records with filters
   GET /api/usage/summary  - Aggregated statistics (by time / group / model / api-key)
 """
-from quart import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
 from typing import Optional
+import asyncio
 import os
 import logging
 
 from app import db
 from app.models import UsageRecord
+from app.routes.gateway_helpers import _call_in_app_ctx
 from jose import JWTError, jwt
 
 usage_bp = Blueprint('usage', __name__)
@@ -150,12 +152,14 @@ async def list_records():
     if provider_id:
         q = q.filter(UsageRecord.provider_id == int(provider_id))
 
-    total = q.count()
-    records = (
-        q.order_by(UsageRecord.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
+    total, records = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: (
+            q.count(),
+            q.order_by(UsageRecord.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all(),
+        )
     )
 
     return jsonify({
@@ -243,22 +247,24 @@ async def get_summary_totals():
 
     filters = _get_summary_filters(current_username)
 
-    row = _apply_filters(
-        db.session.query(
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
-            func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
-            func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
-            func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).one()
+    row = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
+                func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
+                func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
+                func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).one()
+    )
 
     return jsonify({
         "requests": row.requests or 0,
@@ -291,17 +297,19 @@ async def get_summary_by_model():
 
     filters = _get_summary_filters(current_username)
 
-    rows = _apply_filters(
-        db.session.query(
-            UsageRecord.model_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.model_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    )
 
     result = [
         {
@@ -331,18 +339,20 @@ async def get_summary_by_group():
 
     filters = _get_summary_filters(current_username)
 
-    rows = _apply_filters(
-        db.session.query(
-            UsageRecord.group_id,
-            UsageRecord.group_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-        ),
-        filters,
-    ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
-        func.count(UsageRecord.id).desc()
-    ).limit(20).all()
+    rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.group_id,
+                UsageRecord.group_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            ),
+            filters,
+        ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
+            func.count(UsageRecord.id).desc()
+        ).limit(20).all()
+    )
 
     return jsonify([
         {
@@ -377,14 +387,16 @@ async def get_summary_by_currency():
 
     filters = _get_summary_filters(current_username)
 
-    rows = _apply_filters(
-        db.session.query(
-            UsageRecord.currency,
-            func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost_native"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(UsageRecord.currency).all()
+    rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.currency,
+                func.coalesce(func.sum(UsageRecord.actual_amount), 0).label("total_cost_native"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(UsageRecord.currency).all()
+    )
 
     currency_items = []
     total_usd = 0.0
@@ -423,20 +435,22 @@ async def get_summary_by_api_key():
 
     filters = _get_summary_filters(current_username)
 
-    rows = _apply_filters(
-        db.session.query(
-            UsageRecord.api_key_hash,
-            UsageRecord.api_key_preview,
-            UsageRecord.api_key_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(
-        UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
-    ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.api_key_hash,
+                UsageRecord.api_key_preview,
+                UsageRecord.api_key_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(
+            UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
+        ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    )
 
     result = [
         {
@@ -480,19 +494,21 @@ async def get_summary_time_series_by_model():
     granularity = request.args.get("granularity", "day")
 
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
-    rows = _apply_filters(
-        db.session.query(
-            period_col.label("period"),
-            UsageRecord.model_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by("period", UsageRecord.model_name).order_by("period", UsageRecord.model_name).all()
+    rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                period_col.label("period"),
+                UsageRecord.model_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by("period", UsageRecord.model_name).order_by("period", UsageRecord.model_name).all()
+    )
 
     result = []
     for r in rows:
@@ -532,18 +548,20 @@ async def get_summary_time_series():
     granularity = request.args.get("granularity", "day")
 
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
-    rows = _apply_filters(
-        db.session.query(
-            period_col.label("period"),
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by("period").order_by("period").all()
+    rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                period_col.label("period"),
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by("period").order_by("period").all()
+    )
 
     result = []
     for r in rows:
@@ -589,22 +607,24 @@ async def get_summary():
     granularity = request.args.get("granularity", "day")
 
     # ── Totals ────────────────────────────────────────────────────────────
-    row = _apply_filters(
-        db.session.query(
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
-            func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
-            func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
-            func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).one()
+    row = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
+                func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
+                func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
+                func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).one()
+    )
     totals = {
         "requests": row.requests or 0,
         "input_tokens": int(row.input_tokens or 0),
@@ -620,17 +640,19 @@ async def get_summary():
     }
 
     # ── By model ──────────────────────────────────────────────────────────
-    by_model_rows = _apply_filters(
-        db.session.query(
-            UsageRecord.model_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    by_model_rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.model_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    )
 
     by_model = [
         {
@@ -645,18 +667,20 @@ async def get_summary():
     ]
 
     # ── By group ──────────────────────────────────────────────────────────
-    by_group_rows = _apply_filters(
-        db.session.query(
-            UsageRecord.group_id,
-            UsageRecord.group_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-        ),
-        filters,
-    ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
-        func.count(UsageRecord.id).desc()
-    ).limit(20).all()
+    by_group_rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.group_id,
+                UsageRecord.group_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            ),
+            filters,
+        ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
+            func.count(UsageRecord.id).desc()
+        ).limit(20).all()
+    )
 
     by_group = [
         {
@@ -670,20 +694,22 @@ async def get_summary():
     ]
 
     # ── By API key ────────────────────────────────────────────────────────
-    by_api_key_rows = _apply_filters(
-        db.session.query(
-            UsageRecord.api_key_hash,
-            UsageRecord.api_key_preview,
-            UsageRecord.api_key_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(
-        UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
-    ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    by_api_key_rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                UsageRecord.api_key_hash,
+                UsageRecord.api_key_preview,
+                UsageRecord.api_key_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(
+            UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
+        ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20).all()
+    )
 
     by_api_key = [
         {
@@ -700,17 +726,19 @@ async def get_summary():
 
     # ── Time series ───────────────────────────────────────────────────────
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
-    time_series_rows = _apply_filters(
-        db.session.query(
-            period_col.label("period"),
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-        ),
-        filters,
-    ).group_by("period").order_by("period").all()
+    time_series_rows = await asyncio.to_thread(
+        _call_in_app_ctx, current_app._get_current_object(), lambda: _apply_filters(
+            db.session.query(
+                period_col.label("period"),
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+            ),
+            filters,
+        ).group_by("period").order_by("period").all()
+    )
 
     time_series = [
         {

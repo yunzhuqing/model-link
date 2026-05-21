@@ -5,6 +5,7 @@ Provides the OpenAI-compatible /v1/embeddings endpoint, supporting both
 text-only and multimodal embedding models.
 """
 from quart import Blueprint, request, jsonify, current_app, g
+import asyncio
 import logging
 import time
 
@@ -25,6 +26,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    _call_in_app_ctx,
     G_API_KEY_PROVIDER_ID,
 )
 
@@ -162,10 +164,13 @@ async def create_embeddings():
     tracer = create_tracer(monitoring_config)
 
     # 6. 调用中间层
+    _app = current_app._get_current_object()
     try:
         _start_time = time.time()
         # Resolve model to capture provider info before the API call
-        resolved = _gateway_service.resolve_model(model_name, group_id, provider_id=provider_id)
+        resolved = await asyncio.to_thread(
+            _call_in_app_ctx, _app, _gateway_service.resolve_model, model_name, group_id, provider_id=provider_id
+        )
 
         if tracer:
             tracer.start(model_name, input_data=data)
@@ -178,7 +183,9 @@ async def create_embeddings():
                 "api_key_name": api_key.name if api_key else None,
             })
         resolved.provider_instance.tracer = tracer
-        response = _gateway_service.embed(embedding_request, group_id, provider_id=provider_id, tracer=tracer)
+        response = await asyncio.to_thread(
+            _call_in_app_ctx, _app, _gateway_service.embed, embedding_request, group_id, provider_id=provider_id, tracer=tracer
+        )
         _duration_ms = int((time.time() - _start_time) * 1000)
         if tracer:
             tracer.log_output(response.to_dict())

@@ -277,3 +277,20 @@ def _populate_api_key_cache(api_key, cache):
     if not api_key.unlimited_budget and api_key.budget is not None:
         from app.budget_manager import get_budget_manager
         get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
+
+
+def _call_in_app_ctx(app, fn, *args, **kwargs):
+    """Call *fn(*args, **kwargs)* inside Flask's application context.
+
+    We explicitly use Flask's ``_cv_app`` ContextVar (the same bridging
+    mechanism used by ``create_app()``) because Quart's ``app.app_context()``
+    does not interoperate with Flask-SQLAlchemy's ``db.session``.
+    """
+    from flask.globals import _cv_app
+    from flask.ctx import AppContext as FlaskAppContext
+
+    token = _cv_app.set(FlaskAppContext(app))
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _cv_app.reset(token)

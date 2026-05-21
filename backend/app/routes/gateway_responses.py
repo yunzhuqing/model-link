@@ -10,6 +10,7 @@ OpenAI Responses API 路由层
 """
 from quart import Blueprint, request, jsonify, current_app, g
 from typing import Any, Dict, Optional
+import asyncio
 import json
 import logging
 import time
@@ -55,6 +56,8 @@ from app.routes.gateway import (
     _check_allowed_models,
     _gateway_service,
     _log_error,
+    _run_stream_in_thread,
+    _call_in_app_ctx,
 )
 from app.routes.gateway_helpers import G_API_KEY_PROVIDER_ID
 
@@ -585,6 +588,7 @@ async def openai_responses():
     tracer = create_tracer(monitoring_config)
 
     _resp_start_time = time.monotonic()
+    _app = current_app._get_current_object()
     try:
         if chat_request.stream:
             _user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
@@ -612,8 +616,9 @@ async def openai_responses():
                     "api_key_name": _api_key_name,
                 })
 
-            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
-            _app = current_app._get_current_object()
+            chunks, model_meta = await asyncio.to_thread(
+                _run_stream_in_thread, _app, _gateway_service, chat_request, group_id, tracer, provider_id_override
+            )
 
             def _resp_chunks_with_usage():
                 last_usage = None
@@ -692,7 +697,9 @@ async def openai_responses():
                     "api_key_name": api_key.name if api_key else None,
                 })
 
-            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
+            response, resolved = await asyncio.to_thread(
+                lambda: _call_in_app_ctx(_app, _gateway_service.chat, chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
+            )
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
 
             if tracer:

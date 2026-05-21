@@ -16,7 +16,10 @@ Embeddings、Images、Rerank、Responses API 端点已拆分至独立模块。
   - 供应商 API 的差异（由供应商层处理）
 """
 from quart import Blueprint, request, jsonify, current_app, g
+import asyncio
 import logging
+import queue
+import threading
 import time
 
 # Configure logger for gateway
@@ -88,6 +91,92 @@ def _reconcile_tpm(rate_limiter, rate_limit_info, actual_input_tokens: int = 0) 
         )
     except Exception as e:
         logger.warning(f"[rate_limiter] TPM reconciliation failed: {e}")
+
+
+def _call_in_app_ctx(app, fn, *args, **kwargs):
+    """Call *fn* with *args, **kwargs inside Flask's application context.
+
+    We explicitly use Flask's ``_cv_app`` ContextVar (the same bridging
+    mechanism used by ``create_app()``) because Quart's ``app.app_context()``
+    does not interoperate with Flask-SQLAlchemy's ``db.session``.
+    """
+    from flask.globals import _cv_app
+    from flask.ctx import AppContext as FlaskAppContext
+
+    token = _cv_app.set(FlaskAppContext(app))
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _cv_app.reset(token)
+
+
+def _run_stream_in_thread(app, gateway_service, chat_request, group_id, tracer, provider_id):
+    """Run blocking stream_chat in a worker thread, bridge chunks via queue.Queue.
+
+    Returns a synchronous generator that yields chunks from a thread-safe queue,
+    plus the model_meta dict. The generator is safe to consume from any thread.
+
+    Callers should invoke this via ``await asyncio.to_thread()`` to avoid
+    blocking the asyncio event loop while the initial DB query and first
+    provider response arrive.
+
+    The *app* parameter is the Flask/Quart application object, used to push
+    an application context inside the worker thread so that Flask-SQLAlchemy's
+    ``db.session`` can resolve its scoped session.
+    """
+    q = queue.Queue(maxsize=200)
+
+    def _worker():
+        from flask.globals import _cv_app
+        from flask.ctx import AppContext as FlaskAppContext
+
+        token = _cv_app.set(FlaskAppContext(app))
+        try:
+            chunks_iter, model_meta = gateway_service.stream_chat(
+                chat_request, group_id, tracer=tracer, provider_id=provider_id
+            )
+            q.put(('__meta__', model_meta))
+            for chunk in chunks_iter:
+                q.put(('chunk', chunk))
+            q.put(('__done__', None))
+        except BaseException as e:
+            q.put(('__error__', e))
+        finally:
+            _cv_app.reset(token)
+
+    t = threading.Thread(target=_worker, daemon=True, name="stream-chat-worker")
+    t.start()
+
+    # Block until the DB query completes (meta available — fast, a few ms).
+    item_type, data = q.get()
+    if item_type == '__error__':
+        raise data
+    model_meta = data
+
+    # Pre-fetch the first chunk so that create_stream_response's eager
+    # next() call doesn't block the calling thread.
+    item_type, data = q.get()
+    if item_type == '__error__':
+        raise data
+    if item_type == '__done__':
+        _first = None
+    else:
+        _first = data
+
+    def _generator():
+        nonlocal _first
+        if _first is not None:
+            yield _first
+            _first = None
+        while True:
+            item_type, data = q.get()
+            if item_type == '__error__':
+                raise data
+            if item_type == '__done__':
+                break
+            yield data
+
+    return _generator(), model_meta
 
 
 # ============== 统一请求处理 ==============
@@ -270,6 +359,7 @@ async def _handle_request(adapter):
 
     # 5. 调用中间层
     _request_start_time = time.monotonic()
+    _app = current_app._get_current_object()
     try:
         if chat_request.stream:
             # ── Streaming path ────────────────────────────────────────────────
@@ -300,9 +390,9 @@ async def _handle_request(adapter):
                     "api_key_name": _api_key_name,
                 })
 
-            chunks, model_meta = _gateway_service.stream_chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
-
-            _app = current_app._get_current_object()
+            chunks, model_meta = await asyncio.to_thread(
+                _run_stream_in_thread, _app, _gateway_service, chat_request, group_id, tracer, provider_id
+            )
 
             def _chunks_with_usage_recording():
                 last_usage = None
@@ -388,7 +478,9 @@ async def _handle_request(adapter):
                     "api_key_name": api_key.name if api_key else None,
                 })
 
-            response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
+            response, resolved = await asyncio.to_thread(
+                lambda: _call_in_app_ctx(_app, _gateway_service.chat, chat_request, group_id, tracer=tracer, provider_id=provider_id)
+            )
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
 
             if tracer:
