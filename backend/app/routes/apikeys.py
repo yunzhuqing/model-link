@@ -6,8 +6,9 @@ Cache integration:
   - Create / update / delete / regenerate operations invalidate the cache
     (cache.invalidate_api_key_by_id) so stale data is never served.
 """
-from quart import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify, current_app
 from datetime import datetime
+import asyncio
 import secrets
 
 from app import db
@@ -29,6 +30,8 @@ from app.group_service import (
     update_group as _svc_update_group,
     delete_group as _svc_delete_group,
 )
+
+from app.routes.gateway_helpers import _call_in_app_ctx
 
 apikeys_bp = Blueprint('apikeys', __name__)
 
@@ -764,6 +767,8 @@ async def get_api_key_detail(current_user, api_key_id):
     from app.cache import get_cache
     import hashlib
 
+    app = current_app._get_current_object()
+
     api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
@@ -804,19 +809,21 @@ async def get_api_key_detail(current_user, api_key_id):
             + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
         )
 
-        totals_row = (
-            db.session.query(
-                db.func.count(UsageRecord.id).label('requests'),
-                db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-                db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-                db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-                db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0).label('total_cost_usd'),
-                db.func.coalesce(db.func.sum(UsageRecord.output_image_number), 0).label('total_image_count'),
-                db.func.coalesce(db.func.sum(UsageRecord.output_video_number), 0).label('total_video_count'),
-                db.func.coalesce(db.func.sum(UsageRecord.output_audio_seconds), 0).label('total_audio_seconds'),
+        totals_row = await asyncio.to_thread(
+            _call_in_app_ctx, app, lambda: (
+                db.session.query(
+                    db.func.count(UsageRecord.id).label('requests'),
+                    db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                    db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                    db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+                    db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0).label('total_cost_usd'),
+                    db.func.coalesce(db.func.sum(UsageRecord.output_image_number), 0).label('total_image_count'),
+                    db.func.coalesce(db.func.sum(UsageRecord.output_video_number), 0).label('total_video_count'),
+                    db.func.coalesce(db.func.sum(UsageRecord.output_audio_seconds), 0).label('total_audio_seconds'),
+                )
+                .filter(UsageRecord.api_key_hash == key_hash)
+                .one()
             )
-            .filter(UsageRecord.api_key_hash == key_hash)
-            .one()
         )
 
         usage_totals = {
@@ -853,20 +860,22 @@ async def get_api_key_detail(current_user, api_key_id):
         + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
     )
 
-    by_model_rows = (
-        db.session.query(
-            UsageRecord.model_name,
-            db.func.count(UsageRecord.id).label('requests'),
-            db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-            db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-            db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-            db.func.coalesce(db.func.sum(_cost_expr_model), 0).label('estimated_cost'),
+    by_model_rows = await asyncio.to_thread(
+        _call_in_app_ctx, app, lambda: (
+            db.session.query(
+                UsageRecord.model_name,
+                db.func.count(UsageRecord.id).label('requests'),
+                db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+                db.func.coalesce(db.func.sum(_cost_expr_model), 0).label('estimated_cost'),
+            )
+            .filter(UsageRecord.api_key_hash == key_hash)
+            .group_by(UsageRecord.model_name)
+            .order_by(db.func.coalesce(db.func.sum(_cost_expr_model), 0).desc())
+            .limit(50)
+            .all()
         )
-        .filter(UsageRecord.api_key_hash == key_hash)
-        .group_by(UsageRecord.model_name)
-        .order_by(db.func.coalesce(db.func.sum(_cost_expr_model), 0).desc())
-        .limit(50)
-        .all()
     )
 
     by_model = [
