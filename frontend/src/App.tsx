@@ -19,6 +19,7 @@ import HelpMessages from './pages/HelpMessages';
 import HelpImageGeneration from './pages/HelpImageGeneration';
 import HelpVideoGeneration from './pages/HelpVideoGeneration';
 import HelpThreed from './pages/HelpThreed';
+import HelpVideoErase from './pages/HelpVideoErase';
 import HelpModelRouting from './pages/HelpModelRouting';
 import ApiKeyDetail from './pages/ApiKeyDetail';
 import RateLimits from './pages/RateLimits';
@@ -72,6 +73,7 @@ function App() {
               <Route path="help/image-generation" element={<HelpImageGeneration />} />
               <Route path="help/video-generation" element={<HelpVideoGeneration />} />
               <Route path="help/3d-generation" element={<HelpThreed />} />
+              <Route path="help/video-erase" element={<HelpVideoErase />} />
               <Route path="help/model-routing" element={<HelpModelRouting />} />
               <Route path="rate-limits" element={<RateLimits />} />
               <Route path="permissions" element={<PermissionManager />} />

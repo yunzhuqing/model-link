@@ -42,6 +42,7 @@
     "helpImageGeneration": "Image Generation",
     "helpVideoGeneration": "Video Generation",
     "help3dGeneration": "3D Generation",
+    "helpVideoErase": "Video Erase",
     "helpModelRouting": "Model Routing",
     "rateLimits": "Rate Limits",
     "rateLimitsDesc": "Monitor model RPM/TPM usage",

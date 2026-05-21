@@ -42,6 +42,7 @@
     "helpImageGeneration": "图片生成",
     "helpVideoGeneration": "视频生成",
     "help3dGeneration": "3D 生成",
+    "helpVideoErase": "视频擦除",
     "helpModelRouting": "多模型路由",
     "rateLimits": "速率限制",
     "rateLimitsDesc": "监控模型 RPM/TPM 使用情况",

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route } from 'lucide-react';
+import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser } from 'lucide-react';
 
 interface HelpItem {
   path: string;
@@ -110,6 +110,15 @@ const generationItems: GenerationItem[] = [
     description: '通过 3d_generation 工具调用混元 3D 生成 3D 模型，支持单图/多视角图/文本输入，仅支持异步模式（background: true）。',
     badge: '3d_generation',
     badgeColor: 'bg-purple-100 text-purple-700',
+  },
+  {
+    path: '/help/video-erase',
+    icon: <Eraser className="w-5 h-5 text-white" />,
+    iconBg: 'from-orange-500 to-amber-600',
+    title: '视频智能擦除',
+    description: '通过 video_erase 工具调用腾讯云 MPS 智能擦除字幕、水印，仅支持异步模式（background: true）。',
+    badge: 'video_erase',
+    badgeColor: 'bg-orange-100 text-orange-700',
   },
 ];
 
