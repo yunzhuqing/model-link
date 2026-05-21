@@ -8,6 +8,22 @@ import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Us
 import TagSelector from '../components/TagSelector';
 import { useAuth } from '../contexts/AuthContext';
 
+/** Fuzzy match model name / provider / sharedFromGroup by query. */
+function fuzzyMatchOption(query: string, m: { name: string; providerName: string; sharedFromGroup?: string }): boolean {
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+  if (m.name.toLowerCase().includes(q)) return true;
+  if (m.providerName.toLowerCase().includes(q)) return true;
+  if (m.sharedFromGroup && m.sharedFromGroup.toLowerCase().includes(q)) return true;
+  // Normalized subsequence match: "gpt4" matches "gpt-4"
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const nq = normalize(query);
+  if (normalize(m.name).includes(nq)) return true;
+  if (m.providerName && normalize(m.providerName).includes(nq)) return true;
+  if (m.sharedFromGroup && normalize(m.sharedFromGroup).includes(nq)) return true;
+  return false;
+}
+
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all API keys. */
 const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; currentRole?: string; permissions?: Record<string, boolean> } = {}) => {
@@ -87,6 +103,17 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     enabled: !!groupId,
   });
 
+  // Standalone mode: fetch shared models for the create group when group is selected
+  const effectiveGroupId = newKeyGroupId || selectedKey?.group?.id;
+  const { data: standaloneShares } = useQuery({
+    queryKey: ['model-shares', effectiveGroupId],
+    queryFn: async () => {
+      const res = await client.get(`/api/groups/${effectiveGroupId}/model-shares`);
+      return res.data as { shares: any[] };
+    },
+    enabled: !groupId && !!effectiveGroupId,
+  });
+
   const { data: modelsData, isLoading: isModelsLoading } = useQuery({
     queryKey: ['apiKeyModels', modelsKeyId],
     queryFn: async () => {
@@ -101,6 +128,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     name: string;
     providerName: string;
     sharedFromGroup?: string;
+    groupId?: number;
   }
 
   // Build available model list from providers + shared models (embedded mode)
@@ -115,16 +143,17 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
           for (const m of p.models) {
             if (!seen.has(m.name)) {
               seen.add(m.name);
-              result.push({ name: m.name, providerName: p.name });
+              result.push({ name: m.name, providerName: p.name, groupId: p.group_id });
             }
           }
         }
       }
     }
 
-    // Shared models from other groups
-    if (sharesData?.shares) {
-      for (const share of sharesData.shares) {
+    // Shared models from other groups (embedded mode)
+    const allShares = sharesData?.shares || standaloneShares?.shares;
+    if (allShares) {
+      for (const share of allShares) {
         if (!seen.has(share.model_name)) {
           seen.add(share.model_name);
           result.push({
@@ -137,7 +166,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     }
 
     return result.sort((a, b) => a.name.localeCompare(b.name));
-  }, [providers, sharesData]);
+  }, [providers, sharesData, standaloneShares]);
 
   const createMutation = useMutation({
     mutationFn: (data: any) => {
@@ -284,6 +313,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     searchInput,
     onSearchChange,
     disabled = false,
+    groupFilter,
   }: {
     selected: string[];
     onAdd: (name: string) => void;
@@ -291,8 +321,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     searchInput: string;
     onSearchChange: (v: string) => void;
     disabled?: boolean;
+    groupFilter?: number;
   }) => {
-    const availableModels = allModels.length > 0 ? allModels : (providers ? (() => {
+    let availableModels = allModels.length > 0 ? allModels : (providers ? (() => {
       // Fallback: build from providers only when allModels is empty (standalone mode)
       const seen = new Set<string>();
       const result: ModelOption[] = [];
@@ -311,13 +342,15 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
       return result.sort((a, b) => a.name.localeCompare(b.name));
     })() : []);
 
-    const searchLower = searchInput.toLowerCase();
+    // In standalone mode, filter by the key's group when groupFilter is provided
+    if (groupFilter && !groupId) {
+      availableModels = availableModels.filter(
+        m => m.groupId === groupFilter || m.sharedFromGroup != null
+      );
+    }
+
     const filtered = availableModels.filter(
-      m => !selected.includes(m.name) && (
-        m.name.toLowerCase().includes(searchLower) ||
-        m.providerName.toLowerCase().includes(searchLower) ||
-        (m.sharedFromGroup && m.sharedFromGroup.toLowerCase().includes(searchLower))
-      )
+      m => !selected.includes(m.name) && fuzzyMatchOption(searchInput, m)
     );
 
     return (
@@ -606,6 +639,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   searchInput={modelSearchInput}
                   onSearchChange={setModelSearchInput}
                   disabled={!canEditModels}
+                  groupFilter={newKeyGroupId}
                 />
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
@@ -711,6 +745,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   searchInput={editModelSearchInput}
                   onSearchChange={setEditModelSearchInput}
                   disabled={!canEditModels}
+                  groupFilter={selectedKey?.group?.id}
                 />
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>

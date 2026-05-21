@@ -16,6 +16,24 @@ import BudgetBars from './ApiKeyDetail/BudgetBars';
 import BudgetEditModal from './ApiKeyDetail/BudgetEditModal';
 import CompressionSettingsModal from './ApiKeyDetail/CompressionSettingsModal';
 import { fmtNum, fmtCost, fmtDate } from './ApiKeyDetail/utils';
+import { Search } from 'lucide-react';
+
+/** Fuzzy match: search each token against model name / alias / provider */
+function fuzzyMatchModel(query: string, model: { name: string; alias?: string; provider_name?: string }): boolean {
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+  // Direct substring match (case-insensitive)
+  if (model.name.toLowerCase().includes(q)) return true;
+  if (model.alias && model.alias.toLowerCase().includes(q)) return true;
+  if (model.provider_name && model.provider_name.toLowerCase().includes(q)) return true;
+  // Normalized subsequence match: "gpt4" → "gpt4" vs "gpt-4" → "gpt4"
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const nq = normalize(query);
+  const nname = normalize(model.name);
+  if (nname.includes(nq)) return true;
+  if (model.alias && normalize(model.alias).includes(nq)) return true;
+  return false;
+}
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
@@ -27,6 +45,7 @@ const ApiKeyDetail = () => {
   const [costDays, setCostDays] = useState(7);
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [showCompressModal, setShowCompressModal] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['apiKeyDetail', id],
@@ -502,15 +521,29 @@ const ApiKeyDetail = () => {
       {/* ── Available Models Tab ─────────────────────────────────────────── */}
       {activeTab === 'models' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="flex items-center space-x-2 mb-4">
-            <Shield className="w-5 h-5 text-blue-500" />
-            <h2 className="text-base font-bold text-slate-800">可用模型</h2>
-            <span className="text-xs text-slate-400 ml-2">
-              {data.allowed_models.length > 0 ? `限制 ${data.allowed_models.length} 个模型` : '不限制'}
-               · 共 {data.available_models.length} 个可用
-            </span>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center space-x-2">
+              <Shield className="w-5 h-5 text-blue-500" />
+              <h2 className="text-base font-bold text-slate-800">可用模型</h2>
+              <span className="text-xs text-slate-400 ml-2">
+                {data.allowed_models.length > 0 ? `限制 ${data.allowed_models.length} 个模型` : '不限制'}
+                 · 共 {data.available_models.length} 个可用
+              </span>
+            </div>
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                placeholder="搜索模型名称、别名、供应商..."
+                className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all w-64"
+              />
+            </div>
           </div>
-          {data.available_models.length > 0 ? (
+          {(() => {
+            const filtered = data.available_models.filter(m => fuzzyMatchModel(modelSearch, m));
+            return filtered.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -535,7 +568,7 @@ const ApiKeyDetail = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.available_models.map((m, idx) => (
+                  {filtered.map((m, idx) => (
                     <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
                       <td className="py-2.5 px-3 font-medium text-slate-800">{m.name}</td>
                       <td className="py-2.5 px-3 text-slate-500">{m.alias || '-'}</td>
@@ -566,8 +599,11 @@ const ApiKeyDetail = () => {
               </table>
             </div>
           ) : (
-            <div className="text-center py-8 text-slate-400 text-sm">暂无可用模型</div>
-          )}
+            <div className="text-center py-8 text-slate-400 text-sm">
+              {modelSearch ? '没有匹配的模型' : '暂无可用模型'}
+            </div>
+          );
+          })()}
         </div>
       )}
 
