@@ -142,6 +142,10 @@ def _run_stream_in_thread(app, gateway_service, chat_request, group_id, tracer, 
         except BaseException as e:
             q.put(('__error__', e))
         finally:
+            try:
+                db.session.remove()
+            except Exception:
+                pass
             _cv_app.reset(token)
 
     t = threading.Thread(target=_worker, daemon=True, name="stream-chat-worker")

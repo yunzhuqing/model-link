@@ -293,4 +293,13 @@ def _call_in_app_ctx(app, fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     finally:
+        # Remove the DB session before resetting the Flask app context.
+        # The teardown handler registered on the Quart app is async and will
+        # NOT be awaited in this sync helper — so db.session.remove() must
+        # be called explicitly. Without this, every non-streaming request
+        # leaks one connection from the QueuePool.
+        try:
+            db.session.remove()
+        except Exception:
+            pass
         _cv_app.reset(token)
