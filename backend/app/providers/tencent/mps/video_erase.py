@@ -17,7 +17,7 @@ api_key 字段应为 "SecretId:SecretKey" 格式。
 {
     "type": "video_erase",
     "template_id": "",
-    "model": "erase_subtitle_standard",
+    "model": "mps-erase-subtitle-standard",
     "erase_type": "subtitle",
     "erase_method": "auto|custom",
     "area": [
@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 import json
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
@@ -47,6 +48,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import Message, MessageRole, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.storage import get_storage_backend
 from app.utils import gen_id, json_loads
 
 # =============================================================================
@@ -70,6 +72,7 @@ _POLL_MAX_WAIT_S = 600  # MPS tasks can take longer than VOD
 # Models that are handled by the MPS video erase provider.
 _TENCENT_MPS_VIDEO_ERASE_MODELS = (
     "erase_",
+    "mps-erase-",
     "mps-smarterase",
 )
 
@@ -94,14 +97,22 @@ def _parse_erase_model(model: str) -> Dict[str, str]:
     Parse the erase model identifier into its components.
 
     Example:
-        "erase_subtitle_standard" → {"erase_type": "subtitle", "subtitle_model": "standard"}
+        "mps-erase-subtitle-standard" → {"erase_type": "subtitle", "subtitle_model": "standard"}
 
     Returns a dict with keys matching MPS API parameter names.
     """
     result: Dict[str, str] = {}
 
     key = model.lower().strip()
-    if key.startswith("erase_"):
+    # New format: mps-erase-<erase_type>-<subtitle_model>
+    if key.startswith("mps-erase-"):
+        rest = key[len("mps-erase-"):]
+        parts = rest.split("-", 1)
+        if len(parts) >= 1:
+            result["erase_type"] = parts[0]
+        if len(parts) >= 2:
+            result["subtitle_model"] = parts[1]
+    elif key.startswith("erase_"):
         parts = key.split("_")
         # Format: erase_<erase_type>_<model>
         if len(parts) >= 3:
@@ -335,18 +346,10 @@ def _describe_mps_task_detail(
     return resp
 
 
-def _build_cos_url(bucket: str, region: str, path: str) -> str:
-    """Build a COS object URL from bucket, region, and path."""
-    path = path.lstrip("/")
-    return f"https://{bucket}.cos.{region}.myqcloud.com/{path}"
-
-
 def _poll_mps_task(
     secret_id: str,
     secret_key: str,
     task_id: str,
-    output_bucket: str,
-    output_region: str,
     poll_timeout: Optional[int] = None,
     tracer: Any = None,
 ) -> List[Dict[str, Any]]:
@@ -376,58 +379,22 @@ def _poll_mps_task(
                     })
 
                 if status == "FINISH":
-                    # Extract output from WorkflowTask
                     workflow_task = resp.get("WorkflowTask", {})
-                    media_process_result = workflow_task.get("MediaProcessResultSet", [])
-
-                    if not media_process_result:
-                        # Try SmartEraseTask directly
-                        smart_erase = workflow_task.get("SmartEraseTask", {})
-                        output = smart_erase.get("Output", {})
-                        if output:
-                            media_process_result = [{"Output": output}]
-
                     video_items: List[Dict[str, Any]] = []
 
-                    for result_set in media_process_result:
-                        output = result_set.get("Output", {})
-                        path = output.get("Path", "")
-                        if path:
-                            url = _build_cos_url(output_bucket, output_region, path)
-                            if url:
-                                video_items.append({
-                                    "type": "video_erase_call",
-                                    "status": "completed",
-                                    "result": url,
-                                })
-
-                    # Fallback: check SmartEraseTask.Output directly
-                    if not video_items:
-                        smart_erase = resp.get("SmartEraseTask") or workflow_task.get("SmartEraseTask", {})
-                        if isinstance(smart_erase, dict):
-                            output = smart_erase.get("Output", {})
-                            path = output.get("Path", "")
-                            if path:
-                                url = _build_cos_url(output_bucket, output_region, path)
-                                if url:
-                                    video_items.append({
-                                        "type": "video_erase_call",
-                                        "status": "completed",
-                                        "result": url,
-                                    })
-
-                    # Fallback: check top-level Output
-                    if not video_items:
-                        output = resp.get("Output", {})
-                        path = output.get("Path", "")
-                        if path:
-                            url = _build_cos_url(output_bucket, output_region, path)
-                            if url:
-                                video_items.append({
-                                    "type": "video_erase_call",
-                                    "status": "completed",
-                                    "result": url,
-                                })
+                    # Parse SmartEraseTaskResult: WorkflowTask.SmartEraseTaskResult.Output.Path
+                    smart_erase_result = workflow_task.get("SmartEraseTaskResult", {})
+                    output = smart_erase_result.get("Output", {})
+                    path = output.get("Path", "")
+                    if path:
+                        cos_key = path.lstrip("/")
+                        storage = get_storage_backend()
+                        url = storage.url_for(cos_key)
+                        video_items.append({
+                            "type": "video_erase_call",
+                            "status": "completed",
+                            "result": url,
+                        })
 
                     if not video_items:
                         raise RuntimeError(
@@ -498,7 +465,7 @@ def execute_mps_video_erase(
 
     Args:
         api_key:      "SecretId:SecretKey" credential string
-        model:        Model identifier, e.g. "erase_subtitle_standard"
+        model:        Model identifier, e.g. "mps-erase-subtitle-standard"
         messages:     List of Message objects from the ChatRequest
         metadata:     ChatRequest.metadata dict (carries video_erase params)
         extra_config: Provider extra_config (COS bucket, region, etc.)
@@ -515,6 +482,7 @@ def execute_mps_video_erase(
         metadata.get("output_bucket")
         or extra.get("cos_bucket")
         or extra.get("output_bucket")
+        or os.environ.get("STORAGE_S3_BUCKET")
         or ""
     )
     output_region = str(
@@ -522,14 +490,21 @@ def execute_mps_video_erase(
         or extra.get("cos_region")
         or extra.get("output_region")
         or extra.get("region")
+        or os.environ.get("STORAGE_S3_REGION")
         or MPS_API_REGION
     )
     output_dir = str(
         metadata.get("output_dir")
         or extra.get("output_dir")
         or extra.get("cos_output_dir")
-        or "/"
+        or ""
     )
+    # Default to {storage.prefix}/{request_id}/
+    if not output_dir:
+        storage = get_storage_backend()
+        prefix = getattr(storage, 'prefix', 'background_responses')
+        request_id = metadata.get("request_id") or gen_id("vid")
+        output_dir = f"{prefix}/{request_id}/"
     if not output_bucket:
         raise RuntimeError(
             "MPS video erase: COS bucket must be configured in extra_config.cos_bucket"
@@ -603,7 +578,6 @@ def execute_mps_video_erase(
 
         video_items = _poll_mps_task(
             secret_id, secret_key, task_id,
-            output_bucket, output_region,
             poll_timeout=metadata.get("timeout"),
             tracer=_child_span,
         )

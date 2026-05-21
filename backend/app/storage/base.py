@@ -90,6 +90,23 @@ class StorageBackend(ABC):
             "Configure a storage backend that supports binary writes."
         )
 
+    def url_for(self, key: str) -> str:
+        """
+        Generate an accessible URL for an existing object at *key*.
+
+        Args:
+            key: The storage key / object name.
+
+        Returns:
+            A URL string that can be used to access the stored object.
+
+        Raises:
+            NotImplementedError: If the backend does not support URL generation.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support url_for(). "
+        )
+
     def read_binary(self, key_or_url: str) -> Optional[bytes]:
         """
         Retrieve binary data stored via write_binary().

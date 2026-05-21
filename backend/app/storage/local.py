@@ -51,6 +51,16 @@ class LocalStorageBackend(StorageBackend):
         except (FileNotFoundError, OSError):
             return None
 
+    def url_for(self, key: str, expires_in: int = 7 * 24 * 3600) -> str:
+        """Return a local URL path for *key* (filesystem path or short key)."""
+        if key.startswith(self.base_dir):
+            rel = key[len(self.base_dir):]
+        else:
+            rel = key
+        if not rel.startswith("/"):
+            rel = f"/{rel}"
+        return f"/v1{rel}"
+
     def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         """
         Write binary *data* to *key* on the local filesystem.

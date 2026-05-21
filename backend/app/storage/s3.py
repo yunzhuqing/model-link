@@ -114,6 +114,32 @@ class S3StorageBackend(StorageBackend):
             # so callers don't crash — the gateway will surface "not found".
             return None
 
+    def url_for(self, key: str, expires_in: int = 7 * 24 * 3600) -> str:
+        """
+        Generate an accessible URL for an existing S3 object at *key*.
+
+        If ``STORAGE_S3_PUBLIC_BASE_URL`` is set, returns a plain public URL.
+        Otherwise returns a presigned URL valid for *expires_in* seconds.
+
+        Args:
+            key:        S3 object key.
+            expires_in: Presigned URL validity in seconds (default 7 days).
+
+        Returns:
+            A URL string that can be used to download the object.
+        """
+        import os as _os
+        public_base = _os.getenv("STORAGE_S3_PUBLIC_BASE_URL", "").rstrip("/")
+        if public_base:
+            return f"{public_base}/{key}"
+
+        client = self._get_client()
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
+
     def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         """
         Upload binary *data* to S3 under ``{prefix}/files/{key}`` and return

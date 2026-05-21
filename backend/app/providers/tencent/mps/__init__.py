@@ -1,3 +1,6 @@
-from .base import MPSProvider
+"""
+腾讯云 MPS 供应商模块 (MPS Provider Module)
 
-__all__ = ["MPSProvider"]
+子模块：
+- video_erase: MPS 智能擦除实现
+"""
