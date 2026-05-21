@@ -540,7 +540,11 @@ async def create_api_key(current_user):
     user_role = _get_role(group_id, current_user.id)
     if user_role != 'root' and not check_permission(user_role, 'apikey.create'):
         return jsonify({'detail': 'Creating API keys is disabled for your role'}), 403
-    
+
+    # Permission: non-root users need apikey.edit_models to restrict allowed_models
+    if data.get('allowed_models') and user_role != 'root' and not check_permission(user_role, 'apikey.edit_models'):
+        return jsonify({'detail': 'You do not have permission to restrict allowed models'}), 403
+
     # Convert empty string to None for expires_at (empty string is not valid for timestamp)
     expires_at = data.get('expires_at')
     if expires_at == '':
@@ -608,6 +612,8 @@ async def update_api_key(current_user, api_key_id):
             return jsonify({'detail': 'You do not have permission to toggle unlimited budget'}), 403
         if 'budget' in data and not check_permission(user_role, 'apikey.add_budget'):
             return jsonify({'detail': 'You do not have permission to add budget'}), 403
+        if 'allowed_models' in data and not check_permission(user_role, 'apikey.edit_models'):
+            return jsonify({'detail': 'You do not have permission to edit allowed models'}), 403
 
     if 'name' in data:
         api_key.name = data['name']

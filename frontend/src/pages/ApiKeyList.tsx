@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, groupsApi } from '../api/client';
@@ -77,6 +77,16 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     },
   });
 
+  // Fetch shared models from other groups (embedded mode only)
+  const { data: sharesData } = useQuery({
+    queryKey: ['model-shares', groupId],
+    queryFn: async () => {
+      const res = await client.get(`/api/groups/${groupId}/model-shares`);
+      return res.data as { shares: any[] };
+    },
+    enabled: !!groupId,
+  });
+
   const { data: modelsData, isLoading: isModelsLoading } = useQuery({
     queryKey: ['apiKeyModels', modelsKeyId],
     queryFn: async () => {
@@ -87,19 +97,47 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     enabled: !!modelsKeyId,
   });
 
-  // Get all available model names from providers
-  const getAvailableModelNames = (): string[] => {
-    if (!providers) return [];
-    const names = new Set<string>();
-    providers.forEach((p: any) => {
-      if (p.models) {
-        p.models.forEach((m: any) => {
-          names.add(m.name);
-        });
+  interface ModelOption {
+    name: string;
+    providerName: string;
+    sharedFromGroup?: string;
+  }
+
+  // Build available model list from providers + shared models (embedded mode)
+  const allModels = useMemo<ModelOption[]>(() => {
+    const seen = new Set<string>();
+    const result: ModelOption[] = [];
+
+    // Own provider models
+    if (providers) {
+      for (const p of providers) {
+        if (p.models) {
+          for (const m of p.models) {
+            if (!seen.has(m.name)) {
+              seen.add(m.name);
+              result.push({ name: m.name, providerName: p.name });
+            }
+          }
+        }
       }
-    });
-    return Array.from(names).sort();
-  };
+    }
+
+    // Shared models from other groups
+    if (sharesData?.shares) {
+      for (const share of sharesData.shares) {
+        if (!seen.has(share.model_name)) {
+          seen.add(share.model_name);
+          result.push({
+            name: share.model_name,
+            providerName: share.provider_name,
+            sharedFromGroup: share.source_group_name,
+          });
+        }
+      }
+    }
+
+    return result.sort((a, b) => a.name.localeCompare(b.name));
+  }, [providers, sharesData]);
 
   const createMutation = useMutation({
     mutationFn: (data: any) => {
@@ -245,40 +283,69 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     onRemove,
     searchInput,
     onSearchChange,
+    disabled = false,
   }: {
     selected: string[];
     onAdd: (name: string) => void;
     onRemove: (name: string) => void;
     searchInput: string;
     onSearchChange: (v: string) => void;
+    disabled?: boolean;
   }) => {
-    const availableModels = getAvailableModelNames();
+    const availableModels = allModels.length > 0 ? allModels : (providers ? (() => {
+      // Fallback: build from providers only when allModels is empty (standalone mode)
+      const seen = new Set<string>();
+      const result: ModelOption[] = [];
+      if (providers) {
+        for (const p of providers) {
+          if (p.models) {
+            for (const m of p.models) {
+              if (!seen.has(m.name)) {
+                seen.add(m.name);
+                result.push({ name: m.name, providerName: p.name });
+              }
+            }
+          }
+        }
+      }
+      return result.sort((a, b) => a.name.localeCompare(b.name));
+    })() : []);
+
+    const searchLower = searchInput.toLowerCase();
     const filtered = availableModels.filter(
-      m => !selected.includes(m) && m.toLowerCase().includes(searchInput.toLowerCase())
+      m => !selected.includes(m.name) && (
+        m.name.toLowerCase().includes(searchLower) ||
+        m.providerName.toLowerCase().includes(searchLower) ||
+        (m.sharedFromGroup && m.sharedFromGroup.toLowerCase().includes(searchLower))
+      )
     );
 
     return (
-      <div>
+      <div className={disabled ? 'opacity-50 pointer-events-none' : ''}>
         <label className="block text-sm font-medium text-slate-700 mb-2">
           可用模型限制（留空表示不限制）
         </label>
         {/* Selected tags */}
         {selected.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {selected.map(name => (
-              <span
-                key={name}
-                className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-medium"
-              >
-                {name}
-                <button
-                  onClick={() => onRemove(name)}
-                  className="text-blue-400 hover:text-blue-600 ml-0.5"
+            {selected.map(name => {
+              const opt = availableModels.find(m => m.name === name);
+              return (
+                <span
+                  key={name}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-medium"
+                  title={opt ? `${opt.providerName}${opt.sharedFromGroup ? ` · 共享自 ${opt.sharedFromGroup}` : ''}` : name}
                 >
-                  <X className="w-3 h-3" />
-                </button>
-              </span>
-            ))}
+                  {name}
+                  <button
+                    onClick={() => onRemove(name)}
+                    className="text-blue-400 hover:text-blue-600 ml-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
         {/* Search input */}
@@ -291,9 +358,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
             onKeyDown={(e) => {
               if (e.key === 'Enter' && searchInput.trim()) {
                 e.preventDefault();
-                const exactMatch = filtered.find(m => m.toLowerCase() === searchInput.toLowerCase());
+                const exactMatch = filtered.find(m => m.name.toLowerCase() === searchInput.toLowerCase());
                 if (exactMatch) {
-                  onAdd(exactMatch);
+                  onAdd(exactMatch.name);
                 } else if (searchInput.trim() && !selected.includes(searchInput.trim())) {
                   onAdd(searchInput.trim());
                 }
@@ -301,22 +368,30 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
               }
             }}
             className="w-full pl-9 p-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-            placeholder="搜索或输入模型名称..."
+            placeholder="搜索模型名称、供应商或共享来源..."
           />
         </div>
         {/* Dropdown suggestions */}
         {searchInput && filtered.length > 0 && (
-          <div className="mt-1 max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg z-10 relative">
-            {filtered.slice(0, 20).map(name => (
+          <div className="mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg z-10 relative">
+            {filtered.slice(0, 20).map(m => (
               <button
-                key={name}
+                key={m.name}
                 onClick={() => {
-                  onAdd(name);
+                  onAdd(m.name);
                   onSearchChange('');
                 }}
-                className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors first:rounded-t-xl last:rounded-b-xl"
+                className="w-full text-left px-3 py-2 hover:bg-blue-50 hover:text-blue-700 transition-colors first:rounded-t-xl last:rounded-b-xl"
               >
-                {name}
+                <div className="text-sm font-medium text-slate-800">{m.name}</div>
+                <div className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
+                  <span>{m.providerName}</span>
+                  {m.sharedFromGroup && (
+                    <span className="px-1 py-0.5 bg-amber-50 text-amber-600 rounded text-[10px] font-medium">
+                      共享自 {m.sharedFromGroup}
+                    </span>
+                  )}
+                </div>
               </button>
             ))}
           </div>
@@ -325,6 +400,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
           <p className="text-xs text-slate-400 mt-1.5">
             已选择 {selected.length} 个模型
           </p>
+        )}
+        {disabled && (
+          <p className="text-xs text-amber-500 mt-1">您没有编辑可用模型的权限</p>
         )}
       </div>
     );
@@ -346,6 +424,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     const canCopyOthers = permissions ? permissions['apikey.copy_others'] === true : !isMember;
     const canEditOwn = permissions ? permissions['apikey.edit_own'] === true : true;
     const canManage = permissions ? permissions['apikey.manage'] === true : !isMember;
+    const canEditModels = permissions ? permissions['apikey.edit_models'] === true : !isMember;
 
     return (
       <>
@@ -526,6 +605,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   onRemove={(name) => setNewKeyAllowedModels(prev => prev.filter(n => n !== name))}
                   searchInput={modelSearchInput}
                   onSearchChange={setModelSearchInput}
+                  disabled={!canEditModels}
                 />
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
@@ -630,6 +710,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   onRemove={(name) => setEditAllowedModels(prev => prev.filter(n => n !== name))}
                   searchInput={editModelSearchInput}
                   onSearchChange={setEditModelSearchInput}
+                  disabled={!canEditModels}
                 />
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
@@ -667,17 +748,20 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 </button>
                 <button
                   onClick={() => {
+                    const editData: any = {
+                      name: editKeyName,
+                      description: editKeyDescription || undefined,
+                      expires_at: editKeyExpires || undefined,
+                      tags: editKeyTags.length > 0 ? editKeyTags : undefined,
+                      rpm: editKeyRpm ? Number(editKeyRpm) : null,
+                      tpm: editKeyTpm ? Number(editKeyTpm) : null,
+                    };
+                    if (canEditModels) {
+                      editData.allowed_models = editAllowedModels;
+                    }
                     updateMutation.mutate({
                       id: selectedKey.id,
-                      data: {
-                        name: editKeyName,
-                        description: editKeyDescription || undefined,
-                        expires_at: editKeyExpires || undefined,
-                        allowed_models: editAllowedModels,
-                        tags: editKeyTags.length > 0 ? editKeyTags : undefined,
-                        rpm: editKeyRpm ? Number(editKeyRpm) : null,
-                        tpm: editKeyTpm ? Number(editKeyTpm) : null,
-                      },
+                      data: editData,
                     });
                   }}
                   disabled={updateMutation.isPending}

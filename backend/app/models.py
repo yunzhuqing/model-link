@@ -905,6 +905,12 @@ DEFAULT_PERMISSIONS = [
         "description": "为 API Key 追加预算金额",
         "allowed_roles": ["root"],
     },
+    {
+        "key": "apikey.edit_models",
+        "label": "编辑 API Key 可用模型",
+        "description": "创建或编辑 API Key 时限制可用模型列表",
+        "allowed_roles": ["root", "admin"],
+    },
 ]
 
 
