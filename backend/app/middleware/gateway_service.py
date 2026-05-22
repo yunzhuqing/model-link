@@ -395,6 +395,18 @@ class GatewayService:
         if not support_online_video:
             self._convert_video_urls_to_base64(request)
 
+        # 2.8. Eagerly extract provider attributes before releasing the DB session.
+        #      The LLM call may take 10-60+ seconds — holding a DB connection
+        #      for that duration wastes pool capacity and causes QueuePool timeouts.
+        _provider_id = resolved.db_provider.id
+        _provider_name = resolved.db_provider.name
+
+        # 2.9. Release DB session before the long-running LLM call.
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+
         # 3. 调用供应商 API
         resolved.provider_instance.tracer = tracer
         try:
@@ -412,20 +424,20 @@ class GatewayService:
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                     provider_id=resolved.db_provider.id,
-                                     provider_name=resolved.db_provider.name)
+                                     provider_id=_provider_id,
+                                     provider_name=_provider_name)
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
             raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=_provider_id,
+                                provider_name=_provider_name)
         except httpx.HTTPError as e:
             raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=_provider_id,
+                                provider_name=_provider_name)
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=_provider_id,
+                                provider_name=_provider_name)
 
     def stream_chat(
         self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
