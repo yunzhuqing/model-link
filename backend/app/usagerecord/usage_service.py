@@ -5,8 +5,8 @@ This module provides two public functions:
   - record_usage()        – for completed non-streaming requests
   - record_stream_usage() – for completed streaming requests
 
-Both are fire-and-forget: they spawn a daemon thread so the gateway response
-is never delayed by the DB write.
+Both are fire-and-forget: they spawn a background asyncio task so the
+gateway response is never delayed by the DB write.
 
 Tiered pricing
 --------------
@@ -35,8 +35,8 @@ exchange_rate_service (refreshed daily from frankfurter.app).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
 from typing import Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -48,9 +48,8 @@ logger = logging.getLogger("usage")
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def record_usage(
+async def record_usage(
     *,
-    app,
     response: "ChatResponse",
     db_model: "DbModel",
     db_provider: "Provider",
@@ -63,9 +62,9 @@ def record_usage(
     Persist one UsageRecord row for a completed (non-streaming) request.
 
     All data needed from SQLAlchemy ORM objects is extracted eagerly here
-    (in the request thread, while the session is still alive) and passed as
-    plain Python values to the background thread.  This avoids cross-thread
-    lazy-loading on a closed/detached session.
+    (in the request handler, while the session is still alive) and passed as
+    plain Python values to a background asyncio task.  This avoids lazy-loading
+    on a closed/detached session.
     """
     # ── Eagerly extract all primitive values from ORM objects ─────────────────
     # Prefer the explicit user; fall back to the user associated with the API key.
@@ -123,41 +122,34 @@ def record_usage(
 
     exchange_rate = _get_exchange_rate_for_currency(currency)
 
-    thread = threading.Thread(
-        target=_persist_usage,
-        kwargs=dict(
-            app=app,
-            response=response,
-            user_name=user_name,
-            api_key_raw=api_key_raw,
-            api_key_name=api_key_name,
-            api_key_group_id=api_key_group_id,
-            api_key_group_name=api_key_group_name,
-            model_name=model_name,
-            provider_id=provider_id,
-            provider_name=provider_name,
-            input_price_unit=input_price_unit,
-            output_price_unit=output_price_unit,
-            cache_creation_price_unit=cache_creation_price_unit,
-            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
-            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
-            cache_token_price_unit=cache_token_price_unit,
-            pricing_tiers=pricing_tiers,
-            output_pricing=output_pricing,
-            currency=currency,
-            duration_ms=duration_ms,
-            exchange_rate=exchange_rate,
-            discount=discount,
-            user_id=api_key_user_id,
-        ),
-        daemon=True,
-    )
-    thread.start()
+    asyncio.create_task(_persist_usage_async(
+        response=response,
+        user_name=user_name,
+        api_key_raw=api_key_raw,
+        api_key_name=api_key_name,
+        api_key_group_id=api_key_group_id,
+        api_key_group_name=api_key_group_name,
+        model_name=model_name,
+        provider_id=provider_id,
+        provider_name=provider_name,
+        input_price_unit=input_price_unit,
+        output_price_unit=output_price_unit,
+        cache_creation_price_unit=cache_creation_price_unit,
+        cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+        cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+        cache_token_price_unit=cache_token_price_unit,
+        pricing_tiers=pricing_tiers,
+        output_pricing=output_pricing,
+        currency=currency,
+        duration_ms=duration_ms,
+        exchange_rate=exchange_rate,
+        discount=discount,
+        user_id=api_key_user_id,
+    ))
 
 
-def record_stream_usage(
+async def record_stream_usage(
     *,
-    app,
     usage_info,
     # Identity (plain Python primitives — no ORM objects)
     user_name: Optional[str] = None,
@@ -189,43 +181,37 @@ def record_stream_usage(
     Persist one UsageRecord row for a completed streaming request.
 
     Called after the stream finishes with the accumulated UsageInfo from
-    the final usage chunk.  Runs in a daemon background thread.
+    the final usage chunk.  Runs as a fire-and-forget background asyncio task.
 
     All arguments must be plain Python primitives (no ORM objects), since
     the SQLAlchemy session is already closed by the time the stream ends.
     """
     exchange_rate = _get_exchange_rate_for_currency(currency)
 
-    thread = threading.Thread(
-        target=_persist_usage,
-        kwargs=dict(
-            app=app,
-            response=_UsageOnlyResponse(usage_info),
-            user_name=user_name,
-            api_key_raw=api_key_raw,
-            api_key_name=api_key_name,
-            api_key_group_id=api_key_group_id,
-            api_key_group_name=api_key_group_name,
-            model_name=model_name,
-            provider_id=provider_id,
-            provider_name=provider_name,
-            input_price_unit=input_price_unit,
-            output_price_unit=output_price_unit,
-            cache_creation_price_unit=cache_creation_price_unit,
-            cache_5m_creation_price_unit=cache_5m_creation_price_unit,
-            cache_1h_creation_price_unit=cache_1h_creation_price_unit,
-            cache_token_price_unit=cache_token_price_unit,
-            pricing_tiers=pricing_tiers,
-            output_pricing=output_pricing,
-            currency=currency,
-            duration_ms=duration_ms,
-            exchange_rate=exchange_rate,
-            discount=discount,
-            user_id=user_id,
-        ),
-        daemon=True,
-    )
-    thread.start()
+    asyncio.create_task(_persist_usage_async(
+        response=_UsageOnlyResponse(usage_info),
+        user_name=user_name,
+        api_key_raw=api_key_raw,
+        api_key_name=api_key_name,
+        api_key_group_id=api_key_group_id,
+        api_key_group_name=api_key_group_name,
+        model_name=model_name,
+        provider_id=provider_id,
+        provider_name=provider_name,
+        input_price_unit=input_price_unit,
+        output_price_unit=output_price_unit,
+        cache_creation_price_unit=cache_creation_price_unit,
+        cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+        cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+        cache_token_price_unit=cache_token_price_unit,
+        pricing_tiers=pricing_tiers,
+        output_pricing=output_pricing,
+        currency=currency,
+        duration_ms=duration_ms,
+        exchange_rate=exchange_rate,
+        discount=discount,
+        user_id=user_id,
+    ))
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -423,7 +409,7 @@ def _resolve_output_price(
     return base_price
 
 
-def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None:
+async def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None:
     """
     Deduct spending from budget records in the ml_api_key_budgets table.
 
@@ -432,10 +418,12 @@ def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None
     (total remaining) for backward compatibility.
 
     Args:
-        session: The active SQLAlchemy Session (from the NullPool engine).
+        session: The active async SQLAlchemy Session.
         api_key_raw: The raw API key string.
         amount_usd: Amount in USD to deduct.
     """
+    from sqlalchemy import select
+
     # Coerce to float in case amount_usd is a Decimal (e.g. from UsageRecord.actual_amount_usd)
     amount_usd = float(amount_usd)
     if amount_usd <= 0:
@@ -445,17 +433,18 @@ def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None
         from app.models import ApiKey as AK, ApiKeyBudget as AKB
 
         # Find the API key by raw key
-        ak = session.query(AK).filter(AK.key == api_key_raw).first()
+        result = await session.execute(select(AK).where(AK.key == api_key_raw))
+        ak = result.scalars().first()
         if not ak:
             return
 
         # Get budget records with remaining > 0, ordered by created_at (oldest first)
-        budgets = (
-            session.query(AKB)
-            .filter(AKB.api_key_id == ak.id, AKB.remaining > 0)
+        result = await session.execute(
+            select(AKB)
+            .where(AKB.api_key_id == ak.id, AKB.remaining > 0)
             .order_by(AKB.created_at.asc())
-            .all()
         )
+        budgets = result.scalars().all()
 
         if not budgets:
             return
@@ -480,21 +469,20 @@ def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None
     except Exception as exc:
         logger.warning(f"[budget] Failed to deduct budget records, rolling back: {exc}")
         try:
-            session.rollback()
+            await session.rollback()
         except Exception:
             pass
         raise
 
 
 class _UsageOnlyResponse:
-    """Minimal response-like object wrapping a UsageInfo for _persist_usage compatibility."""
+    """Minimal response-like object wrapping a UsageInfo for _persist_usage_async compatibility."""
     def __init__(self, usage_info):
         self.usage = usage_info
 
 
-def _persist_usage(
+async def _persist_usage_async(
     *,
-    app,
     response,
     user_name,
     api_key_raw,
@@ -520,9 +508,8 @@ def _persist_usage(
 ) -> None:
     """Worker that actually writes the UsageRecord to the database.
 
-    Runs in a short-lived daemon thread.  Uses a dedicated NullPool engine
-    (one physical connection per call, closed immediately after use) to avoid
-    occupying slots from the main QueuePool used by request handlers.
+    Runs as a fire-and-forget background asyncio task, using the main app's
+    async session factory for DB access.
     """
     try:
         from app.models import UsageRecord
@@ -552,19 +539,13 @@ def _persist_usage(
             user_id=user_id,
         )
 
-        # Use a NullPool engine so the connection is closed immediately after
-        # the INSERT, instead of being borrowed from the main QueuePool.
-        db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-        _persist_record_via_nullpool(db_url, record, api_key_raw=api_key_raw)
+        await _persist_record(record, api_key_raw=api_key_raw)
     except Exception as exc:
         logger.exception(f"[usage] Failed to persist usage record: {exc}")
 
 
-def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -> None:
-    """Insert a UsageRecord row using a disposable NullPool connection.
-
-    This avoids occupying the main QueuePool and prevents connection leaks
-    from short-lived background threads.
+async def _persist_record(record, api_key_raw: str = None) -> None:
+    """Insert a UsageRecord row using the main async session factory.
 
     After a successful DB write, if the API key has a budget set, the
     actual_amount_usd is deducted from the cache so that budget checks
@@ -574,56 +555,64 @@ def _persist_record_via_nullpool(db_url: str, record, api_key_raw: str = None) -
     counts) so that the API key detail page can show real-time data from
     cache without querying the database.
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-    from sqlalchemy.pool import NullPool
+    from app import get_db_session
 
-    engine = create_engine(db_url, poolclass=NullPool)
-    try:
-        with Session(engine) as session:
-            session.add(record)
-            # Don't commit yet — budget deduction must be in the same transaction
+    async with get_db_session() as session:
+        session.add(record)
+        # Don't commit yet — budget deduction must be in the same transaction
 
-            # ── Sync budget deduction + usage stats to cache ──────────────
-            if api_key_raw:
-                try:
-                    from app.cache import get_cache
-                    cache = get_cache()
+        # ── Async budget deduction + usage stats to cache ────────────
+        if api_key_raw:
+            try:
+                from app.cache import get_async_cache
+                cache = get_async_cache()
 
-                    actual_usd = float(getattr(record, 'actual_amount_usd', None) or 0)
-                    # Only deduct budget if the key is NOT unlimited
-                    cached_info = cache.get_api_key_info(api_key_raw)
-                    is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
-                    if actual_usd > 0 and not is_unlimited:
-                        # Deduct from DB budget records first (oldest first),
-                        # then sync the cache so cache and DB stay consistent.
-                        _deduct_budget_records(session, api_key_raw, actual_usd)
-                        from app.budget_manager import get_budget_manager
-                        get_budget_manager().deduct(api_key_raw, actual_usd)
+                # Capture all record values before commit — after commit,
+                # the session expires all ORM objects and accessing any
+                # attribute would trigger a lazy-load, which fails for
+                # background tasks without a greenlet context.
+                actual_usd = float(getattr(record, 'actual_amount_usd', None) or 0)
+                _input_tokens = int(getattr(record, 'input_tokens', 0) or 0)
+                _output_tokens = int(getattr(record, 'output_tokens', 0) or 0)
+                _reasoning_tokens = int(getattr(record, 'reasoning_tokens', 0) or 0)
+                _image_count = int(getattr(record, 'output_image_number', 0) or 0)
+                _video_count = int(getattr(record, 'output_video_number', 0) or 0)
+                _audio_seconds = float(getattr(record, 'output_audio_seconds', 0.0) or 0.0)
+                _web_search_requests = int(getattr(record, 'web_search_requests', 0) or 0)
+                _credits = float(getattr(record, 'credits', 0.0) or 0.0)
 
-                    # Commit both the usage record and budget deduction atomically
-                    session.commit()
+                # Only deduct budget if the key is NOT unlimited
+                cached_info = await cache.get_api_key_info(api_key_raw)
+                is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
+                if actual_usd > 0 and not is_unlimited:
+                    # Deduct from DB budget records first (oldest first),
+                    # then sync the cache so cache and DB stay consistent.
+                    await _deduct_budget_records(session, api_key_raw, actual_usd)
+                    from app.budget_manager import get_async_budget_manager
+                    await get_async_budget_manager().deduct(api_key_raw, actual_usd)
 
-                    # Increment real-time usage stats in cache
-                    cache.increment_usage_stats(
-                        api_key_raw,
-                        request_count=1,
-                        input_tokens=int(getattr(record, 'input_tokens', 0) or 0),
-                        output_tokens=int(getattr(record, 'output_tokens', 0) or 0),
-                        reasoning_tokens=int(getattr(record, 'reasoning_tokens', 0) or 0),
-                        cost_usd=actual_usd,
-                        image_count=int(getattr(record, 'output_image_number', 0) or 0),
-                        video_count=int(getattr(record, 'output_video_number', 0) or 0),
-                        audio_seconds=float(getattr(record, 'output_audio_seconds', 0.0) or 0.0),
-                        web_search_requests=int(getattr(record, 'web_search_requests', 0) or 0),
-                        credits=float(getattr(record, 'credits', 0.0) or 0.0),
-                    )
-                except Exception as _ce:
-                    logger.debug(f"[cache] Failed to update cache after usage record: {_ce}")
-            else:
-                session.commit()
-    finally:
-        engine.dispose()
+                # Commit both the usage record and budget deduction atomically
+                await session.commit()
+
+                # Increment real-time usage stats in cache (uses local vars,
+                # not record attributes — record is expired after commit)
+                await cache.increment_usage_stats(
+                    api_key_raw,
+                    request_count=1,
+                    input_tokens=_input_tokens,
+                    output_tokens=_output_tokens,
+                    reasoning_tokens=_reasoning_tokens,
+                    cost_usd=actual_usd,
+                    image_count=_image_count,
+                    video_count=_video_count,
+                    audio_seconds=_audio_seconds,
+                    web_search_requests=_web_search_requests,
+                    credits=_credits,
+                )
+            except Exception as _ce:
+                logger.error(f"[cache] Failed to update cache after usage record: {_ce}", exc_info=True)
+        else:
+            await session.commit()
 
 
 def _build_record(

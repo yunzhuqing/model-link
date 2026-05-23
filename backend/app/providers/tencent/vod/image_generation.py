@@ -23,7 +23,8 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
+import asyncio
 
 import httpx
 
@@ -527,8 +528,8 @@ def describe_aigc_api_tokens(
 # API 调用: CreateAigcImageTask
 # =============================================================================
 
-def _create_aigc_image_task(
-    client: httpx.Client,
+async def _create_aigc_image_task(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     sub_app_id: Optional[int],
@@ -623,7 +624,7 @@ def _create_aigc_image_task(
     _error: Optional[Exception] = None
 
     try:
-        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -660,8 +661,8 @@ def _create_aigc_image_task(
 # API 调用: DescribeTaskDetail (轮询)
 # =============================================================================
 
-def _describe_task_detail(
-    client: httpx.Client,
+async def _describe_task_detail(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -690,7 +691,7 @@ def _describe_task_detail(
     payload_str = json.dumps(body, ensure_ascii=False)
     headers = _build_auth_headers(secret_id, secret_key, "DescribeTaskDetail", payload_str)
 
-    response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+    response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
     response.raise_for_status()
     data = response.json()
 
@@ -728,8 +729,23 @@ def check_tencentvod_task_status(
         网络错误时返回空 dict {}
     """
     try:
+        body: Dict[str, Any] = {"TaskId": task_id}
+        if sub_app_id is not None:
+            body["SubAppId"] = sub_app_id
+        payload_str = json.dumps(body, ensure_ascii=False)
+        headers = _build_auth_headers(secret_id, secret_key, "DescribeTaskDetail", payload_str)
         with httpx.Client(timeout=30) as client:
-            return _describe_task_detail(client, secret_id, secret_key, task_id, sub_app_id)
+            response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        resp = data.get("Response", {})
+        if "Error" in resp:
+            err = resp["Error"]
+            raise RuntimeError(
+                f"TencentVOD DescribeTaskDetail error "
+                f"(code={err.get('Code')}): {err.get('Message')}"
+            )
+        return resp
     except Exception as exc:
         logger.warning(f"TencentVOD DescribeTaskDetail error for {task_id}: {exc}")
         return {}
@@ -739,7 +755,7 @@ def check_tencentvod_task_status(
 # API 调用: 任务轮询 (Image)
 # =============================================================================
 
-def _poll_task(
+async def _poll_task(
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -778,7 +794,7 @@ def _poll_task(
         while time.time() < deadline:
             resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
             if not resp:
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
                 continue
 
             # Extract the AigcImageTask sub-object
@@ -824,7 +840,7 @@ def _poll_task(
                     f"TencentVOD image task {task_id} failed with status={status}"
                 )
 
-            time.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"TencentVOD image task {task_id} timed out after {max_wait}s"
@@ -841,7 +857,7 @@ def _poll_task(
 # 主入口: 执行图像生成
 # =============================================================================
 
-def execute_tencentvod_image_generation(
+async def execute_tencentvod_image_generation(
     api_key: str,
     model: str,
     messages,
@@ -972,8 +988,8 @@ def execute_tencentvod_image_generation(
 
     try:
         # Submit task
-        with httpx.Client(timeout=60) as client:
-            task_id = _create_aigc_image_task(
+        async with httpx.AsyncClient(timeout=60) as client:
+            task_id = await _create_aigc_image_task(
                 client=client,
                 secret_id=secret_id,
                 secret_key=secret_key,
@@ -997,7 +1013,7 @@ def execute_tencentvod_image_generation(
             hook(task_id)
 
         # Poll for result
-        image_items = _poll_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+        image_items = await _poll_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
 
         if _child_span:
             _child_span.log_output({"task_id": task_id, "image_count": len(image_items), "status": "succeeded"})
@@ -1046,10 +1062,10 @@ def execute_tencentvod_image_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_image_generation(
+async def stream_image_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Execute TencentVOD image generation and yield StreamChunks.
 
@@ -1069,7 +1085,7 @@ def stream_image_generation(
         request: The chat request with image generation parameters
     """
     # Call the synchronous (polling) path to get the full result
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

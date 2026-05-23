@@ -22,7 +22,7 @@ https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/gemini
 - api_key: Google Cloud 服务账号 JSON 密钥内容（完整 JSON 字符串）
     如果为空，将尝试使用 Application Default Credentials (ADC)
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import uuid
@@ -368,7 +368,10 @@ class VertexAIProvider(BaseProvider):
         """获取 HTTP 客户端"""
         import httpx
         if self._client is None:
-            self._client = httpx.Client(timeout=self.DEFAULT_TIMEOUT)
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
+            )
         return self._client
 
     # ==================== URL 构建 ====================
@@ -1284,7 +1287,7 @@ class VertexAIProvider(BaseProvider):
 
     # ==================== 主接口 ====================
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """执行非流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -1323,8 +1326,8 @@ class VertexAIProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {}))
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     error_text = response.text
@@ -1382,7 +1385,7 @@ class VertexAIProvider(BaseProvider):
             logger.error(f"[VertexAI {publisher}] Unexpected error: {type(e).__name__}: {e}")
             raise RuntimeError(f"Vertex AI API error ({publisher}): {str(e)}")
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -1395,7 +1398,8 @@ class VertexAIProvider(BaseProvider):
             self.is_video_generation_model(request.model)
             or self._has_video_generation_tool(request)
         ):
-            yield from stream_vertexai_veo_generation(self.chat, request)
+            async for chunk in stream_vertexai_veo_generation(self.chat, request):
+                yield chunk
             return
 
         # ── Image generation via Vertex AI Gemini ─────────────────────────
@@ -1403,7 +1407,8 @@ class VertexAIProvider(BaseProvider):
             self.is_image_generation_model(request.model)
             or self._has_image_generation_tool(request)
         ):
-            yield from stream_vertexai_image_generation(self.chat, request)
+            async for chunk in stream_vertexai_image_generation(self.chat, request):
+                yield chunk
             return
 
         try:
@@ -1432,11 +1437,11 @@ class VertexAIProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data), \
+            async with self._trace_call(request.model, input_data=request_data), \
                  self.client.stream("POST", url, json=request_data, headers=headers, **({"timeout": req_timeout} if req_timeout else {})) as response:
                 if response.status_code >= 400:
                     error_text = ""
-                    for chunk in response.iter_bytes():
+                    async for chunk in response.aiter_bytes():
                         if chunk:
                             error_text += chunk.decode('utf-8')
                     try:
@@ -1445,7 +1450,7 @@ class VertexAIProvider(BaseProvider):
                     except json.JSONDecodeError:
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text}")
 
-                for line in response.iter_lines():
+                async for line in response.aiter_lines():
                     if not line:
                         continue
 

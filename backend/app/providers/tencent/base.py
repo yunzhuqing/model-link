@@ -14,7 +14,7 @@
   轮询，兼容 /v1/responses video_erase 工具）
 """
 import time
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.chat import ChatRequest, ChatResponse
@@ -177,7 +177,7 @@ class TencentProvider(BaseProvider):
 
     # ── Non-streaming ──────────────────────────────────────────
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
@@ -185,7 +185,7 @@ class TencentProvider(BaseProvider):
         route = self._dispatch_route(request)
 
         if route == "hunyuan3d":
-            return execute_hunyuan3d_generation(
+            return await execute_hunyuan3d_generation(
                 api_key=self._get_api_key(),
                 model=request.model,
                 messages=request.messages,
@@ -195,7 +195,7 @@ class TencentProvider(BaseProvider):
             )
 
         if route == "mps_video_erase":
-            return execute_mps_video_erase(
+            return await execute_mps_video_erase(
                 api_key=self._get_api_key(),
                 model=request.model,
                 messages=request.messages,
@@ -208,7 +208,7 @@ class TencentProvider(BaseProvider):
 
     # ── Streaming ──────────────────────────────────────────────
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
@@ -216,11 +216,13 @@ class TencentProvider(BaseProvider):
         route = self._dispatch_route(request)
 
         if route == "hunyuan3d":
-            yield from stream_3d_generation(self.chat, request)
+            async for chunk in stream_3d_generation(self.chat, request):
+                yield chunk
             return
 
         if route == "mps_video_erase":
-            yield from stream_video_erase(self.chat, request)
+            async for chunk in stream_video_erase(self.chat, request):
+                yield chunk
             return
 
         raise ValueError(f"TencentProvider: unknown route '{route}'")

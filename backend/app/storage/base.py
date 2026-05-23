@@ -129,3 +129,30 @@ class StorageBackend(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support read_binary(). "
         )
+
+
+class AsyncStorageBackend(ABC):
+    """Async abstract interface for storing and retrieving background response files."""
+
+    @abstractmethod
+    async def write(self, key: str, content: str) -> None:
+        """Persist *content* under *key* (async)."""
+
+    @abstractmethod
+    async def read(self, key: str) -> Optional[str]:
+        """Retrieve the content stored under *key* (async)."""
+
+    def make_key(self, response_id: str, suffix: str) -> str:
+        """Build a storage key (sync — pure computation)."""
+
+    async def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        """Persist binary *data* (async)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support write_binary().")
+
+    def url_for(self, key: str) -> str:
+        """Generate an accessible URL for *key* (sync — pure computation)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support url_for().")
+
+    async def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        """Retrieve binary data (async)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support read_binary().")

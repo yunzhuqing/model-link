@@ -56,8 +56,6 @@ from app.routes.gateway import (
     _check_allowed_models,
     _gateway_service,
     _log_error,
-    _run_stream_in_thread,
-    _call_in_app_ctx,
 )
 from app.routes.gateway_helpers import G_API_KEY_PROVIDER_ID
 
@@ -94,6 +92,9 @@ def _run_background_response(
     All DB operations are performed via background_response_dao (NullPool engine),
     so no long-lived DB connection is held during the LLM/video generation work.
 
+    Uses ``asyncio.run()`` internally to call the now-async GatewayService methods
+    with a temporary Quart app context and async DB session.
+
     Async-within-async handling
     ---------------------------
     The upstream provider itself may be an async Responses API service (e.g. an
@@ -107,7 +108,7 @@ def _run_background_response(
     ``ChatResponse.usage.extra['_upstream_status']``.
 
     Args:
-        app:         The Flask application instance (needed for app context).
+        app:         The Flask/Quart application instance.
         response_id: The BackgroundResponse.response_id to update when done.
         input_key:   Storage key for the JSON request payload.
         output_key:  Storage key for the JSON response output.
@@ -121,304 +122,296 @@ def _run_background_response(
     """
     import os
 
-    # Quart's app_context() is async-only; in this sync background thread
-    # we set Flask's _cv_app ContextVar directly so Flask-SQLAlchemy works.
-    from flask.globals import _cv_app
-    from flask.ctx import AppContext
-    _token = _cv_app.set(AppContext(app))
+    async def _async_work():
+        """Inner async function that runs within the thread's asyncio event loop."""
+        from app import get_db_session
+        from quart import g
 
-    # Propagate the originating request_id into the ContextVar so downstream
-    # helpers (logging filters, storage key namespacing, etc.) can read it
-    # even though Quart's `g` is unavailable in this thread.
-    _rid_token = None
-    if request_id:
-        try:
-            from app import request_id_var
-            _rid_token = request_id_var.set(request_id)
-        except Exception:
-            pass
-    try:
-        db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-        storage = get_storage_backend()
+        # Set up Quart's app context so g.db_session resolves and Flask-SQLAlchemy works.
+        async with app.app_context():
+            async with get_db_session() as session:
+                g.db_session = session
 
-        final_error: Optional[str] = None
-        formatted_output: Optional[str] = None
+                # Propagate the originating request_id into the ContextVar so downstream
+                # helpers (logging filters, storage key namespacing, etc.) can read it.
+                _rid_token = None
+                if request_id:
+                    try:
+                        from app import request_id_var
+                        _rid_token = request_id_var.set(request_id)
+                    except Exception:
+                        pass
 
-        try:
-            # Read request payload — no DB connection held during this
-            raw = storage.read(input_key)
-            if raw is None:
-                raise RuntimeError(f"Input not found at storage key: {input_key}")
-            data = json_loads(raw)
+                db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+                storage = get_storage_backend()
 
-            adapter = OpenAIResponsesAdapter()
-            chat_request = adapter.parse_request(data)
+                final_error: Optional[str] = None
+                formatted_output: Optional[str] = None
 
-            # Inject a hook so providers that create async tasks can persist
-            # the task_id immediately — before entering their poll loop.
-            # If the process crashes mid-poll, the resync service can still
-            # query the upstream provider using this task_id.
-            def _on_task_created(task_id: str) -> None:
                 try:
-                    _bg_dao.update_task_metadata(
-                        db_url=db_url,
-                        response_id=response_id,
-                        task_id=task_id,
-                    )
-                except Exception:
-                    pass  # Best-effort; resync will retry later
+                    # Read request payload — no DB connection held during this
+                    raw = storage.read(input_key)
+                    if raw is None:
+                        raise RuntimeError(f"Input not found at storage key: {input_key}")
+                    data = json_loads(raw)
 
-            def _on_model_resolved(resolved) -> None:
-                """Persist provider_id immediately after model resolution."""
-                try:
-                    _bg_dao.update_task_metadata(
-                        db_url=db_url,
-                        response_id=response_id,
-                        provider_id=resolved.db_provider.id if resolved.db_provider else None,
-                    )
-                except Exception:
-                    pass  # Best-effort
+                    adapter = OpenAIResponsesAdapter()
+                    chat_request = adapter.parse_request(data)
 
-            chat_request.metadata['_on_task_created'] = _on_task_created
-            chat_request.metadata['_on_model_resolved'] = _on_model_resolved
+                    # Inject a hook so providers that create async tasks can persist
+                    # the task_id immediately — before entering their poll loop.
+                    # If the process crashes mid-poll, the resync service can still
+                    # query the upstream provider using this task_id.
+                    def _on_task_created(task_id: str) -> None:
+                        try:
+                            _bg_dao.update_task_metadata(
+                                db_url=db_url,
+                                response_id=response_id,
+                                task_id=task_id,
+                            )
+                        except Exception:
+                            pass  # Best-effort; resync will retry later
 
-            # ── LLM / video generation call ────────────────────────────────
-            # chat() uses db.session for model resolution; the actual
-            # provider API call may be long-running.
-            if tracer:
-                tracer.start(model_name or data.get('model', ''), input_data=request_data or data, session_id=chat_request.session_id)
-                tracer.log_input(request_data or data)
-                tracer.set_metadata({
-                    "request_id": request_id,
-                    "group_id": group_id,
-                    "user": user_name,
-                    "model_name": model_name,
-                    "api_key_name": api_key_name,
-                })
-            _bg_start_time = time.monotonic()
-            try:
-                response, resolved = _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
-                if tracer:
-                    tracer.log_output(adapter.format_response(response))
-            except Exception:
-                if tracer:
-                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
-                    tracer.end(error=Exception("background generation error"))
-                raise
+                    def _on_model_resolved(resolved) -> None:
+                        """Persist provider_id immediately after model resolution."""
+                        try:
+                            _bg_dao.update_task_metadata(
+                                db_url=db_url,
+                                response_id=response_id,
+                                provider_id=resolved.db_provider.id if resolved.db_provider else None,
+                            )
+                        except Exception:
+                            pass  # Best-effort
 
-            # Persist task metadata immediately after chat() returns, so the resync
-            # service can query provider status even if this thread later crashes.
-            try:
-                _provider_task_id = None
-                if response.usage and response.usage.extra:
-                    _provider_task_id = response.usage.extra.get('_task_id')
-                _bg_dao.update_task_metadata(
-                    db_url=db_url,
-                    response_id=response_id,
-                    task_id=_provider_task_id,
-                    provider_id=resolved.db_provider.id if resolved.db_provider else None,
-                    session_id=chat_request.session_id,
-                    request_id=request_id,
-                )
-            except Exception as _meta_exc:
-                logger.warning(f"[background] Failed to update task metadata for {response_id!r}: {_meta_exc}")
+                    chat_request.metadata['_on_task_created'] = _on_task_created
+                    chat_request.metadata['_on_model_resolved'] = _on_model_resolved
 
-            # Eagerly extract all ORM data we need for usage recording,
-            # then release the DB session so the connection returns to the
-            # pool immediately — before any long-running polling begins.
-            _db_model = resolved.db_model
-            _db_provider = resolved.db_provider
-            _provider_instance = resolved.provider_instance
-            # Pre-extract primitive pricing fields from ORM objects
-            _pricing_snapshot = {
-                'provider_id': _db_provider.id if _db_provider else None,
-                'provider_name': _db_provider.name if _db_provider else None,
-                'input_price': float(getattr(_db_model, 'input_price', 0) or 0),
-                'output_price': float(getattr(_db_model, 'output_price', 0) or 0),
-                'cache_creation_price': float(getattr(_db_model, 'cache_creation_price', 0) or 0),
-                'cache_5m_creation_price': float(getattr(_db_model, 'cache_5m_creation_price', 0) or 0),
-                'cache_1h_creation_price': float(getattr(_db_model, 'cache_1h_creation_price', 0) or 0),
-                'cache_hit_price': float(getattr(_db_model, 'cache_hit_price', 0) or 0),
-                'pricing_tiers': getattr(_db_model, 'pricing_tiers', None),
-                'output_pricing': getattr(_db_model, 'output_pricing', None),
-                'currency': getattr(_db_model, 'currency', 'USD') or 'USD',
-                'discount': float(getattr(_db_model, 'discount', 1) or 1),
-            }
-            # Release the DB session — return the connection to the pool
-            try:
-                db.session.remove()
-            except Exception:
-                pass
+                    # ── LLM / video generation call ────────────────────────────────
+                    # GatewayService.chat() is now async; called via await.
+                    if tracer:
+                        tracer.start(model_name or data.get('model', ''), input_data=request_data or data, session_id=chat_request.session_id)
+                        tracer.log_input(request_data or data)
+                        tracer.set_metadata({
+                            "request_id": request_id,
+                            "group_id": group_id,
+                            "user": user_name,
+                            "model_name": model_name,
+                            "api_key_name": api_key_name,
+                        })
+                    _bg_start_time = time.monotonic()
+                    try:
+                        response, resolved = await _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
+                        if tracer:
+                            tracer.log_output(adapter.format_response(response))
+                    except Exception:
+                        if tracer:
+                            tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
+                            tracer.end(error=Exception("background generation error"))
+                        raise
 
-            # ── Check if upstream is itself async ─────────────────────────
-            # Some upstream Responses API providers (e.g. OpenAI-compatible
-            # services with background=true) may return status "queued" or
-            # "in_progress" immediately.  In that case we must poll
-            # GET /v1/responses/{id} until the upstream finishes.
-            upstream_status = response.usage.extra.get('_upstream_status', 'completed')
-            _PENDING_STATUSES = {'queued', 'in_progress'}
+                    # Persist task metadata immediately after chat() returns, so the resync
+                    # service can query provider status even if this thread later crashes.
+                    try:
+                        _provider_task_id = None
+                        if response.usage and response.usage.extra:
+                            _provider_task_id = response.usage.extra.get('_task_id')
+                        _bg_dao.update_task_metadata(
+                            db_url=db_url,
+                            response_id=response_id,
+                            task_id=_provider_task_id,
+                            provider_id=resolved.db_provider.id if resolved.db_provider else None,
+                            session_id=chat_request.session_id,
+                            request_id=request_id,
+                        )
+                    except Exception as _meta_exc:
+                        logger.warning(f"[background] Failed to update task metadata for {response_id!r}: {_meta_exc}")
 
-            if upstream_status in _PENDING_STATUSES:
-                upstream_response_id = response.id
-                upstream_model = response.model
+                    # Eagerly extract all ORM data we need for usage recording,
+                    # then release the DB session so the connection returns to the
+                    # pool immediately — before any long-running polling begins.
+                    _db_model = resolved.db_model
+                    _db_provider = resolved.db_provider
+                    _provider_instance = resolved.provider_instance
+                    # Pre-extract primitive pricing fields from ORM objects
+                    _pricing_snapshot = {
+                        'provider_id': _db_provider.id if _db_provider else None,
+                        'provider_name': _db_provider.name if _db_provider else None,
+                        'input_price': float(getattr(_db_model, 'input_price', 0) or 0),
+                        'output_price': float(getattr(_db_model, 'output_price', 0) or 0),
+                        'cache_creation_price': float(getattr(_db_model, 'cache_creation_price', 0) or 0),
+                        'cache_5m_creation_price': float(getattr(_db_model, 'cache_5m_creation_price', 0) or 0),
+                        'cache_1h_creation_price': float(getattr(_db_model, 'cache_1h_creation_price', 0) or 0),
+                        'cache_hit_price': float(getattr(_db_model, 'cache_hit_price', 0) or 0),
+                        'pricing_tiers': getattr(_db_model, 'pricing_tiers', None),
+                        'output_pricing': getattr(_db_model, 'output_pricing', None),
+                        'currency': getattr(_db_model, 'currency', 'USD') or 'USD',
+                        'discount': float(getattr(_db_model, 'discount', 1) or 1),
+                    }
+                    # Release the DB session — close it so the connection returns to the pool
+                    # before any long-running polling begins.
+                    await session.close()
 
-                # Store upstream response ID as task_id for resync
-                try:
-                    _bg_dao.update_task_metadata(
-                        db_url=db_url,
-                        response_id=response_id,
-                        task_id=upstream_response_id,
-                    )
-                except Exception as _meta_exc:
-                    logger.warning(f"[background] Failed to store upstream task_id for {response_id!r}: {_meta_exc}")
-
-                # Re-resolve the provider so we can call get_response() on it.
-                # At this point chat_request.model has already been mutated by
-                # GatewayService.chat() to the real (non-alias) model name, so
-                # resolve_model() will find it by name.
-                resolved = _gateway_service.resolve_model(chat_request.model, group_id, provider_id=provider_id)
-                provider_instance = resolved.provider_instance
-                # Update pricing snapshot with re-resolved model data
-                _pricing_snapshot['provider_id'] = resolved.db_provider.id if resolved.db_provider else None
-                _pricing_snapshot['provider_name'] = resolved.db_provider.name if resolved.db_provider else None
-                # Release the DB session again before the long-running polling loop
-                try:
-                    db.session.remove()
-                except Exception:
-                    pass
-
-                if not hasattr(provider_instance, 'get_response'):
-                    raise RuntimeError(
-                        f"Upstream returned async status {upstream_status!r} but provider "
-                        f"'{type(provider_instance).__name__}' does not support polling "
-                        f"(missing get_response method)."
-                    )
-
-                # Poll with exponential back-off, capped at 30 s, up to 2 h total.
-                _POLL_INTERVALS = [2, 4, 8, 16, 30]  # seconds between polls
-                _MAX_POLL_SECONDS = 7200              # 2 hours hard limit
-                elapsed = 0
-                poll_idx = 0
-
-                while upstream_status in _PENDING_STATUSES and elapsed < _MAX_POLL_SECONDS:
-                    wait = _POLL_INTERVALS[min(poll_idx, len(_POLL_INTERVALS) - 1)]
-                    logger.info(
-                        f"[background] Upstream response {upstream_response_id!r} is "
-                        f"{upstream_status!r}; waiting {wait}s before next poll "
-                        f"(elapsed={elapsed}s, our_response_id={response_id!r})"
-                    )
-                    time.sleep(wait)
-                    elapsed += wait
-                    poll_idx += 1
-
-                    response = provider_instance.get_response(upstream_response_id, upstream_model)
+                    # ── Check if upstream is itself async ─────────────────────────
+                    # Some upstream Responses API providers (e.g. OpenAI-compatible
+                    # services with background=true) may return status "queued" or
+                    # "in_progress" immediately.  In that case we must poll
+                    # GET /v1/responses/{id} until the upstream finishes.
                     upstream_status = response.usage.extra.get('_upstream_status', 'completed')
+                    _PENDING_STATUSES = {'queued', 'in_progress'}
 
-                if upstream_status in _PENDING_STATUSES:
-                    raise RuntimeError(
-                        f"Upstream response {upstream_response_id!r} did not complete "
-                        f"within {_MAX_POLL_SECONDS}s (last status: {upstream_status!r})"
+                    if upstream_status in _PENDING_STATUSES:
+                        upstream_response_id = response.id
+                        upstream_model = response.model
+
+                        # Store upstream response ID as task_id for resync
+                        try:
+                            _bg_dao.update_task_metadata(
+                                db_url=db_url,
+                                response_id=response_id,
+                                task_id=upstream_response_id,
+                            )
+                        except Exception as _meta_exc:
+                            logger.warning(f"[background] Failed to store upstream task_id for {response_id!r}: {_meta_exc}")
+
+                        # Re-resolve the provider so we can call get_response() on it.
+                        # Open a fresh async DB session for the re-resolution.
+                        async with get_db_session() as _resolve_session:
+                            g.db_session = _resolve_session
+                            resolved = await _gateway_service.resolve_model(chat_request.model, group_id, provider_id=provider_id)
+                            provider_instance = resolved.provider_instance
+                            # Update pricing snapshot with re-resolved model data
+                            _pricing_snapshot['provider_id'] = resolved.db_provider.id if resolved.db_provider else None
+                            _pricing_snapshot['provider_name'] = resolved.db_provider.name if resolved.db_provider else None
+                            # Release the DB session again before the long-running polling loop
+                            await _resolve_session.close()
+
+                        if not hasattr(provider_instance, 'get_response'):
+                            raise RuntimeError(
+                                f"Upstream returned async status {upstream_status!r} but provider "
+                                f"'{type(provider_instance).__name__}' does not support polling "
+                                f"(missing get_response method)."
+                            )
+
+                        # Poll with exponential back-off, capped at 30 s, up to 2 h total.
+                        _POLL_INTERVALS = [2, 4, 8, 16, 30]  # seconds between polls
+                        _MAX_POLL_SECONDS = 7200              # 2 hours hard limit
+                        elapsed = 0
+                        poll_idx = 0
+
+                        while upstream_status in _PENDING_STATUSES and elapsed < _MAX_POLL_SECONDS:
+                            wait = _POLL_INTERVALS[min(poll_idx, len(_POLL_INTERVALS) - 1)]
+                            logger.info(
+                                f"[background] Upstream response {upstream_response_id!r} is "
+                                f"{upstream_status!r}; waiting {wait}s before next poll "
+                                f"(elapsed={elapsed}s, our_response_id={response_id!r})"
+                            )
+                            time.sleep(wait)
+                            elapsed += wait
+                            poll_idx += 1
+
+                            response = provider_instance.get_response(upstream_response_id, upstream_model)
+                            upstream_status = response.usage.extra.get('_upstream_status', 'completed')
+
+                        if upstream_status in _PENDING_STATUSES:
+                            raise RuntimeError(
+                                f"Upstream response {upstream_response_id!r} did not complete "
+                                f"within {_MAX_POLL_SECONDS}s (last status: {upstream_status!r})"
+                            )
+
+                        if upstream_status == 'failed':
+                            # Surface the real upstream error if available
+                            upstream_error = response.usage.extra.get('_upstream_error')
+                            if upstream_error:
+                                raise RuntimeError(json.dumps(upstream_error, ensure_ascii=False))
+                            raise RuntimeError(
+                                f"Upstream response {upstream_response_id!r} failed "
+                                f"(upstream status: {upstream_status!r})"
+                            )
+
+                    formatted = adapter.format_response(
+                        response,
+                        parallel_tool_calls=chat_request.parallel_tool_calls,
+                        metadata=chat_request.metadata.get('_user_metadata'),
                     )
+                    # Save any data URIs from image generation to storage,
+                    # replacing them with storage URLs in the stored output.
+                    _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
+                    _strip_internal_fields(formatted.get('output', []))
+                    formatted_output = json.dumps(formatted, ensure_ascii=False)
 
-                if upstream_status == 'failed':
-                    # Surface the real upstream error if available
-                    upstream_error = response.usage.extra.get('_upstream_error')
-                    if upstream_error:
-                        raise RuntimeError(json.dumps(upstream_error, ensure_ascii=False))
-                    raise RuntimeError(
-                        f"Upstream response {upstream_response_id!r} failed "
-                        f"(upstream status: {upstream_status!r})"
-                    )
+                    # Record usage for background response.
+                    # All pricing info comes from _pricing_snapshot (plain primitives
+                    # eagerly extracted before DB session close).
+                    _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
+                    try:
+                        from app.usagerecord.usage_service import record_stream_usage
+                        await record_stream_usage(
+                            app=app,
+                            usage_info=response.usage,
+                            user_name=user_name,
+                            user_id=user_id,
+                            api_key_raw=api_key_raw,
+                            api_key_name=api_key_name,
+                            api_key_group_id=api_key_group_id,
+                            api_key_group_name=api_key_group_name,
+                            model_name=data.get('model', ''),
+                            provider_id=_pricing_snapshot['provider_id'],
+                            provider_name=_pricing_snapshot['provider_name'],
+                            input_price_unit=_pricing_snapshot['input_price'],
+                            output_price_unit=_pricing_snapshot['output_price'],
+                            cache_creation_price_unit=_pricing_snapshot['cache_creation_price'],
+                            cache_5m_creation_price_unit=_pricing_snapshot['cache_5m_creation_price'],
+                            cache_1h_creation_price_unit=_pricing_snapshot['cache_1h_creation_price'],
+                            cache_token_price_unit=_pricing_snapshot['cache_hit_price'],
+                            pricing_tiers=_pricing_snapshot['pricing_tiers'],
+                            output_pricing=_pricing_snapshot['output_pricing'],
+                            currency=_pricing_snapshot['currency'],
+                            discount=_pricing_snapshot['discount'],
+                            duration_ms=_bg_duration_ms,
+                        )
+                    except Exception as _ue:
+                        logger.warning(f"[usage] Failed to record usage for background response {response_id!r}: {_ue}")
 
-            formatted = adapter.format_response(
-                response,
-                parallel_tool_calls=chat_request.parallel_tool_calls,
-                metadata=chat_request.metadata.get('_user_metadata'),
-            )
-            # Save any data URIs from image generation to storage,
-            # replacing them with storage URLs in the stored output.
-            _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
-            _strip_internal_fields(formatted.get('output', []))
-            formatted_output = json.dumps(formatted, ensure_ascii=False)
+                    if tracer:
+                        tracer.set_metadata({
+                            "duration_ms": _bg_duration_ms,
+                            "response_id": response.id if response else None,
+                        })
+                        tracer.end()
 
-            # Record usage for background response.
-            # All pricing info comes from _pricing_snapshot (plain primitives
-            # eagerly extracted before db.session.remove()).
-            _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
-            try:
-                from app.usagerecord.usage_service import record_stream_usage
-                record_stream_usage(
-                    app=app,
-                    usage_info=response.usage,
-                    user_name=user_name,
-                    user_id=user_id,
-                    api_key_raw=api_key_raw,
-                    api_key_name=api_key_name,
-                    api_key_group_id=api_key_group_id,
-                    api_key_group_name=api_key_group_name,
-                    model_name=data.get('model', ''),
-                    provider_id=_pricing_snapshot['provider_id'],
-                    provider_name=_pricing_snapshot['provider_name'],
-                    input_price_unit=_pricing_snapshot['input_price'],
-                    output_price_unit=_pricing_snapshot['output_price'],
-                    cache_creation_price_unit=_pricing_snapshot['cache_creation_price'],
-                    cache_5m_creation_price_unit=_pricing_snapshot['cache_5m_creation_price'],
-                    cache_1h_creation_price_unit=_pricing_snapshot['cache_1h_creation_price'],
-                    cache_token_price_unit=_pricing_snapshot['cache_hit_price'],
-                    pricing_tiers=_pricing_snapshot['pricing_tiers'],
-                    output_pricing=_pricing_snapshot['output_pricing'],
-                    currency=_pricing_snapshot['currency'],
-                    discount=_pricing_snapshot['discount'],
-                    duration_ms=_bg_duration_ms,
-                )
-            except Exception as _ue:
-                logger.warning(f"[usage] Failed to record usage for background response {response_id!r}: {_ue}")
+                except Exception as exc:
+                    if tracer:
+                        try:
+                            tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
+                            tracer.end(error=exc)
+                        except Exception:
+                            pass
+                    logger.exception(f"[background] Error processing {response_id!r}: {exc}")
+                    final_error = str(exc)
 
-            if tracer:
-                tracer.set_metadata({
-                    "duration_ms": _bg_duration_ms,
-                    "response_id": response.id if response else None,
-                })
-                tracer.end()
+                # Write output to storage (outside any DB transaction)
+                if formatted_output is not None:
+                    try:
+                        storage.write(output_key, formatted_output)
+                    except Exception as write_exc:
+                        logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
+                        final_error = str(write_exc)
+                        formatted_output = None
 
-        except Exception as exc:
-            if tracer:
-                try:
-                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
-                    tracer.end(error=exc)
-                except Exception:
-                    pass
-            # Ensure the DB session is cleaned up even on error paths;
-            # db.session.remove() at line 194 only runs on the success path.
-            try:
-                db.session.remove()
-            except Exception:
-                pass
-            logger.exception(f"[background] Error processing {response_id!r}: {exc}")
-            final_error = str(exc)
+                # Update DB — each call opens a brand-new NullPool connection
+                if final_error:
+                    _bg_dao.mark_failed(db_url, response_id, final_error)
+                else:
+                    _bg_dao.mark_completed(db_url, response_id)
 
-        # Write output to storage (outside any DB transaction)
-        if formatted_output is not None:
-            try:
-                storage.write(output_key, formatted_output)
-            except Exception as write_exc:
-                logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
-                final_error = str(write_exc)
-                formatted_output = None
+                if _rid_token is not None:
+                    try:
+                        from app import request_id_var
+                        request_id_var.reset(_rid_token)
+                    except Exception:
+                        pass
 
-        # Update DB — each call opens a brand-new NullPool connection
-        if final_error:
-            _bg_dao.mark_failed(db_url, response_id, final_error)
-        else:
-            _bg_dao.mark_completed(db_url, response_id)
-    finally:
-        _cv_app.reset(_token)
-        if _rid_token is not None:
-            try:
-                from app import request_id_var
-                request_id_var.reset(_rid_token)
-            except Exception:
-                pass
+    asyncio.run(_async_work())
 
 
 # ============== Responses API 端点 ==============
@@ -474,7 +467,7 @@ async def openai_responses():
         )), 400
 
     # 2. 认证（只做一次）
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("responses", status, error.get('detail', 'Not authenticated'))
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
@@ -492,7 +485,7 @@ async def openai_responses():
         provider_id_override = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
         # Create tracer for background request
-        monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+        monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
         tracer = create_tracer(monitoring_config)
 
         # Eagerly extract identity primitives while the DB session is alive.
@@ -584,7 +577,7 @@ async def openai_responses():
 
     logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
 
-    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
     tracer = create_tracer(monitoring_config)
 
     _resp_start_time = time.monotonic()
@@ -616,16 +609,16 @@ async def openai_responses():
                     "api_key_name": _api_key_name,
                 })
 
-            chunks, model_meta = await asyncio.to_thread(
-                _run_stream_in_thread, _app, _gateway_service, chat_request, group_id, tracer, provider_id_override
+            chunks_gen, model_meta = await _gateway_service.stream_chat(
+                chat_request, group_id, tracer=tracer, provider_id=provider_id_override
             )
 
-            def _resp_chunks_with_usage():
+            async def _resp_chunks_with_usage():
                 last_usage = None
                 _accumulated_extra = {}
                 _content_parts: list[str] = []
                 try:
-                    for chunk in chunks:
+                    async for chunk in chunks_gen:
                         if chunk.usage is not None:
                             if hasattr(chunk.usage, 'extra') and chunk.usage.extra:
                                 _accumulated_extra.update(chunk.usage.extra)
@@ -655,7 +648,7 @@ async def openai_responses():
                         try:
                             from app.usagerecord.usage_service import record_stream_usage
                             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
-                            record_stream_usage(
+                            await record_stream_usage(
                                 app=_app,
                                 usage_info=last_usage,
                                 user_name=_user_name,
@@ -697,8 +690,8 @@ async def openai_responses():
                     "api_key_name": api_key.name if api_key else None,
                 })
 
-            response, resolved = await asyncio.to_thread(
-                lambda: _call_in_app_ctx(_app, _gateway_service.chat, chat_request, group_id, tracer=tracer, provider_id=provider_id_override)
+            response, resolved = await _gateway_service.chat(
+                chat_request, group_id, tracer=tracer, provider_id=provider_id_override
             )
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
 
@@ -712,8 +705,7 @@ async def openai_responses():
 
             try:
                 from app.usagerecord.usage_service import record_usage
-                record_usage(
-                    app=current_app._get_current_object(),
+                await record_usage(
                     response=response,
                     db_model=resolved.db_model,
                     db_provider=resolved.db_provider,
@@ -769,7 +761,7 @@ async def get_response(response_id: str):
         - 404 if the response_id is not found.
         - 403 if the caller is not authorised to access this response.
     """
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("get_response", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status

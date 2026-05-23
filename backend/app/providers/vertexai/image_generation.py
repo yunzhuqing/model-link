@@ -10,7 +10,7 @@ Vertex AI 图像生成模块 (Vertex AI Image Generation)
 
 API 文档: https://cloud.google.com/vertex-ai/generative-ai/docs/image/generate-images
 """
-from typing import Optional, Dict, Any, List, Generator
+from typing import Optional, Dict, Any, List, AsyncGenerator
 
 from app.abstraction.chat import ChatRequest, ChatResponse, UsageInfo, FinishReason
 from app.abstraction.messages import ContentBlock
@@ -139,10 +139,10 @@ def handle_image_generation_response(
 # 流式图像生成
 # =============================================================================
 
-def stream_vertexai_image_generation(
+async def stream_vertexai_image_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Stream image generation results on Vertex AI.
 
@@ -154,4 +154,5 @@ def stream_vertexai_image_generation(
         chat_fn: The non-streaming chat function to call (provider.chat)
         request: The chat request with image generation parameters
     """
-    yield from stream_image_generation(chat_fn, request)
+    async for chunk in stream_image_generation(chat_fn, request):
+        yield chunk

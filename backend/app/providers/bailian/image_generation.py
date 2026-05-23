@@ -57,7 +57,7 @@ POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/g
 }
 """
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import base64
@@ -227,7 +227,7 @@ def _convert_messages_to_dashscope(messages: List[Message]) -> List[Dict[str, An
 # API 调用与响应解析
 # =============================================================================
 
-def _download_image_as_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
+async def _download_image_as_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
     """Download an image URL and return it as a base64 data URI.
 
     Returns ``None`` if the download fails, so the caller can fall back
@@ -247,7 +247,7 @@ def _download_image_as_b64(url: str, fallback_mime: str = "image/png") -> Option
         return None
 
 
-def execute_qwen_image_generation(
+async def execute_qwen_image_generation(
     api_key: str,
     model: str,
     messages: List[Message],
@@ -333,8 +333,8 @@ def execute_qwen_image_generation(
 
     try:
         http_timeout = int(metadata.get("timeout", 300) or 300)
-        with httpx.Client(timeout=http_timeout) as client:
-            response = client.post(
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
+            response = await client.post(
                 QWEN_IMAGE_API_URL,
                 json=request_body,
                 headers=headers,
@@ -485,10 +485,10 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str, metadata: Optio
 # 流式响应生成
 # =============================================================================
 
-def stream_image_generation(
+async def stream_image_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Execute Qwen image generation and yield the result as StreamChunks.
 
@@ -507,7 +507,7 @@ def stream_image_generation(
         request: The chat request with image generation parameters
     """
     # Call the non-streaming API to get the full image result
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

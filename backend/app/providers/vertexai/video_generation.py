@@ -26,7 +26,8 @@ import json
 import re as _re
 import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+import asyncio
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx as _httpx
 
@@ -135,7 +136,7 @@ def _resolve_veo_base_url(base_url: str, project_id: Optional[str]) -> str:
 # 主入口: 执行视频生成
 # =============================================================================
 
-def execute_vertexai_veo_generation(
+async def execute_vertexai_veo_generation(
     request: ChatRequest,
     get_headers_fn,
     base_url: str,
@@ -219,8 +220,8 @@ def execute_vertexai_veo_generation(
 
         operation_name = ""
         try:
-            with _httpx.Client(timeout=60) as client:
-                resp = client.post(create_url, content=payload_str, headers=headers)
+            with _httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(create_url, content=payload_str, headers=headers)
 
             if resp.status_code >= 400:
                 raise RuntimeError(
@@ -259,11 +260,11 @@ def execute_vertexai_veo_generation(
         _poll_error: Optional[Exception] = None
 
         try:
-            with _httpx.Client(timeout=60) as client:
+            with _httpx.AsyncClient(timeout=60) as client:
                 poll_count = 0
                 while time.time() < deadline:
                     poll_headers = get_headers_fn()
-                    poll_resp = client.post(
+                    poll_resp = await client.post(
                         fetch_url,
                         json=fetch_body,
                         headers=poll_headers,
@@ -300,7 +301,7 @@ def execute_vertexai_veo_generation(
                             })
                         break
 
-                    time.sleep(5.0)
+                    await asyncio.sleep(5.0)
 
                 # Timeout error
                 if not raw_videos:
@@ -329,7 +330,7 @@ def execute_vertexai_veo_generation(
         )
 
     # ── Download / decode videos and save to storage ───────────────────
-    stored_urls = _download_and_store_videos(
+    stored_urls = await _download_and_store_videos(
         raw_videos, operation_name, get_headers_fn
     )
 
@@ -386,7 +387,7 @@ def execute_vertexai_veo_generation(
 # 视频下载与存储
 # =============================================================================
 
-def _download_and_store_videos(
+async def _download_and_store_videos(
     raw_videos: List[Dict[str, str]],
     operation_name: str,
     get_headers_fn,
@@ -436,8 +437,8 @@ def _download_and_store_videos(
                     download_url = gcs_uri
 
                 dl_headers = get_headers_fn()
-                with _httpx.Client(timeout=300, follow_redirects=True) as dl_client:
-                    dl_resp = dl_client.get(download_url, headers=dl_headers)
+                async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as dl_client:
+                    dl_resp = await dl_client.get(download_url, headers=dl_headers)
 
                 if dl_resp.status_code >= 400:
                     raise RuntimeError(
@@ -464,10 +465,10 @@ def _download_and_store_videos(
 # 流式视频生成
 # =============================================================================
 
-def stream_vertexai_veo_generation(
+async def stream_vertexai_veo_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Stream Veo video generation results on Vertex AI.
 
@@ -479,4 +480,5 @@ def stream_vertexai_veo_generation(
         chat_fn: The non-streaming chat function to call (provider.chat)
         request: The chat request with video generation parameters
     """
-    yield from stream_veo_video_generation(chat_fn, request)
+    async for chunk in stream_veo_video_generation(chat_fn, request):
+        yield chunk

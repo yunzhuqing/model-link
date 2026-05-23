@@ -2,7 +2,7 @@
 OpenAI 供应商实现 (OpenAI Provider)
 实现 OpenAI API 的调用。
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import logging
 import time
@@ -292,8 +292,9 @@ class OpenAIProvider(BaseProvider):
         """获取 HTTP 客户端"""
         if self._client is None:
             import httpx
-            self._client = httpx.Client(
-                timeout=self.DEFAULT_TIMEOUT,
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
                 headers=self.get_headers()
             )
         return self._client
@@ -677,22 +678,22 @@ class OpenAIProvider(BaseProvider):
             call_type=call_type
         )
     
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """执行对话请求"""
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
-        
+
         request_data = self.prepare_request(request)
         request_data["stream"] = False
         logger.debug("Prepared OpenAI request data: %s", json.dumps(request_data, ensure_ascii=False))
-        
+
         url = f"{self.config.base_url}/chat/completions"
         req_timeout = self._get_request_timeout(request)
 
-        with self._trace_call(request.model, input_data=request_data) as child_span:
+        async with self._trace_call(request.model, input_data=request_data) as child_span:
             try:
-                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+                response = await self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     try:
@@ -713,12 +714,12 @@ class OpenAIProvider(BaseProvider):
             except Exception as e:
                 raise RuntimeError(f"OpenAI API error: {str(e)}")
     
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
-        
+
         request_data = self.prepare_request(request)
         request_data["stream"] = True
         # Request usage info in the final streaming chunk
@@ -727,47 +728,48 @@ class OpenAIProvider(BaseProvider):
 
         url = f"{self.config.base_url}/chat/completions"
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-        
+
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data), \
-                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
-                # Check for error status before streaming
-                if response.status_code >= 400:
-                    # Read the error response and raise with details
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode('utf-8')
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                    except json.JSONDecodeError:
-                        raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_text}")
-                
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        
-                        if data_str == "[DONE]":
-                            break
-                        
-                        try:
-                            chunk_data = json.loads(data_str)
-                            chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                    # Check for error status before streaming
+                    if response.status_code >= 400:
+                        # Read the error response and raise with details
+                        error_text = ""
+                        async for chunk in response.aiter_bytes():
                             if chunk:
-                                yield chunk
-                        except json.JSONDecodeError as err:
-                            logger.warning("Failed to parse OpenAI stream chunk: %s. Data: %s", err, data_str)
+                                error_text += chunk.decode('utf-8')
+                        try:
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                        except json.JSONDecodeError:
+                            raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_text}")
+
+                    async for line in response.aiter_lines():
+                        if not line:
                             continue
-        
+
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+
+                            if data_str == "[DONE]":
+                                break
+
+                            try:
+                                chunk_data = json.loads(data_str)
+                                chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+                                if chunk:
+                                    yield chunk
+                            except json.JSONDecodeError as err:
+                                logger.warning("Failed to parse OpenAI stream chunk: %s. Data: %s", err, data_str)
+                                continue
+
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"OpenAI streaming API error: {str(e)}")
+            logger.exception(f"OpenAI streaming API error: {e}")
+            raise RuntimeError(f"OpenAI streaming API error: {e}")
     
     def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """解析流式响应块"""
@@ -828,18 +830,18 @@ class OpenAIProvider(BaseProvider):
             })
         return models
     
-    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """
         执行嵌入请求
-        
+
         Supports both text-only and multimodal (text + images) embedding.
-        
+
         Text-only: uses "input" field
         Multimodal: uses "messages" field with content blocks
-        
+
         Args:
             request: 嵌入请求对象
-        
+
         Returns:
             嵌入响应对象
         """
@@ -848,36 +850,36 @@ class OpenAIProvider(BaseProvider):
             "model": request.model,
             "encoding_format": request.encoding_format,
         }
-        
+
         # Multimodal embedding uses "messages" instead of "input"
         if request.is_multimodal:
             request_data["messages"] = request.messages
         else:
             request_data["input"] = request.input
-        
+
         if request.dimensions is not None:
             request_data["dimensions"] = request.dimensions
-        
+
         if request.user:
             request_data["user"] = request.user
-        
+
         url = f"{self.config.base_url}/embeddings"
-        
+
         try:
-            response = self.client.post(url, json=request_data)
-            
+            response = await self.client.post(url, json=request_data)
+
             if response.status_code >= 400:
                 try:
                     error_data = response.json()
                     raise RuntimeError(f"OpenAI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                 except json.JSONDecodeError:
                     raise RuntimeError(f"OpenAI API error ({response.status_code}): {response.text}")
-            
+
             response.raise_for_status()
-            
+
             response_data = response.json()
             return self._parse_embedding_response(response_data, request.model)
-        
+
         except RuntimeError:
             raise
         except Exception as e:

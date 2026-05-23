@@ -144,9 +144,19 @@ def resolve_and_check_task_status(
     # ── Bailian — Dashscope video generation ────────────────────────────
     elif provider_type == "bailian":
         try:
-            from app.providers.bailian.video_generation import check_happyhorse_task_status
+            from app.providers.bailian.video_generation import _resolve_task_query_url
+            import httpx as _httpx
             domain = extra_config.get("domain")
-            result = check_happyhorse_task_status(api_key, task_id, domain=domain)
+            if domain:
+                task_query_url = f"{domain.rstrip('/')}/api/v1/tasks"
+            else:
+                task_query_url = _resolve_task_query_url(None)
+            url = f"{task_query_url}/{task_id}"
+            with _httpx.Client(timeout=30) as client:
+                resp = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+                if resp.status_code >= 400:
+                    return TaskStatus.UNKNOWN
+                result = resp.json()
             task_status = result.get("output", {}).get("task_status", "")
             return _map_bailian_status(task_status)
         except Exception as exc:

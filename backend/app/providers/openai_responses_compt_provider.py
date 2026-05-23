@@ -34,7 +34,7 @@ OpenAI Responses API 兼容供应商 (OpenAI Responses API Compatible Provider)
 import json
 import time
 import uuid
-from typing import Dict, Any, List, Optional, Generator
+from typing import Dict, Any, List, Optional, AsyncGenerator
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider
@@ -323,7 +323,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
     # 非流式请求
     # ------------------------------------------------------------------
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """向 /v1/responses 发送非流式请求。"""
         error = self.validate_request(request)
         if error:
@@ -335,8 +335,8 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         url = f"{self.config.base_url}/responses"
 
         try:
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data)
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data)
 
                 if response.status_code >= 400:
                     try:
@@ -591,7 +591,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
     # 流式请求
     # ------------------------------------------------------------------
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """
         向 /v1/responses 发送流式请求，解析 Responses API SSE 事件。
 
@@ -621,51 +621,51 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         _tc_accum: Dict[str, Dict[str, Any]] = {}  # call_id → {name, args}
 
         try:
-            with self._trace_call(request.model, input_data=request_data), \
-                 self.client.stream("POST", url, json=request_data) as response:
-                if response.status_code >= 400:
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode("utf-8")
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(
-                            f"OpenAI Responses API error ({response.status_code}): "
-                            f"{json.dumps(error_data, ensure_ascii=False)}"
-                        )
-                    except json.JSONDecodeError:
-                        raise RuntimeError(
-                            f"OpenAI Responses API error ({response.status_code}): {error_text}"
-                        )
-
-                current_event: Optional[str] = None
-
-                for line in response.iter_lines():
-                    if not line:
-                        # 空行：事件边界，重置当前事件名
-                        current_event = None
-                        continue
-
-                    if line.startswith("event:"):
-                        current_event = line[6:].strip()
-                        continue
-
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=request_data) as response:
+                    if response.status_code >= 400:
+                        error_text = ""
+                        async for chunk in response.aiter_bytes():
+                            if chunk:
+                                error_text += chunk.decode("utf-8")
                         try:
-                            event_data = json.loads(data_str)
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(
+                                f"OpenAI Responses API error ({response.status_code}): "
+                                f"{json.dumps(error_data, ensure_ascii=False)}"
+                            )
                         except json.JSONDecodeError:
+                            raise RuntimeError(
+                                f"OpenAI Responses API error ({response.status_code}): {error_text}"
+                            )
+
+                    current_event: Optional[str] = None
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            # 空行：事件边界，重置当前事件名
+                            current_event = None
                             continue
 
-                        chunk = self._parse_responses_event(
-                            event_data, current_event, response_id, request.model, _tc_accum
-                        )
-                        if chunk:
-                            yield chunk
+                        if line.startswith("event:"):
+                            current_event = line[6:].strip()
+                            continue
+
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if not data_str or data_str == "[DONE]":
+                                continue
+
+                            try:
+                                event_data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            chunk = self._parse_responses_event(
+                                event_data, current_event, response_id, request.model, _tc_accum
+                            )
+                            if chunk:
+                                yield chunk
 
         except RuntimeError:
             raise
@@ -789,7 +789,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
     # 轮询上游异步响应
     # ------------------------------------------------------------------
 
-    def get_response(self, upstream_response_id: str, model: str) -> ChatResponse:
+    async def get_response(self, upstream_response_id: str, model: str) -> ChatResponse:
         """
         通过 GET /v1/responses/{id} 查询上游异步响应的最新状态。
 
@@ -812,7 +812,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         """
         url = f"{self.config.base_url}/responses/{upstream_response_id}"
         try:
-            response = self.client.get(url)
+            response = await self.client.get(url)
 
             if response.status_code >= 400:
                 try:

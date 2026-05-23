@@ -24,7 +24,7 @@ Gemini 返回的图像数据以 inlineData 形式嵌入在 response parts 中：
 }
 """
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 
@@ -185,10 +185,10 @@ def build_image_chat_response(
     )
 
 
-def stream_image_generation(
+async def stream_image_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Execute image generation and yield the result as StreamChunks.
 
@@ -208,7 +208,7 @@ def stream_image_generation(
         request: The chat request with image generation parameters
     """
     # Use the non-streaming API to get the full image result
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

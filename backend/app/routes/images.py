@@ -28,7 +28,6 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
-    _call_in_app_ctx,
     G_API_KEY_PROVIDER_ID,
 )
 
@@ -78,7 +77,7 @@ async def create_images():
     }
     """
     # 1. 认证
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("images_generations", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
@@ -122,7 +121,7 @@ async def create_images():
     provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 5. 设置 tracer
-    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
     tracer = create_tracer(monitoring_config)
 
     # 6. 调用中间层
@@ -139,9 +138,7 @@ async def create_images():
                 "model_name": model_name,
                 "api_key_name": api_key.name if api_key else None,
             })
-        result, chat_response, resolved = await asyncio.to_thread(
-            lambda: _call_in_app_ctx(
-                _app, _gateway_service.generate_images,
+        result, chat_response, resolved = await _gateway_service.generate_images(
                 model_name=model_name,
                 prompt=prompt,
                 images=images,
@@ -157,7 +154,6 @@ async def create_images():
                 resolution=resolution,
                 provider_id=provider_id,
                 tracer=tracer,
-            )
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         if tracer:
@@ -168,8 +164,7 @@ async def create_images():
             tracer.end()
         try:
             from app.usagerecord.usage_service import record_usage
-            record_usage(
-                app=current_app._get_current_object(),
+            await record_usage(
                 response=chat_response,
                 db_model=resolved.db_model,
                 db_provider=resolved.db_provider,
@@ -238,7 +233,7 @@ async def edit_images():
     }
     """
     # 1. 认证
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("images_edits", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
@@ -283,7 +278,7 @@ async def edit_images():
     provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 5. 设置 tracer
-    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
     tracer = create_tracer(monitoring_config)
 
     # 6. 调用中间层
@@ -300,9 +295,7 @@ async def edit_images():
                 "model_name": model_name,
                 "api_key_name": api_key.name if api_key else None,
             })
-        result, chat_response, resolved = await asyncio.to_thread(
-            lambda: _call_in_app_ctx(
-                _app, _gateway_service.edit_images,
+        result, chat_response, resolved = await _gateway_service.edit_images(
                 model_name=model_name,
                 prompt=prompt,
                 images=images,
@@ -319,7 +312,6 @@ async def edit_images():
                 group_id=group_id,
                 provider_id=provider_id,
                 tracer=tracer,
-            )
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         if tracer:
@@ -330,8 +322,7 @@ async def edit_images():
             tracer.end()
         try:
             from app.usagerecord.usage_service import record_usage
-            record_usage(
-                app=current_app._get_current_object(),
+            await record_usage(
                 response=chat_response,
                 db_model=resolved.db_model,
                 db_provider=resolved.db_provider,

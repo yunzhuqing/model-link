@@ -12,7 +12,7 @@ https://ai.google.dev/gemini-api/docs
 - base_url: API 基础 URL（默认 https://generativelanguage.googleapis.com）
 - api_key: Google AI API Key
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import sys
@@ -128,8 +128,9 @@ class GeminiProvider(BaseProvider):
     def client(self) -> Any:
         if self._client is None:
             import httpx
-            self._client = httpx.Client(
-                timeout=self.DEFAULT_TIMEOUT,
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
                 headers=self._get_headers()
             )
         return self._client
@@ -565,7 +566,7 @@ class GeminiProvider(BaseProvider):
 
     # ==================== 主接口 ====================
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """执行非流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -573,7 +574,7 @@ class GeminiProvider(BaseProvider):
 
         # Veo video generation models → dedicated video generation path
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
-            return execute_veo_video_generation(
+            return await execute_veo_video_generation(
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
                 model=request.model,
@@ -587,8 +588,8 @@ class GeminiProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     try:
@@ -636,7 +637,7 @@ class GeminiProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Gemini API error: {str(e)}")
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -644,7 +645,8 @@ class GeminiProvider(BaseProvider):
 
         # Veo video generation models → dedicated video generation path
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
-            yield from stream_veo_video_generation(self.chat, request)
+            async for chunk in stream_veo_video_generation(self.chat, request):
+                yield chunk
             return
 
         # For image generation models, use the dedicated streaming path.
@@ -656,7 +658,8 @@ class GeminiProvider(BaseProvider):
             or self._has_image_generation_tool(request)
         )
         if is_img_gen:
-            yield from stream_image_generation(self.chat, request)
+            async for chunk in stream_image_generation(self.chat, request):
+                yield chunk
             return
 
         request_data = self.prepare_request(request)
@@ -670,54 +673,54 @@ class GeminiProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data), \
-                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
-                if response.status_code >= 400:
-                    error_text = ""
-                    for chunk_bytes in response.iter_bytes():
-                        if chunk_bytes:
-                            error_text += chunk_bytes.decode('utf-8')
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(
-                            f"Gemini API error ({response.status_code}): "
-                            f"{json.dumps(error_data, ensure_ascii=False)}"
-                        )
-                    except json.JSONDecodeError:
-                        raise RuntimeError(
-                            f"Gemini API error ({response.status_code}): {error_text}"
-                        )
-
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-
-                    if line.startswith("event:"):
-                        continue
-
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                    if response.status_code >= 400:
+                        error_text = ""
+                        async for chunk_bytes in response.aiter_bytes():
+                            if chunk_bytes:
+                                error_text += chunk_bytes.decode('utf-8')
                         try:
-                            event_data = json.loads(data_str)
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(
+                                f"Gemini API error ({response.status_code}): "
+                                f"{json.dumps(error_data, ensure_ascii=False)}"
+                            )
                         except json.JSONDecodeError:
+                            raise RuntimeError(
+                                f"Gemini API error ({response.status_code}): {error_text}"
+                            )
+
+                    async for line in response.aiter_lines():
+                        if not line:
                             continue
 
-                        chunk = self._parse_stream_chunk(event_data, response_id, request.model)
-                        if chunk:
-                            if chunk.tool_calls:
-                                gemini_saw_tool_calls = True
-                            # The trailing end-of-stream chunk has finish_reason=STOP but no
-                            # content.  If we already saw tool calls earlier, upgrade it.
-                            if (gemini_saw_tool_calls and
-                                    chunk.finish_reason == FinishReason.STOP and
-                                    not chunk.tool_calls and
-                                    not chunk.delta_content and
-                                    not chunk.delta_reasoning_content):
-                                chunk.finish_reason = FinishReason.TOOL_CALLS
-                            yield chunk
+                        if line.startswith("event:"):
+                            continue
+
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if not data_str or data_str == "[DONE]":
+                                continue
+
+                            try:
+                                event_data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            chunk = self._parse_stream_chunk(event_data, response_id, request.model)
+                            if chunk:
+                                if chunk.tool_calls:
+                                    gemini_saw_tool_calls = True
+                                # The trailing end-of-stream chunk has finish_reason=STOP but no
+                                # content.  If we already saw tool calls earlier, upgrade it.
+                                if (gemini_saw_tool_calls and
+                                        chunk.finish_reason == FinishReason.STOP and
+                                        not chunk.tool_calls and
+                                        not chunk.delta_content and
+                                        not chunk.delta_reasoning_content):
+                                    chunk.finish_reason = FinishReason.TOOL_CALLS
+                                yield chunk
 
         except RuntimeError:
             raise
@@ -827,7 +830,7 @@ class GeminiProvider(BaseProvider):
 
     # ==================== Embedding ====================
 
-    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """
         执行嵌入请求
 
@@ -853,16 +856,16 @@ class GeminiProvider(BaseProvider):
         if request.is_multimodal:
             # Multimodal embedding - convert messages to Gemini content parts
             parts = self._convert_messages_to_gemini_parts(request.messages)
-            return self._embed_single(request.model, parts, request.dimensions)
+            return await self._embed_single(request.model, parts, request.dimensions)
         elif isinstance(request.input, list):
             # Batch text embedding
-            return self._embed_batch(request.model, request.input, request.dimensions)
+            return await self._embed_batch(request.model, request.input, request.dimensions)
         else:
             # Single text embedding
             parts = [{"text": request.input or ""}]
-            return self._embed_single(request.model, parts, request.dimensions)
+            return await self._embed_single(request.model, parts, request.dimensions)
 
-    def _embed_single(self, model: str, parts: List[Dict[str, Any]], dimensions: Optional[int] = None) -> EmbeddingResponse:
+    async def _embed_single(self, model: str, parts: List[Dict[str, Any]], dimensions: Optional[int] = None) -> EmbeddingResponse:
         """执行单个嵌入请求"""
         request_data = {
             "model": f"models/{model}",
@@ -876,7 +879,7 @@ class GeminiProvider(BaseProvider):
         url = self._get_embed_url(model)
 
         try:
-            response = self.client.post(url, json=request_data)
+            response = await self.client.post(url, json=request_data)
 
             if response.status_code >= 400:
                 try:
@@ -906,7 +909,7 @@ class GeminiProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Gemini embedding API error: {str(e)}")
 
-    def _embed_batch(self, model: str, texts: List[str], dimensions: Optional[int] = None) -> EmbeddingResponse:
+    async def _embed_batch(self, model: str, texts: List[str], dimensions: Optional[int] = None) -> EmbeddingResponse:
         """执行批量文本嵌入请求"""
         requests = []
         for text in texts:
@@ -927,7 +930,7 @@ class GeminiProvider(BaseProvider):
         url = self._get_batch_embed_url(model)
 
         try:
-            response = self.client.post(url, json=request_data)
+            response = await self.client.post(url, json=request_data)
 
             if response.status_code >= 400:
                 try:

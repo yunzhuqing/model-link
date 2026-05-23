@@ -3,7 +3,6 @@ User service — cache-first user lookups and cache invalidation.
 
 Keeps caching logic out of the ORM models layer.
 """
-from app import db
 from app.models import User, Group
 
 
@@ -28,23 +27,24 @@ class CachedGroup:
         self.description = description
         self._orm = None
 
-    def _get_orm(self):
+    async def _get_orm(self, session=None):
         if self._orm is None:
-            self._orm = db.session.get(Group, self.id)
+            if session is None:
+                from flask import g
+                session = g.db_session
+            self._orm = await session.get(Group, self.id)
         return self._orm
 
-    @property
-    def users(self):
-        orm = self._get_orm()
+    async def get_users(self, session=None):
+        orm = await self._get_orm(session=session)
         return orm.users if orm else []
 
-    @property
-    def api_keys(self):
-        orm = self._get_orm()
+    async def get_api_keys(self, session=None):
+        orm = await self._get_orm(session=session)
         return orm.api_keys if orm else []
 
-    def to_dict(self):
-        orm = self._get_orm()
+    async def to_dict(self, session=None):
+        orm = await self._get_orm(session=session)
         if orm:
             return orm.to_dict()
         return {'id': self.id, 'name': self.name, 'description': self.description}
@@ -114,34 +114,37 @@ def cached_user_from_dict(cached: dict) -> CachedUser:
 
 # ── Public API ────────────────────────────────────────────────────────────
 
-def get_user_by_id(user_id: int) -> CachedUser | None:
+async def get_user_by_id(user_id: int, session=None) -> CachedUser | None:
     """Get user by ID with cache-first lookup. Returns CachedUser or None."""
     try:
-        from app.cache import get_cache
-        cached = get_cache().get_user_info(user_id)
+        from app.cache import get_async_cache
+        cached = await get_async_cache().get_user_info(user_id)
         if cached:
             return cached_user_from_dict(cached)
     except Exception:
         pass
 
-    orm_user = db.session.get(User, user_id)
+    if session is None:
+        from flask import g
+        session = g.db_session
+    orm_user = await session.get(User, user_id)
     if orm_user is None:
         return None
 
     cache_dict = user_to_cache_dict(orm_user)
     try:
-        from app.cache import get_cache
-        get_cache().set_user_info(user_id, cache_dict)
+        from app.cache import get_async_cache
+        await get_async_cache().set_user_info(user_id, cache_dict)
     except Exception:
         pass
 
     return cached_user_from_dict(cache_dict)
 
 
-def invalidate_user_cache(user_id: int) -> None:
+async def invalidate_user_cache(user_id: int) -> None:
     """Remove cached user info. Safe to call even if cache is unavailable."""
     try:
-        from app.cache import get_cache
-        get_cache().invalidate_user_info(user_id)
+        from app.cache import get_async_cache
+        await get_async_cache().invalidate_user_info(user_id)
     except Exception:
         pass

@@ -9,7 +9,7 @@
 通义千问图像生成模型（qwen-image-2.0-pro）通过专用 Dashscope API
 进行图像生成和编辑，兼容 /v1/responses image_generation 工具。
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import uuid
@@ -270,7 +270,7 @@ class BailianProvider(OpenAIProvider):
 
     # ==================== 非流式接口 ====================
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """
         执行对话/图像生成请求
 
@@ -313,8 +313,8 @@ class BailianProvider(OpenAIProvider):
         url = f"{self.config.base_url}/chat/completions"
 
         try:
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data)
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data)
 
                 if response.status_code >= 400:
                     try:
@@ -389,7 +389,7 @@ class BailianProvider(OpenAIProvider):
 
     # ==================== 流式接口 ====================
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """
         执行流式对话/图像生成请求
 
@@ -410,11 +410,13 @@ class BailianProvider(OpenAIProvider):
             # Inject api_key and domain into metadata for the streaming function
             request.metadata["_api_key"] = self.config.api_key
             request.metadata["_domain"] = self._get_dashscope_domain()
-            yield from stream_video_generation(self.chat, request)
+            async for chunk in stream_video_generation(self.chat, request):
+                yield chunk
             return
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
-            yield from stream_image_generation(self.chat, request)
+            async for chunk in stream_image_generation(self.chat, request):
+                yield chunk
             return
 
         # 准备请求数据
@@ -430,41 +432,41 @@ class BailianProvider(OpenAIProvider):
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
         try:
-            with self._trace_call(request.model, input_data=request_data), \
-                 self.client.stream("POST", url, json=request_data) as response:
-                if response.status_code >= 400:
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode('utf-8')
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(
-                            f"Bailian API error ({response.status_code}): "
-                            f"{json.dumps(error_data, ensure_ascii=False)}"
-                        )
-                    except json.JSONDecodeError:
-                        raise RuntimeError(
-                            f"Bailian API error ({response.status_code}): {error_text}"
-                        )
-
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-
-                        if data_str == "[DONE]":
-                            break
-
-                        try:
-                            chunk_data = json.loads(data_str)
-                            chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=request_data) as response:
+                    if response.status_code >= 400:
+                        error_text = ""
+                        async for chunk in response.aiter_bytes():
                             if chunk:
-                                yield chunk
+                                error_text += chunk.decode('utf-8')
+                        try:
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(
+                                f"Bailian API error ({response.status_code}): "
+                                f"{json.dumps(error_data, ensure_ascii=False)}"
+                            )
                         except json.JSONDecodeError:
+                            raise RuntimeError(
+                                f"Bailian API error ({response.status_code}): {error_text}"
+                            )
+
+                    async for line in response.aiter_lines():
+                        if not line:
                             continue
+
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+
+                            if data_str == "[DONE]":
+                                break
+
+                            try:
+                                chunk_data = json.loads(data_str)
+                                chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+                                if chunk:
+                                    yield chunk
+                            except json.JSONDecodeError:
+                                continue
 
         except RuntimeError:
             raise
@@ -499,7 +501,7 @@ class BailianProvider(OpenAIProvider):
 
     # ==================== 嵌入接口 ====================
 
-    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """
         执行嵌入请求
 
@@ -524,7 +526,7 @@ class BailianProvider(OpenAIProvider):
         )
 
         if not is_multimodal_model:
-            return super().embed(request)
+            return await super().embed(request)
 
         return execute_bailian_multimodal_embed(
             api_key=self.config.api_key,
@@ -534,7 +536,7 @@ class BailianProvider(OpenAIProvider):
 
     # ==================== Rerank 接口 ====================
 
-    def rerank(self, request: RerankRequest) -> RerankResponse:
+    async def rerank(self, request: RerankRequest) -> RerankResponse:
         """
         执行 Rerank 请求。
 
@@ -548,14 +550,14 @@ class BailianProvider(OpenAIProvider):
             Rerank 响应对象
         """
         if request.is_multimodal:
-            return execute_bailian_multimodal_rerank(
+            return await execute_bailian_multimodal_rerank(
                 api_key=self.config.api_key,
                 multimodal_rerank_url=self._multimodal_rerank_url,
                 request=request,
             )
 
         # 文本 Rerank：使用 compatible-api 模式 URL（https://xxx/compatible-api/v1/reranks）
-        return execute_bailian_text_rerank(
+        return await execute_bailian_text_rerank(
             api_key=self.config.api_key,
             rerank_url=self._text_rerank_url,
             request=request,

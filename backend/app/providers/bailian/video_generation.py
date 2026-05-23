@@ -34,7 +34,8 @@ from __future__ import annotations
 import json
 import time
 import logging
-from typing import Any, Dict, Generator, List, Optional
+import asyncio
+from typing import Any, Dict, AsyncGenerator, List, Optional
 
 import httpx
 
@@ -477,7 +478,7 @@ def _build_video_request_body(
 # 任务状态查询 (单次, 供轮询和 resync 共用)
 # =============================================================================
 
-def check_happyhorse_task_status(
+async def check_happyhorse_task_status(
     api_key: str,
     task_id: str,
     domain: Optional[str] = None,
@@ -500,8 +501,8 @@ def check_happyhorse_task_status(
         task_query_url = _resolve_task_query_url(None)
     url = f"{task_query_url}/{task_id}"
     try:
-        with httpx.Client(timeout=30) as client:
-            response = client.get(
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
                 url,
                 headers={"Authorization": f"Bearer {api_key}"},
             )
@@ -522,7 +523,7 @@ def check_happyhorse_task_status(
 # 任务轮询
 # =============================================================================
 
-def _poll_task(
+async def _poll_task(
     api_key: str,
     task_id: str,
     task_query_url: str,  # kept for backward compat, unused since check_happyhorse_task_status resolves URL
@@ -564,7 +565,7 @@ def _poll_task(
                     f"Video generation task {task_id} timed out after {timeout}s"
                 )
 
-            result = check_happyhorse_task_status(api_key, task_id)
+            result = await check_happyhorse_task_status(api_key, task_id)
             output = result.get("output", {})
             task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
             poll_count += 1
@@ -587,7 +588,7 @@ def _poll_task(
                 task_status,
                 elapsed,
             )
-            time.sleep(poll_interval)
+            await asyncio.sleep(poll_interval)
     except Exception as e:
         _error = e
         raise
@@ -600,7 +601,7 @@ def _poll_task(
 # 非流式视频生成
 # =============================================================================
 
-def execute_happyhorse_video_generation(
+async def execute_happyhorse_video_generation(
     api_key: str,
     model: str,
     messages: List[Message],
@@ -650,9 +651,9 @@ def execute_happyhorse_video_generation(
     _trace_error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             try:
-                response = client.post(
+                response = await client.post(
                     video_url,
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -709,7 +710,7 @@ def execute_happyhorse_video_generation(
 
         # Poll for completion (run outside the with block since polling uses its own client)
         try:
-            final_result = _poll_task(
+            final_result = await _poll_task(
                 api_key=api_key,
                 task_id=task_id,
                 task_query_url=task_query_url,
@@ -1027,10 +1028,10 @@ def _format_video_markdown(video_url: str) -> str:
 # 流式视频生成
 # =============================================================================
 
-def stream_video_generation(
+async def stream_video_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Stream video generation progress as SSE events.
 
@@ -1067,9 +1068,9 @@ def stream_video_generation(
         delta_content="🎬 正在提交视频生成任务...\n",
     )
 
-    with httpx.Client(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         try:
-            response = client.post(
+            response = await client.post(
                 video_url,
                 headers={
                     "Authorization": f"Bearer {api_key}",
@@ -1151,7 +1152,7 @@ def stream_video_generation(
     last_status = task_status
     url = f"{task_query_url}/{task_id}"
 
-    with httpx.Client(timeout=30) as poll_client:
+    async with httpx.AsyncClient(timeout=30) as poll_client:
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout:
@@ -1174,13 +1175,13 @@ def stream_video_generation(
                 return
 
             try:
-                poll_response = poll_client.get(
+                poll_response = await poll_client.get(
                     url,
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
 
                 if poll_response.status_code >= 400:
-                    time.sleep(_POLL_INTERVAL_S)
+                    await asyncio.sleep(_POLL_INTERVAL_S)
                     continue
 
                 poll_result = poll_response.json()
@@ -1264,8 +1265,8 @@ def stream_video_generation(
                     return
 
                 # Still pending/running, wait and continue
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
 
             except httpx.RequestError as e:
                 logger.warning("Polling network error: %s", e)
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)

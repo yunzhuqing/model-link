@@ -18,7 +18,7 @@ vLLM 暴露与 OpenAI Chat Completions 兼容的 REST API，因此本实现直�
 """
 import json
 import logging
-from typing import Generator, Dict, Any, List, Optional
+from typing import AsyncGenerator, Dict, Any, List, Optional
 import time
 
 from .openai_provider import OpenAIProvider
@@ -112,7 +112,7 @@ class VLLMProvider(OpenAIProvider):
 
         return data
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """
         执行流式对话请求。
 
@@ -134,55 +134,57 @@ class VLLMProvider(OpenAIProvider):
         url = f"{self.config.base_url}/chat/completions"
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
-        def _do_stream(req_data: Dict[str, Any]) -> Generator[StreamChunk, None, None]:
-            with self._trace_call(request.model, input_data=request_data), \
-                 self.client.stream("POST", url, json=req_data) as response:
-                if response.status_code in (400, 422):
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode("utf-8")
-                    raise _StreamOptionsNotSupported(error_text, response.status_code)
-
-                if response.status_code >= 400:
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode("utf-8")
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(
-                            f"vLLM API error ({response.status_code}): "
-                            f"{json.dumps(error_data, ensure_ascii=False)}"
-                        )
-                    except json.JSONDecodeError:
-                        raise RuntimeError(
-                            f"vLLM API error ({response.status_code}): {error_text}"
-                        )
-
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk_data = json.loads(data_str)
-                            chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+        async def _do_stream(req_data: Dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=req_data) as response:
+                    if response.status_code in (400, 422):
+                        error_text = ""
+                        async for chunk in response.aiter_bytes():
                             if chunk:
-                                yield chunk
-                        except json.JSONDecodeError as err:
+                                error_text += chunk.decode("utf-8")
+                        raise _StreamOptionsNotSupported(error_text, response.status_code)
+
+                    if response.status_code >= 400:
+                        error_text = ""
+                        async for chunk in response.aiter_bytes():
+                            if chunk:
+                                error_text += chunk.decode("utf-8")
+                        try:
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(
+                                f"vLLM API error ({response.status_code}): "
+                                f"{json.dumps(error_data, ensure_ascii=False)}"
+                            )
+                        except json.JSONDecodeError:
+                            raise RuntimeError(
+                                f"vLLM API error ({response.status_code}): {error_text}"
+                            )
+
+                    async for line in response.aiter_lines():
+                        if not line:
                             continue
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk_data = json.loads(data_str)
+                                chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+                                if chunk:
+                                    yield chunk
+                            except json.JSONDecodeError as err:
+                                continue
 
         try:
-            yield from _do_stream(request_data)
+            async for chunk in _do_stream(request_data):
+                yield chunk
         except _StreamOptionsNotSupported:
             # 回退：移除 stream_options 再试
             fallback_data = dict(request_data)
             fallback_data.pop("stream_options", None)
             try:
-                yield from _do_stream(fallback_data)
+                async for chunk in _do_stream(fallback_data):
+                    yield chunk
             except _StreamOptionsNotSupported as e:
                 raise RuntimeError(f"vLLM streaming API error: {e.message}")
         except RuntimeError:
@@ -281,7 +283,7 @@ class VLLMProvider(OpenAIProvider):
             "supports_vision": False,
         }
 
-    def rerank(self, request: RerankRequest) -> RerankResponse:
+    async def rerank(self, request: RerankRequest) -> RerankResponse:
         """
         执行 rerank 请求。
 
@@ -321,7 +323,7 @@ class VLLMProvider(OpenAIProvider):
         url = f"{self.config.base_url}/rerank"
 
         try:
-            response = self.client.post(url, json=request_data)
+            response = await self.client.post(url, json=request_data)
 
             if response.status_code >= 400:
                 try:

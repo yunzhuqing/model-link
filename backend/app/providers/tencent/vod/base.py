@@ -27,7 +27,7 @@ API 文档：
 import json
 import time
 import uuid
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from ...openai_provider import OpenAIProvider
 from ...base import ProviderConfig, ProviderCapability
@@ -380,7 +380,7 @@ class TencentVODProvider(OpenAIProvider):
 
     # ==================== 非流式接口 ====================
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """
         执行对话/图像生成/视频生成请求
 
@@ -401,7 +401,7 @@ class TencentVODProvider(OpenAIProvider):
             raise ValueError(error)
 
         if self._has_3d_generation_tool(request):
-            return execute_tencentvod_3d_generation(
+            return await execute_tencentvod_3d_generation(
                 api_key=self._get_image_api_key(),
                 model=request.model,
                 messages=request.messages,
@@ -411,7 +411,7 @@ class TencentVODProvider(OpenAIProvider):
             )
 
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
-            return execute_tencentvod_video_generation(
+            return await execute_tencentvod_video_generation(
                 api_key=self._get_image_api_key(),
                 model=request.model,
                 messages=request.messages,
@@ -421,7 +421,7 @@ class TencentVODProvider(OpenAIProvider):
             )
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
-            return execute_tencentvod_image_generation(
+            return await execute_tencentvod_image_generation(
                 api_key=self._get_image_api_key(),
                 model=request.model,
                 messages=request.messages,
@@ -431,11 +431,11 @@ class TencentVODProvider(OpenAIProvider):
             )
 
         # 标准对话路径 (OpenAI 兼容)
-        return super().chat(request)
+        return await super().chat(request)
 
     # ==================== 流式接口 ====================
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """
         执行流式对话/图像生成/视频生成请求
 
@@ -456,19 +456,23 @@ class TencentVODProvider(OpenAIProvider):
             raise ValueError(error)
 
         if self._has_3d_generation_tool(request):
-            yield from stream_3d_generation(self.chat, request)
+            async for chunk in stream_3d_generation(self.chat, request):
+                yield chunk
             return
 
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
-            yield from stream_video_generation(self.chat, request)
+            async for chunk in stream_video_generation(self.chat, request):
+                yield chunk
             return
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
-            yield from stream_image_generation(self.chat, request)
+            async for chunk in stream_image_generation(self.chat, request):
+                yield chunk
             return
 
         # 标准流式对话路径 (OpenAI 兼容)
-        yield from super().stream_chat(request)
+        async for chunk in super().stream_chat(request):
+            yield chunk
 
     # ==================== 模型信息 ====================
 

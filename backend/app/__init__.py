@@ -24,6 +24,17 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+class SafePercentStyle(logging.PercentStyle):
+    """PercentStyle that substitutes missing keys with '-' instead of raising KeyError."""
+
+    def format(self, record):
+        record_dict = record.__dict__
+        for key in ("request_id",):
+            if key not in record_dict:
+                record_dict[key] = "-"
+        return self._format(record)
+
+
 class LogFormatter(logging.Formatter):
     """Log formatter that supports customizable output via LOG_FORMAT env variable."""
 
@@ -34,6 +45,7 @@ class LogFormatter(logging.Formatter):
         )
         datefmt = os.getenv("LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S")
         super().__init__(format_string, datefmt=datefmt)
+        self._style = SafePercentStyle(format_string)
 
 
 def _configure_logging() -> None:
@@ -122,6 +134,92 @@ _configure_logging()
 db = SQLAlchemy()
 migrate = Migrate()
 
+# ── Async DB engine and session factory ──────────────────────────────────────
+# Used by all async route handlers. The sync ``db`` (Flask-SQLAlchemy) is kept
+# for Alembic migrations and startup/bootstrap queries.
+
+from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker as _async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+from sqlalchemy.pool import NullPool as _NullPool
+
+_async_engine = None
+_async_session_factory = None
+
+
+def _build_async_db_url() -> str:
+    """Build an async database URL from the DATABASE_URL env var.
+
+    Handles both sync URLs (mysql+pymysql:// → mysql+aiomysql://) and
+    already-async URLs (returned as-is).
+    """
+    database_url = os.getenv('DATABASE_URL', 'sqlite:///./sql_app.db')
+    # Already async — return as-is
+    if "+aiomysql" in database_url or "+asyncpg" in database_url or "+aiosqlite" in database_url:
+        return database_url
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if database_url.startswith("mysql+pymysql://"):
+        return database_url.replace("mysql+pymysql://", "mysql+aiomysql://", 1)
+    if database_url.startswith("mysql://"):
+        return database_url.replace("mysql://", "mysql+aiomysql://", 1)
+    if database_url.startswith("sqlite://"):
+        return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+
+
+def _ensure_sync_db_url(database_url: str) -> str:
+    """Convert an async URL back to sync format for Flask-SQLAlchemy.
+
+    mysql+aiomysql:// → mysql+pymysql://
+    postgresql+asyncpg:// → postgresql://
+    sqlite+aiosqlite:// → sqlite://
+    """
+    if "+aiomysql" in database_url:
+        return database_url.replace("+aiomysql", "+pymysql", 1)
+    if "+asyncpg" in database_url:
+        return database_url.replace("+asyncpg", "", 1)
+    if "+aiosqlite" in database_url:
+        return database_url.replace("+aiosqlite", "", 1)
+    return database_url
+
+
+def get_db_session() -> _AsyncSession:
+    """Return a new async DB session. Caller is responsible for closing it.
+
+    Usage:
+        async with get_db_session() as session:
+            result = await session.execute(select(Model).where(...))
+    """
+    return _async_session_factory()
+
+
+async def _init_async_engine():
+    """Initialise the async engine and session factory."""
+    global _async_engine, _async_session_factory
+    async_url = _build_async_db_url()
+    _async_engine = _create_async_engine(
+        async_url,
+        pool_size=int(os.getenv('SQLALCHEMY_POOL_SIZE', 10)),
+        max_overflow=int(os.getenv('SQLALCHEMY_MAX_OVERFLOW', 20)),
+        pool_timeout=int(os.getenv('SQLALCHEMY_POOL_TIMEOUT', 30)),
+        pool_recycle=int(os.getenv('SQLALCHEMY_POOL_RECYCLE', 600)),
+        pool_pre_ping=os.getenv('SQLALCHEMY_POOL_PRE_PING', 'true').lower() == 'true',
+    )
+    _async_session_factory = _async_sessionmaker(
+        _async_engine, class_=_AsyncSession, expire_on_commit=False,
+    )
+
+
+async def _dispose_async_engine():
+    """Dispose the async engine. Called on shutdown."""
+    global _async_engine
+    if _async_engine is not None:
+        await _async_engine.dispose()
+        _async_engine = None
+
 
 def create_app(config=None):
     """Create and configure the Quart application."""
@@ -132,40 +230,36 @@ def create_app(config=None):
     if database_url and database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:///./sql_app.db'
+    # Ensure the sync URL for Flask-SQLAlchemy (strip async driver prefix)
+    sync_db_url = _ensure_sync_db_url(database_url) if database_url else 'sqlite:///./sql_app.db'
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = sync_db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
-    
+
     # Allow large request bodies (base64 images can be several MB)
     app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB default
-    
+
     # Timeout settings for Quart/ASGI request handling.
-    # BODY_TIMEOUT: Maximum time (seconds) to wait for the complete request body.
-    #   Large base64 image uploads may need more time, default 300s.
-    # RESPONSE_TIMEOUT: Maximum time (seconds) to wait for a complete response.
-    #   AI model calls (chat, image/video/3D generation) can take a long time,
-    #   default 2400s (40 min) to accommodate slow generation tasks.
     app.config['BODY_TIMEOUT'] = int(os.getenv('BODY_TIMEOUT', 300))
     app.config['RESPONSE_TIMEOUT'] = int(os.getenv('RESPONSE_TIMEOUT', 2400))
-    
+
     # Database connection pooling settings for long-lived connections.
-    # All values can be overridden via environment variables.
-    #
-    # IMPORTANT: Background tasks (usage recording, background responses) use
-    # their own NullPool engines and do NOT consume slots from this pool.
-    # Only request-handler threads use this pool.
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    engine_options = {
         'pool_size': int(os.getenv('SQLALCHEMY_POOL_SIZE', 10)),
         'max_overflow': int(os.getenv('SQLALCHEMY_MAX_OVERFLOW', 20)),
         'pool_timeout': int(os.getenv('SQLALCHEMY_POOL_TIMEOUT', 30)),
-        'pool_recycle': int(os.getenv('SQLALCHEMY_POOL_RECYCLE', 1800)),
+        'pool_recycle': int(os.getenv('SQLALCHEMY_POOL_RECYCLE', 600)),
         'pool_pre_ping': os.getenv('SQLALCHEMY_POOL_PRE_PING', 'true').lower() == 'true',
-        'connect_args': {
+    }
+    # MySQL-specific connect args (pymysql supports these; other drivers don't)
+    if 'mysql' in sync_db_url:
+        engine_options['connect_args'] = {
             'connect_timeout': int(os.getenv('DB_CONNECT_TIMEOUT', 10)),
             'read_timeout': int(os.getenv('DB_READ_TIMEOUT', 30)),
             'write_timeout': int(os.getenv('DB_WRITE_TIMEOUT', 30)),
-        },
-    }
+        }
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
     
     # Apply any custom config
     if config:
@@ -191,6 +285,26 @@ def create_app(config=None):
 
     from flask.globals import _cv_app
     from flask.ctx import AppContext
+
+    # ── Async DB session lifecycle ──────────────────────────────────────
+    # Each request gets its own async DB session, available as g.db_session.
+    # The session is closed in teardown_appcontext.
+
+    @app.before_request
+    async def _create_async_db_session():
+        from quart import g
+        g.db_session = _async_session_factory()
+
+    @app.teardown_appcontext
+    async def _close_async_db_session(exc):
+        from quart import g
+        session = getattr(g, 'db_session', None)
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            g.db_session = None
 
     @app.before_request
     async def _push_flask_app_context():
@@ -260,21 +374,35 @@ def create_app(config=None):
     # Enable CORS for all origins
     quart_cors_init(app, allow_origin="*")
     
+    # Initialise the async DB engine. This must happen before any routes are served.
+    app.before_serving(_init_async_engine)
+
+    # Schedule the async exchange-rate refresh on startup.
+    from app.exchange_rate_service import start_daily_refresh as _start_exchange_rate_refresh
+    app.before_serving(lambda: _start_exchange_rate_refresh() or None)
+
     # Initialise the storage backend eagerly so any misconfiguration
     # (e.g. missing S3 bucket name) surfaces at startup rather than on
     # the first background-response request.
     from app.storage import get_storage_backend as _init_storage
     _init_storage()
 
-    # Start the daily exchange-rate refresh daemon (USD→CNY, from frankfurter.app).
-    # The first fetch happens immediately in a background thread so the rate is
-    # current before the first request is served.
-    from app.exchange_rate_service import start_daily_refresh as _start_exchange_rate_refresh
-    _start_exchange_rate_refresh()
-
     # Initialise the cache middleware (memory or Redis, based on CACHE_BACKEND env).
-    from app.cache import init_cache as _init_cache
-    _init_cache()
+    from app.cache import init_async_cache as _init_async_cache
+    _init_async_cache()
+
+    # Dispose async engine on shutdown.
+    app.after_serving(_dispose_async_engine)
+
+    # Close async cache and exchange rate task on shutdown.
+    from app.cache import close_async_cache as _close_async_cache
+    from app.exchange_rate_service import stop_daily_refresh as _stop_daily_refresh
+
+    async def _shutdown_cleanup():
+        await _close_async_cache()
+        await _stop_daily_refresh()
+
+    app.after_serving(_shutdown_cleanup)
 
     # Start the distributed leader-election service.
     # In single-node / dev setups (no COORDINATOR_URL) the node automatically

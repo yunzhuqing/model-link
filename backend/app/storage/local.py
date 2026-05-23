@@ -11,7 +11,7 @@ Directory layout:
 import os
 from typing import Optional
 
-from .base import StorageBackend
+from .base import StorageBackend, AsyncStorageBackend
 
 
 class LocalStorageBackend(StorageBackend):
@@ -106,5 +106,72 @@ class LocalStorageBackend(StorageBackend):
         try:
             with open(file_path, "rb") as fh:
                 return fh.read()
+        except (FileNotFoundError, OSError):
+            return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── Async Local Storage ───────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class AsyncLocalStorageBackend(AsyncStorageBackend):
+    """Async filesystem storage using aiofiles."""
+
+    DEFAULT_BASE_DIR = "/tmp/model-link/background_responses"
+
+    def __init__(self, base_dir: Optional[str] = None):
+        self.base_dir = (
+            base_dir
+            or os.getenv("BACKGROUND_RESPONSE_STORAGE_DIR", self.DEFAULT_BASE_DIR)
+        )
+
+    def make_key(self, response_id: str, suffix: str) -> str:
+        return os.path.join(self.base_dir, response_id, f"{suffix}.json")
+
+    async def write(self, key: str, content: str) -> None:
+        import aiofiles
+        os.makedirs(os.path.dirname(key), exist_ok=True)
+        async with aiofiles.open(key, "w", encoding="utf-8") as fh:
+            await fh.write(content)
+
+    async def read(self, key: str) -> Optional[str]:
+        import aiofiles
+        try:
+            async with aiofiles.open(key, "r", encoding="utf-8") as fh:
+                return await fh.read()
+        except (FileNotFoundError, OSError):
+            return None
+
+    def url_for(self, key: str, expires_in: int = 7 * 24 * 3600) -> str:
+        if key.startswith(self.base_dir):
+            rel = key[len(self.base_dir):]
+        else:
+            rel = key
+        if not rel.startswith("/"):
+            rel = f"/{rel}"
+        return f"/v1{rel}"
+
+    async def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        import aiofiles
+        files_dir = os.path.join(self.base_dir, "files")
+        os.makedirs(files_dir, exist_ok=True)
+        file_path = os.path.join(files_dir, key)
+        async with aiofiles.open(file_path, "wb") as fh:
+            await fh.write(data)
+        self._files_dir = files_dir
+        return f"/v1/files/{key}"
+
+    async def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        import aiofiles
+        if key_or_url.startswith("/v1/files/"):
+            key = key_or_url[len("/v1/files/"):]
+        else:
+            key = key_or_url
+        files_dir = getattr(self, '_files_dir', None) or os.path.join(self.base_dir, "files")
+        file_path = os.path.join(files_dir, key)
+        try:
+            async with aiofiles.open(file_path, "rb") as fh:
+                return await fh.read()
         except (FileNotFoundError, OSError):
             return None

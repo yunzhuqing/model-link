@@ -117,7 +117,7 @@ def parse_volcengine_multimodal_embedding_response(
     )
 
 
-def execute_volcengine_multimodal_embed(
+async def execute_volcengine_multimodal_embed(
     api_key: str,
     base_url: str,
     request: EmbeddingRequest,
@@ -162,8 +162,8 @@ def execute_volcengine_multimodal_embed(
             child_span.log_input(request_data)
 
     try:
-        with httpx.Client(timeout=120) as client:
-            response = client.post(url, json=request_data, headers=headers)
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(url, json=request_data, headers=headers)
 
         if response.status_code >= 400:
             try:

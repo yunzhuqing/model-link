@@ -3,7 +3,7 @@
 定义所有 API 格式适配器必须实现的接口。
 """
 from abc import ABC, abstractmethod
-from typing import Generator, Optional
+from typing import AsyncGenerator, Optional
 import json
 
 from quart import Response
@@ -87,11 +87,11 @@ class BaseAdapter(ABC):
 
     def create_stream_response(
         self,
-        chunks: Generator[StreamChunk, None, None],
+        chunks: AsyncGenerator[StreamChunk, None],
         model_name: str
     ) -> Response:
         """
-        从 StreamChunk 生成器创建 HTTP 流式响应。
+        从 StreamChunk 异步生成器创建 HTTP 流式响应。
 
         Error handling: we eagerly consume the first chunk *before* committing
         to an SSE stream.  Most provider errors (authentication, invalid
@@ -101,7 +101,7 @@ class BaseAdapter(ABC):
         instead of an SSE event.
 
         Args:
-            chunks: StreamChunk 生成器
+            chunks: StreamChunk 异步生成器
             model_name: 模型名称（用于错误处理）
 
         Returns:
@@ -113,34 +113,15 @@ class BaseAdapter(ABC):
         # ------------------------------------------------------------------
         # Eagerly consume the first chunk to surface provider errors early.
         # ------------------------------------------------------------------
-        chunk_iter = iter(chunks)
-        first_chunks: list = []
-        try:
-            first_chunk = next(chunk_iter)
-            first_chunks.append(first_chunk)
-        except StopIteration:
-            pass
-        except ProviderError as e:
-            return jsonify(self.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
-        except GatewayServiceError as e:
-            return jsonify(self.format_error_response(e.message, e.status_code)), e.status_code
-        except Exception as e:
-            return jsonify(self.format_error_response(str(e), 500)), 500
-
-        # Re-chain the eagerly consumed chunk(s) with the remaining iterator
-        all_chunks = itertools.chain(first_chunks, chunk_iter)
-
-        def generate():
+        async def generate():
             try:
-                # 发送流式开始事件（子类可覆盖）
                 start_event = self.format_stream_start(model_name)
                 if start_event:
                     yield start_event
 
-                for chunk in all_chunks:
+                async for chunk in chunks:
                     yield self.format_stream_chunk(chunk)
 
-                # 发送结束标记
                 yield self.format_stream_end()
 
             except (GatewayServiceError, ProviderError) as e:

@@ -27,7 +27,8 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+import asyncio
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx
 
@@ -426,7 +427,7 @@ def _build_content(
 # API 调用: 创建视频生成任务
 # =============================================================================
 
-def _create_video_task(
+async def _create_video_task(
     api_key: str,
     base_url: str,
     model_id: str,
@@ -495,8 +496,8 @@ def _create_video_task(
 
     try:
         payload_str = json.dumps(body, ensure_ascii=False)
-        with httpx.Client(timeout=60) as client:
-            response = client.post(url, content=payload_str, headers=headers)
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, content=payload_str, headers=headers)
 
         if response.status_code >= 400:
             raise RuntimeError(
@@ -583,7 +584,7 @@ def check_seedance_task_status(
 # API 调用: 轮询任务结果
 # =============================================================================
 
-def _poll_video_task(
+async def _poll_video_task(
     api_key: str,
     base_url: str,
     task_id: str,
@@ -647,7 +648,7 @@ def _poll_video_task(
                     f"Seedance video task {task_id} ended with status={status}"
                 )
 
-            time.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"Seedance video task {task_id} timed out after {max_wait}s"
@@ -664,7 +665,7 @@ def _poll_video_task(
 # 主入口: 执行视频生成
 # =============================================================================
 
-def execute_seedance_video_generation(
+async def execute_seedance_video_generation(
     api_key: str,
     base_url: str,
     model: str,
@@ -772,7 +773,7 @@ def execute_seedance_video_generation(
 
     try:
         # ── 创建任务 ─────────────────────────────────────────────────────────
-        task_id = _create_video_task(
+        task_id = await _create_video_task(
             api_key=api_key,
             base_url=base_url,
             model_id=model_id,
@@ -791,7 +792,7 @@ def execute_seedance_video_generation(
             hook(task_id)
 
         # ── 轮询结果 ─────────────────────────────────────────────────────────
-        video_url, usage_dict, poll_count = _poll_video_task(
+        video_url, usage_dict, poll_count = await _poll_video_task(
             api_key, base_url, task_id, tracer=_child_span, poll_timeout=metadata.get('timeout')
         )
 
@@ -859,10 +860,10 @@ def execute_seedance_video_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_seedance_video_generation(
+async def stream_seedance_video_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     执行 Seedance 视频生成并以 StreamChunk 格式 yield 结果。
 
@@ -878,7 +879,7 @@ def stream_seedance_video_generation(
         chat_fn: provider.chat 非流式方法
         request: ChatRequest
     """
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

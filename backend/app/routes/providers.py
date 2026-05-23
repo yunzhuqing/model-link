@@ -2,11 +2,12 @@
 Provider and Model management routes.
 """
 from datetime import datetime
-from quart import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify, g
 from functools import wraps
 import os
 
-from app import db
+from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from app.models import Provider, Model, Group
 from app.routes.users import token_required
 from app.routes.permissions import (
@@ -68,15 +69,18 @@ providers_bp = Blueprint('providers', __name__)
 @token_required
 async def list_providers(current_user):
     """List all providers, optionally filtered by group_id."""
+    session = g.db_session
     skip = request.args.get('skip', 0, type=int)
     limit = request.args.get('limit', 100, type=int)
     group_id = request.args.get('group_id', type=int)
-    
-    query = db.session.query(Provider)
+
+    stmt = select(Provider).options(selectinload(Provider.models))
     if group_id:
-        query = query.filter(Provider.group_id == group_id)
-    
-    providers = query.offset(skip).limit(limit).all()
+        stmt = stmt.where(Provider.group_id == group_id)
+
+    stmt = stmt.offset(skip).limit(limit)
+    result = await session.execute(stmt)
+    providers = result.scalars().all()
     return jsonify([p.to_dict() for p in providers])
 
 
@@ -84,31 +88,36 @@ async def list_providers(current_user):
 @token_required
 async def create_provider(current_user):
     """Create a new provider in a group. Root only."""
+    session = g.db_session
     data = await request.get_json()
-    
+
     group_id = data.get('group_id')
     if not group_id:
         return jsonify({'detail': 'group_id is required'}), 400
-    
+
     # Permission: requires provider.manage (default: root only)
-    user_role = _get_role(group_id, current_user.id)
-    if not check_permission(user_role, 'provider.manage'):
+    user_role = await _get_role(group_id, current_user.id)
+    if not await check_permission(user_role, 'provider.manage'):
         return jsonify({'detail': 'Provider management is disabled for this group'}), 403
-    
+
     # Verify group exists
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+    result = await session.execute(select(Group).where(Group.id == group_id))
+    group = result.scalars().first()
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     # Check for duplicate name within the same group
     name = data.get('name')
-    existing = db.session.query(Provider).filter(
-        Provider.name == name,
-        Provider.group_id == group_id
-    ).first()
+    result = await session.execute(
+        select(Provider).where(
+            Provider.name == name,
+            Provider.group_id == group_id
+        )
+    )
+    existing = result.scalars().first()
     if existing:
         return jsonify({'detail': f'A provider with name "{name}" already exists in this group'}), 409
-    
+
     provider = Provider(
         name=name,
         type=data.get('type', 'openai'),
@@ -121,15 +130,15 @@ async def create_provider(current_user):
         extra_config=data.get('extra_config'),
         is_active=data.get('is_active', True)
     )
-    db.session.add(provider)
-    db.session.flush()  # Get provider.id without committing
+    session.add(provider)
+    await session.flush()  # Get provider.id without committing
 
     # Auto-create ApiToken for TencentVOD providers
     _maybe_create_tencentvod_api_token(provider)
 
-    db.session.commit()
-    db.session.refresh(provider)
-    
+    await session.commit()
+    await session.refresh(provider)
+
     return jsonify(provider.to_dict()), 201
 
 
@@ -137,7 +146,8 @@ async def create_provider(current_user):
 @token_required
 async def get_provider(current_user, provider_id):
     """Get a specific provider."""
-    provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+    session = g.db_session
+    provider = await session.get(Provider, provider_id, options=[selectinload(Provider.models)])
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
     return jsonify(provider.to_dict())
@@ -148,18 +158,22 @@ async def get_provider(current_user, provider_id):
 @require_provider_permission('provider.manage')
 async def update_provider(current_user, provider_id):
     """Update a provider. Root only (controlled by provider.manage permission)."""
-    provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+    session = g.db_session
+    provider = await session.get(Provider, provider_id, options=[selectinload(Provider.models)])
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
-    
+
     data = await request.get_json()
     if 'name' in data and data['name'] != provider.name:
         # Check for duplicate name within the same group
-        existing = db.session.query(Provider).filter(
-            Provider.name == data['name'],
-            Provider.group_id == provider.group_id,
-            Provider.id != provider_id
-        ).first()
+        result = await session.execute(
+            select(Provider).where(
+                Provider.name == data['name'],
+                Provider.group_id == provider.group_id,
+                Provider.id != provider_id
+            )
+        )
+        existing = result.scalars().first()
         if existing:
             return jsonify({'detail': f'A provider with name "{data["name"]}" already exists in this group'}), 409
         provider.name = data['name']
@@ -191,8 +205,8 @@ async def update_provider(current_user, provider_id):
     # Auto-create ApiToken for TencentVOD providers if not already set
     _maybe_create_tencentvod_api_token(provider)
 
-    db.session.commit()
-    db.session.refresh(provider)
+    await session.commit()
+    await session.refresh(provider)
 
     return jsonify(provider.to_dict())
 
@@ -202,7 +216,8 @@ async def update_provider(current_user, provider_id):
 @require_provider_permission('provider.manage')
 async def reveal_provider_key(current_user, provider_id):
     """Return the full (unmasked) api_key for a provider. Requires provider.manage."""
-    provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+    session = g.db_session
+    provider = await session.get(Provider, provider_id, options=[selectinload(Provider.models)])
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
     return jsonify({'api_key': provider.api_key or ''})
@@ -213,13 +228,14 @@ async def reveal_provider_key(current_user, provider_id):
 @require_provider_permission('provider.manage')
 async def delete_provider(current_user, provider_id):
     """Delete a provider. Root only (controlled by provider.manage permission)."""
-    provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+    session = g.db_session
+    provider = await session.get(Provider, provider_id, options=[selectinload(Provider.models)])
     if not provider:
         return jsonify({'detail': 'Provider not found'}), 404
-    
-    db.session.delete(provider)
-    db.session.commit()
-    
+
+    await session.delete(provider)
+    await session.commit()
+
     return '', 204
 
 
@@ -229,9 +245,11 @@ async def delete_provider(current_user, provider_id):
 @token_required
 async def list_models(current_user):
     """List all models."""
+    session = g.db_session
     skip = request.args.get('skip', 0, type=int)
     limit = request.args.get('limit', 100, type=int)
-    models = db.session.query(Model).offset(skip).limit(limit).all()
+    result = await session.execute(select(Model).options(selectinload(Model.provider)).offset(skip).limit(limit))
+    models = result.scalars().all()
     return jsonify([m.to_dict() for m in models])
 
 
@@ -239,18 +257,20 @@ async def list_models(current_user):
 @token_required
 async def create_model(current_user):
     """Create a new model. Root only."""
+    session = g.db_session
     data = await request.get_json()
-    
+
     # Resolve group_id from provider_id for permission check
     provider_id = data.get('provider_id')
     if provider_id:
-        provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+        result = await session.execute(select(Provider).where(Provider.id == provider_id))
+        provider = result.scalars().first()
         if provider:
             group_id = provider.group_id
-            user_role = _get_role(group_id, current_user.id)
-            if not check_permission(user_role, 'provider.manage'):
+            user_role = await _get_role(group_id, current_user.id)
+            if not await check_permission(user_role, 'provider.manage'):
                 return jsonify({'detail': 'Model management is disabled for this group'}), 403
-    
+
     # Parse retirement_time if provided as ISO string
     retirement_time = None
     if data.get('retirement_time'):
@@ -297,10 +317,10 @@ async def create_model(current_user):
         support_embedding=data.get('support_embedding', False),
         is_active=data.get('is_active', True)
     )
-    db.session.add(model)
-    db.session.commit()
-    db.session.refresh(model)
-    
+    session.add(model)
+    await session.commit()
+    await session.refresh(model)
+
     return jsonify(model.to_dict()), 201
 
 
@@ -308,20 +328,22 @@ async def create_model(current_user):
 @token_required
 async def update_model(current_user, model_id):
     """Update a model.
-    
+
     Root can update all fields (requires root.provider.manage).
     Admin can only update priority and traffic_ratio.
     Member cannot update anything.
     """
-    model = db.session.query(Model).filter(Model.id == model_id).first()
+    session = g.db_session
+    result = await session.execute(select(Model).options(selectinload(Model.provider)).where(Model.id == model_id))
+    model = result.scalars().first()
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
-    
+
     # Resolve group_id from model's provider
     group_id = model.provider.group_id if model.provider else None
-    if not group_id or not _is_member(group_id, current_user.id):
+    if not group_id or not await _is_member(group_id, current_user.id):
         return jsonify({'detail': 'You do not have access to this model'}), 403
-    
+
     data = await request.get_json()
 
     # Strip read-only / computed fields that the frontend may accidentally send
@@ -339,33 +361,33 @@ async def update_model(current_user, model_id):
                   'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                   'support_online_image', 'support_online_video', 'support_embedding',
                   'is_active', 'priority', 'traffic_ratio', 'retirement_time'}
-    
-    is_root = _is_root(group_id, current_user.id)
-    is_admin = _is_admin_or_above_inner(group_id, current_user.id)
-    
+
+    is_root = await _is_root(group_id, current_user.id)
+    is_admin = await _is_admin_or_above_inner(group_id, current_user.id)
+
     if is_root:
-        user_role = _get_role(group_id, current_user.id)
-        if not check_permission(user_role, 'provider.manage'):
+        user_role = await _get_role(group_id, current_user.id)
+        if not await check_permission(user_role, 'provider.manage'):
             return jsonify({'detail': 'Model management is disabled for this group'}), 403
         allowed_fields = all_fields
     elif is_admin:
-        user_role = _get_role(group_id, current_user.id)
-        if not check_permission(user_role, 'model.priority') and not check_permission(user_role, 'model.traffic_ratio'):
+        user_role = await _get_role(group_id, current_user.id)
+        if not await check_permission(user_role, 'model.priority') and not await check_permission(user_role, 'model.traffic_ratio'):
             return jsonify({'detail': 'Model priority and traffic ratio management is disabled for this group'}), 403
         allowed_fields = set()
-        if check_permission(user_role, 'model.priority'):
+        if await check_permission(user_role, 'model.priority'):
             allowed_fields.add('priority')
-        if check_permission(user_role, 'model.traffic_ratio'):
+        if await check_permission(user_role, 'model.traffic_ratio'):
             allowed_fields.add('traffic_ratio')
     else:
         return jsonify({'detail': 'Only admins and root can update models'}), 403
-    
+
     # Reject if any non-allowed field is in the request
     requested_fields = set(data.keys())
     if not requested_fields.issubset(allowed_fields):
         forbidden = requested_fields - allowed_fields
         return jsonify({'detail': f'You cannot modify these fields: {", ".join(sorted(forbidden))}'}), 403
-    
+
     for field in allowed_fields:
         if field in data:
             # Handle alias/nullable strings - convert empty string to None
@@ -388,9 +410,9 @@ async def update_model(current_user, model_id):
     if not model.currency:
         model.currency = 'USD'
 
-    db.session.commit()
-    db.session.refresh(model)
-    
+    await session.commit()
+    await session.refresh(model)
+
     return jsonify(model.to_dict())
 
 
@@ -398,22 +420,24 @@ async def update_model(current_user, model_id):
 @token_required
 async def delete_model(current_user, model_id):
     """Delete a model. Root only (requires root.provider.manage)."""
-    model = db.session.query(Model).filter(Model.id == model_id).first()
+    session = g.db_session
+    result = await session.execute(select(Model).options(selectinload(Model.provider)).where(Model.id == model_id))
+    model = result.scalars().first()
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
-    
+
     # Resolve group_id from model's provider
     group_id = model.provider.group_id if model.provider else None
-    if not group_id or not _is_member(group_id, current_user.id):
+    if not group_id or not await _is_member(group_id, current_user.id):
         return jsonify({'detail': 'You do not have access to this model'}), 403
-    
-    user_role = _get_role(group_id, current_user.id)
-    if not check_permission(user_role, 'provider.manage'):
+
+    user_role = await _get_role(group_id, current_user.id)
+    if not await check_permission(user_role, 'provider.manage'):
         return jsonify({'detail': 'Model management is disabled for this group'}), 403
-    
-    db.session.delete(model)
-    db.session.commit()
-    
+
+    await session.delete(model)
+    await session.commit()
+
     return '', 204
 
 
@@ -423,20 +447,24 @@ async def delete_model(current_user, model_id):
 @token_required
 async def get_all_rate_limits(current_user):
     """Get rate limit status for all models across all groups the user has access to."""
-    from app.rate_limiter import get_rate_limiter
+    from app.rate_limiter import get_async_rate_limiter
 
-    limiter = get_rate_limiter()
+    limiter = get_async_rate_limiter()
     if limiter is None:
         return jsonify({'models': [], 'note': 'Rate limiter not initialized (in-memory mode)'})
 
-    models = db.session.query(Model).filter(
-        Model.is_active == True,
-        db.or_(Model.rpm.isnot(None), Model.tpm.isnot(None))
-    ).all()
+    session = g.db_session
+    result = await session.execute(
+        select(Model).options(selectinload(Model.provider)).where(
+            Model.is_active == True,
+            (Model.rpm.isnot(None)) | (Model.tpm.isnot(None))
+        )
+    )
+    models = result.scalars().all()
 
-    result = []
+    result_list = []
     for model in models:
-        status = limiter.get_status(model.id, model.provider.group_id)
+        status = await limiter.get_status(model.id, model.provider.group_id)
         if status is not None:
             rpm_limit = model.rpm
             tpm_limit = model.tpm
@@ -457,28 +485,30 @@ async def get_all_rate_limits(current_user):
             status['tpm_used'] = (tpm_limit - tpm_remaining) if (tpm_limit is not None and tpm_remaining is not None) else 0
             status['rpm_pct'] = round(status['rpm_used'] / rpm_limit * 100, 1) if rpm_limit else 0
             status['tpm_pct'] = round(status['tpm_used'] / tpm_limit * 100, 1) if tpm_limit else 0
-            result.append(status)
+            result_list.append(status)
 
-    return jsonify({'models': result})
+    return jsonify({'models': result_list})
 
 
 @providers_bp.route('/providers/rate-limits/<int:model_id>', methods=['GET'])
 @token_required
 async def get_model_rate_limit(current_user, model_id):
     """Get rate limit status for a specific model."""
-    from app.rate_limiter import get_rate_limiter
+    from app.rate_limiter import get_async_rate_limiter
 
-    model = db.session.query(Model).filter(Model.id == model_id).first()
+    session = g.db_session
+    result = await session.execute(select(Model).options(selectinload(Model.provider)).where(Model.id == model_id))
+    model = result.scalars().first()
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
 
-    limiter = get_rate_limiter()
+    limiter = get_async_rate_limiter()
     if limiter is None:
         return jsonify({'model_id': model.id, 'model_name': model.name,
                        'rpm': model.rpm, 'tpm': model.tpm,
                        'note': 'Rate limiter not initialized (in-memory mode)'})
 
-    status = limiter.get_status(model.id, model.provider.group_id)
+    status = await limiter.get_status(model.id, model.provider.group_id)
     if status is None:
         return jsonify({
             'model_id': model.id,
@@ -503,7 +533,9 @@ async def get_model_rate_limit(current_user, model_id):
 async def list_workspaces(current_user):
     """List all workspaces."""
     from app.models import Workspace
-    workspaces = db.session.query(Workspace).order_by(Workspace.id).all()
+    session = g.db_session
+    result = await session.execute(select(Workspace).order_by(Workspace.id))
+    workspaces = result.scalars().all()
     return jsonify([ws.to_dict() for ws in workspaces])
 
 
@@ -511,29 +543,33 @@ async def list_workspaces(current_user):
 @token_required
 async def list_workspace_users(current_user, workspace_id):
     """List users in a workspace (members of any group within the workspace). Supports ?search= query."""
-    from app.models import Workspace, User, UserGroup, Group
+    from app.models import Workspace, User, UserGroup, Group as GroupModel
 
-    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    session = g.db_session
+    result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+    ws = result.scalars().first()
     if not ws:
         return jsonify({'detail': 'Workspace not found'}), 404
 
     search = request.args.get('search', '').strip()
 
-    query = (
-        db.session.query(User)
+    stmt = (
+        select(User)
         .join(UserGroup, UserGroup.user_id == User.id)
-        .join(Group, Group.id == UserGroup.group_id)
-        .filter(Group.workspace_id == workspace_id)
+        .join(GroupModel, GroupModel.id == UserGroup.group_id)
+        .where(GroupModel.workspace_id == workspace_id)
         .distinct()
     )
 
     if search:
         pattern = f'%{search}%'
-        query = query.filter(
-            db.or_(User.username.ilike(pattern), User.email.ilike(pattern))
+        stmt = stmt.where(
+            (User.username.ilike(pattern)) | (User.email.ilike(pattern))
         )
 
-    users = query.limit(20).all()
+    stmt = stmt.limit(20)
+    result = await session.execute(stmt)
+    users = result.scalars().all()
     return jsonify([{'id': u.id, 'username': u.username, 'email': u.email} for u in users])
 
 
@@ -541,18 +577,23 @@ async def list_workspace_users(current_user, workspace_id):
 @token_required
 async def get_workspace_rate_limits(current_user, workspace_id):
     """List all workspace-level rate limit configurations and their live status."""
-    from app.rate_limiter import get_rate_limiter
-    from app.models import Workspace, WorkspaceRateLimit, Model, Provider, Group
+    from app.rate_limiter import get_async_rate_limiter
+    from app.models import Workspace, WorkspaceRateLimit, Model as ModelModel, Provider as ProviderModel, Group as GroupModel
 
-    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    session = g.db_session
+    result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+    ws = result.scalars().first()
     if not ws:
         return jsonify({'detail': 'Workspace not found'}), 404
 
-    limits = db.session.query(WorkspaceRateLimit).filter(
-        WorkspaceRateLimit.workspace_id == workspace_id
-    ).all()
+    result = await session.execute(
+        select(WorkspaceRateLimit).options(selectinload(WorkspaceRateLimit.provider)).where(
+            WorkspaceRateLimit.workspace_id == workspace_id
+        )
+    )
+    limits = result.scalars().all()
 
-    limiter = get_rate_limiter()
+    limiter = get_async_rate_limiter()
 
     # Collect all model names for per-provider lookup
     model_names = list(set(rl.model_name for rl in limits))
@@ -561,20 +602,22 @@ async def get_workspace_rate_limits(current_user, workspace_id):
     # to show per-provider breakdown
     provider_models = {}  # model_name -> [{provider_name, group_name, ...}]
     if model_names:
-        matching_models = db.session.query(Model).join(Provider).join(Group).filter(
-            Model.is_active == True,
-            Provider.is_active == True,
-            db.or_(
-                Model.name.in_(model_names),
-                Model.alias.in_(model_names),
+        result = await session.execute(
+            select(ModelModel).options(
+                selectinload(ModelModel.provider).selectinload(ProviderModel.group)
+            ).join(ProviderModel).join(GroupModel).where(
+                ModelModel.is_active == True,
+                ProviderModel.is_active == True,
+                (ModelModel.name.in_(model_names)) | (ModelModel.alias.in_(model_names)),
             )
-        ).all()
+        )
+        matching_models = result.scalars().all()
         for m in matching_models:
             key = m.alias or m.name
             if key not in provider_models:
                 provider_models[key] = []
             # Get group-level status for this specific model
-            grp_status = limiter.get_status(m.id, m.provider.group_id)
+            grp_status = await limiter.get_status(m.id, m.provider.group_id)
             rpm_limit_g = m.rpm
             tpm_limit_g = m.tpm
             rpm_remaining = grp_status['rpm'].get('remaining')
@@ -596,14 +639,17 @@ async def get_workspace_rate_limits(current_user, workspace_id):
     # Build API key lookup: preview -> {name, group_name}
     # API keys belong to this workspace (via workspace_id or group.workspace_id)
     from app.models import ApiKey
-    ws_api_keys = db.session.query(ApiKey).filter(
-        db.or_(
-            ApiKey.workspace_id == workspace_id,
-            ApiKey.group_id.in_(
-                db.session.query(Group.id).filter(Group.workspace_id == workspace_id)
-            ),
+
+    # Subquery for group IDs in this workspace
+    group_ids_subq = select(GroupModel.id).where(GroupModel.workspace_id == workspace_id).subquery()
+
+    result = await session.execute(
+        select(ApiKey).options(selectinload(ApiKey.group)).where(
+            (ApiKey.workspace_id == workspace_id) |
+            (ApiKey.group_id.in_(group_ids_subq))
         )
-    ).all()
+    )
+    ws_api_keys = result.scalars().all()
     apikey_info_map = {}  # preview_prefix -> {name, group_name}
     for ak in ws_api_keys:
         if ak.key:
@@ -613,15 +659,15 @@ async def get_workspace_rate_limits(current_user, workspace_id):
                 'group_name': ak.group.name if ak.group else None,
             }
 
-    result = []
+    result_list = []
     for rl in limits:
-        status = limiter.get_ws_status(
+        status = await limiter.get_ws_status(
             workspace_id, rl.model_name,
             ws_rpm_limit=rl.rpm, ws_tpm_limit=rl.tpm,
             provider_type=rl.provider_type, provider_id=rl.provider_id,
         )
         # Add historical usage (1m, 5m, 10m)
-        history = limiter.get_ws_history(
+        history = await limiter.get_ws_history(
             workspace_id, rl.model_name,
             ws_rpm_limit=rl.rpm, ws_tpm_limit=rl.tpm,
             provider_type=rl.provider_type, provider_id=rl.provider_id,
@@ -648,9 +694,9 @@ async def get_workspace_rate_limits(current_user, workspace_id):
         status['apikeys'] = enriched_apikeys
         # Add per-provider breakdown (group-level models for this model_name)
         status['providers'] = provider_models.get(rl.model_name, [])
-        result.append(status)
+        result_list.append(status)
 
-    return jsonify({'workspace': ws.to_dict(), 'rate_limits': result})
+    return jsonify({'workspace': ws.to_dict(), 'rate_limits': result_list})
 
 
 @providers_bp.route('/workspaces/<int:workspace_id>/rate-limits', methods=['POST'])
@@ -659,7 +705,9 @@ async def create_workspace_rate_limit(current_user, workspace_id):
     """Create a new workspace-level rate limit for a model + provider_type (+ optional provider_id)."""
     from app.models import Workspace, WorkspaceRateLimit
 
-    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    session = g.db_session
+    result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+    ws = result.scalars().first()
     if not ws:
         return jsonify({'detail': 'Workspace not found'}), 404
 
@@ -681,16 +729,18 @@ async def create_workspace_rate_limit(current_user, workspace_id):
     provider_id = data.get('provider_id')  # optional — NULL means shared for all accounts of this type
 
     # Check for duplicate (workspace_id, model_name, provider_type, provider_id)
-    q = db.session.query(WorkspaceRateLimit).filter(
+    stmt = select(WorkspaceRateLimit).where(
         WorkspaceRateLimit.workspace_id == workspace_id,
         WorkspaceRateLimit.model_name == model_name,
         WorkspaceRateLimit.provider_type == provider_type,
     )
     if provider_id is not None:
-        q = q.filter(WorkspaceRateLimit.provider_id == provider_id)
+        stmt = stmt.where(WorkspaceRateLimit.provider_id == provider_id)
     else:
-        q = q.filter(WorkspaceRateLimit.provider_id.is_(None))
-    existing = q.first()
+        stmt = stmt.where(WorkspaceRateLimit.provider_id.is_(None))
+
+    result = await session.execute(stmt)
+    existing = result.scalars().first()
     if existing:
         label = f'{provider_type}' + (f' (provider #{provider_id})' if provider_id else ' (shared)')
         return jsonify({'detail': f'Rate limit for model "{model_name}" / {label} already exists'}), 409
@@ -703,8 +753,8 @@ async def create_workspace_rate_limit(current_user, workspace_id):
         rpm=data.get('rpm'),
         tpm=data.get('tpm'),
     )
-    db.session.add(rl)
-    db.session.commit()
+    session.add(rl)
+    await session.commit()
     return jsonify(rl.to_dict()), 201
 
 
@@ -714,10 +764,14 @@ async def update_workspace_rate_limit(current_user, workspace_id, rate_limit_id)
     """Update a workspace-level rate limit."""
     from app.models import WorkspaceRateLimit
 
-    rl = db.session.query(WorkspaceRateLimit).filter(
-        WorkspaceRateLimit.id == rate_limit_id,
-        WorkspaceRateLimit.workspace_id == workspace_id,
-    ).first()
+    session = g.db_session
+    result = await session.execute(
+        select(WorkspaceRateLimit).where(
+            WorkspaceRateLimit.id == rate_limit_id,
+            WorkspaceRateLimit.workspace_id == workspace_id,
+        )
+    )
+    rl = result.scalars().first()
     if not rl:
         return jsonify({'detail': 'Rate limit not found'}), 404
 
@@ -739,7 +793,7 @@ async def update_workspace_rate_limit(current_user, workspace_id, rate_limit_id)
     if 'provider_id' in data:
         rl.provider_id = data['provider_id']
 
-    db.session.commit()
+    await session.commit()
     return jsonify(rl.to_dict())
 
 
@@ -749,15 +803,19 @@ async def delete_workspace_rate_limit(current_user, workspace_id, rate_limit_id)
     """Delete a workspace-level rate limit."""
     from app.models import WorkspaceRateLimit
 
-    rl = db.session.query(WorkspaceRateLimit).filter(
-        WorkspaceRateLimit.id == rate_limit_id,
-        WorkspaceRateLimit.workspace_id == workspace_id,
-    ).first()
+    session = g.db_session
+    result = await session.execute(
+        select(WorkspaceRateLimit).where(
+            WorkspaceRateLimit.id == rate_limit_id,
+            WorkspaceRateLimit.workspace_id == workspace_id,
+        )
+    )
+    rl = result.scalars().first()
     if not rl:
         return jsonify({'detail': 'Rate limit not found'}), 404
 
-    db.session.delete(rl)
-    db.session.commit()
+    await session.delete(rl)
+    await session.commit()
     return '', 204
 
 
@@ -765,10 +823,12 @@ async def delete_workspace_rate_limit(current_user, workspace_id, rate_limit_id)
 @token_required
 async def get_workspace_rate_limit_status(current_user, workspace_id):
     """Get live rate limit status for a specific model in a workspace."""
-    from app.rate_limiter import get_rate_limiter
+    from app.rate_limiter import get_async_rate_limiter
     from app.models import Workspace, WorkspaceRateLimit
 
-    ws = db.session.query(Workspace).filter(Workspace.id == workspace_id).first()
+    session = g.db_session
+    result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+    ws = result.scalars().first()
     if not ws:
         return jsonify({'detail': 'Workspace not found'}), 404
 
@@ -776,15 +836,18 @@ async def get_workspace_rate_limit_status(current_user, workspace_id):
     if not model_name:
         return jsonify({'detail': 'model_name query parameter is required'}), 400
 
-    rl = db.session.query(WorkspaceRateLimit).filter(
-        WorkspaceRateLimit.workspace_id == workspace_id,
-        WorkspaceRateLimit.model_name == model_name,
-    ).first()
+    result = await session.execute(
+        select(WorkspaceRateLimit).where(
+            WorkspaceRateLimit.workspace_id == workspace_id,
+            WorkspaceRateLimit.model_name == model_name,
+        )
+    )
+    rl = result.scalars().first()
 
-    limiter = get_rate_limiter()
+    limiter = get_async_rate_limiter()
     ws_rpm = rl.rpm if rl else None
     ws_tpm = rl.tpm if rl else None
-    status = limiter.get_ws_status(workspace_id, model_name, ws_rpm_limit=ws_rpm, ws_tpm_limit=ws_tpm)
+    status = await limiter.get_ws_status(workspace_id, model_name, ws_rpm_limit=ws_rpm, ws_tpm_limit=ws_tpm)
     status['workspace_id'] = workspace_id
     status['workspace_name'] = ws.name
     return jsonify(status)

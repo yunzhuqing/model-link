@@ -12,7 +12,7 @@ Anthropic API 特点：
 
 API 文档: https://docs.anthropic.com/en/api/messages
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import uuid
@@ -121,8 +121,9 @@ class AnthropicProvider(BaseProvider):
         """获取 HTTP 客户端"""
         if self._client is None:
             import httpx
-            self._client = httpx.Client(
-                timeout=self.DEFAULT_TIMEOUT,
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
                 headers=self.get_headers()
             )
         return self._client
@@ -457,7 +458,7 @@ class AnthropicProvider(BaseProvider):
 
     # ==================== 非流式请求 ====================
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """执行非流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -470,8 +471,8 @@ class AnthropicProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     try:
@@ -497,7 +498,7 @@ class AnthropicProvider(BaseProvider):
 
     # ==================== 流式请求 ====================
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -511,46 +512,46 @@ class AnthropicProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data), \
-                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
-                # Check for error status before streaming
-                if response.status_code >= 400:
-                    error_text = ""
-                    for chunk in response.iter_bytes():
-                        if chunk:
-                            error_text += chunk.decode('utf-8')
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(
-                            f"Anthropic API error ({response.status_code}): "
-                            f"{json.dumps(error_data, ensure_ascii=False)}"
-                        )
-                    except json.JSONDecodeError:
-                        raise RuntimeError(
-                            f"Anthropic API error ({response.status_code}): {error_text}"
-                        )
-
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-
-                    # Skip event type lines
-                    if line.startswith("event:"):
-                        continue
-
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                    # Check for error status before streaming
+                    if response.status_code >= 400:
+                        error_text = ""
+                        async for chunk in response.aiter_bytes():
+                            if chunk:
+                                error_text += chunk.decode('utf-8')
                         try:
-                            event_data = json.loads(data_str)
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(
+                                f"Anthropic API error ({response.status_code}): "
+                                f"{json.dumps(error_data, ensure_ascii=False)}"
+                            )
                         except json.JSONDecodeError:
+                            raise RuntimeError(
+                                f"Anthropic API error ({response.status_code}): {error_text}"
+                            )
+
+                    async for line in response.aiter_lines():
+                        if not line:
                             continue
 
-                        chunk = self._parse_stream_event(event_data, response_id, request.model)
-                        if chunk:
-                            yield chunk
+                        # Skip event type lines
+                        if line.startswith("event:"):
+                            continue
+
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if not data_str or data_str == "[DONE]":
+                                continue
+
+                            try:
+                                event_data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            chunk = self._parse_stream_event(event_data, response_id, request.model)
+                            if chunk:
+                                yield chunk
 
         except RuntimeError:
             raise

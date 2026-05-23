@@ -16,16 +16,14 @@ Embeddings、Images、Rerank、Responses API 端点已拆分至独立模块。
   - 供应商 API 的差异（由供应商层处理）
 """
 from quart import Blueprint, request, jsonify, current_app, g
-import asyncio
 import logging
-import queue
-import threading
 import time
 
 # Configure logger for gateway
 logger = logging.getLogger("gateway")
 
-from app import db
+from sqlalchemy import select as sa_select
+
 from app.models import Provider, Model
 from app.monitoring import create_tracer
 from app.group_service import get_group_monitoring_config
@@ -59,7 +57,62 @@ from app.routes.gateway_helpers import (
 gateway_bp = Blueprint('gateway', __name__)
 
 
-def _reconcile_tpm(rate_limiter, rate_limit_info, actual_input_tokens: int = 0) -> None:
+
+
+async def _resolve_for_rate_limit(model_name, group_id, provider_id, api_key):
+    """Resolve model + query workspace rate limits."""
+    from app.models import WorkspaceRateLimit
+    from sqlalchemy import select as sa_select
+
+    resolved = await _gateway_service.resolve_model(model_name, group_id, provider_id=provider_id)
+    db_model = resolved.db_model
+
+    workspace_id = None
+    ws_rl = None
+    model_name_for_ws = model_name
+
+    if api_key:
+        workspace_id = getattr(api_key, 'workspace_id', None)
+        if not workspace_id and api_key.group:
+            workspace_id = getattr(api_key.group, 'workspace_id', None)
+
+    if workspace_id and db_model and db_model.provider:
+        session = g.db_session
+        provider_type_val = db_model.provider.type
+        provider_id_val = db_model.provider_id
+        alt_name = db_model.alias or db_model.name
+        for try_name in ([model_name] + ([alt_name] if alt_name != model_name else [])):
+            # Priority 1: exact provider_id match
+            result = await session.execute(
+                sa_select(WorkspaceRateLimit).where(
+                    WorkspaceRateLimit.workspace_id == workspace_id,
+                    WorkspaceRateLimit.model_name == try_name,
+                    WorkspaceRateLimit.provider_type == provider_type_val,
+                    WorkspaceRateLimit.provider_id == provider_id_val,
+                )
+            )
+            ws_rl = result.scalars().first()
+            if ws_rl:
+                model_name_for_ws = try_name
+                break
+            # Priority 2: shared provider_type (provider_id=NULL)
+            result = await session.execute(
+                sa_select(WorkspaceRateLimit).where(
+                    WorkspaceRateLimit.workspace_id == workspace_id,
+                    WorkspaceRateLimit.model_name == try_name,
+                    WorkspaceRateLimit.provider_type == provider_type_val,
+                    WorkspaceRateLimit.provider_id.is_(None),
+                )
+            )
+            ws_rl = result.scalars().first()
+            if ws_rl:
+                model_name_for_ws = try_name
+                break
+
+    return resolved, db_model, workspace_id, ws_rl, model_name_for_ws
+
+
+async def _reconcile_tpm(rate_limiter, rate_limit_info, actual_input_tokens: int = 0) -> None:
     """Reconcile pre-estimated TPM with actual input tokens after the request.
 
     rate_limit_info = (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview,
@@ -74,7 +127,7 @@ def _reconcile_tpm(rate_limiter, rate_limit_info, actual_input_tokens: int = 0) 
         model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, \
             workspace_id, model_name, workspace_tpm, ws_provider_type, ws_provider_id, \
             apikey_rpm, apikey_tpm, api_key_id = rate_limit_info
-        rate_limiter.reconcile(
+        await rate_limiter.reconcile(
             model_id=model_id,
             group_id=group_id,
             tpm_limit=tpm_limit,
@@ -91,100 +144,6 @@ def _reconcile_tpm(rate_limiter, rate_limit_info, actual_input_tokens: int = 0) 
         )
     except Exception as e:
         logger.warning(f"[rate_limiter] TPM reconciliation failed: {e}")
-
-
-def _call_in_app_ctx(app, fn, *args, **kwargs):
-    """Call *fn* with *args, **kwargs inside Flask's application context.
-
-    We explicitly use Flask's ``_cv_app`` ContextVar (the same bridging
-    mechanism used by ``create_app()``) because Quart's ``app.app_context()``
-    does not interoperate with Flask-SQLAlchemy's ``db.session``.
-    """
-    from flask.globals import _cv_app
-    from flask.ctx import AppContext as FlaskAppContext
-
-    token = _cv_app.set(FlaskAppContext(app))
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        try:
-            db.session.remove()
-        except Exception:
-            pass
-        _cv_app.reset(token)
-
-
-def _run_stream_in_thread(app, gateway_service, chat_request, group_id, tracer, provider_id):
-    """Run blocking stream_chat in a worker thread, bridge chunks via queue.Queue.
-
-    Returns a synchronous generator that yields chunks from a thread-safe queue,
-    plus the model_meta dict. The generator is safe to consume from any thread.
-
-    Callers should invoke this via ``await asyncio.to_thread()`` to avoid
-    blocking the asyncio event loop while the initial DB query and first
-    provider response arrive.
-
-    The *app* parameter is the Flask/Quart application object, used to push
-    an application context inside the worker thread so that Flask-SQLAlchemy's
-    ``db.session`` can resolve its scoped session.
-    """
-    q = queue.Queue(maxsize=200)
-
-    def _worker():
-        from flask.globals import _cv_app
-        from flask.ctx import AppContext as FlaskAppContext
-
-        token = _cv_app.set(FlaskAppContext(app))
-        try:
-            chunks_iter, model_meta = gateway_service.stream_chat(
-                chat_request, group_id, tracer=tracer, provider_id=provider_id
-            )
-            q.put(('__meta__', model_meta))
-            for chunk in chunks_iter:
-                q.put(('chunk', chunk))
-            q.put(('__done__', None))
-        except BaseException as e:
-            q.put(('__error__', e))
-        finally:
-            try:
-                db.session.remove()
-            except Exception:
-                pass
-            _cv_app.reset(token)
-
-    t = threading.Thread(target=_worker, daemon=True, name="stream-chat-worker")
-    t.start()
-
-    # Block until the DB query completes (meta available — fast, a few ms).
-    item_type, data = q.get()
-    if item_type == '__error__':
-        raise data
-    model_meta = data
-
-    # Pre-fetch the first chunk so that create_stream_response's eager
-    # next() call doesn't block the calling thread.
-    item_type, data = q.get()
-    if item_type == '__error__':
-        raise data
-    if item_type == '__done__':
-        _first = None
-    else:
-        _first = data
-
-    def _generator():
-        nonlocal _first
-        if _first is not None:
-            yield _first
-            _first = None
-        while True:
-            item_type, data = q.get()
-            if item_type == '__error__':
-                raise data
-            if item_type == '__done__':
-                break
-            yield data
-
-    return _generator(), model_meta
 
 
 # ============== 统一请求处理 ==============
@@ -205,7 +164,7 @@ async def _handle_request(adapter):
     4. 格式化响应（Adapter: ChatResponse → 外部格式）
     """
     # 1. 认证
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("handle_request", status, error.get('detail', 'Not authenticated'), exc_info=True)
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
@@ -245,61 +204,26 @@ async def _handle_request(adapter):
     rate_limiter = None
     rate_limit_info = None  # (model_id, group_id, rpm_limit, tpm_limit, estimated_tokens, apikey_preview, workspace_id, model_name_for_ws, workspace_tpm)
     try:
-        from app.rate_limiter import get_rate_limiter, estimate_input_tokens
-        from app.models import WorkspaceRateLimit
-        rate_limiter = get_rate_limiter()
-        # Resolve model first to get rpm/tpm limits (DB query)
-        resolved_rl = _gateway_service.resolve_model(model_name, group_id, provider_id=provider_id)
-        db_model_rl = resolved_rl.db_model
+        from app.rate_limiter import get_async_rate_limiter, estimate_input_tokens
+        rate_limiter = get_async_rate_limiter()
+        # Resolve model + workspace rate limits
+        _, db_model_rl, workspace_id, _ws_rl, model_name_for_ws = (
+            await _resolve_for_rate_limit(
+                model_name, group_id, provider_id, api_key,
+            )
+        )
         rpm_limit = getattr(db_model_rl, 'rpm', None)
         tpm_limit = getattr(db_model_rl, 'tpm', None)
 
-        # Resolve workspace-level rate limits
-        # Try api_key.workspace_id first, then fall back to group.workspace_id
-        workspace_id = None
         workspace_rpm = None
         workspace_tpm = None
         ws_provider_type = ""
         ws_provider_id_val = None
-        model_name_for_ws = model_name  # Use the requested model name for workspace key
-        if api_key:
-            workspace_id = getattr(api_key, 'workspace_id', None)
-            if not workspace_id and api_key.group:
-                workspace_id = getattr(api_key.group, 'workspace_id', None)
-        if workspace_id and db_model_rl and db_model_rl.provider:
-            provider_type_val = db_model_rl.provider.type
-            provider_id_val = db_model_rl.provider_id
-
-            # Determine the model name for workspace lookup (try alias first)
-            alt_name = db_model_rl.alias or db_model_rl.name
-            # Try each model name variant
-            for try_name in ([model_name] + ([alt_name] if alt_name != model_name else [])):
-                # Priority 1: exact provider_id match
-                ws_rl = db.session.query(WorkspaceRateLimit).filter(
-                    WorkspaceRateLimit.workspace_id == workspace_id,
-                    WorkspaceRateLimit.model_name == try_name,
-                    WorkspaceRateLimit.provider_type == provider_type_val,
-                    WorkspaceRateLimit.provider_id == provider_id_val,
-                ).first()
-                if ws_rl:
-                    model_name_for_ws = try_name
-                    break
-                # Priority 2: shared provider_type (provider_id=NULL)
-                ws_rl = db.session.query(WorkspaceRateLimit).filter(
-                    WorkspaceRateLimit.workspace_id == workspace_id,
-                    WorkspaceRateLimit.model_name == try_name,
-                    WorkspaceRateLimit.provider_type == provider_type_val,
-                    WorkspaceRateLimit.provider_id.is_(None),
-                ).first()
-                if ws_rl:
-                    model_name_for_ws = try_name
-                    break
-
-            if ws_rl:
-                workspace_rpm = ws_rl.rpm
-                workspace_tpm = ws_rl.tpm
-                ws_provider_type = ws_rl.provider_type
-                ws_provider_id_val = ws_rl.provider_id
+        if _ws_rl:
+            workspace_rpm = _ws_rl.rpm
+            workspace_tpm = _ws_rl.tpm
+            ws_provider_type = _ws_rl.provider_type
+            ws_provider_id_val = _ws_rl.provider_id
 
         # API-key-level rate limits
         apikey_rpm = getattr(api_key, 'rpm', None) if api_key else None
@@ -322,7 +246,7 @@ async def _handle_request(adapter):
 
             apikey_preview = (api_key.key[:8] + '...') if api_key and api_key.key else ''
 
-            result = rate_limiter.check_and_reserve(
+            result = await rate_limiter.check_and_reserve(
                 model_id=db_model_rl.id,
                 group_id=group_id or 0,
                 rpm_limit=rpm_limit,
@@ -359,10 +283,10 @@ async def _handle_request(adapter):
         # the actual request flow produce the proper ModelNotFoundError.
         pass
     except Exception as e:
-        logger.error(f"[rate_limiter] Pre-check failed, skipping: {e}")
+        logger.error(f"[rate_limiter] Pre-check failed, skipping: {e}", exc_info=True)
 
     # 4.6. Get monitoring config from group (cache-first)
-    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
     tracer = create_tracer(monitoring_config)
 
     # 5. 调用中间层
@@ -398,16 +322,16 @@ async def _handle_request(adapter):
                     "api_key_name": _api_key_name,
                 })
 
-            chunks, model_meta = await asyncio.to_thread(
-                _run_stream_in_thread, _app, _gateway_service, chat_request, group_id, tracer, provider_id
+            chunks_gen, model_meta = await _gateway_service.stream_chat(
+                chat_request, group_id, tracer=tracer, provider_id=provider_id
             )
 
-            def _chunks_with_usage_recording():
+            async def _chunks_with_usage_recording():
                 last_usage = None
                 _accumulated_extra = {}
                 _content_parts: list[str] = []
                 try:
-                    for chunk in chunks:
+                    async for chunk in chunks_gen:
                         if chunk.usage is not None:
                             if hasattr(chunk.usage, 'extra') and chunk.usage.extra:
                                 _accumulated_extra.update(chunk.usage.extra)
@@ -437,13 +361,13 @@ async def _handle_request(adapter):
                 finally:
                     if last_usage is not None:
                         try:
-                            _reconcile_tpm(rate_limiter, rate_limit_info, last_usage.prompt_tokens if last_usage else 0)
+                            await _reconcile_tpm(rate_limiter, rate_limit_info, last_usage.prompt_tokens if last_usage else 0)
                         except Exception as _e:
                             logger.warning(f"[rate_limiter] Stream TPM reconciliation failed: {_e}")
                         try:
                             from app.usagerecord.usage_service import record_stream_usage
                             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
-                            record_stream_usage(
+                            await record_stream_usage(
                                 app=_app,
                                 usage_info=last_usage,
                                 user_name=_user_name,
@@ -486,8 +410,8 @@ async def _handle_request(adapter):
                     "api_key_name": api_key.name if api_key else None,
                 })
 
-            response, resolved = await asyncio.to_thread(
-                lambda: _call_in_app_ctx(_app, _gateway_service.chat, chat_request, group_id, tracer=tracer, provider_id=provider_id)
+            response, resolved = await _gateway_service.chat(
+                chat_request, group_id, tracer=tracer, provider_id=provider_id
             )
             _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
 
@@ -498,12 +422,11 @@ async def _handle_request(adapter):
                 })
                 tracer.end()
 
-            _reconcile_tpm(rate_limiter, rate_limit_info, response.usage.prompt_tokens if response and response.usage else 0)
+            await _reconcile_tpm(rate_limiter, rate_limit_info, response.usage.prompt_tokens if response and response.usage else 0)
 
             try:
                 from app.usagerecord.usage_service import record_usage
-                record_usage(
-                    app=current_app._get_current_object(),
+                await record_usage(
                     response=response,
                     db_model=resolved.db_model,
                     db_provider=resolved.db_provider,
@@ -574,18 +497,24 @@ async def anthropic_messages():
 @gateway_bp.route('/v1/models', methods=['GET'])
 async def list_models():
     """List all available models (OpenAI compatible)."""
-    from app.models import get_group_models_with_shares
+    from sqlalchemy.orm import selectinload
 
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         return jsonify(error), status
 
+    session = g.db_session
+
     # Get all models for this group (including shared models)
     if api_key:
-        model_provider_pairs = get_group_models_with_shares(api_key.group_id)
+        from app.models import get_group_models_with_shares
+        model_provider_pairs = await get_group_models_with_shares(api_key.group_id, session=session)
     else:
         # No API key — return all active models from all active providers
-        providers = db.session.query(Provider).filter(Provider.is_active == True).all()
+        result = await session.execute(
+            sa_select(Provider).options(selectinload(Provider.models)).where(Provider.is_active == True)
+        )
+        providers = result.scalars().all()
         model_provider_pairs = []
         seen = set()
         for provider in providers:

@@ -11,16 +11,18 @@
   3. 请求执行 - 调用供应商 API 并返回统一格式的响应
   4. 错误处理 - 统一处理供应商层的错误
 """
-from typing import Any, Optional, Generator, Tuple, Callable, List
+from typing import Any, Optional, AsyncGenerator, Tuple, Callable, List
 from dataclasses import dataclass
 import hashlib
 import logging
 import random
 import time
+import asyncio
 import httpx
+from sqlalchemy import select, or_
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import selectinload
 
-from app import db
 from app.utils import json_loads
 from app.models import Provider, Model
 from app.providers import get_provider_class
@@ -77,16 +79,16 @@ logger = logging.getLogger(__name__)
 _TRANSIENT_DB_ERROR_CODES = frozenset({2013})  # 2013 = Lost connection during query
 
 
-def _retry_db_query(query_fn, max_retries=2):
-    """Execute a database query with retries on transient connection errors.
+async def _retry_db_query(session, query_fn, max_retries=2):
+    """Execute an async database query with retries on transient connection errors.
 
-    On OperationalError with a transient code, the broken session is removed
+    On OperationalError with a transient code, the broken session is rolled back
     and a fresh connection is obtained on the next attempt.
     """
     last_exc = None
     for attempt in range(max_retries + 1):
         try:
-            return query_fn()
+            return await query_fn(session)
         except OperationalError as exc:
             last_exc = exc
             code = getattr(exc.orig, 'args', None)
@@ -100,9 +102,12 @@ def _retry_db_query(query_fn, max_retries=2):
                 "Transient DB error (attempt %d/%d): %s. Retrying...",
                 attempt + 1, max_retries + 1, exc
             )
-            db.session.remove()
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             if attempt < max_retries:
-                time.sleep(0.1 * (attempt + 1))
+                await asyncio.sleep(0.1 * (attempt + 1))
         except Exception:
             raise
     raise last_exc
@@ -140,7 +145,14 @@ class GatewayService:
     # Default timeout (seconds) when no model-level timeout is configured.
     DEFAULT_TIMEOUT = 300
 
-    def resolve_model(self, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModel:
+    def __init__(self):
+        self._provider_cache: dict[int, BaseProvider] = {}
+        # Track raw DB values at cache time so we can detect real config changes.
+        # Provider.__init__ may mutate config (e.g. set default base_url), so
+        # we can't compare cached.config against db_provider directly.
+        self._provider_db_fingerprint: dict[int, tuple[str, str | None]] = {}
+
+    async def resolve_model(self, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModel:
         """
         解析模型名称/别名，返回供应商实例和模型信息。
 
@@ -158,33 +170,35 @@ class GatewayService:
         Raises:
             ModelNotFoundError: 如果模型未找到或不可访问
         """
-        # 先尝试按别名查找，再按名称查找
-        # Join with Provider so we can filter by group_id and is_active at the DB level.
-        query = (
-            db.session.query(Model)
-            .join(Provider, Model.provider_id == Provider.id)
-            .filter((Model.alias == model_name) | (Model.name == model_name))
-        )
+        from quart import g
+        session = g.db_session
 
+        async def _query_all(s):
+            result = await s.execute(
+                select(Model)
+                .options(selectinload(Model.provider))
+                .join(Provider, Model.provider_id == Provider.id)
+                .where((Model.alias == model_name) | (Model.name == model_name))
+            )
+            return result.scalars().all()
+
+        all_models: List[Model] = await _retry_db_query(session, _query_all)
+
+        # Filter by group_id
         if group_id is not None:
             from app.models import ModelShare
-            shared_model_ids = (
-                db.session.query(ModelShare.model_id)
-                .filter(ModelShare.target_group_id == group_id)
-                .subquery()
+            shared_result = await session.execute(
+                select(ModelShare.model_id)
+                .where(ModelShare.target_group_id == group_id)
             )
-            query = query.filter(
-                db.or_(
-                    Provider.group_id == group_id,
-                    Model.id.in_(shared_model_ids)
-                )
-            )
+            shared_ids = {row[0] for row in shared_result}
+            all_models = [
+                m for m in all_models
+                if m.provider.group_id == group_id or m.id in shared_ids
+            ]
 
         if provider_id is not None:
-            query = query.filter(Model.provider_id == provider_id)
-
-        # Fetch ALL matching models (across all providers)
-        all_models: List[Model] = _retry_db_query(query.all)
+            all_models = [m for m in all_models if m.provider_id == provider_id]
 
         if not all_models:
             raise ModelNotFoundError(model_name)
@@ -192,7 +206,6 @@ class GatewayService:
         # Filter out retired models
         non_retired = [m for m in all_models if not m.is_retired]
         if not non_retired:
-            # All matching models are retired — use the first to build the error message
             m = all_models[0]
             raise GatewayServiceError(
                 f"Model '{model_name}' was retired on {m.retirement_time.strftime('%Y-%m-%d')} "
@@ -207,7 +220,6 @@ class GatewayService:
         ]
 
         if not active_models:
-            # Determine a more specific error message
             disabled_models = [m for m in non_retired if not m.is_active]
             disabled_providers = [m for m in non_retired if m.is_active and m.provider and not m.provider.is_active]
             if disabled_models and not disabled_providers:
@@ -226,17 +238,13 @@ class GatewayService:
                     status_code=403
                 )
 
-        # Priority + Traffic-ratio based routing:
-        # 1. Group models by priority (higher = more preferred)
-        # 2. Pick the highest priority group
-        # 3. Within that group, distribute traffic by traffic_ratio
-        #    - If user_id is provided, use hash-based deterministic selection
-        #    - If no user_id, use weighted random selection
+        # Priority + Traffic-ratio based routing
         db_model = self._select_model_by_priority(active_models, user_id=user_id)
 
-        db_provider = db.session.query(Provider).filter(
-            Provider.id == db_model.provider_id
-        ).first()
+        provider_result = await session.execute(
+            select(Provider).where(Provider.id == db_model.provider_id)
+        )
+        db_provider = provider_result.scalars().first()
 
         if not db_provider:
             raise ModelNotFoundError(model_name)
@@ -327,7 +335,7 @@ class GatewayService:
             # All traffic_ratios are 0 — fall back to uniform random
             return random.choice(candidates)
 
-    def chat(
+    async def chat(
         self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
         provider_id: Optional[int] = None,
     ) -> Tuple[ChatResponse, ResolvedModel]:
@@ -354,7 +362,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
+        resolved = await self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
 
         # Record provider info on tracer immediately after resolution
         if tracer:
@@ -388,12 +396,12 @@ class GatewayService:
         # 2.6. Convert image URLs to base64 if provider doesn't support online images
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
         if not support_online_image:
-            self._convert_image_urls_to_base64(request)
+            await self._convert_image_urls_to_base64(request)
 
         # 2.7. Convert video URLs to base64 if provider doesn't support online videos
         support_online_video = getattr(resolved.db_model, 'support_online_video', True)
         if not support_online_video:
-            self._convert_video_urls_to_base64(request)
+            await self._convert_video_urls_to_base64(request)
 
         # 2.8. Eagerly extract provider attributes before releasing the DB session.
         #      The LLM call may take 10-60+ seconds — holding a DB connection
@@ -401,16 +409,10 @@ class GatewayService:
         _provider_id = resolved.db_provider.id
         _provider_name = resolved.db_provider.name
 
-        # 2.9. Release DB session before the long-running LLM call.
-        try:
-            db.session.remove()
-        except Exception:
-            pass
-
         # 3. 调用供应商 API
         resolved.provider_instance.tracer = tracer
         try:
-            response = resolved.provider_instance.chat(request)
+            response = await resolved.provider_instance.chat(request)
 
             if not self._should_include_reasoning(request):
                 for choice in response.choices:
@@ -439,10 +441,10 @@ class GatewayService:
                                 provider_id=_provider_id,
                                 provider_name=_provider_name)
 
-    def stream_chat(
+    async def stream_chat(
         self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
         provider_id: Optional[int] = None,
-    ) -> Tuple[Generator[StreamChunk, None, None], dict]:
+    ) -> Tuple[AsyncGenerator[StreamChunk, None], dict]:
         """
         执行流式对话请求，返回 (StreamChunk 生成器, model_meta dict)。
 
@@ -470,7 +472,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. Resolve model (DB access)
-        resolved = self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
+        resolved = await self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
 
         # Record provider info on tracer immediately after resolution
         if tracer:
@@ -501,16 +503,16 @@ class GatewayService:
         # 4. Convert image/video URLs if provider doesn't support them online
         support_online_image = getattr(resolved.db_model, 'support_online_image', True)
         if not support_online_image:
-            self._convert_image_urls_to_base64(request)
+            await self._convert_image_urls_to_base64(request)
         support_online_video = getattr(resolved.db_model, 'support_online_video', True)
         if not support_online_video:
-            self._convert_video_urls_to_base64(request)
+            await self._convert_video_urls_to_base64(request)
 
         # 5. Determine reasoning flag
         include_reasoning = self._should_include_reasoning(request)
 
         # 6. Pre-extract all primitive values from ORM objects while session is open.
-        #    These will be passed to the usage recorder after db.session.remove().
+        #    These will be passed to the usage recorder.
         model_meta: dict = {
             'provider_id': resolved.db_provider.id,
             'provider_name': resolved.db_provider.name,
@@ -531,25 +533,13 @@ class GatewayService:
             'discount': float(getattr(resolved.db_model, 'discount', 1) or 1),
         }
 
-        # 7. Release the DB session — same rationale as stream_chat()
-        try:
-            db.session.remove()
-        except Exception:
-            pass
-
         # 7. Attach tracer to provider so it can create child spans internally.
         resolved.provider_instance.tracer = tracer
 
-        # 8. Release the DB session
-        try:
-            db.session.remove()
-        except Exception:
-            pass
-
-        # 9. Return lazy generator + metadata
-        def _stream():
+        # 8. Return lazy async generator + metadata
+        async def _stream():
             try:
-                for chunk in resolved.provider_instance.stream_chat(request):
+                async for chunk in resolved.provider_instance.stream_chat(request):
                     if not include_reasoning:
                         chunk.delta_reasoning_content = None
                     yield chunk
@@ -605,7 +595,11 @@ class GatewayService:
 
     def _create_provider_instance(self, db_provider: Provider) -> Optional[BaseProvider]:
         """
-        根据数据库供应商配置创建供应商实例。
+        根据数据库供应商配置创建或返回缓存的供应商实例。
+
+        Provider instances (and their httpx.AsyncClient connection pools) are
+        cached by provider_id so that concurrent requests reuse a single
+        managed connection pool instead of creating a new client per request.
 
         Args:
             db_provider: 数据库供应商对象
@@ -613,6 +607,21 @@ class GatewayService:
         Returns:
             供应商实例，如果创建失败返回 None
         """
+        cache_key = db_provider.id
+        raw_api_key = db_provider.api_key or ""
+        raw_base_url = db_provider.base_url
+
+        if cache_key in self._provider_cache:
+            cached = self._provider_cache[cache_key]
+            prev_key, prev_url = self._provider_db_fingerprint.get(cache_key, ("", None))
+            if raw_api_key != prev_key or raw_base_url != prev_url:
+                # DB values changed — invalidate cached instance so the next
+                # call recreates the provider with new config.
+                del self._provider_cache[cache_key]
+                self._provider_db_fingerprint.pop(cache_key, None)
+            else:
+                return cached
+
         provider_type = db_provider.type
         provider_class = get_provider_class(provider_type)
 
@@ -623,19 +632,22 @@ class GatewayService:
 
         config = ProviderConfig(
             name=db_provider.name,
-            api_key=db_provider.api_key or "",
-            base_url=db_provider.base_url,
+            api_key=raw_api_key,
+            base_url=raw_base_url,
             authorization=db_provider.authorization or "Authorization",
             extra_config=db_provider.extra_config or {},
         )
 
         try:
-            return provider_class(config)
+            instance = provider_class(config)
+            self._provider_cache[cache_key] = instance
+            self._provider_db_fingerprint[cache_key] = (raw_api_key, raw_base_url)
+            return instance
         except Exception as e:
             return None
 
     @staticmethod
-    def _convert_image_urls_to_base64(request: ChatRequest) -> None:
+    async def _convert_image_urls_to_base64(request: ChatRequest) -> None:
         """
         Convert all IMAGE_URL content blocks in the request to IMAGE_BASE64.
 
@@ -683,44 +695,44 @@ class GatewayService:
             ext = os.path.splitext(path)[1].lower()
             return _EXT_MIME.get(ext, 'image/jpeg')
 
-        for message in request.messages:
-            if not isinstance(message.content, list):
-                continue
-
-            new_blocks = []
-            for block in message.content:
-                if not isinstance(block, ContentBlock):
-                    new_blocks.append(block)
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            for message in request.messages:
+                if not isinstance(message.content, list):
                     continue
 
-                if block.type == ContentType.IMAGE_URL and block.url:
-                    # Download the image and convert to base64
-                    try:
-                        with httpx.Client(timeout=30, follow_redirects=True) as client:
-                            resp = client.get(block.url)
-                            resp.raise_for_status()
-                        ct = resp.headers.get('content-type', '')
-                        mime = _guess_mime(block.url, ct)
-                        b64_data = base64.b64encode(resp.content).decode('ascii')
-                        new_blocks.append(ContentBlock.from_image_base64(b64_data, mime))
-                        logger.info(
-                            f"Converted image URL to base64: {block.url[:80]}... "
-                            f"({len(resp.content)} bytes, {mime})"
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            f"Failed to download image URL {block.url[:120]}: {exc}. "
-                            f"Keeping original URL block."
-                        )
-                        # Keep the original block if download fails
+                new_blocks = []
+                for block in message.content:
+                    if not isinstance(block, ContentBlock):
                         new_blocks.append(block)
-                else:
-                    new_blocks.append(block)
+                        continue
 
-            message.content = new_blocks
+                    if block.type == ContentType.IMAGE_URL and block.url:
+                        # Download the image and convert to base64
+                        try:
+                            resp = await client.get(block.url)
+                            resp.raise_for_status()
+                            ct = resp.headers.get('content-type', '')
+                            mime = _guess_mime(block.url, ct)
+                            b64_data = base64.b64encode(resp.content).decode('ascii')
+                            new_blocks.append(ContentBlock.from_image_base64(b64_data, mime))
+                            logger.info(
+                                f"Converted image URL to base64: {block.url[:80]}... "
+                                f"({len(resp.content)} bytes, {mime})"
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to download image URL {block.url[:120]}: {exc}. "
+                                f"Keeping original URL block."
+                            )
+                            # Keep the original block if download fails
+                            new_blocks.append(block)
+                    else:
+                        new_blocks.append(block)
+
+                message.content = new_blocks
 
     @staticmethod
-    def _convert_video_urls_to_base64(request: ChatRequest) -> None:
+    async def _convert_video_urls_to_base64(request: ChatRequest) -> None:
         """
         Convert all VIDEO_URL content blocks in the request to VIDEO_BASE64.
 
@@ -762,41 +774,41 @@ class GatewayService:
             ext = os.path.splitext(path)[1].lower()
             return _EXT_MIME.get(ext, 'video/mp4')
 
-        for message in request.messages:
-            if not isinstance(message.content, list):
-                continue
-
-            new_blocks = []
-            for block in message.content:
-                if not isinstance(block, ContentBlock):
-                    new_blocks.append(block)
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http_client:
+            for message in request.messages:
+                if not isinstance(message.content, list):
                     continue
 
-                if block.type == ContentType.VIDEO_URL and block.url:
-                    try:
-                        with httpx.Client(timeout=60, follow_redirects=True) as http_client:
-                            resp = http_client.get(block.url)
-                            resp.raise_for_status()
-                        ct = resp.headers.get('content-type', '')
-                        mime = _guess_mime(block.url, ct)
-                        b64_data = base64.b64encode(resp.content).decode('ascii')
-                        new_blocks.append(ContentBlock.from_video_base64(b64_data, mime))
-                        logger.info(
-                            f"Converted video URL to base64: {block.url[:80]}... "
-                            f"({len(resp.content)} bytes, {mime})"
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            f"Failed to download video URL {block.url[:120]}: {exc}. "
-                            f"Keeping original URL block."
-                        )
+                new_blocks = []
+                for block in message.content:
+                    if not isinstance(block, ContentBlock):
                         new_blocks.append(block)
-                else:
-                    new_blocks.append(block)
+                        continue
 
-            message.content = new_blocks
+                    if block.type == ContentType.VIDEO_URL and block.url:
+                        try:
+                            resp = await http_client.get(block.url)
+                            resp.raise_for_status()
+                            ct = resp.headers.get('content-type', '')
+                            mime = _guess_mime(block.url, ct)
+                            b64_data = base64.b64encode(resp.content).decode('ascii')
+                            new_blocks.append(ContentBlock.from_video_base64(b64_data, mime))
+                            logger.info(
+                                f"Converted video URL to base64: {block.url[:80]}... "
+                                f"({len(resp.content)} bytes, {mime})"
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to download video URL {block.url[:120]}: {exc}. "
+                                f"Keeping original URL block."
+                            )
+                            new_blocks.append(block)
+                    else:
+                        new_blocks.append(block)
 
-    def rerank(self, request: RerankRequest, group_id: Optional[int] = None,
+                message.content = new_blocks
+
+    async def rerank(self, request: RerankRequest, group_id: Optional[int] = None,
                provider_id: Optional[int] = None) -> RerankResponse:
         """
         执行 Rerank 请求。
@@ -815,7 +827,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
+        resolved = await self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
 
         # 2. 替换为真实模型名称
         request.model = resolved.real_model_name
@@ -829,7 +841,7 @@ class GatewayService:
 
         # 4. 调用供应商 API
         try:
-            return resolved.provider_instance.rerank(request)
+            return await resolved.provider_instance.rerank(request)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -842,7 +854,7 @@ class GatewayService:
                                 provider_id=resolved.db_provider.id,
                                 provider_name=resolved.db_provider.name)
 
-    def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None, tracer: Any = None) -> EmbeddingResponse:
+    async def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None, tracer: Any = None) -> EmbeddingResponse:
         """
         执行嵌入请求。
 
@@ -860,7 +872,7 @@ class GatewayService:
             ProviderError: 供应商 API 调用失败
         """
         # 1. 解析模型
-        resolved = self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
+        resolved = await self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
 
         # Record provider info on tracer immediately after resolution
         if tracer:
@@ -897,7 +909,7 @@ class GatewayService:
 
         # 4. 调用供应商 API
         try:
-            response = resolved.provider_instance.embed(request)
+            response = await resolved.provider_instance.embed(request)
             return response
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
@@ -911,7 +923,7 @@ class GatewayService:
                                 provider_id=resolved.db_provider.id,
                                 provider_name=resolved.db_provider.name)
 
-    def generate_images(
+    async def generate_images(
         self,
         model_name: str,
         prompt: str,
@@ -1003,7 +1015,7 @@ class GatewayService:
         # Providers that support image generation (Volcengine, Bailian, Gemini,
         # …) will detect the metadata and call their image-gen API.
         try:
-            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
+            chat_response, resolved = await self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -1047,7 +1059,7 @@ class GatewayService:
         }
         return result_dict, chat_response, resolved
 
-    def edit_images(
+    async def edit_images(
         self,
         model_name: str,
         prompt: str,
@@ -1141,7 +1153,7 @@ class GatewayService:
         # Route through the standard chat pipeline (with resolved model info
         # for usage recording)
         try:
-            chat_response, resolved = self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
+            chat_response, resolved = await self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:

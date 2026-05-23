@@ -6,12 +6,12 @@ Cache integration:
   - Create / update / delete / regenerate operations invalidate the cache
     (cache.invalidate_api_key_by_id) so stale data is never served.
 """
-from quart import Blueprint, request, jsonify, current_app
+from quart import Blueprint, request, jsonify, current_app, g
 from datetime import datetime
-import asyncio
 import secrets
 
-from app import db
+from sqlalchemy import select, func, update
+from sqlalchemy.orm import selectinload
 from app.models import ApiKey, ApiKeyBudget, ApiKeyPolicy
 from app.routes.users import token_required
 from app.models import check_permission
@@ -30,8 +30,6 @@ from app.group_service import (
     update_group as _svc_update_group,
     delete_group as _svc_delete_group,
 )
-
-from app.routes.gateway_helpers import _call_in_app_ctx
 
 apikeys_bp = Blueprint('apikeys', __name__)
 
@@ -60,18 +58,21 @@ async def list_groups(current_user):
     """
     from app.models import UserGroup
 
+    session = g.db_session
     search = request.args.get('search', '').strip().lower()
 
     result = []
     for g in current_user.groups:
         if search and search not in g.name.lower():
             continue
-        group_dict = g.to_dict()
+        group_dict = await g.to_dict(session=session)
         # Include the current user's role in this group
-        ug = db.session.query(UserGroup).filter(
-            UserGroup.group_id == g.id,
-            UserGroup.user_id == current_user.id,
-        ).first()
+        ug = (await session.execute(
+            select(UserGroup).where(
+                UserGroup.group_id == g.id,
+                UserGroup.user_id == current_user.id,
+            )
+        )).scalars().first()
         group_dict['my_role'] = ug.role if ug else None
         result.append(group_dict)
 
@@ -90,7 +91,7 @@ async def create_group(current_user):
     if not data.get('name'):
         return jsonify({'detail': 'Group name is required'}), 400
 
-    group, err = _svc_create_group(
+    group, err = await _svc_create_group(
         name=data.get('name'),
         description=data.get('description'),
         workspace_id=data.get('workspace_id'),
@@ -99,27 +100,30 @@ async def create_group(current_user):
         return jsonify({'detail': err}), 400
 
     # Creator is automatically a root member
+    session = g.db_session
+    # Merge the group created in the sync session into the async session
+    merged_group = await session.merge(group)
     user_group = UserGroup(
         user_id=current_user.id,
-        group_id=group.id,
+        group_id=merged_group.id,
         role='root',
     )
-    db.session.add(user_group)
+    session.add(user_group)
     try:
-        db.session.commit()
+        await session.commit()
     except Exception as e:
-        db.session.rollback()
+        await session.rollback()
         return jsonify({'detail': str(e)}), 400
-    db.session.refresh(group)
+    await session.refresh(merged_group)
 
-    return jsonify(group.to_dict()), 201
+    return jsonify(merged_group.to_dict()), 201
 
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['GET'])
 @token_required
 async def get_group(current_user, group_id):
     """Get a specific group."""
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
 
@@ -149,9 +153,11 @@ async def update_group(current_user, group_id):
     if err:
         return jsonify({'detail': err}), 404 if err == 'Group not found' else 400
 
-    db.session.commit()
-    db.session.refresh(group)
-    return jsonify(group.to_dict())
+    session = g.db_session
+    merged_group = await session.merge(group)
+    await session.commit()
+    await session.refresh(merged_group)
+    return jsonify(merged_group.to_dict())
 
 
 @apikeys_bp.route('/groups/<int:group_id>', methods=['DELETE'])
@@ -159,11 +165,17 @@ async def update_group(current_user, group_id):
 @require_permission('group.manage')
 async def delete_group(current_user, group_id):
     """Delete a group. Root only (controlled by group.manage permission)."""
+    from app.models import Group
+
     ok, err = _svc_delete_group(group_id)
     if err:
         return jsonify({'detail': err}), 404
 
-    db.session.commit()
+    session = g.db_session
+    group = await session.get(Group, group_id)
+    if group is not None:
+        await session.delete(group)
+    await session.commit()
     return '', 204
 
 
@@ -174,22 +186,26 @@ async def add_user_to_group(current_user, group_id, user_id):
     """Add a user to a group. Admin or above only (controlled by member.manage permission)."""
     from app.models import User
 
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
 
-    user = db.session.query(User).filter(User.id == user_id).first()
+    session = g.db_session
+    user = await session.get(User, user_id)
     if not user:
         return jsonify({'detail': 'User not found'}), 404
 
-    if user in group.users:
+    # Merge group into async session to manage relationships
+    merged_group = await session.merge(group)
+
+    if user in merged_group.users:
         return jsonify({'detail': 'User is already a member of this group'}), 400
 
-    group.users.append(user)
-    db.session.commit()
-    db.session.refresh(group)
+    merged_group.users.append(user)
+    await session.commit()
+    await session.refresh(merged_group)
 
-    return jsonify(group.to_dict())
+    return jsonify(merged_group.to_dict())
 
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>', methods=['DELETE'])
@@ -199,30 +215,36 @@ async def remove_user_from_group(current_user, group_id, user_id):
     """Remove a user from a group. Admin or above only (controlled by member.manage permission)."""
     from app.models import User, UserGroup
 
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
 
-    user = db.session.query(User).filter(User.id == user_id).first()
+    session = g.db_session
+    user = await session.get(User, user_id)
     if not user:
         return jsonify({'detail': 'User not found'}), 404
 
-    if user not in group.users:
+    # Merge group into async session to manage relationships
+    merged_group = await session.merge(group)
+
+    if user not in merged_group.users:
         return jsonify({'detail': 'User is not a member of this group'}), 400
 
-    target_membership = db.session.query(UserGroup).filter(
-        UserGroup.group_id == group_id,
-        UserGroup.user_id == user_id
-    ).first()
-    current_role = _get_role(group_id, current_user.id)
+    target_membership = (await session.execute(
+        select(UserGroup).where(
+            UserGroup.group_id == group_id,
+            UserGroup.user_id == user_id
+        )
+    )).scalars().first()
+    current_role = await _get_role(group_id, current_user.id)
     if _role_rank(target_membership.role) > _role_rank(current_role):
         return jsonify({'detail': 'Cannot remove a member with a higher role than your own'}), 403
 
-    group.users.remove(user)
-    db.session.commit()
-    db.session.refresh(group)
+    merged_group.users.remove(user)
+    await session.commit()
+    await session.refresh(merged_group)
 
-    return jsonify(group.to_dict())
+    return jsonify(merged_group.to_dict())
 
 
 @apikeys_bp.route('/groups/<int:group_id>/invite', methods=['POST'])
@@ -232,44 +254,50 @@ async def invite_member(current_user, group_id):
     """Invite a member to a group by email. Admin or above only (controlled by member.invite permission)."""
     from app.models import User, UserGroup
 
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     data = await request.get_json()
     email = data.get('email')
     role = data.get('role', 'member')  # Default to member role
-    
+
     # Validate role
     if role not in ['root', 'admin', 'member']:
         return jsonify({'detail': 'Invalid role. Must be root, admin, or member'}), 400
 
-    current_role = _get_role(group_id, current_user.id)
+    session = g.db_session
+    current_role = await _get_role(group_id, current_user.id)
     if _role_rank(role) > _role_rank(current_role):
         return jsonify({'detail': 'Cannot assign a role higher than your own'}), 403
 
     if not email:
         return jsonify({'detail': 'Email is required'}), 400
-    
+
     # Find user by email
-    user = db.session.query(User).filter(User.email == email).first()
+    user = (await session.execute(
+        select(User).where(User.email == email)
+    )).scalars().first()
     if not user:
         return jsonify({'detail': 'User with this email not found'}), 404
-    
-    if user in group.users:
+
+    # Merge group into async session to check membership
+    merged_group = await session.merge(group)
+
+    if user in merged_group.users:
         return jsonify({'detail': 'User is already a member of this group'}), 400
-    
+
     # Add user with specified role
     user_group = UserGroup(
         user_id=user.id,
         group_id=group.id,
         role=role
     )
-    db.session.add(user_group)
-    db.session.commit()
-    db.session.refresh(group)
-    
-    return jsonify(group.to_dict())
+    session.add(user_group)
+    await session.commit()
+    await session.refresh(merged_group)
+
+    return jsonify(merged_group.to_dict())
 
 
 @apikeys_bp.route('/groups/<int:group_id>/users/<int:user_id>/role', methods=['PUT'])
@@ -278,28 +306,31 @@ async def invite_member(current_user, group_id):
 async def update_member_role(current_user, group_id, user_id):
     """Update a member's role in a group. Root and admin (with permission) can change roles."""
     from app.models import User, UserGroup
-    
-    group = get_group_by_id(group_id)
+
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     data = await request.get_json()
     new_role = data.get('role')
-    
+
     # Validate role
     if new_role not in ['root', 'admin', 'member']:
         return jsonify({'detail': 'Invalid role. Must be root, admin, or member'}), 400
-    
+
+    session = g.db_session
     # Find the user's membership
-    user_group = db.session.query(UserGroup).filter(
-        UserGroup.group_id == group_id,
-        UserGroup.user_id == user_id
-    ).first()
-    
+    user_group = (await session.execute(
+        select(UserGroup).where(
+            UserGroup.group_id == group_id,
+            UserGroup.user_id == user_id
+        )
+    )).scalars().first()
+
     if not user_group:
         return jsonify({'detail': 'User is not a member of this group'}), 400
-    
-    current_role = _get_role(group_id, current_user.id)
+
+    current_role = await _get_role(group_id, current_user.id)
 
     # Cannot modify someone with a higher role
     if _role_rank(user_group.role) > _role_rank(current_role):
@@ -308,12 +339,13 @@ async def update_member_role(current_user, group_id, user_id):
     # Cannot assign a role higher than your own
     if _role_rank(new_role) > _role_rank(current_role):
         return jsonify({'detail': 'Cannot assign a role higher than your own'}), 403
-    
+
     user_group.role = new_role
-    db.session.commit()
-    db.session.refresh(group)
-    
-    return jsonify(group.to_dict())
+    await session.commit()
+    merged_group = await session.merge(group)
+    await session.refresh(merged_group)
+
+    return jsonify(merged_group.to_dict())
 
 
 # ============== Model Share Management ==============
@@ -324,20 +356,22 @@ async def list_model_shares(current_user, group_id):
     """List models shared to this group from other groups."""
     from app.models import Group, ModelShare, Model as MLModel, Provider
 
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
 
     if current_user not in group.users:
         return jsonify({'detail': 'You do not have access to this group'}), 403
 
+    session = g.db_session
     shares = (
-        db.session.query(ModelShare, MLModel, Provider, Group)
-        .join(MLModel, ModelShare.model_id == MLModel.id)
-        .join(Provider, MLModel.provider_id == Provider.id)
-        .join(Group, ModelShare.source_group_id == Group.id)
-        .filter(ModelShare.target_group_id == group_id)
-        .all()
+        (await session.execute(
+            select(ModelShare, MLModel, Provider, Group)
+            .join(MLModel, ModelShare.model_id == MLModel.id)
+            .join(Provider, MLModel.provider_id == Provider.id)
+            .join(Group, ModelShare.source_group_id == Group.id)
+            .where(ModelShare.target_group_id == group_id)
+        )).all()
     )
 
     result = []
@@ -381,7 +415,7 @@ async def add_model_share(current_user, group_id):
     """Share a model from another group to this group."""
     from app.models import ModelShare, Model as MLModel
 
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
 
@@ -393,7 +427,8 @@ async def add_model_share(current_user, group_id):
     if not model_id:
         return jsonify({'detail': 'model_id is required'}), 400
 
-    model = db.session.query(MLModel).filter(MLModel.id == model_id).first()
+    session = g.db_session
+    model = await session.get(MLModel, model_id, options=[selectinload(MLModel.provider)])
     if not model:
         return jsonify({'detail': 'Model not found'}), 404
 
@@ -406,10 +441,12 @@ async def add_model_share(current_user, group_id):
         return jsonify({'detail': 'Cannot share a model to its own group'}), 400
 
     # Check if already shared
-    existing = db.session.query(ModelShare).filter(
-        ModelShare.model_id == model_id,
-        ModelShare.target_group_id == group_id,
-    ).first()
+    existing = (await session.execute(
+        select(ModelShare).where(
+            ModelShare.model_id == model_id,
+            ModelShare.target_group_id == group_id,
+        )
+    )).scalars().first()
     if existing:
         return jsonify({'detail': 'Model is already shared to this group'}), 409
 
@@ -419,8 +456,8 @@ async def add_model_share(current_user, group_id):
         target_group_id=group_id,
         created_by=current_user.id,
     )
-    db.session.add(share)
-    db.session.commit()
+    session.add(share)
+    await session.commit()
 
     return jsonify({
         'id': share.id,
@@ -438,22 +475,25 @@ async def remove_model_share(current_user, group_id, share_id):
     """Remove a model share from this group."""
     from app.models import ModelShare
 
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
 
     if current_user not in group.users:
         return jsonify({'detail': 'You do not have access to this group'}), 403
 
-    share = db.session.query(ModelShare).filter(
-        ModelShare.id == share_id,
-        ModelShare.target_group_id == group_id,
-    ).first()
+    session = g.db_session
+    share = (await session.execute(
+        select(ModelShare).where(
+            ModelShare.id == share_id,
+            ModelShare.target_group_id == group_id,
+        )
+    )).scalars().first()
     if not share:
         return jsonify({'detail': 'Model share not found'}), 404
 
-    db.session.delete(share)
-    db.session.commit()
+    await session.delete(share)
+    await session.commit()
 
     return jsonify({'detail': 'Model share removed'})
 
@@ -466,7 +506,8 @@ async def list_api_keys(current_user):
     """List the current user's own API keys only."""
     api_keys = []
     for group in current_user.groups:
-        api_keys.extend([k.to_dict_with_group() for k in group.api_keys if k.user_id == current_user.id])
+        group_keys = await group.get_api_keys(session=session)
+        api_keys.extend([k.to_dict_with_group() for k in group_keys if k.user_id == current_user.id])
     return jsonify(api_keys)
 
 
@@ -474,7 +515,7 @@ async def list_api_keys(current_user):
 @token_required
 async def list_api_keys_by_group(current_user, group_id):
     """List all API keys for a specific group."""
-    group = get_group_by_id(group_id)
+    group = await get_group_by_id(group_id)
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
     
@@ -482,7 +523,7 @@ async def list_api_keys_by_group(current_user, group_id):
         return jsonify({'detail': 'You are not a member of this group'}), 403
     
     # Members can only see their own API keys; admins/root see all
-    if _is_admin_or_above_inner(group_id, current_user.id):
+    if await _is_admin_or_above_inner(group_id, current_user.id):
         return jsonify([k.to_dict() for k in group.api_keys])
     else:
         return jsonify([k.to_dict() for k in group.api_keys if k.user_id == current_user.id])
@@ -496,26 +537,27 @@ async def get_api_key(current_user, api_key_id):
     from app.cache import get_cache
     cache = get_cache()
     cached = cache.get_api_key_info_by_id(api_key_id)
+    session = g.db_session
     if cached is not None:
         # Still need to verify group membership from DB
-        api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
         if not api_key:
             cache.invalidate_api_key_by_id(api_key_id)
             return jsonify({'detail': 'API key not found'}), 404
         if current_user not in api_key.group.users:
             return jsonify({'detail': 'You do not have access to this API key'}), 403
-        if not _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
+        if not await _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
             return jsonify({'detail': 'You do not have access to this API key'}), 403
         return jsonify(api_key.to_dict_with_group())
 
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
 
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
-    if not _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
+    if not await _is_admin_or_above_inner(api_key.group_id, current_user.id) and api_key.user_id != current_user.id:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
     return jsonify(api_key.to_dict_with_group())
@@ -526,30 +568,31 @@ async def get_api_key(current_user, api_key_id):
 async def create_api_key(current_user):
     """Create a new API key. Members can only create if member.apikey.create is enabled."""
     data = await request.get_json()
-    
+
     # Check if the group exists and user is a member
     group = get_group_by_id(data.get('group_id'))
     if not group:
         return jsonify({'detail': 'Group not found'}), 404
-    
+
     if current_user not in group.users:
         return jsonify({'detail': 'You are not a member of this group'}), 403
-    
+
     # Permission: non-root users need apikey.create permission
     group_id = group.id
-    user_role = _get_role(group_id, current_user.id)
-    if user_role != 'root' and not check_permission(user_role, 'apikey.create'):
+    session = g.db_session
+    user_role = await _get_role(group_id, current_user.id)
+    if user_role != 'root' and not await check_permission(user_role, 'apikey.create', session=session):
         return jsonify({'detail': 'Creating API keys is disabled for your role'}), 403
 
     # Permission: non-root users need apikey.edit_models to restrict allowed_models
-    if data.get('allowed_models') and user_role != 'root' and not check_permission(user_role, 'apikey.edit_models'):
+    if data.get('allowed_models') and user_role != 'root' and not await check_permission(user_role, 'apikey.edit_models', session=session):
         return jsonify({'detail': 'You do not have permission to restrict allowed models'}), 403
 
     # Convert empty string to None for expires_at (empty string is not valid for timestamp)
     expires_at = data.get('expires_at')
     if expires_at == '':
         expires_at = None
-    
+
     api_key = ApiKey(
         key=generate_api_key(),
         name=data.get('name'),
@@ -565,8 +608,8 @@ async def create_api_key(current_user):
         rpm=data.get('rpm') or None,
         tpm=data.get('tpm') or None,
     )
-    db.session.add(api_key)
-    db.session.flush()
+    session.add(api_key)
+    await session.flush()
 
     # Create default budget record
     budget_entry = ApiKeyBudget(
@@ -574,10 +617,10 @@ async def create_api_key(current_user):
         amount=100.0,
         remaining=100.0,
     )
-    db.session.add(budget_entry)
-    db.session.commit()
-    db.session.refresh(api_key)
-    
+    session.add(budget_entry)
+    await session.commit()
+    await session.refresh(api_key)
+
     return jsonify(api_key.to_dict()), 201
 
 
@@ -587,32 +630,33 @@ async def update_api_key(current_user, api_key_id):
     """Update an API key. Invalidates cache after update.
     Members can only edit their own keys if member.apikey.edit_own is enabled.
     Admins/root can edit any key in the group."""
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    
+
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
-    
+
     # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
     group_id = api_key.group_id
-    user_role = _get_role(group_id, current_user.id)
+    user_role = await _get_role(group_id, current_user.id)
     is_owner = api_key.user_id == current_user.id
     if user_role != 'root':
-        if not is_owner and not check_permission(user_role, 'apikey.manage'):
+        if not is_owner and not await check_permission(user_role, 'apikey.manage', session=session):
             return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
-        if is_owner and not check_permission(user_role, 'apikey.edit_own'):
+        if is_owner and not await check_permission(user_role, 'apikey.edit_own', session=session):
             return jsonify({'detail': 'Editing own API keys is disabled for your role'}), 403
-    
+
     data = await request.get_json()
 
     # Check field-specific permissions for budget operations
     if user_role != 'root':
-        if 'unlimited_budget' in data and not check_permission(user_role, 'apikey.unlimited_budget'):
+        if 'unlimited_budget' in data and not await check_permission(user_role, 'apikey.unlimited_budget', session=session):
             return jsonify({'detail': 'You do not have permission to toggle unlimited budget'}), 403
-        if 'budget' in data and not check_permission(user_role, 'apikey.add_budget'):
+        if 'budget' in data and not await check_permission(user_role, 'apikey.add_budget', session=session):
             return jsonify({'detail': 'You do not have permission to add budget'}), 403
-        if 'allowed_models' in data and not check_permission(user_role, 'apikey.edit_models'):
+        if 'allowed_models' in data and not await check_permission(user_role, 'apikey.edit_models', session=session):
             return jsonify({'detail': 'You do not have permission to edit allowed models'}), 403
 
     if 'name' in data:
@@ -634,10 +678,14 @@ async def update_api_key(current_user, api_key_id):
         new_unlimited = bool(data['unlimited_budget'])
         if new_unlimited and not api_key.unlimited_budget:
             # Turning ON unlimited budget: zero out all active budget records
-            db.session.query(ApiKeyBudget).filter(
-                ApiKeyBudget.api_key_id == api_key_id,
-                ApiKeyBudget.remaining > 0,
-            ).update({ApiKeyBudget.remaining: 0.0})
+            await session.execute(
+                update(ApiKeyBudget)
+                .where(
+                    ApiKeyBudget.api_key_id == api_key_id,
+                    ApiKeyBudget.remaining > 0,
+                )
+                .values(remaining=0.0)
+            )
             api_key.last_synced_remaining = 0.0
         api_key.unlimited_budget = new_unlimited
         # Reset budget to 0 when toggling unlimited_budget (both on and off)
@@ -656,10 +704,10 @@ async def update_api_key(current_user, api_key_id):
     if 'tpm' in data:
         val = data['tpm']
         api_key.tpm = int(val) if val is not None and val != '' else None
-    
-    db.session.commit()
-    db.session.refresh(api_key)
-    
+
+    await session.commit()
+    await session.refresh(api_key)
+
     # Update cache with new values so budget/unlimited checks see them immediately
     try:
         from app.cache import get_cache
@@ -686,7 +734,7 @@ async def update_api_key(current_user, api_key_id):
             bm.invalidate(api_key.key)
     except Exception:
         pass
-    
+
     return jsonify(api_key.to_dict())
 
 
@@ -697,7 +745,8 @@ async def get_api_key_models(current_user, api_key_id):
     from app.models import UsageRecord, get_group_models_with_shares
     import hashlib
 
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
 
@@ -705,7 +754,7 @@ async def get_api_key_models(current_user, api_key_id):
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
     # Get all active models in the group (including shared models)
-    pairs = get_group_models_with_shares(api_key.group_id)
+    pairs = await get_group_models_with_shares(api_key.group_id, session=session)
     all_models = [m for m, _ in pairs]
 
     allowed = api_key.allowed_models or []
@@ -721,16 +770,17 @@ async def get_api_key_models(current_user, api_key_id):
     # Get per-model usage stats for this API key
     key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
     usage_rows = (
-        db.session.query(
-            UsageRecord.model_name,
-            db.func.count(UsageRecord.id).label('requests'),
-            db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-            db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-            db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-        )
-        .filter(UsageRecord.api_key_hash == key_hash)
-        .group_by(UsageRecord.model_name)
-        .all()
+        (await session.execute(
+            select(
+                UsageRecord.model_name,
+                func.count(UsageRecord.id).label('requests'),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+            )
+            .where(UsageRecord.api_key_hash == key_hash)
+            .group_by(UsageRecord.model_name)
+        )).all()
     )
     usage_map = {r.model_name: {
         'requests': r.requests,
@@ -773,9 +823,8 @@ async def get_api_key_detail(current_user, api_key_id):
     from app.cache import get_cache
     import hashlib
 
-    app = current_app._get_current_object()
-
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
 
@@ -804,33 +853,19 @@ async def get_api_key_detail(current_user, api_key_id):
         }
     else:
         # Cache miss — fall back to DB aggregation and populate cache
-        _cost_expr = (
-            UsageRecord.input_tokens * UsageRecord.input_price_unit / 1000000.0
-            + UsageRecord.output_tokens * UsageRecord.output_price_unit / 1000000.0
-            + UsageRecord.cache_creation_tokens * UsageRecord.cache_creation_price_unit / 1000000.0
-            + UsageRecord.cache_tokens * UsageRecord.cache_token_price_unit / 1000000.0
-            + UsageRecord.output_image_number * UsageRecord.output_image_price_unit
-            + UsageRecord.output_video_number * UsageRecord.output_video_price_unit
-            + UsageRecord.output_audio_seconds * UsageRecord.output_audio_price_unit
-            + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
-        )
-
-        totals_row = await asyncio.to_thread(
-            _call_in_app_ctx, app, lambda: (
-                db.session.query(
-                    db.func.count(UsageRecord.id).label('requests'),
-                    db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-                    db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-                    db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-                    db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0).label('total_cost_usd'),
-                    db.func.coalesce(db.func.sum(UsageRecord.output_image_number), 0).label('total_image_count'),
-                    db.func.coalesce(db.func.sum(UsageRecord.output_video_number), 0).label('total_video_count'),
-                    db.func.coalesce(db.func.sum(UsageRecord.output_audio_seconds), 0).label('total_audio_seconds'),
-                )
-                .filter(UsageRecord.api_key_hash == key_hash)
-                .one()
+        totals_row = (await session.execute(
+            select(
+                func.count(UsageRecord.id).label('requests'),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label('total_cost_usd'),
+                func.coalesce(func.sum(UsageRecord.output_image_number), 0).label('total_image_count'),
+                func.coalesce(func.sum(UsageRecord.output_video_number), 0).label('total_video_count'),
+                func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label('total_audio_seconds'),
             )
-        )
+            .where(UsageRecord.api_key_hash == key_hash)
+        )).one()
 
         usage_totals = {
             'requests': totals_row.requests or 0,
@@ -866,23 +901,22 @@ async def get_api_key_detail(current_user, api_key_id):
         + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
     )
 
-    by_model_rows = await asyncio.to_thread(
-        _call_in_app_ctx, app, lambda: (
-            db.session.query(
+    by_model_rows = (
+        await session.execute(
+            select(
                 UsageRecord.model_name,
-                db.func.count(UsageRecord.id).label('requests'),
-                db.func.coalesce(db.func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-                db.func.coalesce(db.func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-                db.func.coalesce(db.func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-                db.func.coalesce(db.func.sum(_cost_expr_model), 0).label('estimated_cost'),
+                func.count(UsageRecord.id).label('requests'),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+                func.coalesce(func.sum(_cost_expr_model), 0).label('estimated_cost'),
             )
-            .filter(UsageRecord.api_key_hash == key_hash)
+            .where(UsageRecord.api_key_hash == key_hash)
             .group_by(UsageRecord.model_name)
-            .order_by(db.func.coalesce(db.func.sum(_cost_expr_model), 0).desc())
+            .order_by(func.coalesce(func.sum(_cost_expr_model), 0).desc())
             .limit(50)
-            .all()
         )
-    )
+    ).all()
 
     by_model = [
         {
@@ -897,7 +931,7 @@ async def get_api_key_detail(current_user, api_key_id):
     ]
 
     # ── Available models with rpm/tpm ─────────────────────────────────────
-    pairs = get_group_models_with_shares(api_key.group_id)
+    pairs = await get_group_models_with_shares(api_key.group_id, session=session)
     all_models = [m for m, _ in pairs]
 
     allowed = api_key.allowed_models or []
@@ -956,11 +990,12 @@ async def get_api_key_detail(current_user, api_key_id):
 
     # ── Budget records from ml_api_key_budgets ────────────────────────────
     budget_records = (
-        db.session.query(ApiKeyBudget)
-        .filter(ApiKeyBudget.api_key_id == api_key_id)
-        .order_by(ApiKeyBudget.created_at.asc())
-        .all()
-    )
+        await session.execute(
+            select(ApiKeyBudget)
+            .where(ApiKeyBudget.api_key_id == api_key_id)
+            .order_by(ApiKeyBudget.created_at.asc())
+        )
+    ).scalars().all()
     budgets_list = [b.to_dict() for b in budget_records]
     # Total remaining across all budget records
     total_remaining = float(sum(float(b.remaining or 0) for b in budget_records if b.remaining and b.remaining > 0))
@@ -988,23 +1023,24 @@ async def delete_api_key(current_user, api_key_id):
     """Delete an API key. Invalidates cache.
     Members can only delete their own keys if member.apikey.edit_own is enabled.
     Admins/root can delete any key in the group."""
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    
+
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
-    
+
     # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
     group_id = api_key.group_id
-    user_role = _get_role(group_id, current_user.id)
+    user_role = await _get_role(group_id, current_user.id)
     is_owner = api_key.user_id == current_user.id
     if user_role != 'root':
         if not is_owner and not check_permission(user_role, 'apikey.manage'):
             return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
         if is_owner and not check_permission(user_role, 'apikey.edit_own'):
             return jsonify({'detail': 'Deleting own API keys is disabled for your role'}), 403
-    
+
     # Invalidate cache before deleting (need the raw key for cache lookup)
     try:
         from app.cache import get_cache
@@ -1013,9 +1049,9 @@ async def delete_api_key(current_user, api_key_id):
         get_budget_manager().invalidate(api_key.key)
     except Exception:
         pass
-    
-    db.session.delete(api_key)
-    db.session.commit()
+
+    await session.delete(api_key)
+    await session.commit()
     
     return '', 204
 
@@ -1026,23 +1062,24 @@ async def regenerate_api_key(current_user, api_key_id):
     """Regenerate an API key (revokes the old one). Invalidates cache for old key.
     Members can only regenerate their own keys if member.apikey.edit_own is enabled.
     Admins/root can regenerate any key in the group."""
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    
+
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
-    
+
     # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
     group_id = api_key.group_id
-    user_role = _get_role(group_id, current_user.id)
+    user_role = await _get_role(group_id, current_user.id)
     is_owner = api_key.user_id == current_user.id
     if user_role != 'root':
         if not is_owner and not check_permission(user_role, 'apikey.manage'):
             return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
         if is_owner and not check_permission(user_role, 'apikey.edit_own'):
             return jsonify({'detail': 'Regenerating own API keys is disabled for your role'}), 403
-    
+
     # Invalidate cache for the old key before regenerating
     old_key = api_key.key
     try:
@@ -1052,12 +1089,12 @@ async def regenerate_api_key(current_user, api_key_id):
         get_budget_manager().invalidate(old_key)
     except Exception:
         pass
-    
+
     api_key.key = generate_api_key()
     api_key.request_count = 0
     api_key.token_count = 0
-    db.session.commit()
-    db.session.refresh(api_key)
+    await session.commit()
+    await session.refresh(api_key)
     
     return jsonify(api_key.to_dict())
 
@@ -1068,17 +1105,19 @@ async def regenerate_api_key(current_user, api_key_id):
 @token_required
 async def list_budgets(current_user, api_key_id):
     """List all budget records for an API key."""
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
     if current_user not in api_key.group.users:
         return jsonify({'detail': 'You do not have access to this API key'}), 403
 
     budgets = (
-        db.session.query(ApiKeyBudget)
-        .filter(ApiKeyBudget.api_key_id == api_key_id)
-        .order_by(ApiKeyBudget.created_at.asc())
-        .all()
+        (await session.execute(
+            select(ApiKeyBudget)
+            .where(ApiKeyBudget.api_key_id == api_key_id)
+            .order_by(ApiKeyBudget.created_at.asc())
+        )).scalars().all()
     )
     return jsonify([b.to_dict() for b in budgets])
 
@@ -1095,10 +1134,11 @@ async def add_budget(current_user, api_key_id):
     Creates a new budget record and also updates the ApiKey.budget field
     (total remaining) for backward compatibility.
     """
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    
+
     data = await request.get_json()
     amount = data.get('amount')
     if amount is None or amount == '':
@@ -1112,15 +1152,15 @@ async def add_budget(current_user, api_key_id):
         amount=amount,
         remaining=amount,
     )
-    db.session.add(budget_entry)
+    session.add(budget_entry)
 
     # Also update ApiKey.budget for backward compatibility
     current_budget = api_key.budget or 0.0
     api_key.budget = current_budget + amount
 
-    db.session.commit()
-    db.session.refresh(budget_entry)
-    db.session.refresh(api_key)
+    await session.commit()
+    await session.refresh(budget_entry)
+    await session.refresh(api_key)
 
     # Update cache with new budget value so budget checks see it immediately
     try:
@@ -1149,14 +1189,17 @@ async def add_budget(current_user, api_key_id):
 @require_apikey_permission('apikey.add_budget')
 async def delete_budget(current_user, api_key_id, budget_id):
     """Delete a budget entry. Requires apikey.add_budget permission."""
-    api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    session = g.db_session
+    api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group)])
     if not api_key:
         return jsonify({'detail': 'API key not found'}), 404
-    
-    budget_entry = db.session.query(ApiKeyBudget).filter(
-        ApiKeyBudget.id == budget_id,
-        ApiKeyBudget.api_key_id == api_key_id,
-    ).first()
+
+    budget_entry = (await session.execute(
+        select(ApiKeyBudget).where(
+            ApiKeyBudget.id == budget_id,
+            ApiKeyBudget.api_key_id == api_key_id,
+        )
+    )).scalars().first()
     if not budget_entry:
         return jsonify({'detail': 'Budget entry not found'}), 404
 
@@ -1164,9 +1207,9 @@ async def delete_budget(current_user, api_key_id, budget_id):
     if api_key.budget is not None:
         api_key.budget = max((api_key.budget or 0.0) - float(budget_entry.remaining or 0), 0.0)
 
-    db.session.delete(budget_entry)
-    db.session.commit()
-    db.session.refresh(api_key)
+    await session.delete(budget_entry)
+    await session.commit()
+    await session.refresh(api_key)
 
     # Update cache with new budget value so budget checks see it immediately
     try:
@@ -1196,9 +1239,14 @@ async def delete_budget(current_user, api_key_id, budget_id):
 @require_api_key_access
 async def list_policies(current_user, api_key_id):
     """List all policies for an API key."""
-    policies = db.session.query(ApiKeyPolicy).filter(
-        ApiKeyPolicy.api_key_id == api_key_id
-    ).all()
+    session = g.db_session
+    policies = (
+        (await session.execute(
+            select(ApiKeyPolicy).where(
+                ApiKeyPolicy.api_key_id == api_key_id
+            )
+        )).scalars().all()
+    )
     return jsonify([p.to_dict() for p in policies])
 
 
@@ -1211,10 +1259,13 @@ async def upsert_policy(current_user, api_key_id, policy_type):
     if not data:
         return jsonify({'detail': 'Request body is required'}), 400
 
-    policy = db.session.query(ApiKeyPolicy).filter(
-        ApiKeyPolicy.api_key_id == api_key_id,
-        ApiKeyPolicy.policy_type == policy_type,
-    ).first()
+    session = g.db_session
+    policy = (await session.execute(
+        select(ApiKeyPolicy).where(
+            ApiKeyPolicy.api_key_id == api_key_id,
+            ApiKeyPolicy.policy_type == policy_type,
+        )
+    )).scalars().first()
 
     if policy:
         if 'enabled' in data:
@@ -1228,9 +1279,9 @@ async def upsert_policy(current_user, api_key_id, policy_type):
             enabled=data.get('enabled', True),
             config=data.get('config', {}),
         )
-        db.session.add(policy)
+        session.add(policy)
 
-    db.session.commit()
+    await session.commit()
     return jsonify(policy.to_dict())
 
 
@@ -1239,14 +1290,17 @@ async def upsert_policy(current_user, api_key_id, policy_type):
 @require_api_key_access
 async def delete_policy(current_user, api_key_id, policy_type):
     """Delete a policy for an API key."""
-    policy = db.session.query(ApiKeyPolicy).filter(
-        ApiKeyPolicy.api_key_id == api_key_id,
-        ApiKeyPolicy.policy_type == policy_type,
-    ).first()
+    session = g.db_session
+    policy = (await session.execute(
+        select(ApiKeyPolicy).where(
+            ApiKeyPolicy.api_key_id == api_key_id,
+            ApiKeyPolicy.policy_type == policy_type,
+        )
+    )).scalars().first()
 
     if not policy:
         return jsonify({'detail': 'Policy not found'}), 404
 
-    db.session.delete(policy)
-    db.session.commit()
+    await session.delete(policy)
+    await session.commit()
     return '', 204

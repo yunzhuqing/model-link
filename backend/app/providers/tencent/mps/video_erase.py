@@ -35,7 +35,8 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
+import asyncio
 
 import httpx
 
@@ -213,8 +214,8 @@ def _parse_api_key(api_key: str) -> Tuple[str, str]:
 # API: ProcessMedia (create erase task)
 # =============================================================================
 
-def _create_process_media_task(
-    client: httpx.Client,
+async def _create_process_media_task(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     input_url: str,
@@ -292,7 +293,7 @@ def _create_process_media_task(
     _error: Optional[Exception] = None
 
     try:
-        response = client.post(MPS_API_URL, content=payload_str, headers=headers)
+        response = await client.post(MPS_API_URL, content=payload_str, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -322,8 +323,8 @@ def _create_process_media_task(
 # API: DescribeTaskDetail (poll task result)
 # =============================================================================
 
-def _describe_mps_task_detail(
-    client: httpx.Client,
+async def _describe_mps_task_detail(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -333,7 +334,7 @@ def _describe_mps_task_detail(
     payload_str = json.dumps(body, ensure_ascii=False)
     headers = _build_mps_auth_headers(secret_id, secret_key, "DescribeTaskDetail", payload_str)
 
-    response = client.post(MPS_API_URL, content=payload_str, headers=headers)
+    response = await client.post(MPS_API_URL, content=payload_str, headers=headers)
     response.raise_for_status()
     data = response.json()
 
@@ -346,7 +347,7 @@ def _describe_mps_task_detail(
     return resp
 
 
-def _poll_mps_task(
+async def _poll_mps_task(
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -363,10 +364,10 @@ def _poll_mps_task(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             poll_count = 0
             while time.time() < deadline:
-                resp = _describe_mps_task_detail(client, secret_id, secret_key, task_id)
+                resp = await _describe_mps_task_detail(client, secret_id, secret_key, task_id)
                 status = resp.get("Status", "")
                 poll_count += 1
 
@@ -408,7 +409,7 @@ def _poll_mps_task(
                     err_msg = resp.get("Message", f"status={status}")
                     raise RuntimeError(f"MPS task {task_id} failed: {err_msg}")
 
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(f"MPS task {task_id} timed out after {max_wait}s")
     except Exception as e:
@@ -452,7 +453,7 @@ def _extract_input_video_url(messages, metadata: Dict[str, Any]) -> str:
 # 主入口: 执行视频擦除
 # =============================================================================
 
-def execute_mps_video_erase(
+async def execute_mps_video_erase(
     api_key: str,
     model: str,
     messages,
@@ -559,8 +560,8 @@ def execute_mps_video_erase(
     _trace_error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
-            task_id = _create_process_media_task(
+        async with httpx.AsyncClient(timeout=60) as client:
+            task_id = await _create_process_media_task(
                 client=client,
                 secret_id=secret_id,
                 secret_key=secret_key,
@@ -576,7 +577,7 @@ def execute_mps_video_erase(
                 tracer=_child_span,
             )
 
-        video_items = _poll_mps_task(
+        video_items = await _poll_mps_task(
             secret_id, secret_key, task_id,
             poll_timeout=metadata.get("timeout"),
             tracer=_child_span,
@@ -624,12 +625,11 @@ def execute_mps_video_erase(
 # 流式响应
 # =============================================================================
 
-def stream_video_erase(
+async def stream_video_erase(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
-    """Execute MPS video erase and yield StreamChunks with video_erase_call events."""
-    response = chat_fn(request)
+) -> AsyncGenerator[StreamChunk, None]:
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

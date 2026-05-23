@@ -9,13 +9,21 @@ Cache strategy:
 import logging
 from typing import Any, Dict, Optional
 
-from app import db
+from sqlalchemy import select
 from app.models import Group
 
 logger = logging.getLogger("group_service")
 
 _GROUP_CACHE_PREFIX = "group:"
 _GROUP_CACHE_TTL = 300
+
+
+def _get_session(session):
+    """Resolve session: use passed session or fall back to g.db_session."""
+    if session is not None:
+        return session
+    from quart import g
+    return g.db_session
 
 
 def _cache_key(group_id: int) -> str:
@@ -54,7 +62,7 @@ def _validate_monitoring_config(config: list | dict | None) -> str | None:
     return None
 
 
-def get_group_config(group_id: int) -> dict | None:
+async def get_group_config(group_id: int, session=None) -> dict | None:
     """Get group config dict (id, name, monitoring_config), cache-first.
 
     Used by gateway routes to look up monitoring_config without hitting DB
@@ -68,8 +76,12 @@ def get_group_config(group_id: int) -> dict | None:
         return data
 
     # Cache miss — load from DB
+    session = _get_session(session)
     try:
-        group = db.session.query(Group).filter(Group.id == group_id).first()
+        result = await session.execute(
+            select(Group).where(Group.id == group_id)
+        )
+        group = result.scalars().first()
     except Exception:
         return None
     if group is None:
@@ -87,12 +99,12 @@ def get_group_config(group_id: int) -> dict | None:
     return data
 
 
-def get_group_monitoring_config(group_id: int) -> list[dict] | None:
+async def get_group_monitoring_config(group_id: int, session=None) -> list[dict] | None:
     """Return monitoring_config for a group as a list, or None.
 
     Normalizes legacy single-dict configs to a single-element list.
     """
-    config = get_group_config(group_id)
+    config = await get_group_config(group_id, session=session)
     if config is None:
         return None
     mc = config.get("monitoring_config")
@@ -105,10 +117,14 @@ def get_group_monitoring_config(group_id: int) -> list[dict] | None:
     return None
 
 
-def get_group_by_id(group_id: int) -> Group | None:
+async def get_group_by_id(group_id: int, session=None) -> Group | None:
     """Get Group ORM object directly from DB (for mutations needing relationships)."""
+    session = _get_session(session)
     try:
-        return db.session.query(Group).filter(Group.id == group_id).first()
+        result = await session.execute(
+            select(Group).where(Group.id == group_id)
+        )
+        return result.scalars().first()
     except Exception:
         return None
 
@@ -122,38 +138,44 @@ def invalidate_group_cache(group_id: int) -> None:
         logger.warning(f"Failed to invalidate group cache {group_id}: {e}")
 
 
-def create_group(name: str, description: str | None = None, workspace_id: int | None = None) -> tuple[Group | None, str | None]:
+async def create_group(name: str, description: str | None = None, workspace_id: int | None = None, session=None) -> tuple[Group | None, str | None]:
     """Create a new group. Returns (group, error)."""
-    existing = db.session.query(Group).filter(Group.name == name).first()
+    session = _get_session(session)
+    result = await session.execute(select(Group).where(Group.name == name))
+    existing = result.scalars().first()
     if existing:
         return None, "Group with this name already exists"
 
     group = Group(name=name, description=description, workspace_id=workspace_id)
-    db.session.add(group)
+    session.add(group)
     try:
-        db.session.flush()
+        await session.flush()
     except Exception as e:
-        db.session.rollback()
+        await session.rollback()
         return None, str(e)
 
     return group, None
 
 
-def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
+async def update_group(group_id: int, session=None, **kwargs) -> tuple[Group | None, str | None]:
     """Update group fields. Returns (group, error).
 
     Accepted kwargs: name, description, monitoring_config, tags, workspace_id
     """
-    group = get_group_by_id(group_id)
+    session = _get_session(session)
+    group = await get_group_by_id(group_id, session=session)
     if not group:
         return None, "Group not found"
 
     if "name" in kwargs and kwargs["name"] is not None:
         new_name = kwargs["name"]
-        existing = db.session.query(Group).filter(
-            Group.name == new_name,
-            Group.id != group_id,
-        ).first()
+        result = await session.execute(
+            select(Group).where(
+                Group.name == new_name,
+                Group.id != group_id,
+            )
+        )
+        existing = result.scalars().first()
         if existing:
             return None, "Group with this name already exists"
         group.name = new_name
@@ -200,12 +222,13 @@ def update_group(group_id: int, **kwargs) -> tuple[Group | None, str | None]:
     return group, None
 
 
-def delete_group(group_id: int) -> tuple[bool, str | None]:
+async def delete_group(group_id: int, session=None) -> tuple[bool, str | None]:
     """Delete a group. Returns (success, error)."""
-    group = get_group_by_id(group_id)
+    session = _get_session(session)
+    group = await get_group_by_id(group_id, session=session)
     if not group:
         return False, "Group not found"
 
-    db.session.delete(group)
+    await session.delete(group)
     invalidate_group_cache(group_id)
     return True, None

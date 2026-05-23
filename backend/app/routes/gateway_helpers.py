@@ -13,7 +13,8 @@ import os
 
 logger = logging.getLogger("gateway")
 
-from app import db
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.models import ApiKey, User
 from jose import JWTError, jwt
 
@@ -64,7 +65,7 @@ def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dic
         "endpoint": endpoint,
         "status_code": status_code,
         "detail": detail,
-        "request_id": g.get('request_id', '-'),
+        # "request_id": g.get('request_id', '-'),
     }
     if extra:
         log_data.update(extra)
@@ -129,7 +130,7 @@ def _check_allowed_models(api_key, model_name: str) -> Optional[dict]:
     }
 
 
-def get_current_user_or_api_key():
+async def get_current_user_or_api_key():
     """Authenticate via either JWT token, API key, or Anthropic x-api-key header.
 
     Supported authentication methods:
@@ -139,7 +140,7 @@ def get_current_user_or_api_key():
 
     API key lookups are accelerated by the cache middleware:
     - On cache hit: validates is_active / expires_at from cached data,
-      then updates last_used_at / request_count in DB asynchronously.
+      then updates last_used_at / request_count in DB.
     - On cache miss: falls back to a DB query and populates the cache.
     """
     auth_header = request.headers.get('Authorization')
@@ -166,10 +167,12 @@ def get_current_user_or_api_key():
         provider_id_override = int(_m.group(2))
         setattr(g, G_API_KEY_PROVIDER_ID, provider_id_override)
 
+    session = g.db_session
+
     # Try cache first for API key authentication
-    from app.cache import get_cache
-    cache = get_cache()
-    cached_info = cache.get_api_key_info(token)
+    from app.cache import get_async_cache
+    cache = get_async_cache()
+    cached_info = await cache.get_api_key_info(token)
 
     if cached_info is not None:
         if not cached_info.get('is_active', True):
@@ -186,29 +189,31 @@ def get_current_user_or_api_key():
 
         is_unlimited = cached_info.get('unlimited_budget', False)
         if not is_unlimited:
-            from app.budget_manager import get_budget_manager
-            budget_remaining = get_budget_manager().get_remaining(token)
+            from app.budget_manager import get_async_budget_manager
+            budget_remaining = await get_async_budget_manager().get_remaining(token)
             if budget_remaining is None:
                 logger.warning(f"Budget remaining is None for API key with unlimited_budget=False, blocking request")
                 return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
             if float(budget_remaining) <= 0:
                 return None, None, {'detail': 'API key budget exceeded. Please add more budget to continue.'}, 403
 
-        api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
+        result = await session.execute(select(ApiKey).options(selectinload(ApiKey.user), selectinload(ApiKey.group)).where(ApiKey.key == token))
+        api_key = result.scalars().first()
         if api_key:
             api_key.last_used_at = datetime.utcnow()
             api_key.request_count += 1
-            db.session.commit()
+            await session.commit()
 
             _ = api_key.user
             _ = api_key.group
 
             return None, api_key, None, 200
         else:
-            cache.invalidate_api_key(token)
+            await cache.invalidate_api_key(token)
 
     # Cache miss — fall back to DB query
-    api_key = db.session.query(ApiKey).filter(ApiKey.key == token).first()
+    result = await session.execute(select(ApiKey).options(selectinload(ApiKey.user), selectinload(ApiKey.group)).where(ApiKey.key == token))
+    api_key = result.scalars().first()
 
     if api_key:
         if not api_key.is_active:
@@ -224,13 +229,13 @@ def get_current_user_or_api_key():
 
         api_key.last_used_at = datetime.utcnow()
         api_key.request_count += 1
-        db.session.commit()
+        await session.commit()
 
         _ = api_key.user
         _ = api_key.group
 
         try:
-            _populate_api_key_cache(api_key, cache)
+            await _populate_api_key_cache(api_key, cache)
         except Exception as _ce:
             logger.debug(f"[cache] Failed to populate API key cache: {_ce}")
 
@@ -247,59 +252,36 @@ def get_current_user_or_api_key():
         logger.warning(f"Invalid token or API key: {token}")
         return None, None, {'detail': 'Invalid token or API key'}, 401
 
-    user = db.session.query(User).filter(User.username == username).first()
+    result = await session.execute(select(User).where(User.username == username))
+    user = result.scalars().first()
     if not user:
         return None, None, {'detail': 'User not found'}, 401
 
     return user, None, None, 200
 
 
-def _populate_api_key_cache(api_key, cache):
+async def _populate_api_key_cache(api_key, cache):
     """Compute the current budget_used from UsageRecord and populate the cache."""
     import hashlib
     from app.models import UsageRecord
+    from sqlalchemy import func as db_func
 
     budget_used = 0.0
+    session = g.db_session
     if api_key.budget is not None:
         key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
-        row = (
-            db.session.query(
-                db.func.coalesce(db.func.sum(UsageRecord.actual_amount_usd), 0)
-            )
-            .filter(UsageRecord.api_key_hash == key_hash)
-            .scalar()
+        result = await session.execute(
+            select(db_func.coalesce(db_func.sum(UsageRecord.actual_amount_usd), 0))
+            .where(UsageRecord.api_key_hash == key_hash)
         )
+        row = result.scalar()
         budget_used = float(row or 0)
 
     info = cache.build_api_key_cache_info(api_key, budget_used=budget_used)
-    cache.set_api_key_info(api_key.key, info)
+    await cache.set_api_key_info(api_key.key, info)
 
     if not api_key.unlimited_budget and api_key.budget is not None:
-        from app.budget_manager import get_budget_manager
-        get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
+        from app.budget_manager import get_async_budget_manager
+        await get_async_budget_manager().set_remaining(api_key.key, float(api_key.budget))
 
 
-def _call_in_app_ctx(app, fn, *args, **kwargs):
-    """Call *fn(*args, **kwargs)* inside Flask's application context.
-
-    We explicitly use Flask's ``_cv_app`` ContextVar (the same bridging
-    mechanism used by ``create_app()``) because Quart's ``app.app_context()``
-    does not interoperate with Flask-SQLAlchemy's ``db.session``.
-    """
-    from flask.globals import _cv_app
-    from flask.ctx import AppContext as FlaskAppContext
-
-    token = _cv_app.set(FlaskAppContext(app))
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        # Remove the DB session before resetting the Flask app context.
-        # The teardown handler registered on the Quart app is async and will
-        # NOT be awaited in this sync helper — so db.session.remove() must
-        # be called explicitly. Without this, every non-streaming request
-        # leaks one connection from the QueuePool.
-        try:
-            db.session.remove()
-        except Exception:
-            pass
-        _cv_app.reset(token)

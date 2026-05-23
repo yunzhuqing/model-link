@@ -13,6 +13,22 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Disable uvloop — it raises RuntimeError on closed TCP transports
+# (e.g. stale DB connections) instead of buffering writes lazily.
+# AIOMySQL never gets a chance to convert the error to DBAPIError,
+# so SQLAlchemy's _do_ping_w_event can't catch it.
+import sys
+
+
+class _BlockUVLoopFinder:
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "uvloop":
+            raise ModuleNotFoundError("uvloop is blocked", name="uvloop")
+        return None
+
+
+sys.meta_path.insert(0, _BlockUVLoopFinder())
+
 from app import create_app, db
 
 app = create_app()

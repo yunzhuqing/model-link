@@ -2,9 +2,9 @@
 Model Template routes — CRUD + built-in seed data.
 """
 from datetime import datetime
-from quart import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify, g
+from sqlalchemy import select
 
-from app import db
 from app.models import ModelTemplate
 from app.routes.users import token_required
 from app.routes.permissions import require_template_manage
@@ -13,7 +13,7 @@ from app.data import BUILTIN_TEMPLATES
 model_templates_bp = Blueprint('model_templates', __name__)
 
 
-def seed_builtin_templates():
+async def seed_builtin_templates():
     """
     Insert or update built-in templates in the database.
 
@@ -22,21 +22,24 @@ def seed_builtin_templates():
     The same model name may appear multiple times across different providers
     or with different labels, so name alone is not a reliable uniqueness key.
     """
+    session = g.db_session
+    result = await session.execute(select(ModelTemplate))
+    existing_rows = result.scalars().all()
     existing = {
         (row.provider, row.label): row
-        for row in db.session.query(ModelTemplate).all()
+        for row in existing_rows
     }
     for tpl in BUILTIN_TEMPLATES:
         key = (tpl['provider'], tpl['label'])
         if key not in existing:
-            db.session.add(ModelTemplate(**tpl))
+            session.add(ModelTemplate(**tpl))
         else:
             # Update existing template with latest built-in data
             db_tpl = existing[key]
             for field, value in tpl.items():
                 if field not in ('provider', 'label'):
                     setattr(db_tpl, field, value)
-    db.session.commit()
+    await session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +50,13 @@ def seed_builtin_templates():
 @token_required
 async def list_model_templates(current_user):
     """List all model templates."""
-    templates = db.session.query(ModelTemplate).order_by(
-        ModelTemplate.provider, ModelTemplate.id
-    ).all()
+    session = g.db_session
+    result = await session.execute(
+        select(ModelTemplate).order_by(
+            ModelTemplate.provider, ModelTemplate.id
+        )
+    )
+    templates = result.scalars().all()
     return jsonify([t.to_dict() for t in templates])
 
 
@@ -59,7 +66,7 @@ async def list_model_templates(current_user):
 async def create_model_template(current_user):
     """Create a custom model template. Root only."""
     data = await request.get_json()
-    
+
     if not data.get('label') or not data.get('name') or not data.get('provider'):
         return jsonify({'detail': 'label, name and provider are required'}), 400
 
@@ -107,9 +114,10 @@ async def create_model_template(current_user):
         support_embedding=data.get('support_embedding', False),
         timeout=data.get('timeout') or None,
     )
-    db.session.add(tpl)
-    db.session.commit()
-    db.session.refresh(tpl)
+    session = g.db_session
+    session.add(tpl)
+    await session.flush()
+    await session.refresh(tpl)
     return jsonify(tpl.to_dict()), 201
 
 
@@ -118,7 +126,9 @@ async def create_model_template(current_user):
 @require_template_manage()
 async def update_model_template(current_user, template_id):
     """Update a model template. Root only."""
-    tpl = db.session.query(ModelTemplate).filter(ModelTemplate.id == template_id).first()
+    session = g.db_session
+    result = await session.execute(select(ModelTemplate).where(ModelTemplate.id == template_id))
+    tpl = result.scalars().first()
     if not tpl:
         return jsonify({'detail': 'Template not found'}), 404
 
@@ -154,8 +164,8 @@ async def update_model_template(current_user, template_id):
     if not tpl.currency:
         tpl.currency = 'USD'
 
-    db.session.commit()
-    db.session.refresh(tpl)
+    await session.flush()
+    await session.refresh(tpl)
     return jsonify(tpl.to_dict())
 
 
@@ -164,12 +174,14 @@ async def update_model_template(current_user, template_id):
 @require_template_manage()
 async def delete_model_template(current_user, template_id):
     """Delete a model template. Root only."""
-    tpl = db.session.query(ModelTemplate).filter(ModelTemplate.id == template_id).first()
+    session = g.db_session
+    result = await session.execute(select(ModelTemplate).where(ModelTemplate.id == template_id))
+    tpl = result.scalars().first()
     if not tpl:
         return jsonify({'detail': 'Template not found'}), 404
 
-    db.session.delete(tpl)
-    db.session.commit()
+    await session.delete(tpl)
+    await session.flush()
     return '', 204
 
 
@@ -182,16 +194,19 @@ async def reseed_model_templates(current_user):
     Inserts missing built-ins and updates existing ones with latest data.
     """
 
+    session = g.db_session
+    result = await session.execute(select(ModelTemplate))
+    existing_rows = result.scalars().all()
     existing = {
         (row.provider, row.label): row
-        for row in db.session.query(ModelTemplate).all()
+        for row in existing_rows
     }
     added = 0
     updated = 0
     for tpl in BUILTIN_TEMPLATES:
         key = (tpl['provider'], tpl['label'])
         if key not in existing:
-            db.session.add(ModelTemplate(**tpl))
+            session.add(ModelTemplate(**tpl))
             added += 1
         else:
             db_tpl = existing[key]
@@ -199,5 +214,5 @@ async def reseed_model_templates(current_user):
                 if field not in ('provider', 'label'):
                     setattr(db_tpl, field, value)
             updated += 1
-    db.session.commit()
+    await session.flush()
     return jsonify({'added': added, 'updated': updated})

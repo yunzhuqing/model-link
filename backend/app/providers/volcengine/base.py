@@ -10,15 +10,13 @@ API 文档: https://www.volcengine.com/docs/82379/1263482
 图像生成支持：
 豆包图像生成模型可以通过 Responses API 作为 image_generation 类型的工具进行调用。
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import uuid
 import sys
 import base64
 import logging
-from urllib.request import urlopen
-
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
@@ -90,8 +88,9 @@ class VolcengineProvider(BaseProvider):
     def client(self) -> Any:
         if self._client is None:
             import httpx
-            self._client = httpx.Client(
-                timeout=self.DEFAULT_TIMEOUT,
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
                 headers=self.get_headers()
             )
         return self._client
@@ -391,7 +390,7 @@ class VolcengineProvider(BaseProvider):
         """Check if the model is a Seed3D 3D generation model."""
         return is_seed3d_model(model)
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """Execute non-streaming request via /responses."""
         error = self.validate_request(request)
         if error:
@@ -422,7 +421,7 @@ class VolcengineProvider(BaseProvider):
         # For image generation models (e.g. Seedream), bypass the Responses API
         # and call the image generation API directly.
         if self.is_image_generation_model(request.model):
-            return self._execute_image_generation_direct(request)
+            return await self._execute_image_generation_direct(request)
 
         request_data = self.prepare_request(request)
         request_data["stream"] = False
@@ -431,8 +430,8 @@ class VolcengineProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     try:
@@ -533,7 +532,7 @@ class VolcengineProvider(BaseProvider):
     # Streaming
     # ----------------------------------------------------------------
 
-    def _execute_image_generation_direct(self, request: ChatRequest) -> ChatResponse:
+    async def _execute_image_generation_direct(self, request: ChatRequest) -> ChatResponse:
         """
         Execute image generation directly from a ChatRequest.
 
@@ -583,7 +582,7 @@ class VolcengineProvider(BaseProvider):
         watermark = request.metadata.get('watermark', False)
         req_timeout = request.metadata.get('timeout')
 
-        return self.execute_image_generation(
+        return await self.execute_image_generation(
             model=request.model,
             prompt=prompt,
             size=size,
@@ -596,27 +595,28 @@ class VolcengineProvider(BaseProvider):
             timeout=req_timeout,
         )
 
-    @staticmethod
-    def _download_image_as_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
+    async def _download_image_as_b64(self, url: str, fallback_mime: str = "image/png") -> Optional[str]:
         """Download an image URL and return it as a base64 data URI.
 
         Returns ``None`` if the download fails, so the caller can fall back
         to the raw URL.
         """
         try:
-            with urlopen(url, timeout=30) as resp:  # noqa: S310 – URL is provider-generated
-                content_type = resp.headers.get("Content-Type", "")
-                data = resp.read()
-                mime = content_type.split(";")[0].strip() or fallback_mime
-                b64 = base64.b64encode(data).decode("ascii")
-                return f"data:{mime};base64,{b64}"
+            resp = await self.client.get(url, timeout=30)
+            if resp.status_code >= 400:
+                return None
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.content
+            mime = content_type.split(";")[0].strip() or fallback_mime
+            b64 = base64.b64encode(data).decode("ascii")
+            return f"data:{mime};base64,{b64}"
         except Exception as exc:
             logging.getLogger("model_link.volcengine").warning(
                 "Failed to convert image URL to base64: %s – %s", url, exc
             )
             return None
 
-    def _stream_image_generation(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def _stream_image_generation(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """
         Execute image generation and yield the result as StreamChunks.
 
@@ -631,7 +631,7 @@ class VolcengineProvider(BaseProvider):
         4. response.output_item.done
         5. response.completed          (emitted by finish chunk)
         """
-        response = self._execute_image_generation_direct(request)
+        response = await self._execute_image_generation_direct(request)
         response_id = response.id
         model = response.model
 
@@ -766,7 +766,7 @@ class VolcengineProvider(BaseProvider):
         ]
         yield finish_chunk
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """Execute streaming request via /responses."""
         error = self.validate_request(request)
         if error:
@@ -774,18 +774,21 @@ class VolcengineProvider(BaseProvider):
 
         # Seed3D 3D generation models → dedicated 3D generation path
         if is_seed3d_model(request.model) or self._has_3d_generation_tool(request):
-            yield from stream_seed3d_generation(self.chat, request)
+            async for chunk in stream_seed3d_generation(self.chat, request):
+                yield chunk
             return
 
         # Seedance video generation models → dedicated video generation path
         if is_seedance_video_model(request.model) or self._has_video_generation_tool(request):
-            yield from stream_seedance_video_generation(self.chat, request)
+            async for chunk in stream_seedance_video_generation(self.chat, request):
+                yield chunk
             return
 
         # For image generation models (e.g. Seedream), bypass the Responses API
         # and emit the result as stream chunks.
         if self.is_image_generation_model(request.model):
-            yield from self._stream_image_generation(request)
+            async for chunk in self._stream_image_generation(request):
+                yield chunk
             return
 
         request_data = self.prepare_request(request)
@@ -804,72 +807,72 @@ class VolcengineProvider(BaseProvider):
 
         try:
             req_timeout = self._get_request_timeout(request)
-            with self._trace_call(request.model, input_data=request_data) as child_span, \
-                 self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
-                if child_span:
-                    _x_req_id = response.headers.get("x-request-id", "")
-                    if _x_req_id:
-                        child_span.log_output({"x-request-id": _x_req_id})
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                async with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                    if child_span:
+                        _x_req_id = response.headers.get("x-request-id", "")
+                        if _x_req_id:
+                            child_span.log_output({"x-request-id": _x_req_id})
 
-                if response.status_code >= 400:
-                    error_text = ""
-                    for chunk_bytes in response.iter_bytes():
-                        if chunk_bytes:
-                            error_text += chunk_bytes.decode('utf-8')
-                    try:
-                        error_data = json.loads(error_text)
-                        raise RuntimeError(
-                            f"Volcengine API error ({response.status_code}): "
-                            f"{json.dumps(error_data, ensure_ascii=False)}"
+                    if response.status_code >= 400:
+                        error_text = ""
+                        async for chunk_bytes in response.aiter_bytes():
+                            if chunk_bytes:
+                                error_text += chunk_bytes.decode('utf-8')
+                        try:
+                            error_data = json.loads(error_text)
+                            raise RuntimeError(
+                                f"Volcengine API error ({response.status_code}): "
+                                f"{json.dumps(error_data, ensure_ascii=False)}"
+                            )
+                        except json.JSONDecodeError:
+                            raise RuntimeError(
+                                f"Volcengine API error ({response.status_code}): {error_text}"
+                            )
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+
+                        # Parse SSE: "event: xxx\ndata: {...}" or "data: {...}"
+                        event_type = None
+                        data_str = None
+
+                        if line.startswith("event:"):
+                            event_type = line[6:].strip()
+                            continue
+                        elif line.startswith("data:"):
+                            data_str = line[5:].strip()
+                        else:
+                            continue
+
+                        if not data_str or data_str == "[DONE]":
+                            continue
+
+                        try:
+                            event_data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        # Determine event type from data if not from SSE event line
+                        if not event_type:
+                            event_type = event_data.get("type", "")
+
+                        # Capture the real response ID from early events so all
+                        # subsequent chunks (and the Anthropic message_start event)
+                        # use the authoritative ID instead of the placeholder.
+                        if event_type in ("response.created", "response.in_progress"):
+                            resp_obj = event_data.get("response", {})
+                            real_id = resp_obj.get("id")
+                            if real_id:
+                                response_id = real_id
+
+                        chunk = self._parse_responses_stream_event(
+                            event_type, event_data, response_id, request.model,
+                            seen_call_ids=seen_call_ids
                         )
-                    except json.JSONDecodeError:
-                        raise RuntimeError(
-                            f"Volcengine API error ({response.status_code}): {error_text}"
-                        )
-
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-
-                    # Parse SSE: "event: xxx\ndata: {...}" or "data: {...}"
-                    event_type = None
-                    data_str = None
-
-                    if line.startswith("event:"):
-                        event_type = line[6:].strip()
-                        continue
-                    elif line.startswith("data:"):
-                        data_str = line[5:].strip()
-                    else:
-                        continue
-
-                    if not data_str or data_str == "[DONE]":
-                        continue
-
-                    try:
-                        event_data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-
-                    # Determine event type from data if not from SSE event line
-                    if not event_type:
-                        event_type = event_data.get("type", "")
-
-                    # Capture the real response ID from early events so all
-                    # subsequent chunks (and the Anthropic message_start event)
-                    # use the authoritative ID instead of the placeholder.
-                    if event_type in ("response.created", "response.in_progress"):
-                        resp_obj = event_data.get("response", {})
-                        real_id = resp_obj.get("id")
-                        if real_id:
-                            response_id = real_id
-
-                    chunk = self._parse_responses_stream_event(
-                        event_type, event_data, response_id, request.model,
-                        seen_call_ids=seen_call_ids
-                    )
-                    if chunk:
-                        yield chunk
+                        if chunk:
+                            yield chunk
 
         except RuntimeError:
             raise
@@ -1088,14 +1091,14 @@ class VolcengineProvider(BaseProvider):
     # Embedding Support
     # ----------------------------------------------------------------
 
-    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         """
         执行嵌入请求。
 
         doubao-embedding-vision 系列模型通过 /embeddings/multimodal 端点
         支持文本、图片、视频的多模态嵌入。纯文本输入同样走该端点。
         """
-        return execute_volcengine_multimodal_embed(
+        return await execute_volcengine_multimodal_embed(
             api_key=self.config.api_key,
             base_url=self.config.base_url,
             request=request,
@@ -1122,7 +1125,7 @@ class VolcengineProvider(BaseProvider):
         """
         return "seedream" in model.lower()
 
-    def execute_image_generation(
+    async def execute_image_generation(
         self,
         model: str,
         prompt: str,
@@ -1166,7 +1169,7 @@ class VolcengineProvider(BaseProvider):
             # We pass "url" explicitly and return URLs to the upper layer.
             # If the caller requested b64_json, the conversion happens at the
             # final return point (format_response for sync, GET /v1/responses for async).
-            response_data = image_provider.generate_image(
+            response_data = await image_provider.generate_image(
                 model_name=model,
                 prompt=prompt,
                 size=size,

@@ -67,7 +67,8 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+import asyncio
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx
 
@@ -271,7 +272,7 @@ def _build_content(
 # API 调用: 创建 3D 生成任务
 # =============================================================================
 
-def _create_3d_task(
+async def _create_3d_task(
     api_key: str,
     base_url: str,
     model_id: str,
@@ -314,8 +315,8 @@ def _create_3d_task(
 
     try:
         payload_str = json.dumps(body, ensure_ascii=False)
-        with httpx.Client(timeout=60) as client:
-            response = client.post(url, content=payload_str, headers=headers)
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, content=payload_str, headers=headers)
 
         if response.status_code >= 400:
             raise RuntimeError(
@@ -401,7 +402,7 @@ def check_seed3d_task_status(
         return result
 
 
-def _poll_3d_task(
+async def _poll_3d_task(
     api_key: str,
     base_url: str,
     task_id: str,
@@ -468,7 +469,7 @@ def _poll_3d_task(
                     f"Seed3D 3D task {task_id} ended with status={status}"
                 )
 
-            time.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"Seed3D 3D task {task_id} timed out after {max_wait}s"
@@ -485,7 +486,7 @@ def _poll_3d_task(
 # 主入口: 执行 3D 生成
 # =============================================================================
 
-def execute_seed3d_generation(
+async def execute_seed3d_generation(
     api_key: str,
     base_url: str,
     model: str,
@@ -560,7 +561,7 @@ def execute_seed3d_generation(
 
     try:
         # ── 创建任务 ─────────────────────────────────────────────────────────
-        task_id = _create_3d_task(
+        task_id = await _create_3d_task(
             api_key=api_key,
             base_url=base_url,
             model_id=model_id,
@@ -573,7 +574,7 @@ def execute_seed3d_generation(
             hook(task_id)
 
         # ── 轮询结果 ─────────────────────────────────────────────────────────
-        file_url, result_format, result_subdivision, usage_dict, poll_count = _poll_3d_task(
+        file_url, result_format, result_subdivision, usage_dict, poll_count = await _poll_3d_task(
             api_key, base_url, task_id, tracer=_child_span, poll_timeout=metadata.get('timeout')
         )
 
@@ -631,10 +632,10 @@ def execute_seed3d_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_seed3d_generation(
+async def stream_seed3d_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     执行 Seed3D 3D 生成并以 StreamChunk 格式 yield 结果。
 
@@ -650,7 +651,7 @@ def stream_seed3d_generation(
         chat_fn: provider.chat 非流式方法
         request: ChatRequest
     """
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

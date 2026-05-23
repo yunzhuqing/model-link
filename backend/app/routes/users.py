@@ -1,14 +1,14 @@
 """
 User authentication and management routes.
 """
-from quart import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify, g
 from datetime import timedelta
 from functools import wraps
 import os
 import time
 import logging
 
-from app import db
+from sqlalchemy import select
 from app.models import User
 from app.user_service import get_user_by_id, invalidate_user_cache
 from app.auth import verify_password, get_password_hash, create_access_token
@@ -67,7 +67,7 @@ def token_required(f):
                 return jsonify({'detail': 'Invalid token'}), 401
         except JWTError:
             return jsonify({'detail': 'Invalid token'}), 401
-        user = get_user_by_id(user_id)
+        user = await get_user_by_id(user_id, session=g.db_session)
         if user is None:
             return jsonify({'detail': 'User not found'}), 401
         return await f(current_user=user, *args, **kwargs)
@@ -85,11 +85,14 @@ async def register():
     except Exception as e:
         return jsonify({'detail': str(e)}), 400
     
+    session = g.db_session
+
     # Check if username exists
-    existing_user = db.session.query(User).filter(User.username == user_create.username).first()
+    result = await session.execute(select(User).where(User.username == user_create.username))
+    existing_user = result.scalars().first()
     if existing_user:
         return jsonify({'detail': 'Username already registered'}), 400
-    
+
     # Create user
     hashed_password = get_password_hash(user_create.password)
     user = User(
@@ -97,10 +100,10 @@ async def register():
         email=user_create.email,
         hashed_password=hashed_password
     )
-    db.session.add(user)
-    db.session.commit()
-    db.session.refresh(user)
-    
+    session.add(user)
+    await session.flush()
+    await session.refresh(user)
+
     return jsonify(user.to_dict()), 201
 
 
@@ -119,8 +122,10 @@ async def login():
     
     if not username or not password:
         return jsonify({'detail': 'Username and password required'}), 400
-    
-    user = db.session.query(User).filter(User.username == username).first()
+
+    session = g.db_session
+    result = await session.execute(select(User).where(User.username == username))
+    user = result.scalars().first()
     if not user or not verify_password(password, user.hashed_password):
         return jsonify({'detail': 'Incorrect username or password'}), 401
     
@@ -149,14 +154,16 @@ async def delete_user(current_user, user_id):
     """Delete a user."""
     if user_id != current_user.id:
         return jsonify({'detail': 'Not authorized to delete this user'}), 403
-    
-    user = db.session.query(User).filter(User.id == user_id).first()
+
+    session = g.db_session
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalars().first()
     if not user:
         return jsonify({'detail': 'User not found'}), 404
-    
-    db.session.delete(user)
-    db.session.commit()
 
-    invalidate_user_cache(user_id)
+    await session.delete(user)
+    await session.flush()
+
+    await invalidate_user_cache(user_id)
 
     return '', 204

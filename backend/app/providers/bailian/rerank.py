@@ -52,7 +52,7 @@ from app.utils import gen_id
 # 文本 Rerank — 兼容模式 API
 # =============================================================================
 
-def execute_bailian_text_rerank(
+async def execute_bailian_text_rerank(
     api_key: str,
     rerank_url: str,
     request: RerankRequest,
@@ -121,8 +121,8 @@ def execute_bailian_text_rerank(
     }
 
     try:
-        with httpx.Client(timeout=120) as client:
-            response = client.post(rerank_url, json=request_data, headers=headers)
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(rerank_url, json=request_data, headers=headers)
 
         if response.status_code >= 400:
             _raise_api_error("Bailian text rerank", response)
@@ -140,7 +140,7 @@ def execute_bailian_text_rerank(
 # 多模态 Rerank — Dashscope 专用 API
 # =============================================================================
 
-def execute_bailian_multimodal_rerank(
+async def execute_bailian_multimodal_rerank(
     api_key: str,
     multimodal_rerank_url: str,
     request: RerankRequest,
@@ -216,8 +216,8 @@ def execute_bailian_multimodal_rerank(
     }
 
     try:
-        with httpx.Client(timeout=120) as client:
-            response = client.post(multimodal_rerank_url, json=request_data, headers=headers)
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(multimodal_rerank_url, json=request_data, headers=headers)
 
         if response.status_code >= 400:
             _raise_api_error("Bailian multimodal rerank", response)

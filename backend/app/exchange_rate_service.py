@@ -1,14 +1,13 @@
 """
 Exchange Rate Service
 Fetches the USD→CNY exchange rate from frankfurter.app and caches it in
-memory.  The rate is refreshed once per day via a background daemon thread
+memory.  The rate is refreshed once per day via an asyncio background task
 that is started at application startup.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
-import time
 
 import httpx
 
@@ -22,61 +21,69 @@ _DEFAULT_RATE = 7.0          # Fallback when the API is unavailable
 _REFRESH_INTERVAL = 86400    # Refresh every 24 hours (seconds)
 
 # ── In-memory state ──────────────────────────────────────────────────────────
-_lock = threading.Lock()
+_lock = asyncio.Lock()
 _current_rate: float = _DEFAULT_RATE
-_started = False              # Guard so we only start one refresh thread
+_refresh_task: asyncio.Task | None = None
 
+# ── Public API ───────────────────────────────────────────────────────────────
 
-# ── Public API ────────────────────────────────────────────────────────────────
 
 def get_exchange_rate() -> float:
-    """Return the current USD → CNY exchange rate (thread-safe read)."""
-    with _lock:
-        return _current_rate
+    """Return the current USD → CNY exchange rate (thread-safe read).
+
+    A plain float read is atomic in CPython, so no lock is needed for reads.
+    """
+    return _current_rate
 
 
 def start_daily_refresh() -> None:
-    """
-    Start a background daemon thread that refreshes the exchange rate every 24 h.
-
-    Safe to call multiple times — only one thread is ever started.
-    Performs an immediate fetch on startup so the rate is current from the
-    first request.
-    """
-    global _started
-    with _lock:
-        if _started:
-            return
-        _started = True
-
-    thread = threading.Thread(target=_refresh_loop, daemon=True, name="exchange-rate-refresh")
-    thread.start()
-    logger.info("[exchange_rate] Daily refresh thread started.")
+    """Schedule the async daily refresh task on the running event loop."""
+    global _refresh_task
+    if _refresh_task is not None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Not inside an event loop yet — will be started in create_app via
+        # a startup task.
+        return
+    _refresh_task = loop.create_task(_refresh_loop())
+    logger.info("[exchange_rate] Daily refresh task scheduled.")
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+async def stop_daily_refresh() -> None:
+    """Cancel the daily refresh task. Called on shutdown."""
+    global _refresh_task
+    if _refresh_task is not None:
+        _refresh_task.cancel()
+        try:
+            await _refresh_task
+        except asyncio.CancelledError:
+            pass
+        _refresh_task = None
 
-def _fetch_once() -> None:
+
+# ── Internal helpers ─────────────────────────────────────────────────────────
+
+
+async def _fetch_once() -> None:
     """Fetch the latest rate from frankfurter.app and update the global."""
     global _current_rate
     url = f"https://api.frankfurter.app/latest?from={USD}&to={CNY}"
     try:
-        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-            response = client.get(url)
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url)
             if response.status_code == 200:
                 data = response.json()
                 if "rates" in data and CNY in data["rates"]:
                     rate = float(data["rates"][CNY])
-                    with _lock:
+                    async with _lock:
                         _current_rate = rate
                     logger.info(f"[exchange_rate] Updated {USD}→{CNY} rate: {rate}")
                 else:
                     logger.warning(f"[exchange_rate] {CNY} rate not found in response: {data}")
             else:
-                logger.error(
-                    f"[exchange_rate] Failed to fetch exchange rate. "
-                    f"Status: {response.status_code}"
-                )
+                logger.error(f"[exchange_rate] Failed to fetch exchange rate. Status: {response.status_code}")
     except Exception as exc:
         logger.error(f"[exchange_rate] Error fetching exchange rate: {exc}")
 
@@ -85,39 +92,24 @@ def _seconds_until_next_midnight() -> float:
     """Return the number of seconds from now until the next 00:00:00 local time."""
     import datetime
     now = datetime.datetime.now()
-    # Next midnight = today's date + 1 day, at 00:00:00
     tomorrow_midnight = datetime.datetime(now.year, now.month, now.day) + datetime.timedelta(days=1)
     return (tomorrow_midnight - now).total_seconds()
 
 
-def _refresh_loop() -> None:
-    """
-    Fetch the exchange rate immediately on startup, then repeat at every local midnight (00:00).
-
-    Sleep logic:
-      1. Fetch once right now (startup).
-      2. Calculate how many seconds remain until the next 00:00 local time.
-      3. Sleep until midnight, then fetch again.
-      4. After that, sleep exactly 24 h between fetches (keeping alignment with midnight).
-
-    In a multi-node deployment only the **leader** performs the actual fetch.
-    Follower nodes skip the API call but still run the loop so they pick up
-    leadership changes promptly.
-    """
+async def _refresh_loop() -> None:
+    """Fetch daily, aligned to local midnight. Only the leader node fetches."""
     from app.election_service import is_leader
 
-    # Initial fetch on startup (only if leader)
     if is_leader():
-        _fetch_once()
+        await _fetch_once()
     else:
         logger.info("[exchange_rate] Not leader — skipping initial fetch.")
 
-    # Wait until next midnight, then loop daily
     while True:
         wait = _seconds_until_next_midnight()
         logger.info(f"[exchange_rate] Next refresh in {wait:.0f}s (at local midnight).")
-        time.sleep(wait)
+        await asyncio.sleep(wait)
         if is_leader():
-            _fetch_once()
+            await _fetch_once()
         else:
             logger.debug("[exchange_rate] Not leader — skipping scheduled fetch.")

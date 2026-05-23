@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
+import asyncio
 
 import httpx
 
@@ -94,8 +95,8 @@ def _parse_3d_model_name_version(model: str) -> Tuple[str, str]:
 # API 调用: CreateAigcVideoTask (for 3D scene)
 # =============================================================================
 
-def _create_3d_task(
-    client: httpx.Client,
+async def _create_3d_task(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     sub_app_id: Optional[int],
@@ -131,7 +132,7 @@ def _create_3d_task(
     _error: Optional[Exception] = None
 
     try:
-        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -168,7 +169,7 @@ def _create_3d_task(
 # API 调用: 轮询任务结果
 # =============================================================================
 
-def _poll_3d_task(
+async def _poll_3d_task(
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -189,7 +190,7 @@ def _poll_3d_task(
         while time.time() < deadline:
             resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
             if not resp:
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
                 continue
 
             aigc_task = resp.get("AigcVideoTask") or {}
@@ -237,7 +238,7 @@ def _poll_3d_task(
                     f"TencentVOD 3D task {task_id} failed with status={status}"
                 )
 
-            time.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"TencentVOD 3D task {task_id} timed out after {max_wait}s"
@@ -254,7 +255,7 @@ def _poll_3d_task(
 # 主入口: 执行 3D 生成
 # =============================================================================
 
-def execute_tencentvod_3d_generation(
+async def execute_tencentvod_3d_generation(
     api_key: str,
     model: str,
     messages,
@@ -301,8 +302,8 @@ def execute_tencentvod_3d_generation(
     _trace_error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
-            task_id = _create_3d_task(
+        async with httpx.AsyncClient(timeout=60) as client:
+            task_id = await _create_3d_task(
                 client=client,
                 secret_id=secret_id,
                 secret_key=secret_key,
@@ -319,7 +320,7 @@ def execute_tencentvod_3d_generation(
         if hook:
             hook(task_id)
 
-        items = _poll_3d_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+        items = await _poll_3d_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
 
         if _child_span:
             _child_span.log_output({"task_id": task_id, "status": "succeeded"})
@@ -358,12 +359,12 @@ def execute_tencentvod_3d_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_3d_generation(
+async def stream_3d_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """Execute TencentVOD 3D generation and yield StreamChunks."""
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

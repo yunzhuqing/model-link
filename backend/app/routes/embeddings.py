@@ -26,7 +26,6 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
-    _call_in_app_ctx,
     G_API_KEY_PROVIDER_ID,
 )
 
@@ -89,7 +88,7 @@ async def create_embeddings():
     }
     """
     # 1. 认证
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("embeddings", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
@@ -160,18 +159,13 @@ async def create_embeddings():
     provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
 
     # 5. 设置 tracer
-    monitoring_config = get_group_monitoring_config(group_id) if group_id else None
+    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
     tracer = create_tracer(monitoring_config)
 
     # 6. 调用中间层
     _app = current_app._get_current_object()
     try:
         _start_time = time.time()
-        # Resolve model to capture provider info before the API call
-        resolved = await asyncio.to_thread(
-            _call_in_app_ctx, _app, _gateway_service.resolve_model, model_name, group_id, provider_id=provider_id
-        )
-
         if tracer:
             tracer.start(model_name, input_data=data)
             tracer.log_input(data)
@@ -182,10 +176,7 @@ async def create_embeddings():
                 "model_name": model_name,
                 "api_key_name": api_key.name if api_key else None,
             })
-        resolved.provider_instance.tracer = tracer
-        response = await asyncio.to_thread(
-            _call_in_app_ctx, _app, _gateway_service.embed, embedding_request, group_id, provider_id=provider_id, tracer=tracer
-        )
+        response = await _gateway_service.embed(embedding_request, group_id, provider_id=provider_id, tracer=tracer)
         _duration_ms = int((time.time() - _start_time) * 1000)
         if tracer:
             tracer.log_output(response.to_dict())
@@ -196,8 +187,7 @@ async def create_embeddings():
         # Record usage
         try:
             from app.usagerecord.usage_service import record_usage
-            record_usage(
-                app=current_app._get_current_object(),
+            await record_usage(
                 response=response,
                 db_model=resolved.db_model,
                 db_provider=resolved.db_provider,

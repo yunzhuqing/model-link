@@ -54,7 +54,7 @@ class DoubaoImageProvider:
         if not self.base_url.endswith("/v3") and "/v3/" not in self.base_url:
             self.base_url = self.base_url.rstrip("/") + "/v3"
     
-    def generate_image(
+    async def generate_image(
         self,
         model_name: str,
         prompt: str,
@@ -140,8 +140,8 @@ class DoubaoImageProvider:
 
         try:
             read_timeout = timeout or 300
-            with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=read_timeout, write=30.0, pool=15.0)) as client:
-                response = client.post(
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=read_timeout, write=30.0, pool=15.0)) as client:
+                response = await client.post(
                     f"{self.base_url}/images/generations",
                     json=request_body,
                     headers=headers

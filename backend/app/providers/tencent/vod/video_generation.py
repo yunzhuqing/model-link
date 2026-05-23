@@ -36,7 +36,8 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
+import asyncio
 
 import httpx
 
@@ -283,8 +284,8 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
 # API 调用: CreateAigcVideoTask
 # =============================================================================
 
-def _create_aigc_video_task(
-    client: httpx.Client,
+async def _create_aigc_video_task(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     sub_app_id: Optional[int],
@@ -383,7 +384,7 @@ def _create_aigc_video_task(
     _error: Optional[Exception] = None
 
     try:
-        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -420,7 +421,7 @@ def _create_aigc_video_task(
 # API 调用: DescribeTaskDetail (轮询视频任务)
 # =============================================================================
 
-def _poll_video_task(
+async def _poll_video_task(
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -459,7 +460,7 @@ def _poll_video_task(
         while time.time() < deadline:
             resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
             if not resp:
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
                 continue
 
             # Extract the AigcVideoTask sub-object
@@ -529,7 +530,7 @@ def _poll_video_task(
                     f"ErrCodeExt={err_code_ext}"
                 )
 
-            time.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"TencentVOD video task {task_id} timed out after {max_wait}s"
@@ -695,7 +696,7 @@ def _build_file_infos_from_map(
 # 主入口: 执行视频生成
 # =============================================================================
 
-def execute_tencentvod_video_generation(
+async def execute_tencentvod_video_generation(
     api_key: str,
     model: str,
     messages,
@@ -829,8 +830,8 @@ def execute_tencentvod_video_generation(
 
     try:
         # Submit task
-        with httpx.Client(timeout=60) as client:
-            task_id = _create_aigc_video_task(
+        async with httpx.AsyncClient(timeout=60) as client:
+            task_id = await _create_aigc_video_task(
                 client=client,
                 secret_id=secret_id,
                 secret_key=secret_key,
@@ -856,7 +857,7 @@ def execute_tencentvod_video_generation(
             hook(task_id)
 
         # Poll for result
-        video_items = _poll_video_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
+        video_items = await _poll_video_task(secret_id, secret_key, task_id, _sub_app, poll_timeout=metadata.get("timeout"), tracer=_child_span)
 
         if _child_span:
             _child_span.log_output({"task_id": task_id, "video_count": len(video_items), "status": "succeeded"})
@@ -904,10 +905,10 @@ def execute_tencentvod_video_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_video_generation(
+async def stream_video_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Execute TencentVOD video generation and yield StreamChunks.
 
@@ -927,7 +928,7 @@ def stream_video_generation(
         request: The chat request with video generation parameters
     """
     # Call the synchronous (polling) path to get the full result
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

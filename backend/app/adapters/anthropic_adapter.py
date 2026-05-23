@@ -6,7 +6,7 @@ import itertools
 import json
 import re
 import time
-from typing import Optional, Generator
+from typing import Optional, AsyncGenerator
 
 from quart import Response
 
@@ -531,82 +531,42 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
     def create_stream_response(
         self,
-        chunks: Generator[StreamChunk, None, None],
+        chunks: AsyncGenerator[StreamChunk, None],
         model_name: str
     ) -> Response:
         """
-        从 StreamChunk 生成器创建 Anthropic 格式的 HTTP 流式响应。
-
-        重写父类方法，实现用量（usage）累积：
-        - 在 OpenAI 兼容的流式 API 中，usage 通常在 finish_reason 之后的
-          独立 chunk 中发送（需要 stream_options.include_usage=true）。
-        - 为了在 Anthropic 格式的 message_delta 中包含完整的 usage，
-          需要缓冲 finish chunk，等待 usage chunk 到达后合并。
-
-        Error handling: we eagerly consume the first chunk *before* committing
-        to an SSE stream.  Most provider errors (authentication, invalid
-        parameters, unsupported models, etc.) surface on the very first
-        iteration of the upstream generator.  By catching them here we return a
-        proper JSON error response with ``content-type: application/json``
-        instead of an SSE event.
-
-        流程：
-        1. 流式输出 content_block_delta 等事件（实时）
-        2. 遇到 finish_reason chunk 时缓冲，不立即输出
-        3. 继续消费剩余 chunk，累积 usage
-        4. 流结束后，将累积的 usage 注入 finish chunk 并输出
+        从 StreamChunk 异步生成器创建 Anthropic 格式的 HTTP 流式响应。
         """
         from quart import jsonify
 
-        # ------------------------------------------------------------------
-        # Eagerly consume the first chunk to surface provider errors early.
-        # ------------------------------------------------------------------
-        chunk_iter = iter(chunks)
-        first_chunk = None
-        try:
-            first_chunk = next(chunk_iter)
-        except StopIteration:
-            pass
-        except ProviderError as e:
-            return jsonify(self.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
-        except GatewayServiceError as e:
-            return jsonify(self.format_error_response(e.message, e.status_code)), e.status_code
-        except Exception as e:
-            return jsonify(self.format_error_response(str(e), 500)), 500
-
-        # Capture for use inside generate()
-        _first_chunk = first_chunk
-        _chunk_iter = chunk_iter
-
-        def generate():
+        async def generate():
             # 发送 message_start。
             # 如果第一个 chunk 携带 is_first_chunk=True（Anthropic 原生 provider 的 message_start 事件），
             # 则直接使用其中的 usage（含真实 input_tokens、cache tokens 等）。
             # 否则（非 Claude 供应商，usage 在流末尾才到达），先填 0，
             # 真实的 input_tokens 将在最后的 message_delta 里和 output_tokens 一起上报。
-            message_id = _first_chunk.id if _first_chunk else None
-            first_chunk_usage = None
-            if _first_chunk and _first_chunk.is_first_chunk and _first_chunk.usage:
-                first_chunk_usage = _first_chunk.usage
-            start_event = self.format_stream_start(model_name, message_id=message_id, usage=first_chunk_usage)
-            if start_event:
-                yield start_event
-
-            # Accumulated UsageInfo — updated as usage chunks arrive.
-            # UsageInfo fields are summed/overwritten: later chunks override earlier ones
-            # for token counts (typically one consolidated usage chunk arrives at stream end).
             accumulated_usage: Optional[UsageInfo] = None
             pending_finish_chunk = None
-            text_block_started = False  # 跟踪是否已发送 text 的 content_block_start
-            thinking_block_started = False  # 跟踪是否已发送 thinking 的 content_block_start
-            block_open = False  # 是否有内容块处于打开状态
-            content_block_index = 0  # 当前内容块索引
+            text_block_started = False
+            thinking_block_started = False
+            block_open = False
+            content_block_index = 0
 
-            # 实时流式处理所有 chunk（包含第一个已预取的 chunk）
-            all_chunks = itertools.chain([_first_chunk], _chunk_iter) if _first_chunk else iter(_chunk_iter)
+            first_chunk = True
+            message_id = None
+            first_chunk_usage = None
 
             try:
-                for chunk in all_chunks:
+                async for chunk in chunks:
+                    if first_chunk:
+                        first_chunk = False
+                        message_id = chunk.id
+                        if chunk.is_first_chunk and chunk.usage:
+                            first_chunk_usage = chunk.usage
+                        start_event = self.format_stream_start(model_name, message_id=message_id, usage=first_chunk_usage)
+                        if start_event:
+                            yield start_event
+
                     # 从每个 chunk 累积 usage 信息（后续 chunk 覆盖前面的值）
                     if chunk.usage:
                         accumulated_usage = chunk.usage

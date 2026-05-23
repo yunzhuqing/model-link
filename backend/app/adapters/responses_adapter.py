@@ -1526,29 +1526,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
         upstream generator.  By catching them here we return a proper JSON error
         response with ``content-type: application/json`` instead of an SSE event.
         """
-        from quart import Response, jsonify
+        from quart import Response
         from app.middleware.gateway_service import GatewayServiceError, ProviderError
-        import itertools
-
-        # ------------------------------------------------------------------
-        # Eagerly consume the first chunk to surface provider errors early.
-        # ------------------------------------------------------------------
-        chunk_iter_raw = iter(chunks)
-        first_chunks: list = []
-        try:
-            first_chunk = next(chunk_iter_raw)
-            first_chunks.append(first_chunk)
-        except StopIteration:
-            pass
-        except ProviderError as e:
-            return jsonify(self.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
-        except GatewayServiceError as e:
-            return jsonify(self.format_error_response(e.message, e.status_code)), e.status_code
-        except Exception as e:
-            return jsonify(self.format_error_response(str(e), 500)), 500
-
-        # Re-chain the eagerly consumed chunk(s) with the remaining iterator
-        all_chunks = itertools.chain(first_chunks, chunk_iter_raw)
 
         def _is_marker_chunk(chunk: StreamChunk) -> bool:
             """Return True if this chunk is a role-only marker carrying an ID."""
@@ -1560,26 +1539,26 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 and not chunk.raw_sse_passthrough
             )
 
-        def generate():
+        async def generate():
             try:
                 real_response_id = None
                 real_msg_id = None
                 buffered_chunk = None
 
-                chunk_iter = iter(all_chunks)
+                ait = chunks.__aiter__()
+
+                # Eagerly consume the first chunk to surface provider errors early.
+                try:
+                    chunk = await ait.__anext__()
+                except StopAsyncIteration:
+                    chunk = None
 
                 # Consume all leading marker chunks before emitting the start event.
                 # Markers are role-only chunks with no content/finish/tool_calls:
                 #   delta_role == "assistant"   → carries the real resp_xxx response ID
                 #   delta_role.startswith("msg_") → carries the real msg_xxx message ID
                 # We keep consuming until we see the first non-marker (real content) chunk.
-                while True:
-                    try:
-                        chunk = next(chunk_iter)
-                    except StopIteration:
-                        chunk = None
-                        break
-
+                while chunk is not None:
                     if not _is_marker_chunk(chunk):
                         # Real content chunk — buffer it for after the start event
                         buffered_chunk = chunk
@@ -1590,7 +1569,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         real_response_id = chunk.id if chunk.id else None
                     elif role_val and role_val.startswith("msg_"):
                         real_msg_id = role_val
-                    # Any other role value is silently dropped
+
+                    try:
+                        chunk = await ait.__anext__()
+                    except StopAsyncIteration:
+                        chunk = None
+                        break
 
                 # Ensure we always have a concrete msg_id before emitting the start event.
                 # For non-Azure providers (e.g. Bailian) no marker chunks carry a msg_id, so
@@ -1802,7 +1786,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         yield sse
 
                 # Process remaining chunks
-                for chunk in chunk_iter:
+                async for chunk in ait:
                     sse = _process_chunk(chunk)
                     if sse:
                         yield sse

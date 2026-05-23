@@ -37,7 +37,8 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
+import asyncio
 
 import httpx
 
@@ -352,8 +353,8 @@ def _parse_api_key(api_key: str) -> Tuple[str, str]:
 # API 调用: Submit 3D Job
 # =============================================================================
 
-def _submit_3d_job(
-    client: httpx.Client,
+async def _submit_3d_job(
+    client: httpx.AsyncClient,
     secret_id: str,
     secret_key: str,
     model: str,
@@ -488,7 +489,7 @@ def _submit_3d_job(
     _error: Optional[Exception] = None
 
     try:
-        response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
+        response = await client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
         response.raise_for_status()
         data = response.json()
         resp = data.get("Response", {})
@@ -528,7 +529,7 @@ def _submit_3d_job(
 # API 调用: Query 3D Job 状态查询 (单次, 供轮询和 resync 共用)
 # =============================================================================
 
-def check_hunyuan3d_job_status(
+async def check_hunyuan3d_job_status(
     secret_id: str,
     secret_key: str,
     job_id: str,
@@ -553,8 +554,8 @@ def check_hunyuan3d_job_status(
     payload_str = json.dumps(body, ensure_ascii=False)
     headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
     try:
-        with httpx.Client(timeout=60) as client:
-            response = client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
             response.raise_for_status()
             data = response.json()
             resp = data.get("Response", {})
@@ -570,7 +571,7 @@ def check_hunyuan3d_job_status(
         return {}
 
 
-def check_any_hunyuan3d_job_status(
+async def check_any_hunyuan3d_job_status(
     secret_id: str,
     secret_key: str,
     job_id: str,
@@ -587,12 +588,12 @@ def check_any_hunyuan3d_job_status(
     """
     if model:
         action = "QueryHunyuanTo3DProJob" if _is_pro_model(model) else "QueryHunyuanTo3DRapidJob"
-        resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+        resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
         if resp:
             return resp
 
     for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob"):
-        resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+        resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
         if resp:
             return resp
     return {}
@@ -602,7 +603,7 @@ def check_any_hunyuan3d_job_status(
 # API 调用: Query 3D Job (轮询)
 # =============================================================================
 
-def _poll_3d_job(
+async def _poll_3d_job(
     secret_id: str,
     secret_key: str,
     job_id: str,
@@ -647,9 +648,9 @@ def _poll_3d_job(
     try:
         poll_count = 0
         while time.time() < deadline:
-            resp = check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
+            resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
             if not resp:
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
                 continue
 
             status = resp.get("Status", "")
@@ -713,7 +714,7 @@ def _poll_3d_job(
                     f"ErrorMessage={resp.get('ErrorMessage', '')}"
                 )
 
-            time.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"Hunyuan3D job {job_id} timed out after {max_wait}s"
@@ -775,7 +776,7 @@ def _extract_inputs(messages) -> Tuple[Optional[str], Optional[str], str]:
 # 主入口: 执行 3D 生成
 # =============================================================================
 
-def execute_hunyuan3d_generation(
+async def execute_hunyuan3d_generation(
     api_key: str,
     model: str,
     messages,
@@ -850,8 +851,8 @@ def execute_hunyuan3d_generation(
 
     try:
         # Submit 3D job
-        with httpx.Client(timeout=60) as client:
-            job_id, estimated_credits, _credit_breakdown = _submit_3d_job(
+        async with httpx.AsyncClient(timeout=60) as client:
+            job_id, estimated_credits, _credit_breakdown = await _submit_3d_job(
                 client=client,
                 secret_id=secret_id,
                 secret_key=secret_key,
@@ -876,7 +877,7 @@ def execute_hunyuan3d_generation(
             hook(job_id)
 
         # Poll for result
-        result_items, credits_consumed = _poll_3d_job(
+        result_items, credits_consumed = await _poll_3d_job(
             secret_id, secret_key, job_id, model,
             estimated_credits=estimated_credits,
             region=region, poll_timeout=metadata.get("timeout"), tracer=_child_span,
@@ -943,10 +944,10 @@ def execute_hunyuan3d_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_3d_generation(
+async def stream_3d_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     Execute Hunyuan 3D generation and yield StreamChunks.
 
@@ -966,7 +967,7 @@ def stream_3d_generation(
         request: The chat request with 3D generation parameters
     """
     # Call the synchronous (polling) path to get the full result
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

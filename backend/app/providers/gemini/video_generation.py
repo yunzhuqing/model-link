@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx
 
@@ -250,7 +250,7 @@ def _derive_aspect_ratio_from_size(size: str) -> str:
 # API 调用: 创建视频生成任务
 # =============================================================================
 
-def _create_veo_operation(
+async def _create_veo_operation(
     api_key: str,
     base_url: str,
     model: str,
@@ -288,8 +288,8 @@ def _create_veo_operation(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
-            response = client.post(url, content=payload_str, headers=headers)
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, content=payload_str, headers=headers)
 
         if response.status_code >= 400:
             raise RuntimeError(
@@ -318,7 +318,7 @@ def _create_veo_operation(
 # 视频下载并保存到 storage
 # =============================================================================
 
-def _download_and_store_video(uri: str, api_key: str, video_id: str) -> str:
+async def _download_and_store_video(uri: str, api_key: str, video_id: str) -> str:
     """
     从 Gemini 视频 URI 下载视频内容（需要附加 API Key），
     将视频保存到配置的 storage backend，并返回可访问的 URL。
@@ -344,8 +344,8 @@ def _download_and_store_video(uri: str, api_key: str, video_id: str) -> str:
     separator = "&" if "?" in uri else "?"
     download_url = f"{uri}{separator}key={api_key}"
 
-    with httpx.Client(timeout=300, follow_redirects=True) as client:
-        response = client.get(download_url)
+    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+        response = await client.get(download_url)
 
     if response.status_code >= 400:
         raise RuntimeError(
@@ -374,7 +374,7 @@ def _download_and_store_video(uri: str, api_key: str, video_id: str) -> str:
 # API 调用: 轮询操作结果
 # =============================================================================
 
-def _poll_veo_operation(
+async def _poll_veo_operation(
     api_key: str,
     base_url: str,
     operation_name: str,
@@ -419,10 +419,10 @@ def _poll_veo_operation(
     _error: Optional[Exception] = None
 
     try:
-        with httpx.Client(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             poll_count = 0
             while time.time() < deadline:
-                response = client.get(poll_url, headers=headers)
+                response = await client.get(poll_url, headers=headers)
 
                 if response.status_code >= 400:
                     raise RuntimeError(
@@ -477,7 +477,7 @@ def _poll_veo_operation(
                             video_id = video_id[-80:]
 
                         try:
-                            stored_url = _download_and_store_video(uri, api_key, video_id)
+                            stored_url = await _download_and_store_video(uri, api_key, video_id)
                             stored_urls.append(stored_url)
                         except Exception as exc:
                             # 下载失败时回退到原始 Gemini URI（加上 API Key 供客户端访问）
@@ -491,7 +491,7 @@ def _poll_veo_operation(
                     }
                     return stored_urls, usage_dict
 
-                time.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"Gemini Veo operation {operation_name} timed out after {_POLL_MAX_WAIT_S}s"
@@ -508,7 +508,7 @@ def _poll_veo_operation(
 # 主入口: 执行视频生成
 # =============================================================================
 
-def execute_veo_video_generation(
+async def execute_veo_video_generation(
     api_key: str,
     base_url: str,
     model: str,
@@ -545,7 +545,7 @@ def execute_veo_video_generation(
 
     try:
         # 创建异步操作
-        operation_name = _create_veo_operation(
+        operation_name = await _create_veo_operation(
             api_key=api_key,
             base_url=base_url,
             model=model,
@@ -554,7 +554,7 @@ def execute_veo_video_generation(
         )
 
         # 轮询结果
-        video_uris, usage_dict = _poll_veo_operation(
+        video_uris, usage_dict = await _poll_veo_operation(
             api_key=api_key,
             base_url=base_url,
             operation_name=operation_name,
@@ -627,10 +627,10 @@ def execute_veo_video_generation(
 # 流式响应生成
 # =============================================================================
 
-def stream_veo_video_generation(
+async def stream_veo_video_generation(
     chat_fn,
     request: ChatRequest,
-) -> Generator[StreamChunk, None, None]:
+) -> AsyncGenerator[StreamChunk, None]:
     """
     执行 Gemini Veo 视频生成并以 StreamChunk 格式 yield 结果。
 
@@ -646,7 +646,7 @@ def stream_veo_video_generation(
         chat_fn: provider.chat 非流式方法
         request: ChatRequest
     """
-    response = chat_fn(request)
+    response = await chat_fn(request)
     response_id = response.id
     model = response.model
 

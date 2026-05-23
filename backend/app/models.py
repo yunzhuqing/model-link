@@ -4,6 +4,7 @@ Database models for Flask-SQLAlchemy (used with Quart via flask-sqlalchemy compa
 from datetime import datetime
 from decimal import Decimal
 from app import db
+from sqlalchemy import select, func
 import hashlib
 
 
@@ -944,10 +945,14 @@ class Tag(db.Model):
         }
 
 
-def seed_default_permissions() -> list[Permission]:
+async def seed_default_permissions(session=None) -> list[Permission]:
     """Ensure every default permission point exists in the DB (idempotent)."""
-    from app import db
-    existing_keys = {p.key for p in db.session.query(Permission.key).all()}
+    if session is None:
+        from quart import g
+        session = g.db_session
+
+    result = await session.execute(select(Permission.key))
+    existing_keys = {row[0] for row in result.all()}
 
     created = []
     for perm_def in DEFAULT_PERMISSIONS:
@@ -960,14 +965,14 @@ def seed_default_permissions() -> list[Permission]:
             allowed_roles=perm_def["allowed_roles"],
             is_enabled=perm_def.get("is_enabled", True),
         )
-        db.session.add(perm)
+        session.add(perm)
         created.append(perm)
     if created:
-        db.session.flush()
+        await session.flush()
     return created
 
 
-def check_permission(user_role: str, permission_key: str) -> bool:
+async def check_permission(user_role: str, permission_key: str, session=None) -> bool:
     """
     Check if a user with *user_role* is allowed to perform
     the action guarded by *permission_key*.
@@ -980,10 +985,14 @@ def check_permission(user_role: str, permission_key: str) -> bool:
       3. user_role in allowed_roles → allow
       4. Otherwise → deny
     """
-    from app import db
-    perm = db.session.query(Permission).filter(
-        Permission.key == permission_key,
-    ).first()
+    if session is None:
+        from quart import g
+        session = g.db_session
+
+    result = await session.execute(
+        select(Permission).where(Permission.key == permission_key)
+    )
+    perm = result.scalars().first()
 
     if perm is None:
         return False
@@ -1177,34 +1186,36 @@ class UsageRecord(db.Model):
         }
 
 
-def get_group_models_with_shares(group_id):
+async def get_group_models_with_shares(group_id, session=None):
     """
     Return all active models available to a group, including shared models.
     Deduplicated by model ID.
     Returns a list of (Model, Provider) tuples.
     """
-    from app import db as _db
+    if session is None:
+        from flask import g
+        session = g.db_session
 
     # Own models — through the group's own providers
-    own = (
-        _db.session.query(Model, Provider)
+    own_result = await session.execute(
+        select(Model, Provider)
         .join(Provider, Model.provider_id == Provider.id)
-        .filter(Provider.group_id == group_id)
-        .filter(Provider.is_active == True)
-        .filter(Model.is_active == True)
-        .all()
+        .where(Provider.group_id == group_id)
+        .where(Provider.is_active == True)
+        .where(Model.is_active == True)
     )
+    own = own_result.all()
 
     # Shared models — models shared TO this group from other groups
-    shared = (
-        _db.session.query(Model, Provider)
+    shared_result = await session.execute(
+        select(Model, Provider)
         .join(ModelShare, ModelShare.model_id == Model.id)
         .join(Provider, Model.provider_id == Provider.id)
-        .filter(ModelShare.target_group_id == group_id)
-        .filter(Provider.is_active == True)
-        .filter(Model.is_active == True)
-        .all()
+        .where(ModelShare.target_group_id == group_id)
+        .where(Provider.is_active == True)
+        .where(Model.is_active == True)
     )
+    shared = shared_result.all()
 
     # Merge and deduplicate by model id
     seen = set()

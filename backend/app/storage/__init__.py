@@ -7,14 +7,14 @@ Provides an abstract StorageBackend interface and concrete implementations:
 
 Use `get_storage_backend()` to obtain the configured backend instance.
 """
-from .base import StorageBackend
-from .local import LocalStorageBackend
-from .s3 import S3StorageBackend
-from .factory import get_storage_backend
+from .base import StorageBackend, AsyncStorageBackend
+from .local import LocalStorageBackend, AsyncLocalStorageBackend
+from .s3 import S3StorageBackend, AsyncS3StorageBackend
+from .factory import get_storage_backend, get_async_storage_backend
 
 __all__ = [
-    "StorageBackend",
-    "LocalStorageBackend",
-    "S3StorageBackend",
-    "get_storage_backend",
+    "StorageBackend", "AsyncStorageBackend",
+    "LocalStorageBackend", "AsyncLocalStorageBackend",
+    "S3StorageBackend", "AsyncS3StorageBackend",
+    "get_storage_backend", "get_async_storage_backend",
 ]

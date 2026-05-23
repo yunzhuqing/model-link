@@ -13,35 +13,18 @@ is shared across all requests in a single process.
 import os
 from typing import Optional
 
-from .base import StorageBackend
+from .base import StorageBackend, AsyncStorageBackend
 
 _backend: Optional[StorageBackend] = None
+_async_backend: Optional[AsyncStorageBackend] = None
 
 
 def get_storage_backend() -> StorageBackend:
-    """
-    Return the configured storage backend singleton.
-
-    The backend type is determined by the ``STORAGE_BACKEND`` environment
-    variable (default: ``"local"``).  The singleton is created on first call
-    and reused for the lifetime of the process.
-
-    Supported values:
-        ``local`` — LocalStorageBackend (writes to the local filesystem)
-        ``s3``    — S3StorageBackend   (writes to an S3-compatible bucket)
-
-    Returns:
-        A StorageBackend instance.
-
-    Raises:
-        ValueError: If an unknown backend type is configured.
-    """
+    """Return the configured sync storage backend singleton."""
     global _backend
     if _backend is not None:
         return _backend
-
     backend_type = os.getenv("STORAGE_BACKEND", "local").lower().strip()
-
     if backend_type == "local":
         from .local import LocalStorageBackend
         _backend = LocalStorageBackend()
@@ -49,9 +32,22 @@ def get_storage_backend() -> StorageBackend:
         from .s3 import S3StorageBackend
         _backend = S3StorageBackend()
     else:
-        raise ValueError(
-            f"Unknown STORAGE_BACKEND {backend_type!r}. "
-            "Supported values: 'local', 's3', 'cos'."
-        )
-
+        raise ValueError(f"Unknown STORAGE_BACKEND {backend_type!r}. Supported values: 'local', 's3', 'cos'.")
     return _backend
+
+
+def get_async_storage_backend() -> AsyncStorageBackend:
+    """Return the configured async storage backend singleton."""
+    global _async_backend
+    if _async_backend is not None:
+        return _async_backend
+    backend_type = os.getenv("STORAGE_BACKEND", "local").lower().strip()
+    if backend_type == "local":
+        from .local import AsyncLocalStorageBackend
+        _async_backend = AsyncLocalStorageBackend()
+    elif backend_type == "s3" or backend_type == "cos":
+        from .s3 import AsyncS3StorageBackend
+        _async_backend = AsyncS3StorageBackend()
+    else:
+        raise ValueError(f"Unknown STORAGE_BACKEND {backend_type!r}. Supported values: 'local', 's3', 'cos'.")
+    return _async_backend

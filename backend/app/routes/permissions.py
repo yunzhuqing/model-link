@@ -13,9 +13,9 @@ Permissions are system-global — they apply uniformly across all groups.
 """
 
 import functools
-from quart import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify, g
+from sqlalchemy import select, func as sa_func
 
-from app import db
 from app.models import (
     Group,
     UserGroup,
@@ -32,35 +32,41 @@ permissions_bp = Blueprint("permissions", __name__)
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
-def _get_role(group_id: int, user_id: int) -> str | None:
-    ug = db.session.query(UserGroup).filter(
-        UserGroup.group_id == group_id,
-        UserGroup.user_id == user_id,
-    ).first()
+async def _get_role(group_id: int, user_id: int) -> str | None:
+    result = await g.db_session.execute(
+        select(UserGroup).where(
+            UserGroup.group_id == group_id,
+            UserGroup.user_id == user_id,
+        )
+    )
+    ug = result.scalars().first()
     return ug.role if ug else None
 
 
-def _is_root_in_any_group(user_id: int) -> bool:
+async def _is_root_in_any_group(user_id: int) -> bool:
     """Check if the user is 'root' in at least one group."""
-    count = db.session.query(UserGroup).filter(
-        UserGroup.user_id == user_id,
-        UserGroup.role == "root",
-    ).count()
+    result = await g.db_session.execute(
+        select(sa_func.count()).select_from(UserGroup).where(
+            UserGroup.user_id == user_id,
+            UserGroup.role == "root",
+        )
+    )
+    count = result.scalar()
     return count > 0
 
 
-def _is_member(group_id: int, user_id: int) -> bool:
-    return _get_role(group_id, user_id) is not None
+async def _is_member(group_id: int, user_id: int) -> bool:
+    return await _get_role(group_id, user_id) is not None
 
 
-def _is_root(group_id: int, user_id: int) -> bool:
+async def _is_root(group_id: int, user_id: int) -> bool:
     """Check if user is root in a specific group. (Used by providers.py)"""
-    return _get_role(group_id, user_id) == "root"
+    return await _get_role(group_id, user_id) == "root"
 
 
-def _is_admin_or_above(group_id: int, user_id: int) -> bool:
+async def _is_admin_or_above(group_id: int, user_id: int) -> bool:
     """Check if user is admin or root in the given group."""
-    role = _get_role(group_id, user_id)
+    role = await _get_role(group_id, user_id)
     return role in ('admin', 'root')
 
 
@@ -77,12 +83,15 @@ def require_api_key_access(f):
     """
     @functools.wraps(f)
     async def wrapper(current_user, api_key_id, *args, **kwargs):
-        api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+        result = await g.db_session.execute(
+            select(ApiKey).where(ApiKey.id == api_key_id)
+        )
+        api_key = result.scalars().first()
         if not api_key:
             return jsonify({"detail": "API key not found"}), 404
 
         if api_key.user_id != current_user.id and (
-            not api_key.group_id or not _is_admin_or_above(api_key.group_id, current_user.id)
+            not api_key.group_id or not await _is_admin_or_above(api_key.group_id, current_user.id)
         ):
             return jsonify({"detail": "Access denied"}), 403
 
@@ -90,16 +99,16 @@ def require_api_key_access(f):
     return wrapper
 
 
-def _is_admin_or_above_inner(group_id: int, user_id: int) -> bool:
+async def _is_admin_or_above_inner(group_id: int, user_id: int) -> bool:
     """Check if user is admin or root in a specific group. (Used by providers.py)"""
-    role = _get_role(group_id, user_id)
+    role = await _get_role(group_id, user_id)
     return role in ("admin", "root")
 
 
 # ── Root check helper ──────────────────────────────────────────────────
 
-def _require_root(current_user):
-    if not _is_root_in_any_group(current_user.id):
+async def _require_root(current_user):
+    if not await _is_root_in_any_group(current_user.id):
         return jsonify({"detail": "Only root members can manage system permissions"}), 403
     return None
 
@@ -108,32 +117,32 @@ def _require_root(current_user):
 # Old signatures accepted (current_user, group_id); new helpers are global.
 # These wrappers bridge the gap so existing route code continues to compile.
 
-def _get_user_role_in_group(current_user, group_id: int) -> str | None:
-    return _get_role(group_id, current_user.id)
+async def _get_user_role_in_group(current_user, group_id: int) -> str | None:
+    return await _get_role(group_id, current_user.id)
 
 
-def _is_root_in_group(current_user, group_id: int) -> bool:
-    return _get_role(group_id, current_user.id) == "root"
+async def _is_root_in_group(current_user, group_id: int) -> bool:
+    return await _get_role(group_id, current_user.id) == "root"
 
 
-def _is_member_of_group(current_user, group_id: int) -> bool:
-    return _is_member(group_id, current_user.id)
+async def _is_member_of_group(current_user, group_id: int) -> bool:
+    return await _is_member(group_id, current_user.id)
 
 
-def _is_admin_or_above(current_user, group_id: int) -> bool:
+async def _is_admin_or_above(current_user, group_id: int) -> bool:
     """Return True if user is admin or root in the group."""
-    role = _get_role(group_id, current_user.id)
+    role = await _get_role(group_id, current_user.id)
     return role in ("admin", "root")
 
 
 # ── Bridge for old 2-arg check_permission calls ────────────────────────
-def check_group_permission(current_user, group_id: int, permission_key: str) -> bool:
+async def check_group_permission(current_user, group_id: int, permission_key: str) -> bool:
     """Backward-compatible wrapper: derive role from current_user + group_id,
     then call check_permission(role, permission_key)."""
-    role = _get_role(group_id, current_user.id)
+    role = await _get_role(group_id, current_user.id)
     if role is None:
         return False
-    return check_permission(role, permission_key)
+    return await check_permission(role, permission_key)
 
 
 # ── Permission Decorators ──────────────────────────────────────────────
@@ -161,12 +170,12 @@ def require_permission(permission_key: str):
         @functools.wraps(f)
         async def wrapper(current_user, group_id, *args, **kwargs):
             # Verify group exists and user is a member
-            if not _is_member(group_id, current_user.id):
+            if not await _is_member(group_id, current_user.id):
                 return jsonify({"detail": "You are not a member of this group"}), 403
 
             # Resolve role and check system-level permission
-            role = _get_role(group_id, current_user.id)
-            if not check_permission(role, permission_key):
+            role = await _get_role(group_id, current_user.id)
+            if not await check_permission(role, permission_key):
                 return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
 
             return await f(current_user, group_id, *args, **kwargs)
@@ -191,19 +200,22 @@ def require_apikey_permission(permission_key: str):
     def decorator(f):
         @functools.wraps(f)
         async def wrapper(current_user, api_key_id, *args, **kwargs):
-            api_key = db.session.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+            result = await g.db_session.execute(
+                select(ApiKey).where(ApiKey.id == api_key_id)
+            )
+            api_key = result.scalars().first()
             if not api_key:
                 return jsonify({"detail": "API key not found"}), 404
 
             group_id = api_key.group_id
 
             # Verify membership
-            if not _is_member(group_id, current_user.id):
+            if not await _is_member(group_id, current_user.id):
                 return jsonify({"detail": "You do not have access to this API key"}), 403
 
             # Check system-level permission
-            role = _get_role(group_id, current_user.id)
-            if not check_permission(role, permission_key):
+            role = await _get_role(group_id, current_user.id)
+            if not await check_permission(role, permission_key):
                 return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
 
             return await f(current_user, api_key_id, *args, **kwargs)
@@ -228,19 +240,22 @@ def require_provider_permission(permission_key: str):
     def decorator(f):
         @functools.wraps(f)
         async def wrapper(current_user, provider_id, *args, **kwargs):
-            provider = db.session.query(Provider).filter(Provider.id == provider_id).first()
+            result = await g.db_session.execute(
+                select(Provider).where(Provider.id == provider_id)
+            )
+            provider = result.scalars().first()
             if not provider:
                 return jsonify({"detail": "Provider not found"}), 404
 
             group_id = provider.group_id
 
             # Verify membership
-            if not _is_member(group_id, current_user.id):
+            if not await _is_member(group_id, current_user.id):
                 return jsonify({"detail": "You do not have access to this provider"}), 403
 
             # Check system-level permission
-            role = _get_role(group_id, current_user.id)
-            if not check_permission(role, permission_key):
+            role = await _get_role(group_id, current_user.id)
+            if not await check_permission(role, permission_key):
                 return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
 
             return await f(current_user, provider_id, *args, **kwargs)
@@ -265,10 +280,10 @@ def require_template_manage():
     def decorator(f):
         @functools.wraps(f)
         async def wrapper(current_user, *args, **kwargs):
-            if not _is_root_in_any_group(current_user.id):
+            if not await _is_root_in_any_group(current_user.id):
                 return jsonify({"detail": "Only root members can manage templates"}), 403
 
-            if not check_permission("root", "template.manage"):
+            if not await check_permission("root", "template.manage"):
                 return jsonify({"detail": "Template management is disabled"}), 403
 
             return await f(current_user, *args, **kwargs)
@@ -304,7 +319,7 @@ def require_global_permission(permission_key: str):
             if best_role is None:
                 return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
 
-            if not check_permission(best_role, permission_key):
+            if not await check_permission(best_role, permission_key):
                 return jsonify({"detail": f"Permission '{permission_key}' is not granted for your role"}), 403
 
             return await f(current_user, *args, **kwargs)
@@ -318,12 +333,14 @@ def require_global_permission(permission_key: str):
 @token_required
 async def list_permissions(current_user):
     """List all system-level permission points."""
+    session = g.db_session
     # Auto-seed defaults if none exist
-    seed_default_permissions()
-    db.session.commit()
+    await seed_default_permissions()
+    await session.commit()
 
-    perms = db.session.query(Permission).order_by(Permission.key).all()
-    is_root = _is_root_in_any_group(current_user.id)
+    result = await session.execute(select(Permission).order_by(Permission.key))
+    perms = result.scalars().all()
+    is_root = await _is_root_in_any_group(current_user.id)
 
     return jsonify({
         "permissions": [p.to_dict() for p in perms],
@@ -337,7 +354,7 @@ async def list_permissions(current_user):
 @token_required
 async def create_permission(current_user):
     """Create a new system-level permission point. Only root."""
-    err = _require_root(current_user)
+    err = await _require_root(current_user)
     if err:
         return err
 
@@ -347,10 +364,10 @@ async def create_permission(current_user):
     if not key or not label:
         return jsonify({"detail": "key and label are required"}), 400
 
+    session = g.db_session
     # Check uniqueness
-    existing = db.session.query(Permission).filter(
-        Permission.key == key,
-    ).first()
+    result = await session.execute(select(Permission).where(Permission.key == key))
+    existing = result.scalars().first()
     if existing:
         return jsonify({"detail": f"Permission key '{key}' already exists"}), 409
 
@@ -361,9 +378,9 @@ async def create_permission(current_user):
         allowed_roles=data.get("allowed_roles", ["root"]),
         is_enabled=data.get("is_enabled", True),
     )
-    db.session.add(perm)
-    db.session.commit()
-    db.session.refresh(perm)
+    session.add(perm)
+    await session.commit()
+    await session.refresh(perm)
 
     return jsonify(perm.to_dict()), 201
 
@@ -376,13 +393,13 @@ async def create_permission(current_user):
 @token_required
 async def update_permission(current_user, permission_key):
     """Update a permission point (label, description, allowed_roles, is_enabled). Only root."""
-    err = _require_root(current_user)
+    err = await _require_root(current_user)
     if err:
         return err
 
-    perm = db.session.query(Permission).filter(
-        Permission.key == permission_key,
-    ).first()
+    session = g.db_session
+    result = await session.execute(select(Permission).where(Permission.key == permission_key))
+    perm = result.scalars().first()
     if not perm:
         return jsonify({"detail": "Permission not found"}), 404
 
@@ -405,8 +422,8 @@ async def update_permission(current_user, permission_key):
             return jsonify({"detail": "is_enabled must be a boolean"}), 400
         perm.is_enabled = data["is_enabled"]
 
-    db.session.commit()
-    db.session.refresh(perm)
+    await session.commit()
+    await session.refresh(perm)
 
     return jsonify(perm.to_dict())
 
@@ -419,18 +436,18 @@ async def update_permission(current_user, permission_key):
 @token_required
 async def delete_permission(current_user, permission_key):
     """Delete a system-level permission point. Only root."""
-    err = _require_root(current_user)
+    err = await _require_root(current_user)
     if err:
         return err
 
-    perm = db.session.query(Permission).filter(
-        Permission.key == permission_key,
-    ).first()
+    session = g.db_session
+    result = await session.execute(select(Permission).where(Permission.key == permission_key))
+    perm = result.scalars().first()
     if not perm:
         return jsonify({"detail": "Permission not found"}), 404
 
-    db.session.delete(perm)
-    db.session.commit()
+    await session.delete(perm)
+    await session.commit()
 
     return jsonify({"detail": f"Permission '{permission_key}' deleted"})
 
@@ -441,19 +458,22 @@ async def delete_permission(current_user, permission_key):
 @token_required
 async def get_my_role(current_user, group_id):
     """Return the current user's role and effective system-level permissions in the group."""
-    group = db.session.query(Group).filter(Group.id == group_id).first()
+    session = g.db_session
+    result = await session.execute(select(Group).where(Group.id == group_id))
+    group = result.scalars().first()
     if not group:
         return jsonify({"detail": "Group not found"}), 404
 
-    role = _get_role(group_id, current_user.id)
+    role = await _get_role(group_id, current_user.id)
     if role is None:
         return jsonify({"detail": "You are not a member of this group"}), 403
 
     # Build permissions map: key → True/False
-    perms = db.session.query(Permission).all()
+    perms_result = await session.execute(select(Permission))
+    perms = perms_result.scalars().all()
     perm_map = {}
     for p in perms:
-        perm_map[p.key] = check_permission(role, p.key)
+        perm_map[p.key] = await check_permission(role, p.key)
 
     return jsonify({
         "group_id": group_id,
@@ -469,8 +489,6 @@ async def get_my_role(current_user, group_id):
 @token_required
 async def get_my_global_permissions(current_user):
     """Return the current user's permissions based on their highest role across all groups."""
-    from app.models import UserGroup
-
     best_role = None
     for ug in current_user.group_associations:
         if ug.role == "root":
@@ -482,10 +500,11 @@ async def get_my_global_permissions(current_user):
     if not best_role:
         return jsonify({"permissions": {}, "role": None})
 
-    perms = db.session.query(Permission).all()
+    result = await g.db_session.execute(select(Permission))
+    perms = result.scalars().all()
     perm_map = {}
     for p in perms:
-        perm_map[p.key] = check_permission(best_role, p.key)
+        perm_map[p.key] = await check_permission(best_role, p.key)
 
     return jsonify({
         "role": best_role,

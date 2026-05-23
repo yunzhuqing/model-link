@@ -2,7 +2,7 @@
 Azure OpenAI 供应商实现 (Azure OpenAI Provider)
 实现 Azure OpenAI API 的调用。
 """
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import time
 import uuid
@@ -444,9 +444,9 @@ class AzureProvider(OpenAIProvider):
             provider=self.PROVIDER_TYPE
         )
 
-    def _parse_responses_api_stream(
+    async def _parse_responses_api_stream(
         self, response, response_id: str, model: str
-    ) -> Generator[StreamChunk, None, None]:
+    ) -> AsyncGenerator[StreamChunk, None]:
         """
         Parse Server-Sent Events from the Responses API streaming endpoint
         into StreamChunk objects.
@@ -461,7 +461,7 @@ class AzureProvider(OpenAIProvider):
         # Full text captured from response.output_text.done (sent with the finish chunk)
         full_text: str = ""
 
-        for line in response.iter_lines():
+        async for line in response.aiter_lines():
             if not line:
                 continue
 
@@ -657,7 +657,7 @@ class AzureProvider(OpenAIProvider):
             "supports_vision": True,  # 假设支持
         }
     
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest) -> ChatResponse:
         """执行对话请求"""
         error = self.validate_request(request)
         if error:
@@ -675,8 +675,8 @@ class AzureProvider(OpenAIProvider):
             request_data["stream"] = False
 
         try:
-            with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = self.client.post(url, json=request_data)
+            async with self._trace_call(request.model, input_data=request_data) as child_span:
+                response = await self.client.post(url, json=request_data)
 
                 if response.status_code >= 400:
                     try:
@@ -699,7 +699,7 @@ class AzureProvider(OpenAIProvider):
         except Exception as e:
             raise RuntimeError(f"Azure OpenAI API error: {str(e)}")
 
-    def stream_chat(self, request: ChatRequest) -> Generator[StreamChunk, None, None]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
         error = self.validate_request(request)
         if error:
@@ -720,20 +720,21 @@ class AzureProvider(OpenAIProvider):
             request_data["stream"] = True
 
             try:
-                with self._trace_call(request.model, input_data=request_data), \
-                     self.client.stream("POST", url, json=request_data) as response:
-                    if response.status_code >= 400:
-                        error_text = ""
-                        for chunk in response.iter_bytes():
-                            if chunk:
-                                error_text += chunk.decode('utf-8')
-                        try:
-                            error_data = json.loads(error_text)
-                            raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                        except json.JSONDecodeError:
-                            raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
+                async with self._trace_call(request.model, input_data=request_data) as child_span:
+                    async with self.client.stream("POST", url, json=request_data) as response:
+                        if response.status_code >= 400:
+                            error_text = ""
+                            async for chunk in response.aiter_bytes():
+                                if chunk:
+                                    error_text += chunk.decode('utf-8')
+                            try:
+                                error_data = json.loads(error_text)
+                                raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                            except json.JSONDecodeError:
+                                raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
 
-                    yield from self._parse_responses_api_stream(response, response_id, request.model)
+                        async for chunk in self._parse_responses_api_stream(response, response_id, request.model):
+                            yield chunk
 
             except RuntimeError:
                 raise
@@ -744,36 +745,36 @@ class AzureProvider(OpenAIProvider):
             request_data["stream"] = True
 
             try:
-                with self._trace_call(request.model, input_data=request_data), \
-                     self.client.stream("POST", url, json=request_data) as response:
-                    if response.status_code >= 400:
-                        error_text = ""
-                        for chunk in response.iter_bytes():
-                            if chunk:
-                                error_text += chunk.decode('utf-8')
-                        try:
-                            error_data = json.loads(error_text)
-                            raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
-                        except json.JSONDecodeError:
-                            raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
-
-                    for line in response.iter_lines():
-                        if not line:
-                            continue
-
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-
-                            if data_str == "[DONE]":
-                                break
-
-                            try:
-                                chunk_data = json.loads(data_str)
-                                chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+                async with self._trace_call(request.model, input_data=request_data) as child_span:
+                    async with self.client.stream("POST", url, json=request_data) as response:
+                        if response.status_code >= 400:
+                            error_text = ""
+                            async for chunk in response.aiter_bytes():
                                 if chunk:
-                                    yield chunk
+                                    error_text += chunk.decode('utf-8')
+                            try:
+                                error_data = json.loads(error_text)
+                                raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                             except json.JSONDecodeError:
+                                raise RuntimeError(f"Azure API error ({response.status_code}): {error_text}")
+
+                        async for line in response.aiter_lines():
+                            if not line:
                                 continue
+
+                            if line.startswith("data:"):
+                                data_str = line[5:].strip()
+
+                                if data_str == "[DONE]":
+                                    break
+
+                                try:
+                                    chunk_data = json.loads(data_str)
+                                    chunk = self._parse_stream_chunk(chunk_data, response_id, request.model)
+                                    if chunk:
+                                        yield chunk
+                                except json.JSONDecodeError:
+                                    continue
 
             except RuntimeError:
                 raise
@@ -812,16 +813,16 @@ class AzureProvider(OpenAIProvider):
         base_url = self.config.base_url.rstrip('/')
         return f"{base_url}/openai/deployments/{deployment_name}/embeddings?api-version={self.api_version}"
 
-    def embed(self, request: 'EmbeddingRequest') -> 'EmbeddingResponse':
+    async def embed(self, request: 'EmbeddingRequest') -> 'EmbeddingResponse':
         """
         执行嵌入请求（Azure 版本）
-        
+
         使用 Azure 特定的 URL 格式：
         {base_url}/openai/deployments/{model}/embeddings?api-version={api_version}
-        
+
         Args:
             request: 嵌入请求对象
-        
+
         Returns:
             嵌入响应对象
         """
@@ -831,36 +832,36 @@ class AzureProvider(OpenAIProvider):
         request_data = {
             "encoding_format": request.encoding_format,
         }
-        
+
         # Multimodal embedding uses "messages" instead of "input"
         if request.is_multimodal:
             request_data["messages"] = request.messages
         else:
             request_data["input"] = request.input
-        
+
         if request.dimensions is not None:
             request_data["dimensions"] = request.dimensions
-        
+
         if request.user:
             request_data["user"] = request.user
-        
+
         url = self.get_embedding_url(request.model)
-        
+
         try:
-            response = self.client.post(url, json=request_data)
-            
+            response = await self.client.post(url, json=request_data)
+
             if response.status_code >= 400:
                 try:
                     error_data = response.json()
                     raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                 except json.JSONDecodeError:
                     raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
-            
+
             response.raise_for_status()
-            
+
             response_data = response.json()
             return self._parse_embedding_response(response_data, request.model)
-        
+
         except RuntimeError:
             raise
         except Exception as e:

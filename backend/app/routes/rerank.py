@@ -23,7 +23,6 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
-    _call_in_app_ctx,
     G_API_KEY_PROVIDER_ID,
 )
 
@@ -83,7 +82,7 @@ async def create_rerank():
     }
     """
     # 1. 认证
-    user, api_key, error, status = get_current_user_or_api_key()
+    user, api_key, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("rerank", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
@@ -134,9 +133,7 @@ async def create_rerank():
     # 5. 调用中间层
     _app = current_app._get_current_object()
     try:
-        response = await asyncio.to_thread(
-            _call_in_app_ctx, _app, _gateway_service.rerank, rerank_request, group_id, provider_id=provider_id
-        )
+        response = await _gateway_service.rerank(rerank_request, group_id, provider_id=provider_id)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         _log_error("rerank", e.status_code, e.message, {"model": model_name})

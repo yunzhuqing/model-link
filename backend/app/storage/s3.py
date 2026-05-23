@@ -23,7 +23,7 @@ boto3 must be installed: ``pip install boto3``
 import os
 from typing import Optional
 
-from .base import StorageBackend
+from .base import StorageBackend, AsyncStorageBackend
 
 
 class S3StorageBackend(StorageBackend):
@@ -110,8 +110,6 @@ class S3StorageBackend(StorageBackend):
         except client.exceptions.NoSuchKey:
             return None
         except Exception:  # pylint: disable=broad-except
-            # Swallow unexpected errors (e.g. access denied) and return None
-            # so callers don't crash — the gateway will surface "not found".
             return None
 
     def url_for(self, key: str, expires_in: int = 7 * 24 * 3600) -> str:
@@ -142,57 +140,29 @@ class S3StorageBackend(StorageBackend):
 
     def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         """
-        Upload binary *data* to S3 under ``{prefix}/files/{key}`` and return
-        a presigned URL (valid for 7 days) so clients can download the file.
+        Upload binary *data* to S3 and return a presigned or public URL.
 
-        If the ``STORAGE_S3_PUBLIC_BASE_URL`` environment variable is set, a
-        plain public URL is returned instead of a presigned URL:
-            ``{STORAGE_S3_PUBLIC_BASE_URL}/{s3_key}``
-
-        This is useful when the bucket is served via a CDN or has a public
-        access policy.
-
-        Args:
-            key:          Object filename (e.g. ``"vid_abc123.mp4"``).
-            data:         Raw bytes to upload.
-            content_type: MIME type for the S3 object.
-
-        Returns:
-            A URL string that can be used to download the file.
+        See AsyncS3StorageBackend.write_binary for full documentation.
         """
         import os as _os
         s3_key = f"{self.prefix}/files/{key}"
         client = self._get_client()
-        client.put_object(
-            Bucket=self.bucket,
-            Key=s3_key,
-            Body=data,
-            ContentType=content_type,
-        )
-
-        # If a public base URL is configured, return a plain public URL
+        client.put_object(Bucket=self.bucket, Key=s3_key, Body=data, ContentType=content_type)
         public_base = _os.getenv("STORAGE_S3_PUBLIC_BASE_URL", "").rstrip("/")
         if public_base:
             return f"{public_base}/{s3_key}"
-
-        # Otherwise return a presigned URL valid for 7 days
         presigned_url = client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": self.bucket, "Key": s3_key},
-            ExpiresIn=7 * 24 * 3600,  # 7 days
+            "get_object", Params={"Bucket": self.bucket, "Key": s3_key}, ExpiresIn=7 * 24 * 3600,
         )
         return presigned_url
 
     def read_binary(self, key_or_url: str) -> Optional[bytes]:
         """Retrieve binary data stored via write_binary() by S3 key."""
         import os as _os
-        # If the value looks like an S3 key (starts with our prefix), use it directly
         if key_or_url.startswith(f"{self.prefix}/files/"):
             s3_key = key_or_url
         else:
-            # Assume it's a short key and prepend the prefix
             s3_key = f"{self.prefix}/files/{key_or_url}"
-
         client = self._get_client()
         try:
             response = client.get_object(Bucket=self.bucket, Key=s3_key)
@@ -201,3 +171,122 @@ class S3StorageBackend(StorageBackend):
             return None
         except Exception:
             return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── Async S3 Storage ──────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class AsyncS3StorageBackend(AsyncStorageBackend):
+    """Async S3-compatible storage using aioboto3."""
+
+    def __init__(
+        self,
+        bucket: Optional[str] = None,
+        prefix: Optional[str] = None,
+        region: Optional[str] = None,
+        endpoint_url: Optional[str] = None,
+        access_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+    ):
+        self.bucket = bucket or os.getenv("STORAGE_S3_BUCKET", "")
+        if not self.bucket:
+            raise ValueError(
+                "AsyncS3StorageBackend requires a bucket name. "
+                "Set STORAGE_S3_BUCKET env var or pass bucket= to the constructor."
+            )
+        self.prefix = prefix or os.getenv("STORAGE_S3_PREFIX", "background_responses")
+        self.region = region or os.getenv("STORAGE_S3_REGION", "us-east-1")
+        self.endpoint_url = endpoint_url or os.getenv("STORAGE_S3_ENDPOINT") or None
+        self._access_key = access_key or os.getenv("ACCESS_KEY_ID")
+        self._secret_key = secret_key or os.getenv("SECRET_ACCESS_KEY")
+        self._session = None
+
+    def _get_session(self):
+        """Return (and cache) an aioboto3 Session."""
+        if self._session is None:
+            try:
+                import aioboto3
+            except ImportError as exc:
+                raise ImportError(
+                    "aioboto3 is required for AsyncS3StorageBackend. "
+                    "Install it with: pip install aioboto3"
+                ) from exc
+            self._session = aioboto3.Session()
+        return self._session
+
+    def _client_kwargs(self) -> dict:
+        kwargs: dict = {"region_name": self.region}
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+        if self._access_key and self._secret_key:
+            kwargs["aws_access_key_id"] = self._access_key
+            kwargs["aws_secret_access_key"] = self._secret_key
+        return kwargs
+
+    def make_key(self, response_id: str, suffix: str) -> str:
+        return f"{self.prefix}/{response_id}/{suffix}.json"
+
+    async def write(self, key: str, content: str) -> None:
+        session = self._get_session()
+        async with session.client("s3", **self._client_kwargs()) as client:
+            await client.put_object(
+                Bucket=self.bucket, Key=key, Body=content.encode("utf-8"),
+                ContentType="application/json",
+            )
+
+    async def read(self, key: str) -> Optional[str]:
+        session = self._get_session()
+        async with session.client("s3", **self._client_kwargs()) as client:
+            try:
+                response = await client.get_object(Bucket=self.bucket, Key=key)
+                body = await response["Body"].read()
+                return body.decode("utf-8")
+            except client.exceptions.NoSuchKey:
+                return None
+            except Exception:
+                return None
+
+    def url_for(self, key: str, expires_in: int = 7 * 24 * 3600) -> str:
+        """Generate a public or presigned URL (sync — uses sync client for presigning)."""
+        public_base = os.getenv("STORAGE_S3_PUBLIC_BASE_URL", "").rstrip("/")
+        if public_base:
+            return f"{public_base}/{key}"
+        # Presigning requires a sync client — use the sync backend temporarily
+        import boto3
+        kwargs: dict = {"region_name": self.region}
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+        if self._access_key and self._secret_key:
+            kwargs["aws_access_key_id"] = self._access_key
+            kwargs["aws_secret_access_key"] = self._secret_key
+        client = boto3.client("s3", **kwargs)
+        return client.generate_presigned_url(
+            "get_object", Params={"Bucket": self.bucket, "Key": key}, ExpiresIn=expires_in,
+        )
+
+    async def write_binary(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        s3_key = f"{self.prefix}/files/{key}"
+        session = self._get_session()
+        async with session.client("s3", **self._client_kwargs()) as client:
+            await client.put_object(Bucket=self.bucket, Key=s3_key, Body=data, ContentType=content_type)
+        public_base = os.getenv("STORAGE_S3_PUBLIC_BASE_URL", "").rstrip("/")
+        if public_base:
+            return f"{public_base}/{s3_key}"
+        return self.url_for(s3_key)
+
+    async def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        if key_or_url.startswith(f"{self.prefix}/files/"):
+            s3_key = key_or_url
+        else:
+            s3_key = f"{self.prefix}/files/{key_or_url}"
+        session = self._get_session()
+        async with session.client("s3", **self._client_kwargs()) as client:
+            try:
+                response = await client.get_object(Bucket=self.bucket, Key=s3_key)
+                return await response["Body"].read()
+            except client.exceptions.NoSuchKey:
+                return None
+            except Exception:
+                return None

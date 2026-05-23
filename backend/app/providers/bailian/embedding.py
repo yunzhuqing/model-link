@@ -157,7 +157,7 @@ def parse_bailian_multimodal_embedding_response(
 # 多模态嵌入 API 调用
 # =============================================================================
 
-def execute_bailian_multimodal_embed(
+async def execute_bailian_multimodal_embed(
     api_key: str,
     multimodal_embedding_url: str,
     request: EmbeddingRequest,
@@ -201,8 +201,8 @@ def execute_bailian_multimodal_embed(
     }
 
     try:
-        with httpx.Client(timeout=120) as client:
-            response = client.post(multimodal_embedding_url, json=request_data, headers=headers)
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(multimodal_embedding_url, json=request_data, headers=headers)
 
         if response.status_code >= 400:
             try:
