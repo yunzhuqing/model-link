@@ -1,7 +1,7 @@
 """
 User authentication and management routes.
 """
-from quart import Blueprint, request, jsonify, g
+from quart import Blueprint, request, jsonify
 from datetime import timedelta
 from functools import wraps
 import os
@@ -9,6 +9,7 @@ import time
 import logging
 
 from sqlalchemy import select
+from app import get_db_session
 from app.models import User
 from app.user_service import get_user_by_id, invalidate_user_cache
 from app.auth import verify_password, get_password_hash, create_access_token
@@ -67,7 +68,8 @@ def token_required(f):
                 return jsonify({'detail': 'Invalid token'}), 401
         except JWTError:
             return jsonify({'detail': 'Invalid token'}), 401
-        user = await get_user_by_id(user_id, session=g.db_session)
+        # Cache-first lookup; opens its own short-lived session on cache miss.
+        user = await get_user_by_id(user_id)
         if user is None:
             return jsonify({'detail': 'User not found'}), 401
         return await f(current_user=user, *args, **kwargs)
@@ -79,32 +81,31 @@ def token_required(f):
 async def register():
     """Register a new user."""
     data = await request.get_json()
-    
+
     try:
         user_create = UserCreate(**data)
     except Exception as e:
         return jsonify({'detail': str(e)}), 400
-    
-    session = g.db_session
 
-    # Check if username exists
-    result = await session.execute(select(User).where(User.username == user_create.username))
-    existing_user = result.scalars().first()
-    if existing_user:
-        return jsonify({'detail': 'Username already registered'}), 400
+    async with get_db_session() as session:
+        # Check if username exists
+        result = await session.execute(select(User).where(User.username == user_create.username))
+        existing_user = result.scalars().first()
+        if existing_user:
+            return jsonify({'detail': 'Username already registered'}), 400
 
-    # Create user
-    hashed_password = get_password_hash(user_create.password)
-    user = User(
-        username=user_create.username,
-        email=user_create.email,
-        hashed_password=hashed_password
-    )
-    session.add(user)
-    await session.flush()
-    await session.refresh(user)
+        # Create user
+        hashed_password = get_password_hash(user_create.password)
+        user = User(
+            username=user_create.username,
+            email=user_create.email,
+            hashed_password=hashed_password
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
 
-    return jsonify(user.to_dict()), 201
+        return jsonify(user.to_dict()), 201
 
 
 @users_bp.route('/token', methods=['POST'])
@@ -119,26 +120,26 @@ async def login():
         form = await request.form
         username = form.get('username')
         password = form.get('password')
-    
+
     if not username or not password:
         return jsonify({'detail': 'Username and password required'}), 400
 
-    session = g.db_session
-    result = await session.execute(select(User).where(User.username == username))
-    user = result.scalars().first()
-    if not user or not verify_password(password, user.hashed_password):
-        return jsonify({'detail': 'Incorrect username or password'}), 401
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={'sub': user.username, 'user_id': user.id},
-        expires_delta=access_token_expires
-    )
-    
-    return jsonify({
-        'access_token': access_token,
-        'token_type': 'bearer'
-    })
+    async with get_db_session() as session:
+        result = await session.execute(select(User).where(User.username == username))
+        user = result.scalars().first()
+        if not user or not verify_password(password, user.hashed_password):
+            return jsonify({'detail': 'Incorrect username or password'}), 401
+
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={'sub': user.username, 'user_id': user.id},
+            expires_delta=access_token_expires
+        )
+
+        return jsonify({
+            'access_token': access_token,
+            'token_type': 'bearer'
+        })
 
 
 @users_bp.route('/users/me', methods=['GET'])
@@ -155,14 +156,14 @@ async def delete_user(current_user, user_id):
     if user_id != current_user.id:
         return jsonify({'detail': 'Not authorized to delete this user'}), 403
 
-    session = g.db_session
-    result = await session.execute(select(User).where(User.id == user_id))
-    user = result.scalars().first()
-    if not user:
-        return jsonify({'detail': 'User not found'}), 404
+    async with get_db_session() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalars().first()
+        if not user:
+            return jsonify({'detail': 'User not found'}), 404
 
-    await session.delete(user)
-    await session.flush()
+        await session.delete(user)
+        await session.commit()
 
     await invalidate_user_cache(user_id)
 

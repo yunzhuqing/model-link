@@ -1,6 +1,7 @@
 """
 Quart application factory for Model Link AI Gateway.
 """
+import asyncio
 import logging
 import logging.handlers
 import os
@@ -145,6 +146,17 @@ from sqlalchemy.pool import NullPool as _NullPool
 
 _async_engine = None
 _async_session_factory = None
+_main_event_loop: "asyncio.AbstractEventLoop | None" = None
+
+
+def get_main_event_loop():
+    """Return the main asyncio event loop captured at app startup.
+
+    Used by services that run on background threads (e.g. the election
+    callback thread) but need to schedule coroutines on the loop where
+    the shared async SQLAlchemy engine lives.
+    """
+    return _main_event_loop
 
 
 def _build_async_db_url() -> str:
@@ -198,7 +210,9 @@ def get_db_session() -> _AsyncSession:
 
 async def _init_async_engine():
     """Initialise the async engine and session factory."""
-    global _async_engine, _async_session_factory
+    global _async_engine, _async_session_factory, _main_event_loop
+    # Capture the main loop so background threads can schedule coroutines onto it.
+    _main_event_loop = asyncio.get_running_loop()
     async_url = _build_async_db_url()
     _async_engine = _create_async_engine(
         async_url,
@@ -208,6 +222,24 @@ async def _init_async_engine():
         pool_recycle=int(os.getenv('SQLALCHEMY_POOL_RECYCLE', 600)),
         pool_pre_ping=os.getenv('SQLALCHEMY_POOL_PRE_PING', 'true').lower() == 'true',
     )
+
+    # aiomysql + uvloop edge case: when the underlying TCP transport is closed
+    # (e.g. MySQL killed the connection, or it was checked out across event-loop
+    # transitions), the pre-ping write raises a bare `RuntimeError("unable to
+    # perform operation on <TCPTransport closed=True ...>")` instead of a
+    # DBAPI disconnection error. SQLAlchemy's pre-ping then can't recognise it
+    # as a disconnect and re-raises it to the caller, taking down the request.
+    #
+    # Tell SQLAlchemy to treat that RuntimeError as a disconnect so the pool
+    # invalidates the dead connection and transparently retrieves a fresh one.
+    from sqlalchemy import event as _sa_event
+
+    @_sa_event.listens_for(_async_engine.sync_engine, "handle_error")
+    def _treat_closed_transport_as_disconnect(ctx):  # noqa: ARG001
+        exc = ctx.original_exception
+        if isinstance(exc, RuntimeError) and "closed" in str(exc).lower():
+            ctx.is_disconnect = True
+
     _async_session_factory = _async_sessionmaker(
         _async_engine, class_=_AsyncSession, expire_on_commit=False,
     )
@@ -269,59 +301,22 @@ def create_app(config=None):
     db.init_app(app)
     migrate.init_app(app, db)
 
-    # ── Fix Flask-SQLAlchemy compatibility with Quart 0.20 ──────────────────
-    #
-    # Problem: Flask-SQLAlchemy uses Flask's `current_app` proxy (via werkzeug's
-    # `_cv_app` ContextVar) to scope DB sessions. Quart 0.20 inherits from Flask
-    # but uses its own async app context that does NOT set Flask's `_cv_app`
-    # ContextVar. This causes "Working outside of application context" errors
-    # whenever db.session is accessed in any route handler.
-    #
-    # Solution:
-    # 1. Register a before_request hook that pushes Flask's _cv_app ContextVar
-    #    so Flask-SQLAlchemy can find the current app during request handling.
-    # 2. Replace Flask-SQLAlchemy's sync teardown handler with an async one
-    #    that gracefully handles the context being already cleared.
+    # Flask-SQLAlchemy auto-registers a sync teardown_appcontext that calls
+    # `db.session.remove()`. Under Quart this crashes with "Working outside of
+    # application context" because Quart's app context doesn't set Flask's
+    # _cv_app ContextVar. Since route handlers no longer touch db.session
+    # (they use `async with get_db_session()` instead), it's safe to drop.
+    app.teardown_appcontext_funcs[:] = [
+        fn for fn in app.teardown_appcontext_funcs
+        if not getattr(fn, '__qualname__', '').startswith('SQLAlchemy.')
+    ]
 
-    from flask.globals import _cv_app
-    from flask.ctx import AppContext
-
-    # ── Async DB session lifecycle ──────────────────────────────────────
-    # Each request gets its own async DB session, available as g.db_session.
-    # The session is closed in teardown_appcontext.
-
-    @app.before_request
-    async def _create_async_db_session():
-        from quart import g
-        g.db_session = _async_session_factory()
-
-    @app.teardown_appcontext
-    async def _close_async_db_session(exc):
-        from quart import g
-        session = getattr(g, 'db_session', None)
-        if session is not None:
-            try:
-                await session.close()
-            except Exception:
-                pass
-            g.db_session = None
-
-    @app.before_request
-    async def _push_flask_app_context():
-        """Ensure Flask's _cv_app ContextVar is set for Flask-SQLAlchemy."""
-        from quart import g
-        if not hasattr(g, '_flask_ctx_token'):
-            g._flask_ctx_token = _cv_app.set(AppContext(app))
-
-    @app.after_request
-    async def _pop_flask_app_context(response):
-        """No-op: Flask context cleanup moved to teardown_appcontext.
-
-        Previously this reset _cv_app here, but that caused db.session.remove()
-        in teardown_appcontext to fail silently (RuntimeError caught), leaking
-        DB connections until the QueuePool was exhausted.
-        """
-        return response
+    # ── Per-request hooks (request-id only; no DB session lifecycle) ────────
+    # All route handlers now open short-lived sessions explicitly via
+    # `async with get_db_session() as s:`. The legacy g.db_session pattern
+    # was removed because it tied each DB connection to the full request
+    # lifetime — including minutes-long upstream LLM calls — which exhausted
+    # the connection pool under concurrency.
 
     @app.before_request
     async def _assign_request_id():
@@ -342,35 +337,7 @@ def create_app(config=None):
             response.headers["X-Request-Id"] = req_id
         return response
 
-    # Remove Flask-SQLAlchemy's sync teardown handler and register async version
-    app.teardown_appcontext_funcs[:] = [
-        fn for fn in app.teardown_appcontext_funcs
-        if not getattr(fn, '__qualname__', '').startswith('SQLAlchemy.')
-    ]
 
-    @app.teardown_appcontext
-    async def _teardown_db_session(exc):
-        """Release the DB session first, then reset Flask's _cv_app ContextVar.
-
-        Order matters: db.session.remove() needs Flask's _cv_app to still be
-        set so that Flask-SQLAlchemy can locate the correct scoped session and
-        return the underlying connection to the pool.  Only after the session
-        is fully cleaned up do we reset the ContextVar.
-        """
-        try:
-            db.session.remove()
-        except RuntimeError:
-            # App context already popped — safe to ignore
-            pass
-        # Now safe to reset the Flask app context ContextVar
-        from quart import g
-        token = getattr(g, '_flask_ctx_token', None)
-        if token is not None:
-            try:
-                _cv_app.reset(token)
-            except (ValueError, RuntimeError):
-                pass
-    
     # Enable CORS for all origins
     quart_cors_init(app, allow_origin="*")
     

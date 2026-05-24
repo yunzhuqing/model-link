@@ -1255,7 +1255,7 @@ class VertexAIProvider(BaseProvider):
 
     # ==================== Video Generation (Veo on Vertex AI) ====================
 
-    def _execute_vertexai_veo_generation(self, request: ChatRequest) -> ChatResponse:
+    async def _execute_vertexai_veo_generation(self, request: ChatRequest) -> ChatResponse:
         """
         Execute Veo video generation via Vertex AI predictLongRunning endpoint.
         Delegates to the vertexai.video_generation module.
@@ -1264,7 +1264,7 @@ class VertexAIProvider(BaseProvider):
         # get_headers() triggers _get_credentials() which sets self.config.base_url
         # from the service account project_id when no explicit base_url is configured.
         self.get_headers()
-        return execute_vertexai_veo_generation(
+        return await execute_vertexai_veo_generation(
             request=request,
             get_headers_fn=self.get_headers,
             base_url=self.config.base_url,
@@ -1300,7 +1300,7 @@ class VertexAIProvider(BaseProvider):
             self.is_video_generation_model(request.model)
             or self._has_video_generation_tool(request)
         ):
-            return self._execute_vertexai_veo_generation(request)
+            return await self._execute_vertexai_veo_generation(request)
 
         try:
             request_data = self.prepare_request(request)

@@ -6,7 +6,11 @@ OpenAI Responses API 路由层
 三层架构：
   API 层 (Routes/Adapters) → 中间层 (GatewayService) → 供应商层 (Providers)
 
-此模块从 gateway.py 拆分而来，专门处理 Responses API 相关的路由。
+请求生命周期 (no DB connection held across LLM call):
+  Phase 1: auth + acl (short session)
+  Phase 2: resolve model (short session, then closed)
+  Phase 3: LLM call (NO session)
+  Phase 4: usage record (fire-and-forget)
 """
 from quart import Blueprint, request, jsonify, current_app, g
 from typing import Any, Dict, Optional
@@ -14,16 +18,14 @@ import asyncio
 import json
 import logging
 import time
-import threading
 
 logger = logging.getLogger("gateway")
 
-from app import db
+from app import get_db_session
 import app.background_response_dao as _bg_dao
 from app.monitoring import create_tracer
 from app.group_service import get_group_monitoring_config
 
-# 导入中间层
 from app.utils import json_loads
 
 
@@ -38,33 +40,46 @@ async def _parse_json_body():
 
 
 from app.middleware.gateway_service import (
-    GatewayService,
     GatewayServiceError,
     ModelNotFoundError,
     ProviderError,
 )
 
-# 导入适配器
-from app.adapters.responses_adapter import OpenAIResponsesAdapter, _apply_b64_json_to_image_output, _save_image_data_uris_to_storage, _strip_internal_fields
+from app.adapters.responses_adapter import (
+    OpenAIResponsesAdapter,
+    _apply_b64_json_to_image_output,
+    _save_image_data_uris_to_storage,
+    _strip_internal_fields,
+)
 
 from app.storage import get_storage_backend
 from app.utils import gen_id
 
-# 从 gateway 模块导入共享的认证和工具函数
 from app.routes.gateway import (
     get_current_user_or_api_key,
     _check_allowed_models,
     _gateway_service,
     _log_error,
 )
-from app.routes.gateway_helpers import G_API_KEY_PROVIDER_ID
 
 gateway_responses_bp = Blueprint('gateway_responses', __name__)
 
 
 # ============== Background worker ==============
 
-def _run_background_response(
+# Hold strong references to fire-and-forget background tasks. Without this,
+# asyncio.create_task returns a weakly-referenced task that the GC can collect
+# mid-flight, silently killing long-running background work.
+_background_tasks: set = set()
+
+
+def _track_background_task(task: asyncio.Task) -> None:
+    """Keep ``task`` alive until it finishes, then drop the reference."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _run_background_response(
     app,
     response_id: str,
     input_key: str,
@@ -84,360 +99,269 @@ def _run_background_response(
     provider_id: Optional[int] = None,
 ):
     """
-    Worker function executed in a background thread.
+    Background coroutine scheduled on the main event loop.
 
-    Reads the request payload via the storage backend, calls the GatewayService,
-    writes the result to storage, then updates the BackgroundResponse DB record.
-
-    All DB operations are performed via background_response_dao (NullPool engine),
-    so no long-lived DB connection is held during the LLM/video generation work.
-
-    Uses ``asyncio.run()`` internally to call the now-async GatewayService methods
-    with a temporary Quart app context and async DB session.
-
-    Async-within-async handling
-    ---------------------------
-    The upstream provider itself may be an async Responses API service (e.g. an
-    OpenAI-compatible service that accepts ``background=true``).  In that case the
-    first ``POST /v1/responses`` call returns immediately with
-    ``status: "queued"`` or ``"in_progress"`` instead of a finished result.
-
-    When this happens, this function polls ``GET /v1/responses/{id}`` on the
-    upstream provider until the status changes to ``"completed"`` or ``"failed"``,
-    then saves the final result as normal.  The upstream status is propagated via
-    ``ChatResponse.usage.extra['_upstream_status']``.
-
-    Args:
-        app:         The Flask/Quart application instance.
-        response_id: The BackgroundResponse.response_id to update when done.
-        input_key:   Storage key for the JSON request payload.
-        output_key:  Storage key for the JSON response output.
-        group_id:    Group ID for access control (from the API key, or None for JWT users).
-        user_name:   Human-readable user name (from JWT); extracted eagerly from the
-                     request thread before the session closes.
-        api_key_raw: Raw API key string (for hashing/masking in usage records).
-        api_key_name: Display name of the API key.
-        api_key_group_id: Group ID of the API key.
-        api_key_group_name: Group name of the API key.
+    Runs as ``asyncio.create_task(_run_background_response(...))`` from the
+    request handler. Shares the loop (and therefore the shared async
+    SQLAlchemy engine) with all request handlers, so DB calls work natively.
+    Sync provider SDKs are isolated with ``asyncio.to_thread``.
     """
-    import os
+    async with app.app_context():
+        # Propagate request_id ContextVar
+        _rid_token = None
+        if request_id:
+            try:
+                from app import request_id_var
+                _rid_token = request_id_var.set(request_id)
+            except Exception:
+                pass
 
-    async def _async_work():
-        """Inner async function that runs within the thread's asyncio event loop."""
-        from app import get_db_session
-        from quart import g
+        storage = get_storage_backend()
 
-        # Set up Quart's app context so g.db_session resolves and Flask-SQLAlchemy works.
-        async with app.app_context():
+        final_error: Optional[str] = None
+        formatted_output: Optional[str] = None
+        _bg_start_time = time.monotonic()
+
+        try:
+            # Read request payload
+            raw = storage.read(input_key)
+            if raw is None:
+                raise RuntimeError(f"Input not found at storage key: {input_key}")
+            data = json_loads(raw)
+
+            adapter = OpenAIResponsesAdapter()
+            chat_request = adapter.parse_request(data)
+
+            def _on_task_created(task_id: str) -> None:
+                try:
+                    asyncio.create_task(_bg_dao.update_task_metadata_async(
+                        response_id=response_id,
+                        task_id=task_id,
+                    ))
+                except Exception:
+                    pass
+
+            def _on_model_resolved(resolved) -> None:
+                """Persist provider_id immediately after model resolution."""
+                try:
+                    asyncio.create_task(_bg_dao.update_task_metadata_async(
+                        response_id=response_id,
+                        provider_id=resolved.provider_id,
+                    ))
+                except Exception:
+                    pass
+
+            chat_request.metadata['_on_task_created'] = _on_task_created
+            chat_request.metadata['_on_model_resolved'] = _on_model_resolved
+
+            # ─── Phase 2: resolve model (short DB session) ───
             async with get_db_session() as session:
-                g.db_session = session
+                resolved = await _gateway_service.resolve_model(
+                    session, chat_request.model, group_id, provider_id=provider_id
+                )
+            # ← session closed; DB connection returned to pool
 
-                # Propagate the originating request_id into the ContextVar so downstream
-                # helpers (logging filters, storage key namespacing, etc.) can read it.
-                _rid_token = None
-                if request_id:
-                    try:
-                        from app import request_id_var
-                        _rid_token = request_id_var.set(request_id)
-                    except Exception:
-                        pass
+            # Persist provider_id immediately so resync can find this row
+            try:
+                await _bg_dao.update_task_metadata_async(
+                    response_id=response_id,
+                    provider_id=resolved.provider_id,
+                    session_id=chat_request.session_id,
+                    request_id=request_id,
+                )
+            except Exception as _meta_exc:
+                logger.warning(f"[background] Failed to update provider_id for {response_id!r}: {_meta_exc}")
 
-                db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-                storage = get_storage_backend()
+            # ─── Phase 3: LLM call (NO DB session) ───
+            if tracer:
+                tracer.start(model_name or data.get('model', ''), input_data=request_data or data, session_id=chat_request.session_id)
+                tracer.log_input(request_data or data)
+                tracer.set_metadata({
+                    "request_id": request_id,
+                    "group_id": group_id,
+                    "user": user_name,
+                    "model_name": model_name,
+                    "api_key_name": api_key_name,
+                })
 
-                final_error: Optional[str] = None
-                formatted_output: Optional[str] = None
+            try:
+                response = await _gateway_service.chat(resolved, chat_request, tracer=tracer)
+                if tracer:
+                    tracer.log_output(adapter.format_response(response))
+            except Exception:
+                if tracer:
+                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
+                    tracer.end(error=Exception("background generation error"))
+                raise
+
+            # Persist task metadata after first chat() returns
+            try:
+                _provider_task_id = None
+                if response.usage and response.usage.extra:
+                    _provider_task_id = response.usage.extra.get('_task_id')
+                await _bg_dao.update_task_metadata_async(
+                    response_id=response_id,
+                    task_id=_provider_task_id,
+                    provider_id=resolved.provider_id,
+                    session_id=chat_request.session_id,
+                    request_id=request_id,
+                )
+            except Exception as _meta_exc:
+                logger.warning(f"[background] Failed to update task metadata for {response_id!r}: {_meta_exc}")
+
+            # ─── Async upstream polling (NO DB) ───
+            upstream_status = response.usage.extra.get('_upstream_status', 'completed')
+            _PENDING_STATUSES = {'queued', 'in_progress'}
+
+            if upstream_status in _PENDING_STATUSES:
+                upstream_response_id = response.id
+                upstream_model = response.model
 
                 try:
-                    # Read request payload — no DB connection held during this
-                    raw = storage.read(input_key)
-                    if raw is None:
-                        raise RuntimeError(f"Input not found at storage key: {input_key}")
-                    data = json_loads(raw)
-
-                    adapter = OpenAIResponsesAdapter()
-                    chat_request = adapter.parse_request(data)
-
-                    # Inject a hook so providers that create async tasks can persist
-                    # the task_id immediately — before entering their poll loop.
-                    # If the process crashes mid-poll, the resync service can still
-                    # query the upstream provider using this task_id.
-                    def _on_task_created(task_id: str) -> None:
-                        try:
-                            _bg_dao.update_task_metadata(
-                                db_url=db_url,
-                                response_id=response_id,
-                                task_id=task_id,
-                            )
-                        except Exception:
-                            pass  # Best-effort; resync will retry later
-
-                    def _on_model_resolved(resolved) -> None:
-                        """Persist provider_id immediately after model resolution."""
-                        try:
-                            _bg_dao.update_task_metadata(
-                                db_url=db_url,
-                                response_id=response_id,
-                                provider_id=resolved.db_provider.id if resolved.db_provider else None,
-                            )
-                        except Exception:
-                            pass  # Best-effort
-
-                    chat_request.metadata['_on_task_created'] = _on_task_created
-                    chat_request.metadata['_on_model_resolved'] = _on_model_resolved
-
-                    # ── LLM / video generation call ────────────────────────────────
-                    # GatewayService.chat() is now async; called via await.
-                    if tracer:
-                        tracer.start(model_name or data.get('model', ''), input_data=request_data or data, session_id=chat_request.session_id)
-                        tracer.log_input(request_data or data)
-                        tracer.set_metadata({
-                            "request_id": request_id,
-                            "group_id": group_id,
-                            "user": user_name,
-                            "model_name": model_name,
-                            "api_key_name": api_key_name,
-                        })
-                    _bg_start_time = time.monotonic()
-                    try:
-                        response, resolved = await _gateway_service.chat(chat_request, group_id, tracer=tracer, provider_id=provider_id)
-                        if tracer:
-                            tracer.log_output(adapter.format_response(response))
-                    except Exception:
-                        if tracer:
-                            tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
-                            tracer.end(error=Exception("background generation error"))
-                        raise
-
-                    # Persist task metadata immediately after chat() returns, so the resync
-                    # service can query provider status even if this thread later crashes.
-                    try:
-                        _provider_task_id = None
-                        if response.usage and response.usage.extra:
-                            _provider_task_id = response.usage.extra.get('_task_id')
-                        _bg_dao.update_task_metadata(
-                            db_url=db_url,
-                            response_id=response_id,
-                            task_id=_provider_task_id,
-                            provider_id=resolved.db_provider.id if resolved.db_provider else None,
-                            session_id=chat_request.session_id,
-                            request_id=request_id,
-                        )
-                    except Exception as _meta_exc:
-                        logger.warning(f"[background] Failed to update task metadata for {response_id!r}: {_meta_exc}")
-
-                    # Eagerly extract all ORM data we need for usage recording,
-                    # then release the DB session so the connection returns to the
-                    # pool immediately — before any long-running polling begins.
-                    _db_model = resolved.db_model
-                    _db_provider = resolved.db_provider
-                    _provider_instance = resolved.provider_instance
-                    # Pre-extract primitive pricing fields from ORM objects
-                    _pricing_snapshot = {
-                        'provider_id': _db_provider.id if _db_provider else None,
-                        'provider_name': _db_provider.name if _db_provider else None,
-                        'input_price': float(getattr(_db_model, 'input_price', 0) or 0),
-                        'output_price': float(getattr(_db_model, 'output_price', 0) or 0),
-                        'cache_creation_price': float(getattr(_db_model, 'cache_creation_price', 0) or 0),
-                        'cache_5m_creation_price': float(getattr(_db_model, 'cache_5m_creation_price', 0) or 0),
-                        'cache_1h_creation_price': float(getattr(_db_model, 'cache_1h_creation_price', 0) or 0),
-                        'cache_hit_price': float(getattr(_db_model, 'cache_hit_price', 0) or 0),
-                        'pricing_tiers': getattr(_db_model, 'pricing_tiers', None),
-                        'output_pricing': getattr(_db_model, 'output_pricing', None),
-                        'currency': getattr(_db_model, 'currency', 'USD') or 'USD',
-                        'discount': float(getattr(_db_model, 'discount', 1) or 1),
-                    }
-                    # Release the DB session — close it so the connection returns to the pool
-                    # before any long-running polling begins.
-                    await session.close()
-
-                    # ── Check if upstream is itself async ─────────────────────────
-                    # Some upstream Responses API providers (e.g. OpenAI-compatible
-                    # services with background=true) may return status "queued" or
-                    # "in_progress" immediately.  In that case we must poll
-                    # GET /v1/responses/{id} until the upstream finishes.
-                    upstream_status = response.usage.extra.get('_upstream_status', 'completed')
-                    _PENDING_STATUSES = {'queued', 'in_progress'}
-
-                    if upstream_status in _PENDING_STATUSES:
-                        upstream_response_id = response.id
-                        upstream_model = response.model
-
-                        # Store upstream response ID as task_id for resync
-                        try:
-                            _bg_dao.update_task_metadata(
-                                db_url=db_url,
-                                response_id=response_id,
-                                task_id=upstream_response_id,
-                            )
-                        except Exception as _meta_exc:
-                            logger.warning(f"[background] Failed to store upstream task_id for {response_id!r}: {_meta_exc}")
-
-                        # Re-resolve the provider so we can call get_response() on it.
-                        # Open a fresh async DB session for the re-resolution.
-                        async with get_db_session() as _resolve_session:
-                            g.db_session = _resolve_session
-                            resolved = await _gateway_service.resolve_model(chat_request.model, group_id, provider_id=provider_id)
-                            provider_instance = resolved.provider_instance
-                            # Update pricing snapshot with re-resolved model data
-                            _pricing_snapshot['provider_id'] = resolved.db_provider.id if resolved.db_provider else None
-                            _pricing_snapshot['provider_name'] = resolved.db_provider.name if resolved.db_provider else None
-                            # Release the DB session again before the long-running polling loop
-                            await _resolve_session.close()
-
-                        if not hasattr(provider_instance, 'get_response'):
-                            raise RuntimeError(
-                                f"Upstream returned async status {upstream_status!r} but provider "
-                                f"'{type(provider_instance).__name__}' does not support polling "
-                                f"(missing get_response method)."
-                            )
-
-                        # Poll with exponential back-off, capped at 30 s, up to 2 h total.
-                        _POLL_INTERVALS = [2, 4, 8, 16, 30]  # seconds between polls
-                        _MAX_POLL_SECONDS = 7200              # 2 hours hard limit
-                        elapsed = 0
-                        poll_idx = 0
-
-                        while upstream_status in _PENDING_STATUSES and elapsed < _MAX_POLL_SECONDS:
-                            wait = _POLL_INTERVALS[min(poll_idx, len(_POLL_INTERVALS) - 1)]
-                            logger.info(
-                                f"[background] Upstream response {upstream_response_id!r} is "
-                                f"{upstream_status!r}; waiting {wait}s before next poll "
-                                f"(elapsed={elapsed}s, our_response_id={response_id!r})"
-                            )
-                            time.sleep(wait)
-                            elapsed += wait
-                            poll_idx += 1
-
-                            response = provider_instance.get_response(upstream_response_id, upstream_model)
-                            upstream_status = response.usage.extra.get('_upstream_status', 'completed')
-
-                        if upstream_status in _PENDING_STATUSES:
-                            raise RuntimeError(
-                                f"Upstream response {upstream_response_id!r} did not complete "
-                                f"within {_MAX_POLL_SECONDS}s (last status: {upstream_status!r})"
-                            )
-
-                        if upstream_status == 'failed':
-                            # Surface the real upstream error if available
-                            upstream_error = response.usage.extra.get('_upstream_error')
-                            if upstream_error:
-                                raise RuntimeError(json.dumps(upstream_error, ensure_ascii=False))
-                            raise RuntimeError(
-                                f"Upstream response {upstream_response_id!r} failed "
-                                f"(upstream status: {upstream_status!r})"
-                            )
-
-                    formatted = adapter.format_response(
-                        response,
-                        parallel_tool_calls=chat_request.parallel_tool_calls,
-                        metadata=chat_request.metadata.get('_user_metadata'),
+                    await _bg_dao.update_task_metadata_async(
+                        response_id=response_id,
+                        task_id=upstream_response_id,
                     )
-                    # Save any data URIs from image generation to storage,
-                    # replacing them with storage URLs in the stored output.
-                    _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
-                    _strip_internal_fields(formatted.get('output', []))
-                    formatted_output = json.dumps(formatted, ensure_ascii=False)
+                except Exception as _meta_exc:
+                    logger.warning(f"[background] Failed to store upstream task_id for {response_id!r}: {_meta_exc}")
 
-                    # Record usage for background response.
-                    # All pricing info comes from _pricing_snapshot (plain primitives
-                    # eagerly extracted before DB session close).
-                    _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
-                    try:
-                        from app.usagerecord.usage_service import record_stream_usage
-                        await record_stream_usage(
-                            app=app,
-                            usage_info=response.usage,
-                            user_name=user_name,
-                            user_id=user_id,
-                            api_key_raw=api_key_raw,
-                            api_key_name=api_key_name,
-                            api_key_group_id=api_key_group_id,
-                            api_key_group_name=api_key_group_name,
-                            model_name=data.get('model', ''),
-                            provider_id=_pricing_snapshot['provider_id'],
-                            provider_name=_pricing_snapshot['provider_name'],
-                            input_price_unit=_pricing_snapshot['input_price'],
-                            output_price_unit=_pricing_snapshot['output_price'],
-                            cache_creation_price_unit=_pricing_snapshot['cache_creation_price'],
-                            cache_5m_creation_price_unit=_pricing_snapshot['cache_5m_creation_price'],
-                            cache_1h_creation_price_unit=_pricing_snapshot['cache_1h_creation_price'],
-                            cache_token_price_unit=_pricing_snapshot['cache_hit_price'],
-                            pricing_tiers=_pricing_snapshot['pricing_tiers'],
-                            output_pricing=_pricing_snapshot['output_pricing'],
-                            currency=_pricing_snapshot['currency'],
-                            discount=_pricing_snapshot['discount'],
-                            duration_ms=_bg_duration_ms,
-                        )
-                    except Exception as _ue:
-                        logger.warning(f"[usage] Failed to record usage for background response {response_id!r}: {_ue}")
+                # We already have provider_instance from `resolved`. Use it directly.
+                provider_instance = resolved.provider_instance
 
-                    if tracer:
-                        tracer.set_metadata({
-                            "duration_ms": _bg_duration_ms,
-                            "response_id": response.id if response else None,
-                        })
-                        tracer.end()
+                if not hasattr(provider_instance, 'get_response'):
+                    raise RuntimeError(
+                        f"Upstream returned async status {upstream_status!r} but provider "
+                        f"'{type(provider_instance).__name__}' does not support polling "
+                        f"(missing get_response method)."
+                    )
 
-                except Exception as exc:
-                    if tracer:
-                        try:
-                            tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
-                            tracer.end(error=exc)
-                        except Exception:
-                            pass
-                    logger.exception(f"[background] Error processing {response_id!r}: {exc}")
-                    final_error = str(exc)
+                _POLL_INTERVALS = [2, 4, 8, 16, 30]
+                _MAX_POLL_SECONDS = 7200
+                elapsed = 0
+                poll_idx = 0
 
-                # Write output to storage (outside any DB transaction)
-                if formatted_output is not None:
-                    try:
-                        storage.write(output_key, formatted_output)
-                    except Exception as write_exc:
-                        logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
-                        final_error = str(write_exc)
-                        formatted_output = None
+                while upstream_status in _PENDING_STATUSES and elapsed < _MAX_POLL_SECONDS:
+                    wait = _POLL_INTERVALS[min(poll_idx, len(_POLL_INTERVALS) - 1)]
+                    logger.info(
+                        f"[background] Upstream response {upstream_response_id!r} is "
+                        f"{upstream_status!r}; waiting {wait}s before next poll "
+                        f"(elapsed={elapsed}s, our_response_id={response_id!r})"
+                    )
+                    await asyncio.sleep(wait)
+                    elapsed += wait
+                    poll_idx += 1
 
-                # Update DB — each call opens a brand-new NullPool connection
-                if final_error:
-                    _bg_dao.mark_failed(db_url, response_id, final_error)
-                else:
-                    _bg_dao.mark_completed(db_url, response_id)
+                    # provider_instance.get_response is sync (uses requests); offload.
+                    response = await asyncio.to_thread(
+                        provider_instance.get_response, upstream_response_id, upstream_model
+                    )
+                    upstream_status = response.usage.extra.get('_upstream_status', 'completed')
 
-                if _rid_token is not None:
-                    try:
-                        from app import request_id_var
-                        request_id_var.reset(_rid_token)
-                    except Exception:
-                        pass
+                if upstream_status in _PENDING_STATUSES:
+                    raise RuntimeError(
+                        f"Upstream response {upstream_response_id!r} did not complete "
+                        f"within {_MAX_POLL_SECONDS}s (last status: {upstream_status!r})"
+                    )
 
-    asyncio.run(_async_work())
+                if upstream_status == 'failed':
+                    upstream_error = response.usage.extra.get('_upstream_error')
+                    if upstream_error:
+                        raise RuntimeError(json.dumps(upstream_error, ensure_ascii=False))
+                    raise RuntimeError(
+                        f"Upstream response {upstream_response_id!r} failed "
+                        f"(upstream status: {upstream_status!r})"
+                    )
+
+            formatted = adapter.format_response(
+                response,
+                parallel_tool_calls=chat_request.parallel_tool_calls,
+                metadata=chat_request.metadata.get('_user_metadata'),
+            )
+            _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
+            _strip_internal_fields(formatted.get('output', []))
+            formatted_output = json.dumps(formatted, ensure_ascii=False)
+
+            # ─── Phase 4: usage recording (fire-and-forget) ───
+            _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
+            try:
+                from app.usagerecord.usage_service import record_stream_usage
+                await record_stream_usage(
+                    usage_info=response.usage,
+                    user_name=user_name,
+                    user_id=user_id,
+                    api_key_raw=api_key_raw,
+                    api_key_name=api_key_name,
+                    api_key_group_id=api_key_group_id,
+                    api_key_group_name=api_key_group_name,
+                    model_name=data.get('model', ''),
+                    provider_id=resolved.provider_id,
+                    provider_name=resolved.provider_name,
+                    input_price_unit=resolved.input_price,
+                    output_price_unit=resolved.output_price,
+                    cache_creation_price_unit=resolved.cache_creation_price,
+                    cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                    cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                    cache_token_price_unit=resolved.cache_hit_price,
+                    pricing_tiers=resolved.pricing_tiers,
+                    output_pricing=resolved.output_pricing,
+                    currency=resolved.currency,
+                    discount=resolved.discount,
+                    duration_ms=_bg_duration_ms,
+                )
+            except Exception as _ue:
+                logger.warning(f"[usage] Failed to record usage for background response {response_id!r}: {_ue}")
+
+            if tracer:
+                tracer.set_metadata({
+                    "duration_ms": _bg_duration_ms,
+                    "response_id": response.id if response else None,
+                })
+                tracer.end()
+
+        except Exception as exc:
+            if tracer:
+                try:
+                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
+                    tracer.end(error=exc)
+                except Exception:
+                    pass
+            logger.exception(f"[background] Error processing {response_id!r}: {exc}")
+            final_error = str(exc)
+
+        # Write output to storage (outside any DB transaction)
+        if formatted_output is not None:
+            try:
+                storage.write(output_key, formatted_output)
+            except Exception as write_exc:
+                logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
+                final_error = str(write_exc)
+                formatted_output = None
+
+        # Update DB via shared async engine (reuses pool, no per-call TCP)
+        if final_error:
+            await _bg_dao.mark_failed_async(response_id, final_error)
+        else:
+            await _bg_dao.mark_completed_async(response_id)
+
+        if _rid_token is not None:
+            try:
+                from app import request_id_var
+                request_id_var.reset(_rid_token)
+            except Exception:
+                pass
 
 
 # ============== Responses API 端点 ==============
 
 @gateway_responses_bp.route('/v1/responses', methods=['POST', 'HEAD', 'OPTIONS'])
 async def openai_responses():
-    """
-    OpenAI Responses API endpoint.
-
-    支持任意供应商（OpenAI、Claude、Gemini 等），
-    中间层自动根据模型名称路由到正确的供应商。
-
-    When the request body contains ``"background": true``, the endpoint:
-    1. Immediately returns a ``202 Accepted`` JSON response containing the
-       ``response_id`` and ``status: "in_progress"``.
-    2. Spawns a background thread that calls the provider and stores the
-       result in the ``ml_background_responses`` table.
-    3. The client can later retrieve the result via
-       ``GET /v1/responses/{response_id}``.
-    """
+    """OpenAI Responses API endpoint (sync + background)."""
     if request.method == 'HEAD' or request.method == 'OPTIONS':
         return '', 200
 
     adapter = OpenAIResponsesAdapter()
 
-    # 1. 先读取请求体，检查是否为 background 请求（无需先认证）
+    # Parse request body first
     data = await _parse_json_body()
     if not data:
         _log_error("responses", 400, "Invalid or empty JSON request body")
@@ -450,8 +374,7 @@ async def openai_responses():
 
     is_background = bool(data.get('background', False))
 
-    # Check if this is a 3D generation request (3d_generation tool present).
-    # 3D generation is a long-running async task and ONLY supports background=true.
+    # 3D generation must use background mode
     _tools = data.get('tools', [])
     _has_3d_tool = any(
         isinstance(t, dict) and t.get('type') == '3d_generation'
@@ -466,61 +389,43 @@ async def openai_responses():
             400
         )), 400
 
-    # 2. 认证（只做一次）
-    user, api_key, error, status = await get_current_user_or_api_key()
+    # ─── Phase 1: auth ───
+    auth_ctx, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("responses", status, error.get('detail', 'Not authenticated'))
         return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
-    # 2.5. 检查 API Key 的 allowed_models 限制
-    acl_error = _check_allowed_models(api_key, model_name)
+    acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
         _log_error("responses", 403, acl_error['detail'])
         return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
 
-    # 3. Background 异步路径
-    if is_background:
-        group_id = api_key.group_id if api_key else None
-        apikey_value = api_key.key if api_key else None
-        provider_id_override = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
+    group_id = auth_ctx.api_key_group_id if auth_ctx else None
+    provider_id_override = auth_ctx.provider_id_override if auth_ctx else None
 
-        # Create tracer for background request
-        monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
+    # ─── Background path ───
+    if is_background:
+        monitoring_config = None
+        if group_id:
+            try:
+                async with get_db_session() as _mon_session:
+                    monitoring_config = await get_group_monitoring_config(group_id, session=_mon_session)
+            except Exception as _e:
+                logger.debug(f"[monitoring] fetch config failed: {_e}")
         tracer = create_tracer(monitoring_config)
 
-        # Eagerly extract identity primitives while the DB session is alive.
-        # These will be passed to the background thread for usage recording.
-        _bg_user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
-        _bg_api_key_raw = api_key.key if api_key else None
-        _bg_api_key_name = api_key.name if api_key else None
-        _bg_api_key_group_id = api_key.group_id if api_key else None
-        _bg_api_key_user_id = api_key.user_id if api_key else None
-        _bg_api_key_group_name: Optional[str] = None
-        if api_key:
-            try:
-                if api_key.group:
-                    _bg_api_key_group_name = api_key.group.name
-            except Exception:
-                pass
         _bg_request_id = g.request_id
 
-        # Generate a stable response ID: "resp_" + 48 hex chars
         response_id = gen_id("resp")
-
-        # Build input/output storage keys via the configured backend
         storage = get_storage_backend()
         input_key = storage.make_key(response_id, "input")
         output_key = storage.make_key(response_id, "output")
 
-        # Write the request payload via the storage backend
         storage.write(input_key, json.dumps(data, ensure_ascii=False))
 
-        # Persist the initial "in_progress" record via DAO (NullPool — short-lived connection)
-        db_url = current_app.config.get("SQLALCHEMY_DATABASE_URI", "")
-        _bg_dao.create_record(
-            db_url=db_url,
+        await _bg_dao.create_record_async(
             response_id=response_id,
-            apikey=apikey_value,
+            apikey=auth_ctx.api_key_raw if auth_ctx else None,
             model=model_name,
             input_key=input_key,
             output_key=output_key,
@@ -528,29 +433,29 @@ async def openai_responses():
             provider_id=provider_id_override,
         )
 
-        # Launch the background worker thread
         app = current_app._get_current_object()
-        thread = threading.Thread(
-            target=_run_background_response,
-            args=(app, response_id, input_key, output_key, group_id),
-            kwargs=dict(
-                user_name=_bg_user_name,
-                user_id=_bg_api_key_user_id,
-                api_key_raw=_bg_api_key_raw,
-                api_key_name=_bg_api_key_name,
-                api_key_group_id=_bg_api_key_group_id,
-                api_key_group_name=_bg_api_key_group_name,
+        # Schedule the background coroutine on the main event loop so it
+        # shares the loop (and thus the async SQLAlchemy engine) with the
+        # rest of the application. Keep a reference to prevent GC.
+        _bg_task = asyncio.create_task(
+            _run_background_response(
+                app, response_id, input_key, output_key, group_id,
+                user_name=auth_ctx.user_name if auth_ctx else None,
+                user_id=auth_ctx.user_id if auth_ctx else None,
+                api_key_raw=auth_ctx.api_key_raw if auth_ctx else None,
+                api_key_name=auth_ctx.api_key_name if auth_ctx else None,
+                api_key_group_id=auth_ctx.api_key_group_id if auth_ctx else None,
+                api_key_group_name=auth_ctx.api_key_group_name if auth_ctx else None,
                 tracer=tracer,
                 model_name=model_name,
                 request_data=data,
                 request_id=_bg_request_id,
                 provider_id=provider_id_override,
             ),
-            daemon=True,
+            name=f"bg-response-{response_id}",
         )
-        thread.start()
+        _track_background_task(_bg_task)
 
-        # Return 202 immediately with the response ID and current status
         user_metadata = data.get('metadata')
         if not isinstance(user_metadata, dict):
             user_metadata = None
@@ -565,10 +470,7 @@ async def openai_responses():
             "background": True,
         }), 202
 
-    # 4. 同步路径：直接处理（不再重新认证，复用已读取的数据）
-    group_id = api_key.group_id if api_key else None
-    provider_id_override = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
-
+    # ─── Sync path ───
     try:
         chat_request = adapter.parse_request(data)
     except Exception as e:
@@ -577,41 +479,49 @@ async def openai_responses():
 
     logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
 
-    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
-    tracer = create_tracer(monitoring_config)
-
-    _resp_start_time = time.monotonic()
-    _app = current_app._get_current_object()
+    # ─── Phase 2: resolve model (short session) ───
+    monitoring_config = None
     try:
-        if chat_request.stream:
-            _user_name = user.username if user else (api_key.user.username if api_key and api_key.user else None)
-            _api_key_raw = api_key.key if api_key else None
-            _api_key_name = api_key.name if api_key else None
-            _api_key_group_id = api_key.group_id if api_key else None
-            _api_key_user_id = api_key.user_id if api_key else None
-            _api_key_group_name: Optional[str] = None
-            if api_key:
+        async with get_db_session() as session:
+            try:
+                resolved = await _gateway_service.resolve_model(
+                    session, model_name, group_id, provider_id=provider_id_override
+                )
+            except ModelNotFoundError as e:
+                _log_error("responses", e.status_code, e.message, {"model": model_name})
+                return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
+            except GatewayServiceError as e:
+                _log_error("responses", e.status_code, e.message, {"model": model_name})
+                return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
+
+            if group_id:
                 try:
-                    if api_key.group:
-                        _api_key_group_name = api_key.group.name
+                    monitoring_config = await get_group_monitoring_config(group_id, session=session)
                 except Exception:
                     pass
-            _request_id = g.request_id
+        # ← session closes
+    except Exception as e:
+        logger.error(f"[responses] Phase-2 (resolve) error: {e}", exc_info=True)
+        return jsonify(adapter.format_error_response(f'Internal error: {e}', 500)), 500
 
+    tracer = create_tracer(monitoring_config)
+    _resp_start_time = time.monotonic()
+    _request_id = g.request_id
+
+    try:
+        if chat_request.stream:
             if tracer:
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
                 tracer.set_metadata({
                     "request_id": _request_id,
                     "group_id": group_id,
-                    "user": _user_name,
+                    "user": auth_ctx.user_name if auth_ctx else None,
                     "model_name": model_name,
-                    "api_key_name": _api_key_name,
+                    "api_key_name": auth_ctx.api_key_name if auth_ctx else None,
                 })
 
-            chunks_gen, model_meta = await _gateway_service.stream_chat(
-                chat_request, group_id, tracer=tracer, provider_id=provider_id_override
-            )
+            chunks_gen = await _gateway_service.stream_chat(resolved, chat_request, tracer=tracer)
 
             async def _resp_chunks_with_usage():
                 last_usage = None
@@ -640,7 +550,8 @@ async def openai_responses():
                         })
                 except Exception:
                     if tracer:
-                        tracer.set_metadata({"request_id": _request_id, "model_name": model_name, "api_key_name": _api_key_name})
+                        tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
+                                             "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
                         tracer.end(error=Exception("stream error"))
                     raise
                 finally:
@@ -649,27 +560,26 @@ async def openai_responses():
                             from app.usagerecord.usage_service import record_stream_usage
                             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
                             await record_stream_usage(
-                                app=_app,
                                 usage_info=last_usage,
-                                user_name=_user_name,
-                                user_id=_api_key_user_id,
-                                api_key_raw=_api_key_raw,
-                                api_key_name=_api_key_name,
-                                api_key_group_id=_api_key_group_id,
-                                api_key_group_name=_api_key_group_name,
+                                user_name=auth_ctx.user_name if auth_ctx else None,
+                                user_id=auth_ctx.user_id if auth_ctx else None,
+                                api_key_raw=auth_ctx.api_key_raw if auth_ctx else None,
+                                api_key_name=auth_ctx.api_key_name if auth_ctx else None,
+                                api_key_group_id=auth_ctx.api_key_group_id if auth_ctx else None,
+                                api_key_group_name=auth_ctx.api_key_group_name if auth_ctx else None,
                                 model_name=model_name,
-                                provider_id=model_meta.get('provider_id'),
-                                provider_name=model_meta.get('provider_name'),
-                                input_price_unit=model_meta.get('input_price_unit', 0.0),
-                                output_price_unit=model_meta.get('output_price_unit', 0.0),
-                                cache_creation_price_unit=model_meta.get('cache_creation_price_unit', 0.0),
-                                cache_5m_creation_price_unit=model_meta.get('cache_5m_creation_price_unit', 0.0),
-                                cache_1h_creation_price_unit=model_meta.get('cache_1h_creation_price_unit', 0.0),
-                                cache_token_price_unit=model_meta.get('cache_token_price_unit', 0.0),
-                                pricing_tiers=model_meta.get('pricing_tiers'),
-                                output_pricing=model_meta.get('output_pricing'),
-                                currency=model_meta.get('currency', 'USD'),
-                                discount=model_meta.get('discount', 1.0),
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name,
+                                input_price_unit=resolved.input_price,
+                                output_price_unit=resolved.output_price,
+                                cache_creation_price_unit=resolved.cache_creation_price,
+                                cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                                cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                                cache_token_price_unit=resolved.cache_hit_price,
+                                pricing_tiers=resolved.pricing_tiers,
+                                output_pricing=resolved.output_pricing,
+                                currency=resolved.currency,
+                                discount=resolved.discount,
                                 duration_ms=_resp_duration_ms,
                             )
                         except Exception as _ue:
@@ -683,16 +593,14 @@ async def openai_responses():
                 tracer.start(model_name, input_data=data, session_id=chat_request.session_id)
                 tracer.log_input(data)
                 tracer.set_metadata({
-                    "request_id": g.request_id,
+                    "request_id": _request_id,
                     "group_id": group_id,
-                    "user": user.username if user else None,
+                    "user": auth_ctx.user_name if auth_ctx else None,
                     "model_name": model_name,
-                    "api_key_name": api_key.name if api_key else None,
+                    "api_key_name": auth_ctx.api_key_name if auth_ctx else None,
                 })
 
-            response, resolved = await _gateway_service.chat(
-                chat_request, group_id, tracer=tracer, provider_id=provider_id_override
-            )
+            response = await _gateway_service.chat(resolved, chat_request, tracer=tracer)
             _resp_duration_ms = int((time.monotonic() - _resp_start_time) * 1000)
 
             if tracer:
@@ -707,11 +615,25 @@ async def openai_responses():
                 from app.usagerecord.usage_service import record_usage
                 await record_usage(
                     response=response,
-                    db_model=resolved.db_model,
-                    db_provider=resolved.db_provider,
-                    api_key=api_key,
-                    user=user,
-                    request_model_name=model_name,
+                    user_name=auth_ctx.user_name if auth_ctx else None,
+                    user_id=auth_ctx.user_id if auth_ctx else None,
+                    api_key_raw=auth_ctx.api_key_raw if auth_ctx else None,
+                    api_key_name=auth_ctx.api_key_name if auth_ctx else None,
+                    api_key_group_id=auth_ctx.api_key_group_id if auth_ctx else None,
+                    api_key_group_name=auth_ctx.api_key_group_name if auth_ctx else None,
+                    model_name=model_name,
+                    provider_id=resolved.provider_id,
+                    provider_name=resolved.provider_name,
+                    input_price_unit=resolved.input_price,
+                    output_price_unit=resolved.output_price,
+                    cache_creation_price_unit=resolved.cache_creation_price,
+                    cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                    cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                    cache_token_price_unit=resolved.cache_hit_price,
+                    pricing_tiers=resolved.pricing_tiers,
+                    output_pricing=resolved.output_pricing,
+                    currency=resolved.currency,
+                    discount=resolved.discount,
                     duration_ms=_resp_duration_ms,
                 )
             except Exception as _ue:
@@ -728,19 +650,22 @@ async def openai_responses():
             return jsonify(formatted)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
+                                 "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
+                                 "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
+                                 "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("responses", e.status_code, e.message, {"model": model_name})
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
@@ -750,38 +675,25 @@ async def openai_responses():
 async def get_response(response_id: str):
     """
     Retrieve a background response by ID.
-
-    Used to poll the status and retrieve the result of a previously submitted
-    background request (``POST /v1/responses`` with ``background=true``).
-
-    Returns:
-        - 200 with the full formatted response when status is "completed".
-        - 200 with ``{"id": ..., "status": "in_progress", ...}`` while still running.
-        - 200 with ``{"id": ..., "status": "failed", "error": "..."}`` on failure.
-        - 404 if the response_id is not found.
-        - 403 if the caller is not authorised to access this response.
     """
-    user, api_key, error, status = await get_current_user_or_api_key()
+    auth_ctx, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("get_response", status, error.get('detail', 'Not authenticated'))
         return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
 
-    # Look up by the string response_id field, not the BigInteger pk
-    db_url = db.engine.url.render_as_string(hide_password=False)
-    bg_record = _bg_dao.get_record(db_url, response_id)
+    bg_record = await _bg_dao.get_record_async(response_id)
     if bg_record is None:
         _log_error("get_response", 404, f"Response {response_id!r} not found")
         return jsonify({'detail': f'Response {response_id!r} not found'}), 404
 
-    # Authorisation: API-key callers may only retrieve their own responses.
-    # JWT-authenticated users (admin) may retrieve any response.
-    if api_key and bg_record.get("apikey") and bg_record["apikey"] != api_key.key:
+    # API-key callers may only retrieve their own responses. JWT users (admin) may retrieve any.
+    caller_api_key = auth_ctx.api_key_raw if auth_ctx else None
+    if caller_api_key and bg_record.get("apikey") and bg_record["apikey"] != caller_api_key:
         _log_error("get_response", 403, f"Unauthorised access to response {response_id!r}")
         return jsonify({'detail': 'Not authorised to access this response'}), 403
 
     record_status = bg_record.get("status", "")
 
-    # Helper to extract parallel_tool_calls and metadata from the stored input
     def _extract_response_fields() -> tuple:
         try:
             storage = get_storage_backend()
@@ -796,7 +708,6 @@ async def get_response(response_id: str):
         return False, None
 
     if record_status == "completed":
-        # Read the output via the configured storage backend
         storage = get_storage_backend()
         raw = storage.read(bg_record["output_key"]) if bg_record.get("output_key") else None
         if raw:
@@ -806,8 +717,6 @@ async def get_response(response_id: str):
                 result = {"error": {"code": "server_error", "message": "Failed to parse stored response"}}
         else:
             result = {"error": {"code": "server_error", "message": "Output not found in storage"}}
-        # If the user originally requested b64_json for image generation,
-        # convert stored image URLs to base64 data URIs at poll time.
         if isinstance(result, dict) and result.get('response_format') == 'b64_json':
             _apply_b64_json_to_image_output(result.get('output', []), storage=storage)
         _strip_internal_fields(result.get('output', []) if isinstance(result, dict) else [])
@@ -817,7 +726,6 @@ async def get_response(response_id: str):
         created_at = bg_record.get("created_at")
         error_raw = bg_record.get("error")
 
-        # Valid error code values for the Responses API.
         _VALID_ERROR_CODES = frozenset({
             "server_error", "rate_limit_exceeded", "invalid_prompt",
             "vector_store_timeout", "invalid_image", "invalid_image_format",
@@ -829,7 +737,6 @@ async def get_response(response_id: str):
         })
 
         def _normalise_error(raw) -> dict:
-            """Parse the stored error and normalise its code to a valid enum value."""
             if isinstance(raw, dict):
                 obj = raw
             elif isinstance(raw, str):
@@ -840,12 +747,9 @@ async def get_response(response_id: str):
                     obj = {"code": "server_error", "message": raw}
             else:
                 obj = {"code": "server_error", "message": str(raw) if raw else ""}
-
-            # Normalise code: if not a recognised enum value, fall back to server_error
             if obj.get("code") not in _VALID_ERROR_CODES:
-                obj = dict(obj)  # make a mutable copy
+                obj = dict(obj)
                 obj["code"] = "server_error"
-
             return obj
 
         error_obj = _normalise_error(error_raw)
@@ -878,18 +782,12 @@ async def get_response(response_id: str):
 
 @gateway_responses_bp.route('/v1/test/background-resync', methods=['POST'])
 async def test_background_resync():
-    """
-    Test endpoint: manually trigger one background resync cycle.
-
-    Calls _do_resync() synchronously and returns a summary of what happened.
-    Only for development/debugging use.
-    """
-    import asyncio
+    """Test endpoint: manually trigger one background resync cycle."""
     from app.usagerecord.background_resync_service import _do_resync
 
     t0 = time.time()
     try:
-        await asyncio.to_thread(_do_resync, current_app)
+        await _do_resync(current_app)
         elapsed = round(time.time() - t0, 3)
         return jsonify({
             "status": "ok",

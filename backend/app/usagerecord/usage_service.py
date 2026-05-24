@@ -41,7 +41,6 @@ from typing import Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.abstraction.chat import ChatResponse, UsageInfo
-    from app.models import ApiKey, User, Provider, Model as DbModel
 
 logger = logging.getLogger("usage")
 
@@ -51,75 +50,38 @@ logger = logging.getLogger("usage")
 async def record_usage(
     *,
     response: "ChatResponse",
-    db_model: "DbModel",
-    db_provider: "Provider",
-    api_key: Optional["ApiKey"] = None,
-    user: Optional["User"] = None,
-    request_model_name: str = "",
+    # Identity (plain Python primitives — no ORM objects)
+    user_name: Optional[str] = None,
+    user_id: Optional[int] = None,
+    api_key_raw: Optional[str] = None,
+    api_key_name: Optional[str] = None,
+    api_key_group_id: Optional[int] = None,
+    api_key_group_name: Optional[str] = None,
+    # Model / provider (extracted from ResolvedModelData)
+    model_name: Optional[str] = None,
+    provider_id: Optional[int] = None,
+    provider_name: Optional[str] = None,
+    # Pricing (plain floats — extracted upstream from ORM)
+    input_price_unit: float = 0.0,
+    output_price_unit: float = 0.0,
+    cache_creation_price_unit: float = 0.0,
+    cache_5m_creation_price_unit: float = 0.0,
+    cache_1h_creation_price_unit: float = 0.0,
+    cache_token_price_unit: float = 0.0,
+    pricing_tiers: Optional[list] = None,
+    output_pricing: Optional[dict] = None,
+    currency: str = 'USD',
+    discount: float = 1.0,
     duration_ms: Optional[int] = None,
 ) -> None:
     """
     Persist one UsageRecord row for a completed (non-streaming) request.
 
-    All data needed from SQLAlchemy ORM objects is extracted eagerly here
-    (in the request handler, while the session is still alive) and passed as
-    plain Python values to a background asyncio task.  This avoids lazy-loading
-    on a closed/detached session.
+    All arguments are plain Python primitives — the SQLAlchemy session that
+    produced these values is typically already closed by the time this is
+    called (the gateway eagerly extracts everything to a dataclass in the
+    short-lived resolve session).
     """
-    # ── Eagerly extract all primitive values from ORM objects ─────────────────
-    # Prefer the explicit user; fall back to the user associated with the API key.
-    user_name: Optional[str] = None
-    if user:
-        user_name = user.username
-    elif api_key:
-        try:
-            if api_key.user:
-                user_name = api_key.user.username
-        except Exception:
-            pass
-
-    api_key_raw: Optional[str] = None
-    api_key_name: Optional[str] = None
-    api_key_group_id: Optional[int] = None
-    api_key_group_name: Optional[str] = None
-    api_key_user_id: Optional[int] = None
-
-    if api_key:
-        api_key_raw = api_key.key
-        api_key_name = api_key.name
-        api_key_group_id = api_key.group_id
-        api_key_user_id = api_key.user_id
-        try:
-            if api_key.group:
-                api_key_group_name = api_key.group.name
-        except Exception:
-            pass
-
-    provider_id: Optional[int] = db_provider.id if db_provider else None
-    provider_name: Optional[str] = db_provider.name if db_provider else None
-
-    model_name: Optional[str] = (
-        request_model_name
-        or (db_model.alias or db_model.name if db_model else None)
-    )
-
-    # Flat (base) prices — used when no tier matches
-    # Note: DB columns are Numeric → Decimal; coerce to float to avoid mixed-type arithmetic.
-    input_price_unit: float = float(getattr(db_model, 'input_price', 0) or 0)
-    output_price_unit: float = float(getattr(db_model, 'output_price', 0) or 0)
-    cache_creation_price_unit: float = float(getattr(db_model, 'cache_creation_price', 0) or 0)
-    cache_5m_creation_price_unit: float = float(getattr(db_model, 'cache_5m_creation_price', 0) or 0)
-    cache_1h_creation_price_unit: float = float(getattr(db_model, 'cache_1h_creation_price', 0) or 0)
-    cache_token_price_unit: float = float(getattr(db_model, 'cache_hit_price', 0) or 0)
-    currency: str = getattr(db_model, 'currency', 'USD') or 'USD'
-    # Tiered pricing — serialised as a plain list so it's safe to pass to a thread
-    pricing_tiers: Optional[list] = getattr(db_model, 'pricing_tiers', None)
-    # Output pricing strategies for image/video/audio — plain dict
-    output_pricing: Optional[dict] = getattr(db_model, 'output_pricing', None)
-
-    # Discount multiplier from model (e.g. 0.9 = 10% off; 1.0 = no discount)
-    discount: float = float(getattr(db_model, 'discount', 1) or 1)
-
     exchange_rate = _get_exchange_rate_for_currency(currency)
 
     asyncio.create_task(_persist_usage_async(
@@ -144,7 +106,7 @@ async def record_usage(
         duration_ms=duration_ms,
         exchange_rate=exchange_rate,
         discount=discount,
-        user_id=api_key_user_id,
+        user_id=user_id,
     ))
 
 

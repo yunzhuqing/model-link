@@ -288,7 +288,7 @@ class BailianProvider(OpenAIProvider):
             raise ValueError(error)
 
         if self.is_video_generation_model(request.model) or self._has_video_generation_tool(request):
-            return execute_happyhorse_video_generation(
+            return await execute_happyhorse_video_generation(
                 api_key=self.config.api_key,
                 model=request.model,
                 messages=request.messages,
@@ -298,7 +298,7 @@ class BailianProvider(OpenAIProvider):
             )
 
         if self.is_image_generation_model(request.model) or self._has_image_generation_tool(request):
-            return execute_qwen_image_generation(
+            return await execute_qwen_image_generation(
                 api_key=self.config.api_key,
                 model=request.model,
                 messages=request.messages,
@@ -528,7 +528,7 @@ class BailianProvider(OpenAIProvider):
         if not is_multimodal_model:
             return await super().embed(request)
 
-        return execute_bailian_multimodal_embed(
+        return await execute_bailian_multimodal_embed(
             api_key=self.config.api_key,
             multimodal_embedding_url=self._multimodal_embedding_url,
             request=request,

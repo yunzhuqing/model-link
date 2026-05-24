@@ -200,29 +200,34 @@ class AsyncBudgetManager:
         await get_async_cache().invalidate_budget_remaining(api_key_raw)
 
     async def _load_from_db(self, api_key_raw: str, cache, db_session=None) -> Optional[float]:
-        """Load the budget remaining from DB and populate cache (async)."""
-        try:
-            if db_session is None:
-                from quart import g
-                db_session = g.db_session
-            from sqlalchemy import select as _sel
-            from app.models import ApiKey
-            result = await db_session.execute(
-                _sel(ApiKey).where(ApiKey.key == api_key_raw)
-            )
+        """Load the budget remaining from DB and populate cache (async).
+
+        If ``db_session`` is None, opens its own short-lived session via the
+        shared async engine. Pass a session explicitly when the caller already
+        holds one to avoid an extra connection round-trip.
+        """
+        from sqlalchemy import select as _sel
+        from app.models import ApiKey
+
+        async def _query(session) -> Optional[float]:
+            result = await session.execute(_sel(ApiKey).where(ApiKey.key == api_key_raw))
             ak = result.scalars().first()
             if not ak:
                 return None
             if ak.unlimited_budget:
                 return None
-            if ak.budget is None:
-                remaining = 0.0
-            else:
-                remaining = float(ak.budget)
+            remaining = 0.0 if ak.budget is None else float(ak.budget)
             await cache.set_budget_remaining(api_key_raw, remaining, ttl=self._ttl)
             return remaining
+
+        try:
+            if db_session is not None:
+                return await _query(db_session)
+            from app import get_db_session
+            async with get_db_session() as session:
+                return await _query(session)
         except Exception as exc:
-            logger.debug(f"[budget] Failed to load budget from DB for key: {exc}")
+            logger.error(f"[budget] Failed to load budget from DB: {exc}", exc_info=True)
             return None
 
 

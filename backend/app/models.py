@@ -948,8 +948,11 @@ class Tag(db.Model):
 async def seed_default_permissions(session=None) -> list[Permission]:
     """Ensure every default permission point exists in the DB (idempotent)."""
     if session is None:
-        from quart import g
-        session = g.db_session
+        from app import get_db_session
+        async with get_db_session() as _s:
+            created = await seed_default_permissions(session=_s)
+            await _s.commit()
+            return created
 
     result = await session.execute(select(Permission.key))
     existing_keys = {row[0] for row in result.all()}
@@ -986,8 +989,9 @@ async def check_permission(user_role: str, permission_key: str, session=None) ->
       4. Otherwise → deny
     """
     if session is None:
-        from quart import g
-        session = g.db_session
+        from app import get_db_session
+        async with get_db_session() as _s:
+            return await check_permission(user_role, permission_key, session=_s)
 
     result = await session.execute(
         select(Permission).where(Permission.key == permission_key)
@@ -1193,8 +1197,9 @@ async def get_group_models_with_shares(group_id, session=None):
     Returns a list of (Model, Provider) tuples.
     """
     if session is None:
-        from flask import g
-        session = g.db_session
+        from app import get_db_session
+        async with get_db_session() as _s:
+            return await get_group_models_with_shares(group_id, session=_s)
 
     # Own models — through the group's own providers
     own_result = await session.execute(

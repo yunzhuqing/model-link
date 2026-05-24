@@ -398,7 +398,7 @@ class VolcengineProvider(BaseProvider):
 
         # Seed3D 3D generation models → dedicated 3D generation path
         if is_seed3d_model(request.model) or self._has_3d_generation_tool(request):
-            return execute_seed3d_generation(
+            return await execute_seed3d_generation(
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
                 model=request.model,
@@ -409,7 +409,7 @@ class VolcengineProvider(BaseProvider):
 
         # Seedance video generation models → dedicated video generation path
         if is_seedance_video_model(request.model) or self._has_video_generation_tool(request):
-            return execute_seedance_video_generation(
+            return await execute_seedance_video_generation(
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
                 model=request.model,

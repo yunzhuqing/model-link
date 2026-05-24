@@ -4,79 +4,123 @@ Background Response Resync Service — Leader-node periodic scan.
 Scans ml_background_responses for stale in_progress records,
 queries upstream provider task status, and syncs completed/failed results to DB.
 
+Implementation note:
+  The resync loop runs as an asyncio task on the main event loop (where the
+  shared async SQLAlchemy engine lives). Because the election service fires
+  on_leader / on_lost_leader callbacks from its own daemon thread, this
+  module schedules the coroutine onto the main loop via
+  ``asyncio.run_coroutine_threadsafe``. Provider SDKs that are sync-only
+  are isolated with ``asyncio.to_thread`` inside ``task_status_checker``.
+
 Configuration (environment variables):
   BG_RESYNC_INTERVAL = 600  (seconds between scan runs, default: 600 = 10 minutes)
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import logging
 import os
 import threading
-import time
 from datetime import datetime, timezone
+from typing import Optional
 
 logger = logging.getLogger("bg_resync")
 
-_stop_event = threading.Event()
-_resync_thread = None
-_resync_lock = threading.Lock()
+_lock = threading.Lock()
+_resync_future: Optional[concurrent.futures.Future] = None
+_stop_event: Optional[asyncio.Event] = None
 
 
 def start_background_resync(app) -> None:
     """
-    Start the periodic background-resync daemon thread.
+    Launch the periodic background-resync task on the main event loop.
 
-    Called by the election service's on_leader callback when this node
-    becomes the leader.
+    Safe to call from the election service's daemon thread — the coroutine
+    is scheduled onto the main loop with ``run_coroutine_threadsafe``.
     """
-    global _resync_thread
-    with _resync_lock:
-        if _resync_thread is not None and _resync_thread.is_alive():
+    from app import get_main_event_loop
+
+    global _resync_future, _stop_event
+
+    with _lock:
+        if _resync_future is not None and not _resync_future.done():
             return
-        _stop_event.clear()
 
-    interval = float(os.getenv("BG_RESYNC_INTERVAL", "600"))
-    logger.info(f"[bg_resync] Starting background resync service (interval={interval}s)")
+        loop = get_main_event_loop()
+        if loop is None or not loop.is_running():
+            logger.error("[bg_resync] Cannot start: main event loop is not available yet.")
+            return
 
-    _resync_thread = threading.Thread(
-        target=_resync_loop,
-        args=(app, interval),
-        daemon=True,
-        name="bg-resync",
-    )
-    _resync_thread.start()
+        interval = float(os.getenv("BG_RESYNC_INTERVAL", "600"))
+        logger.info(f"[bg_resync] Starting background resync task (interval={interval}s)")
+
+        # Create the stop event on the main loop so set()/wait() share that loop.
+        async def _make_event() -> asyncio.Event:
+            return asyncio.Event()
+
+        _stop_event = asyncio.run_coroutine_threadsafe(_make_event(), loop).result(timeout=5)
+        _resync_future = asyncio.run_coroutine_threadsafe(_resync_loop(app, interval), loop)
 
 
 def stop_background_resync() -> None:
     """
     Signal the resync loop to stop.
 
-    Called by the election service's on_lost_leader callback.
+    Safe to call from the election service's daemon thread.
     """
-    logger.info("[bg_resync] Stopping background resync service (leadership lost).")
-    _stop_event.set()
+    from app import get_main_event_loop
+
+    global _resync_future, _stop_event
+    logger.info("[bg_resync] Stopping background resync task (leadership lost).")
+
+    loop = get_main_event_loop()
+    with _lock:
+        ev = _stop_event
+        fut = _resync_future
+
+    if ev is not None and loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(ev.set)
+    if fut is not None and not fut.done():
+        fut.cancel()
 
 
-def _resync_loop(app, interval: float) -> None:
+async def _resync_loop(app, interval: float) -> None:
     """Main resync loop — runs only on the leader node."""
-    _stop_event.wait(timeout=min(interval, 15))
+    assert _stop_event is not None
 
-    while not _stop_event.is_set():
-        try:
-            from app.election_service import is_leader
-            if not is_leader():
-                logger.info("[bg_resync] This node is no longer the leader. Stopping resync loop.")
-                break
-            _do_resync(app)
-        except Exception as exc:
-            logger.error(f"[bg_resync] Resync error: {exc}", exc_info=True)
+    # Initial delay before first scan
+    try:
+        await asyncio.wait_for(_stop_event.wait(), timeout=min(interval, 15))
+        return  # stop requested during initial delay
+    except asyncio.TimeoutError:
+        pass
 
-        _stop_event.wait(timeout=interval)
+    try:
+        while not _stop_event.is_set():
+            try:
+                from app.election_service import is_leader
+                if not is_leader():
+                    logger.info("[bg_resync] This node is no longer the leader. Stopping resync loop.")
+                    break
+                await _do_resync(app)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(f"[bg_resync] Resync error: {exc}", exc_info=True)
 
-    logger.info("[bg_resync] Resync loop terminated.")
+            try:
+                await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+                break  # stop requested
+            except asyncio.TimeoutError:
+                continue
+    except asyncio.CancelledError:
+        logger.info("[bg_resync] Resync loop cancelled.")
+    finally:
+        logger.info("[bg_resync] Resync loop terminated.")
 
 
-def _do_resync(app) -> None:
+async def _do_resync(app) -> None:
     """
     Perform one resync cycle:
 
@@ -92,15 +136,11 @@ def _do_resync(app) -> None:
         ModelCategory,
     )
     from app.usagerecord.task_status_checker import (
-        resolve_and_check_task_status,
+        resolve_and_check_task_status_async,
         TaskStatus,
     )
 
-    db_url = app.config.get("SQLALCHEMY_DATABASE_URI", "")
-    if not db_url:
-        return
-
-    stale_records = _bg_dao.find_stale_in_progress_records(db_url, min_age_minutes=10)
+    stale_records = await _bg_dao.find_stale_in_progress_records_async(min_age_minutes=10)
     if not stale_records:
         return
 
@@ -131,7 +171,10 @@ def _do_resync(app) -> None:
 
         # Hard cutoff: records stuck for > 48 hours are unrecoverable
         if age_minutes > 48 * 60:
-            _bg_dao.mark_failed(db_url, record["response_id"], f"Record stuck in_progress for {age_minutes:.0f}m (>{48 * 60}m limit)")
+            await _bg_dao.mark_failed_async(
+                record["response_id"],
+                f"Record stuck in_progress for {age_minutes:.0f}m (>{48 * 60}m limit)",
+            )
             logger.warning(
                 f"[bg_resync] Record {record['response_id']!r} (model={model}) "
                 f"has been stuck for {age_minutes:.1f}m, marked as failed (48h limit)"
@@ -144,7 +187,10 @@ def _do_resync(app) -> None:
 
         task_id = record.get("task_id")
         if not task_id:
-            _bg_dao.mark_failed(db_url, record["response_id"], "No task_id recorded — provider may have crashed before persisting task metadata")
+            await _bg_dao.mark_failed_async(
+                record["response_id"],
+                "No task_id recorded — provider may have crashed before persisting task metadata",
+            )
             logger.warning(
                 f"[bg_resync] Record {record['response_id']!r} (model={model}) "
                 f"has no task_id after {age_minutes:.1f}m, marked as failed"
@@ -155,7 +201,10 @@ def _do_resync(app) -> None:
         response_id = record["response_id"]
         provider_id = record.get("provider_id")
         if not provider_id:
-            _bg_dao.mark_failed(db_url, response_id, "No provider_id recorded — model resolution may have failed")
+            await _bg_dao.mark_failed_async(
+                response_id,
+                "No provider_id recorded — model resolution may have failed",
+            )
             logger.warning(
                 f"[bg_resync] Record {response_id!r} has no provider_id after {age_minutes:.1f}m, marked as failed"
             )
@@ -167,17 +216,17 @@ def _do_resync(app) -> None:
             f"model={model} category={category.value} age={age_minutes:.1f}m"
         )
 
-        status = resolve_and_check_task_status(db_url, record)
+        status = await resolve_and_check_task_status_async(record)
 
         if status == TaskStatus.RUNNING:
             continue
 
         if status == TaskStatus.COMPLETED:
-            _bg_dao.mark_completed(db_url, response_id)
+            await _bg_dao.mark_completed_async(response_id)
             logger.info(f"[bg_resync] Record {response_id!r} synced to completed")
             resolved_count += 1
         elif status == TaskStatus.FAILED:
-            _bg_dao.mark_failed(db_url, response_id, "Task failed at upstream provider")
+            await _bg_dao.mark_failed_async(response_id, "Task failed at upstream provider")
             logger.info(f"[bg_resync] Record {response_id!r} synced to failed")
             resolved_count += 1
         else:
@@ -185,7 +234,7 @@ def _do_resync(app) -> None:
             pass
 
         # Small delay between provider API calls to avoid rate limiting
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
 
     if resolved_count > 0 or skip_count > 0:
         logger.info(

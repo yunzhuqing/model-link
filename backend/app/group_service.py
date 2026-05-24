@@ -10,7 +10,8 @@ import logging
 from typing import Any, Dict, Optional
 
 from sqlalchemy import select
-from app.models import Group
+from sqlalchemy.orm import selectinload
+from app.models import Group, UserGroup, ApiKey
 
 logger = logging.getLogger("group_service")
 
@@ -18,12 +19,14 @@ _GROUP_CACHE_PREFIX = "group:"
 _GROUP_CACHE_TTL = 300
 
 
-def _get_session(session):
-    """Resolve session: use passed session or fall back to g.db_session."""
-    if session is not None:
-        return session
-    from quart import g
-    return g.db_session
+def _require_session(session):
+    """All callers must pass an explicit session."""
+    if session is None:
+        raise RuntimeError(
+            "group_service: session is required. "
+            "Open one via `async with get_db_session() as s:` and pass it explicitly."
+        )
+    return session
 
 
 def _cache_key(group_id: int) -> str:
@@ -76,7 +79,7 @@ async def get_group_config(group_id: int, session=None) -> dict | None:
         return data
 
     # Cache miss — load from DB
-    session = _get_session(session)
+    session = _require_session(session)
     try:
         result = await session.execute(
             select(Group).where(Group.id == group_id)
@@ -118,11 +121,23 @@ async def get_group_monitoring_config(group_id: int, session=None) -> list[dict]
 
 
 async def get_group_by_id(group_id: int, session=None) -> Group | None:
-    """Get Group ORM object directly from DB (for mutations needing relationships)."""
-    session = _get_session(session)
+    """Get Group ORM object from DB with all commonly-walked relationships
+    eager-loaded so callers can safely access .users, .user_associations,
+    .api_keys, .providers and serialize via .to_dict() without triggering
+    async-incompatible lazy loads.
+    """
+    session = _require_session(session)
     try:
         result = await session.execute(
-            select(Group).where(Group.id == group_id)
+            select(Group)
+            .options(
+                selectinload(Group.users),
+                selectinload(Group.user_associations).selectinload(UserGroup.user),
+                selectinload(Group.api_keys).selectinload(ApiKey.user),
+                selectinload(Group.api_keys).selectinload(ApiKey.policies),
+                selectinload(Group.providers),
+            )
+            .where(Group.id == group_id)
         )
         return result.scalars().first()
     except Exception:
@@ -140,7 +155,7 @@ def invalidate_group_cache(group_id: int) -> None:
 
 async def create_group(name: str, description: str | None = None, workspace_id: int | None = None, session=None) -> tuple[Group | None, str | None]:
     """Create a new group. Returns (group, error)."""
-    session = _get_session(session)
+    session = _require_session(session)
     result = await session.execute(select(Group).where(Group.name == name))
     existing = result.scalars().first()
     if existing:
@@ -162,7 +177,7 @@ async def update_group(group_id: int, session=None, **kwargs) -> tuple[Group | N
 
     Accepted kwargs: name, description, monitoring_config, tags, workspace_id
     """
-    session = _get_session(session)
+    session = _require_session(session)
     group = await get_group_by_id(group_id, session=session)
     if not group:
         return None, "Group not found"
@@ -224,7 +239,7 @@ async def update_group(group_id: int, session=None, **kwargs) -> tuple[Group | N
 
 async def delete_group(group_id: int, session=None) -> tuple[bool, str | None]:
     """Delete a group. Returns (success, error)."""
-    session = _get_session(session)
+    session = _require_session(session)
     group = await get_group_by_id(group_id, session=session)
     if not group:
         return False, "Group not found"

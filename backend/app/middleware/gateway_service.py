@@ -31,15 +31,7 @@ from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 from app.abstraction.rerank import RerankRequest, RerankResponse
-
-
-@dataclass
-class ResolvedModel:
-    """解析后的模型信息"""
-    provider_instance: BaseProvider
-    db_provider: Provider
-    db_model: Model
-    real_model_name: str  # 供应商 API 使用的真实模型名称
+from app.request_context import ResolvedModelData
 
 
 class GatewayServiceError(Exception):
@@ -152,12 +144,17 @@ class GatewayService:
         # we can't compare cached.config against db_provider directly.
         self._provider_db_fingerprint: dict[int, tuple[str, str | None]] = {}
 
-    async def resolve_model(self, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModel:
+    async def resolve_model(self, session, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModelData:
         """
-        解析模型名称/别名，返回供应商实例和模型信息。
+        解析模型名称/别名，返回供应商实例和模型信息（plain dataclass）。
 
         当同一模型名称/别名存在于多个启用的供应商中时，
         从启用的供应商中随机选择一个进行路由（负载分散）。
+
+        Args:
+            session: caller-managed AsyncSession — must be alive for the duration of this call.
+        Returns:
+            ResolvedModelData (plain data — safe to use after session is closed).
 
         Args:
             model_name: 模型名称或别名
@@ -165,14 +162,11 @@ class GatewayService:
             provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
-            ResolvedModel 对象
+            ResolvedModelData 对象（plain dataclass — 不再持有 ORM 引用）
 
         Raises:
             ModelNotFoundError: 如果模型未找到或不可访问
         """
-        from quart import g
-        session = g.db_session
-
         async def _query_all(s):
             result = await s.execute(
                 select(Model)
@@ -257,11 +251,34 @@ class GatewayService:
                 status_code=500
             )
 
-        return ResolvedModel(
+        # Eagerly extract all primitive fields to a plain dataclass so callers
+        # can close the DB session before the (potentially minute-long) LLM call.
+        return ResolvedModelData(
+            provider_id=db_provider.id,
+            provider_name=db_provider.name,
+            provider_type=db_provider.type or "",
+            model_id=db_model.id,
+            model_alias=db_model.alias,
+            model_real_name=db_model.name,
+            input_price=float(getattr(db_model, 'input_price', 0) or 0),
+            output_price=float(getattr(db_model, 'output_price', 0) or 0),
+            cache_creation_price=float(getattr(db_model, 'cache_creation_price', 0) or 0),
+            cache_5m_creation_price=float(getattr(db_model, 'cache_5m_creation_price', 0) or 0),
+            cache_1h_creation_price=float(getattr(db_model, 'cache_1h_creation_price', 0) or 0),
+            cache_hit_price=float(getattr(db_model, 'cache_hit_price', 0) or 0),
+            currency=getattr(db_model, 'currency', 'USD') or 'USD',
+            discount=float(getattr(db_model, 'discount', 1) or 1),
+            pricing_tiers=getattr(db_model, 'pricing_tiers', None),
+            output_pricing=getattr(db_model, 'output_pricing', None),
+            support_thinking=bool(getattr(db_model, 'support_thinking', False)),
+            support_online_image=bool(getattr(db_model, 'support_online_image', True)),
+            support_online_video=bool(getattr(db_model, 'support_online_video', True)),
+            support_image=bool(getattr(db_model, 'support_image', False)),
+            support_audio=bool(getattr(db_model, 'support_audio', False)),
+            support_video=bool(getattr(db_model, 'support_video', False)),
+            support_embedding=bool(getattr(db_model, 'support_embedding', False)),
+            timeout=getattr(db_model, 'timeout', None),
             provider_instance=provider_instance,
-            db_provider=db_provider,
-            db_model=db_model,
-            real_model_name=db_model.name
         )
 
     @staticmethod
@@ -336,80 +353,48 @@ class GatewayService:
             return random.choice(candidates)
 
     async def chat(
-        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
-        provider_id: Optional[int] = None,
-    ) -> Tuple[ChatResponse, ResolvedModel]:
+        self, resolved: ResolvedModelData, request: ChatRequest, tracer: Any = None,
+    ) -> ChatResponse:
         """
-        执行非流式对话请求，返回 (ChatResponse, ResolvedModel)。
+        执行非流式对话请求，返回 ChatResponse。
 
-        这是中间层的核心方法，它：
-        1. 解析模型 → 找到正确的供应商
-        2. 替换模型名称 → 使用供应商 API 需要的真实名称
-        3. 调用供应商 API → 获取响应
-        4. 返回统一格式的 ChatResponse 及 ResolvedModel（用于用量记录）
+        模型必须由调用方使用 `resolve_model()` 预先解析。本方法不再持有 DB
+        会话 —— 上游 LLM 调用期间 DB 连接已被释放。
 
         Args:
+            resolved: 调用方在 DB session 内预先解析得到的模型/供应商信息
             request: 统一的对话请求对象（由 Adapter 从任意 API 格式解析而来）
-            group_id: 可选的组 ID（用于访问控制）
-            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
-            (ChatResponse, ResolvedModel) 元组
+            ChatResponse
 
         Raises:
-            ModelNotFoundError: 模型未找到
             GatewayServiceError: 请求验证失败
             ProviderError: 供应商 API 调用失败
         """
-        # 1. 解析模型
-        resolved = await self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
-
-        # Record provider info on tracer immediately after resolution
+        # Record provider info on tracer
         if tracer:
             tracer.set_metadata({
-                "provider_id": resolved.db_provider.id if resolved.db_provider else None,
-                "provider": resolved.db_provider.name if resolved.db_provider else None,
+                "provider_id": resolved.provider_id,
+                "provider": resolved.provider_name,
             })
 
-        # Allow callers to hook into model resolution (e.g. persist provider_id)
-        _on_model_resolved = request.metadata.get('_on_model_resolved')
-        if _on_model_resolved:
-            try:
-                _on_model_resolved(resolved)
-            except Exception:
-                pass
+        # 1. Replace with real model name
+        request.model = resolved.model_real_name
 
-        # 2. 替换为真实模型名称
-        request.model = resolved.real_model_name
+        # 2. Pass model capability flags / overrides to request metadata
+        request.metadata['support_thinking'] = resolved.support_thinking
+        if resolved.timeout:
+            request.metadata['timeout'] = resolved.timeout
+        request.metadata['output_pricing'] = resolved.output_pricing
 
-        # 2.5. 传递模型特性标志到请求元数据
-        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
-
-        # 2.5.1. 传递模型级别超时时间到请求元数据，供 Provider 使用
-        model_timeout = getattr(resolved.db_model, 'timeout', None)
-        if model_timeout:
-            request.metadata['timeout'] = model_timeout
-
-        # 2.5.2. 传递 output_pricing 到请求元数据（供 3D 等 provider 计算积分消耗）
-        request.metadata['output_pricing'] = getattr(resolved.db_model, 'output_pricing', None)
-
-        # 2.6. Convert image URLs to base64 if provider doesn't support online images
-        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
-        if not support_online_image:
+        # 3. Convert image/video URLs if the model doesn't support online URLs
+        if not resolved.support_online_image:
             await self._convert_image_urls_to_base64(request)
-
-        # 2.7. Convert video URLs to base64 if provider doesn't support online videos
-        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
-        if not support_online_video:
+        if not resolved.support_online_video:
             await self._convert_video_urls_to_base64(request)
 
-        # 2.8. Eagerly extract provider attributes before releasing the DB session.
-        #      The LLM call may take 10-60+ seconds — holding a DB connection
-        #      for that duration wastes pool capacity and causes QueuePool timeouts.
-        _provider_id = resolved.db_provider.id
-        _provider_name = resolved.db_provider.name
-
-        # 3. 调用供应商 API
+        # 4. 调用供应商 API
         resolved.provider_instance.tracer = tracer
         try:
             response = await resolved.provider_instance.chat(request)
@@ -420,123 +405,74 @@ class GatewayService:
                     if choice.message:
                         choice.message.reasoning_content = None
 
-            return response, resolved
+            return response
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                     provider_id=_provider_id,
-                                     provider_name=_provider_name)
+                                     provider_id=resolved.provider_id,
+                                     provider_name=resolved.provider_name)
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
             raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
-                                provider_id=_provider_id,
-                                provider_name=_provider_name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
         except httpx.HTTPError as e:
             raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
-                                provider_id=_provider_id,
-                                provider_name=_provider_name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=_provider_id,
-                                provider_name=_provider_name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
 
     async def stream_chat(
-        self, request: ChatRequest, group_id: Optional[int] = None, tracer: Any = None,
-        provider_id: Optional[int] = None,
-    ) -> Tuple[AsyncGenerator[StreamChunk, None], dict]:
+        self, resolved: ResolvedModelData, request: ChatRequest, tracer: Any = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
         """
-        执行流式对话请求，返回 (StreamChunk 生成器, model_meta dict)。
+        执行流式对话请求，返回 StreamChunk 异步生成器。
 
-        与 chat() 方法类似，但返回流式响应块的生成器。
-
-        注意：模型解析（数据库访问）在此方法中立即执行（非惰性），
-        以确保在 Flask 请求上下文中完成。只有流式数据传输是惰性的。
+        模型必须由调用方使用 `resolve_model()` 预先解析。本方法不持有 DB 会话。
 
         Args:
+            resolved: 调用方在 DB session 内预先解析得到的模型/供应商信息
             request: 统一的对话请求对象
-            group_id: 可选的组 ID
-            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
-            (StreamChunk 生成器, model_meta dict)
-
-            model_meta keys:
-                provider_id, provider_name, model_alias, model_real_name,
-                input_price_unit, output_price_unit,
-                cache_creation_price_unit, cache_5m_creation_price_unit, cache_1h_creation_price_unit, cache_token_price_unit
+            StreamChunk 异步生成器
 
         Raises:
-            ModelNotFoundError: 模型未找到
             GatewayServiceError: 请求验证失败
             ProviderError: 供应商 API 调用失败
         """
-        # 1. Resolve model (DB access)
-        resolved = await self.resolve_model(request.model, group_id, user_id=request.user, provider_id=provider_id)
-
-        # Record provider info on tracer immediately after resolution
+        # Record provider info on tracer
         if tracer:
             tracer.set_metadata({
-                "provider_id": resolved.db_provider.id if resolved.db_provider else None,
-                "provider": resolved.db_provider.name if resolved.db_provider else None,
+                "provider_id": resolved.provider_id,
+                "provider": resolved.provider_name,
             })
 
-        # Allow callers to hook into model resolution (e.g. persist provider_id)
-        _on_model_resolved = request.metadata.get('_on_model_resolved')
-        if _on_model_resolved:
-            try:
-                _on_model_resolved(resolved)
-            except Exception:
-                pass
+        # 1. Replace with real model name
+        request.model = resolved.model_real_name
 
-        # 2. Replace with real model name
-        request.model = resolved.real_model_name
+        # 2. Pass model capability flags / overrides to request metadata
+        request.metadata['support_thinking'] = resolved.support_thinking
+        if resolved.timeout:
+            request.metadata['timeout'] = resolved.timeout
 
-        # 3. Pass model capability flags
-        request.metadata['support_thinking'] = getattr(resolved.db_model, 'support_thinking', False)
-
-        # 3.1. Pass model-level timeout to request metadata for providers to use
-        model_timeout = getattr(resolved.db_model, 'timeout', None)
-        if model_timeout:
-            request.metadata['timeout'] = model_timeout
-
-        # 4. Convert image/video URLs if provider doesn't support them online
-        support_online_image = getattr(resolved.db_model, 'support_online_image', True)
-        if not support_online_image:
+        # 3. Convert image/video URLs if the model doesn't support online URLs
+        if not resolved.support_online_image:
             await self._convert_image_urls_to_base64(request)
-        support_online_video = getattr(resolved.db_model, 'support_online_video', True)
-        if not support_online_video:
+        if not resolved.support_online_video:
             await self._convert_video_urls_to_base64(request)
 
-        # 5. Determine reasoning flag
+        # 4. Determine reasoning flag
         include_reasoning = self._should_include_reasoning(request)
 
-        # 6. Pre-extract all primitive values from ORM objects while session is open.
-        #    These will be passed to the usage recorder.
-        model_meta: dict = {
-            'provider_id': resolved.db_provider.id,
-            'provider_name': resolved.db_provider.name,
-            'model_alias': resolved.db_model.alias,
-            'model_real_name': resolved.db_model.name,
-            'input_price_unit': float(getattr(resolved.db_model, 'input_price', 0) or 0),
-            'output_price_unit': float(getattr(resolved.db_model, 'output_price', 0) or 0),
-            'cache_creation_price_unit': float(getattr(resolved.db_model, 'cache_creation_price', 0) or 0),
-            'cache_5m_creation_price_unit': float(getattr(resolved.db_model, 'cache_5m_creation_price', 0) or 0),
-            'cache_1h_creation_price_unit': float(getattr(resolved.db_model, 'cache_1h_creation_price', 0) or 0),
-            'cache_token_price_unit': float(getattr(resolved.db_model, 'cache_hit_price', 0) or 0),
-            'currency': getattr(resolved.db_model, 'currency', 'USD') or 'USD',
-            # Tiered pricing — plain list, safe to pass across thread boundaries
-            'pricing_tiers': getattr(resolved.db_model, 'pricing_tiers', None),
-            # Output pricing strategies for image/video/audio — plain dict
-            'output_pricing': getattr(resolved.db_model, 'output_pricing', None),
-            # Discount multiplier (e.g. 0.9 = 10% off; 1.0 = no discount)
-            'discount': float(getattr(resolved.db_model, 'discount', 1) or 1),
-        }
-
-        # 7. Attach tracer to provider so it can create child spans internally.
+        # 5. Attach tracer to provider so it can create child spans internally.
         resolved.provider_instance.tracer = tracer
 
-        # 8. Return lazy async generator + metadata
+        # 6. Return lazy async generator
         async def _stream():
             try:
                 async for chunk in resolved.provider_instance.stream_chat(request):
@@ -548,22 +484,22 @@ class GatewayService:
             except RuntimeError as e:
                 status_code, error_data = self._parse_provider_error(e)
                 raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                    provider_id=resolved.db_provider.id,
-                                    provider_name=resolved.db_provider.name)
+                                    provider_id=resolved.provider_id,
+                                    provider_name=resolved.provider_name)
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
                 raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
-                                    provider_id=resolved.db_provider.id,
-                                    provider_name=resolved.db_provider.name)
+                                    provider_id=resolved.provider_id,
+                                    provider_name=resolved.provider_name)
             except httpx.HTTPError as e:
                 raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
-                                    provider_id=resolved.db_provider.id,
-                                    provider_name=resolved.db_provider.name)
+                                    provider_id=resolved.provider_id,
+                                    provider_name=resolved.provider_name)
             except Exception as e:
                 raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                    provider_id=resolved.db_provider.id,
-                                    provider_name=resolved.db_provider.name)
+                                    provider_id=resolved.provider_id,
+                                    provider_name=resolved.provider_name)
 
-        return _stream(), model_meta
+        return _stream()
 
     @staticmethod
     def _should_include_reasoning(request: ChatRequest) -> bool:
@@ -808,38 +744,31 @@ class GatewayService:
 
                 message.content = new_blocks
 
-    async def rerank(self, request: RerankRequest, group_id: Optional[int] = None,
-               provider_id: Optional[int] = None) -> RerankResponse:
+    async def rerank(self, resolved: ResolvedModelData, request: RerankRequest) -> RerankResponse:
         """
-        执行 Rerank 请求。
+        执行 Rerank 请求（模型由调用方预先解析）。
 
         Args:
+            resolved: 调用方在 DB session 内预先解析得到的模型/供应商信息
             request: Rerank 请求对象
-            group_id: 可选的组 ID（用于访问控制）
-            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             Rerank 响应对象
 
         Raises:
-            ModelNotFoundError: 模型未找到
             GatewayServiceError: 供应商不支持 rerank
             ProviderError: 供应商 API 调用失败
         """
-        # 1. 解析模型
-        resolved = await self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
+        # Replace with real model name
+        request.model = resolved.model_real_name
 
-        # 2. 替换为真实模型名称
-        request.model = resolved.real_model_name
-
-        # 3. 检查供应商是否支持 rerank
+        # Check that the provider supports rerank
         if not hasattr(resolved.provider_instance, 'rerank'):
             raise GatewayServiceError(
-                f"Provider '{resolved.db_provider.name}' does not support rerank",
+                f"Provider '{resolved.provider_name}' does not support rerank",
                 status_code=400
             )
 
-        # 4. 调用供应商 API
         try:
             return await resolved.provider_instance.rerank(request)
         except ValueError as e:
@@ -847,67 +776,62 @@ class GatewayService:
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
 
-    async def embed(self, request: EmbeddingRequest, group_id: Optional[int] = None, provider_id: Optional[int] = None, tracer: Any = None) -> EmbeddingResponse:
+    async def embed(self, resolved: ResolvedModelData, request: EmbeddingRequest, tracer: Any = None) -> EmbeddingResponse:
         """
-        执行嵌入请求。
+        执行嵌入请求（模型由调用方预先解析）。
 
         Args:
+            resolved: 调用方在 DB session 内预先解析得到的模型/供应商信息
             request: 嵌入请求对象
-            group_id: 可选的组 ID（用于访问控制）
-            provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
 
         Returns:
             嵌入响应对象
 
         Raises:
-            ModelNotFoundError: 模型未找到
             GatewayServiceError: 请求验证失败
             ProviderError: 供应商 API 调用失败
         """
-        # 1. 解析模型
-        resolved = await self.resolve_model(request.model, group_id, user_id=None, provider_id=provider_id)
-
-        # Record provider info on tracer immediately after resolution
+        # Record provider info on tracer immediately
         if tracer:
             tracer.set_metadata({
-                "provider_id": resolved.db_provider.id if resolved.db_provider else None,
-                "provider": resolved.db_provider.name if resolved.db_provider else None,
+                "provider_id": resolved.provider_id,
+                "provider": resolved.provider_name,
             })
 
-        # 2. 替换为真实模型名称
-        request.model = resolved.real_model_name
+        # Replace with real model name
+        request.model = resolved.model_real_name
 
-        # 2.5. 传递模型多模态能力标志到请求元数据，供 Provider 判断是否走多模态 API
-        request.metadata['support_image'] = getattr(resolved.db_model, 'support_image', False)
-        request.metadata['support_video'] = getattr(resolved.db_model, 'support_video', False)
-        request.metadata['support_audio'] = getattr(resolved.db_model, 'support_audio', False)
+        # Pass model multimodal capability flags into request metadata so
+        # the provider can decide whether to use a multimodal API path.
+        request.metadata['support_image'] = resolved.support_image
+        request.metadata['support_video'] = resolved.support_video
+        request.metadata['support_audio'] = resolved.support_audio
 
         # Attach tracer so providers can create child spans
         resolved.provider_instance.tracer = tracer
 
-        # 3. 检查模型是否标记为嵌入模型
-        if not getattr(resolved.db_model, 'support_embedding', False):
+        # Check that the model is flagged as an embedding model
+        if not resolved.support_embedding:
             raise GatewayServiceError(
-                f"Model '{resolved.db_model.alias or resolved.db_model.name}' is not an embedding model. "
+                f"Model '{resolved.model_alias or resolved.model_real_name}' is not an embedding model. "
                 f"Set support_embedding=true for this model in the admin panel.",
                 status_code=400
             )
 
-        # 4. 检查供应商是否支持嵌入
+        # Check that the provider supports embeddings
         if not hasattr(resolved.provider_instance, 'embed'):
             raise GatewayServiceError(
-                f"Provider '{resolved.db_provider.name}' does not support embedding",
+                f"Provider '{resolved.provider_name}' does not support embedding",
                 status_code=400
             )
 
-        # 4. 调用供应商 API
         try:
             response = await resolved.provider_instance.embed(request)
             return response
@@ -916,16 +840,16 @@ class GatewayService:
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
         except Exception as e:
             raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=resolved.db_provider.id,
-                                provider_name=resolved.db_provider.name)
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
 
     async def generate_images(
         self,
-        model_name: str,
+        resolved: ResolvedModelData,
         prompt: str,
         images: Optional[list] = None,
         n: int = 1,
@@ -935,12 +859,10 @@ class GatewayService:
         quality: Optional[str] = None,
         style: Optional[str] = None,
         user: Optional[str] = None,
-        group_id: Optional[int] = None,
         aspect_ratio: Optional[str] = None,
         resolution: Optional[str] = None,
-        provider_id: Optional[int] = None,
         tracer: Any = None,
-    ) -> dict:
+    ) -> Tuple[dict, ChatResponse]:
         """
         Execute image generation and return an OpenAI-compatible response.
 
@@ -950,28 +872,9 @@ class GatewayService:
         ``ChatResponse`` to OpenAI ``/v1/images/generations`` format.
 
         Args:
-            model_name: Model name or alias.
+            resolved: caller-resolved ResolvedModelData (no internal DB access).
             prompt: Text description for the image to generate.
-            n: Number of images to generate.
-            size: Output image dimensions (e.g. "1024x1024").
-            response_format: "url" or "b64_json".
-            output_format: Image file format: "png", "jpeg", "webp".
-            quality: Quality tier (provider-specific).
-            style: Style preset (provider-specific).
-            user: Optional end-user identifier.
-            group_id: Optional group ID for access control.
-
-        Returns:
-            Dict matching the OpenAI images response schema::
-
-                {
-                    "created": <unix_ts>,
-                    "data": [{"url": "...", "b64_json": "...", "revised_prompt": "..."}],
-                    "output_format": "png"
-                }
-
-        Raises:
-            ModelNotFoundError, GatewayServiceError, ProviderError
+            ...
         """
         import json as _json
         from app.abstraction.messages import Message, MessageRole, ContentBlock
@@ -987,9 +890,6 @@ class GatewayService:
         else:
             messages = [Message(role=MessageRole.USER, content=prompt)]
 
-        # These metadata keys are the same ones the Responses-API adapter sets
-        # when it parses an ``image_generation`` tool.  Providers detect them
-        # via ``has_image_generation_tool()`` and route to their image-gen path.
         metadata: dict = {
             "size": size,
             "number": n,
@@ -1005,17 +905,13 @@ class GatewayService:
 
         chat_request = ChatRequest(
             messages=messages,
-            model=model_name,
+            model=resolved.model_real_name,
             metadata=metadata,
             user=user,
         )
 
-        # Route through the standard chat pipeline (with resolved model info
-        # for usage recording).
-        # Providers that support image generation (Volcengine, Bailian, Gemini,
-        # …) will detect the metadata and call their image-gen API.
         try:
-            chat_response, resolved = await self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
+            chat_response = await self.chat(resolved, chat_request, tracer=tracer)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
@@ -1026,9 +922,6 @@ class GatewayService:
         data: list = []
         if chat_response.choices and chat_response.choices[0].message:
             msg = chat_response.choices[0].message
-            # Message.__post_init__ converts string content to
-            # [ContentBlock.from_text(...)], so msg.content is always a list.
-            # Use get_text_content() to retrieve the JSON string.
             text_content = msg.get_text_content()
             if text_content:
                 try:
@@ -1057,11 +950,11 @@ class GatewayService:
             "data": data,
             "output_format": output_format,
         }
-        return result_dict, chat_response, resolved
+        return result_dict, chat_response
 
     async def edit_images(
         self,
-        model_name: str,
+        resolved: ResolvedModelData,
         prompt: str,
         images: Optional[list] = None,
         mask: Optional[dict] = None,
@@ -1074,64 +967,32 @@ class GatewayService:
         input_fidelity: Optional[str] = None,
         moderation: Optional[str] = None,
         user: Optional[str] = None,
-        group_id: Optional[int] = None,
-        provider_id: Optional[int] = None,
         tracer: Any = None,
-    ) -> dict:
+    ) -> Tuple[dict, ChatResponse]:
         """
         Execute image editing and return an OpenAI-compatible response.
 
-        Builds a ``ChatRequest`` with image-editing metadata (including
-        reference images and mask), routes it through the standard provider
-        pipeline, then converts the ``ChatResponse`` to the OpenAI
-        ``/v1/images/edits`` response format.
-
         Args:
-            model_name: Model name or alias.
-            prompt: Text description for how to edit the image.
-            images: List of input images, each dict may contain
-                ``image_url`` (str) and/or ``file_id`` (str).
-            mask: Optional mask image dict with ``image_url`` / ``file_id``.
-            n: Number of images to generate.
-            size: Output image dimensions (e.g. "1024x1024").
-            response_format: "url" or "b64_json".
-            output_format: Image file format: "png", "jpeg", "webp".
-            quality: Quality tier (provider-specific).
-            background: "transparent", "opaque", or "auto".
-            input_fidelity: "high" or "low".
-            moderation: "low" or "auto".
-            user: Optional end-user identifier.
-            group_id: Optional group ID for access control.
-
-        Returns:
-            Dict matching the OpenAI images/edits response schema.
-
-        Raises:
-            ModelNotFoundError, GatewayServiceError, ProviderError
+            resolved: caller-resolved ResolvedModelData (no internal DB access).
+            ...
         """
         import json as _json
         from app.abstraction.messages import Message, MessageRole, ContentBlock
 
-        # Build message content: text prompt + reference images
         content_blocks: list = [ContentBlock.from_text(prompt)]
-
         if images:
             for img in images:
                 img_url = img.get("image_url") or img.get("url")
                 if img_url:
                     content_blocks.append(ContentBlock.from_image_url(img_url))
-
         messages = [Message(role=MessageRole.USER, content=content_blocks)]
 
-        # Metadata keys recognised by image-generation providers
         metadata: dict = {
             "size": size,
             "number": n,
             "response_format": response_format,
             "image_format": output_format,
         }
-
-        # Image-editing specific metadata
         if quality:
             metadata["quality"] = quality
         if background:
@@ -1145,22 +1006,19 @@ class GatewayService:
 
         chat_request = ChatRequest(
             messages=messages,
-            model=model_name,
+            model=resolved.model_real_name,
             metadata=metadata,
             user=user,
         )
 
-        # Route through the standard chat pipeline (with resolved model info
-        # for usage recording)
         try:
-            chat_response, resolved = await self.chat(chat_request, group_id, provider_id=provider_id, tracer=tracer)
+            chat_response = await self.chat(resolved, chat_request, tracer=tracer)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data)
 
-        # ── Convert ChatResponse → OpenAI images/edits format ────────
         data: list = []
         if chat_response.choices and chat_response.choices[0].message:
             msg = chat_response.choices[0].message
@@ -1198,7 +1056,7 @@ class GatewayService:
         if background and background != "auto":
             result_dict["background"] = background
 
-        return result_dict, chat_response, resolved
+        return result_dict, chat_response
 
     @staticmethod
     def _parse_provider_error(error: RuntimeError) -> Tuple[int, Optional[dict]]:

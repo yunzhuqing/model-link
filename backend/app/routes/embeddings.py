@@ -11,6 +11,7 @@ import time
 
 logger = logging.getLogger("gateway")
 
+from app import get_db_session
 from app.abstraction.embedding import EmbeddingRequest
 from app.monitoring import create_tracer
 from app.group_service import get_group_monitoring_config
@@ -26,7 +27,6 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
-    G_API_KEY_PROVIDER_ID,
 )
 
 embeddings_bp = Blueprint('embeddings', __name__)
@@ -50,50 +50,13 @@ async def create_embeddings():
 
     Supports embedding models from various providers (OpenAI, Gemini, Qwen, Doubao, etc.)
     that are compatible with OpenAI's embedding API format.
-
-    Request body (standard):
-    {
-        "model": "text-embedding-3-small",
-        "input": "The food was delicious and the waiter...",
-        "encoding_format": "float",
-        "dimensions": 1536,
-        "user": "user-id"
-    }
-
-    Request body (multimodal via messages):
-    {
-        "model": "multimodal-embedding-model",
-        "messages": [
-            {"role": "user", "content": [
-                {"type": "text", "text": "describe this image"},
-                {"type": "image_url", "image_url": {"url": "https://..."}}
-            ]}
-        ],
-        "encoding_format": "float",
-        "dimensions": 1536,
-        "user": "user-id"
-    }
-
-    Request body (multimodal via input content blocks):
-    {
-        "model": "multimodal-embedding-model",
-        "input": [
-            {"type": "text", "text": "describe this image"},
-            {"type": "image_url", "image_url": {"url": "https://..."}},
-            {"type": "video_url", "video_url": {"url": "https://..."}}
-        ],
-        "encoding_format": "float",
-        "dimensions": 1536,
-        "user": "user-id"
-    }
     """
-    # 1. 认证
-    user, api_key, error, status = await get_current_user_or_api_key()
+    # ── Phase 1: auth (own short session inside) ──
+    auth_ctx, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("embeddings", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
-    # 2. 获取请求数据
     data = await _parse_json_body()
     if not data:
         _log_error("embeddings", 400, "Invalid or empty JSON request body")
@@ -104,8 +67,7 @@ async def create_embeddings():
         _log_error("embeddings", 400, "Model is required")
         return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
-    # 检查 API Key 的 allowed_models 限制
-    acl_error = _check_allowed_models(api_key, model_name)
+    acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
         _log_error("embeddings", 403, acl_error['detail'])
         return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
@@ -144,7 +106,6 @@ async def create_embeddings():
             messages = messages_from_input
             input_data = None
 
-    # 3. 构建嵌入请求
     embedding_request = EmbeddingRequest(
         model=model_name,
         input=input_data,
@@ -154,16 +115,31 @@ async def create_embeddings():
         user=data.get('user'),
     )
 
-    # 4. 获取组 ID（用于访问控制）
-    group_id = api_key.group_id if api_key else None
-    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
+    group_id = auth_ctx.api_key_group_id if auth_ctx else None
+    provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
-    # 5. 设置 tracer
-    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
+    # ── Phase 2: resolve model (short session) ──
+    monitoring_config = None
+    try:
+        async with get_db_session() as session:
+            resolved = await _gateway_service.resolve_model(
+                session, model_name, group_id, provider_id=provider_id
+            )
+            if group_id:
+                try:
+                    monitoring_config = await get_group_monitoring_config(group_id, session=session)
+                except Exception as _e:
+                    logger.debug(f"[monitoring] fetch config failed: {_e}")
+    except ModelNotFoundError as e:
+        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
+    except GatewayServiceError as e:
+        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        return _error_response(e.message, code="request_failed", status_code=e.status_code)
+
     tracer = create_tracer(monitoring_config)
 
-    # 6. 调用中间层
-    _app = current_app._get_current_object()
+    # ── Phase 3: LLM call (no DB session) ──
     try:
         _start_time = time.time()
         if tracer:
@@ -172,28 +148,40 @@ async def create_embeddings():
             tracer.set_metadata({
                 "request_id": g.request_id,
                 "group_id": group_id,
-                "user": user.username if user else None,
+                "user": auth_ctx.user_name if auth_ctx else None,
                 "model_name": model_name,
-                "api_key_name": api_key.name if api_key else None,
+                "api_key_name": auth_ctx.api_key_name if auth_ctx else None,
             })
-        response = await _gateway_service.embed(embedding_request, group_id, provider_id=provider_id, tracer=tracer)
+        response = await _gateway_service.embed(resolved, embedding_request, tracer=tracer)
         _duration_ms = int((time.time() - _start_time) * 1000)
         if tracer:
             tracer.log_output(response.to_dict())
-            tracer.set_metadata({
-                "duration_ms": _duration_ms,
-            })
+            tracer.set_metadata({"duration_ms": _duration_ms})
             tracer.end()
-        # Record usage
+        # ── Phase 4: usage record ──
         try:
             from app.usagerecord.usage_service import record_usage
             await record_usage(
                 response=response,
-                db_model=resolved.db_model,
-                db_provider=resolved.db_provider,
-                api_key=api_key,
-                user=user,
-                request_model_name=model_name,
+                user_name=auth_ctx.user_name if auth_ctx else None,
+                user_id=auth_ctx.user_id if auth_ctx else None,
+                api_key_raw=auth_ctx.api_key_raw if auth_ctx else None,
+                api_key_name=auth_ctx.api_key_name if auth_ctx else None,
+                api_key_group_id=auth_ctx.api_key_group_id if auth_ctx else None,
+                api_key_group_name=auth_ctx.api_key_group_name if auth_ctx else None,
+                model_name=model_name,
+                provider_id=resolved.provider_id,
+                provider_name=resolved.provider_name,
+                input_price_unit=resolved.input_price,
+                output_price_unit=resolved.output_price,
+                cache_creation_price_unit=resolved.cache_creation_price,
+                cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                cache_token_price_unit=resolved.cache_hit_price,
+                pricing_tiers=resolved.pricing_tiers,
+                output_pricing=resolved.output_pricing,
+                currency=resolved.currency,
+                discount=resolved.discount,
                 duration_ms=_duration_ms,
             )
         except Exception as _ue:
@@ -201,19 +189,19 @@ async def create_embeddings():
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("embeddings", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="provider_error", status_code=e.status_code)

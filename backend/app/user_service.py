@@ -3,7 +3,10 @@ User service — cache-first user lookups and cache invalidation.
 
 Keeps caching logic out of the ORM models layer.
 """
-from app.models import User, Group
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from app.models import User, Group, ApiKey, UserGroup
 
 
 # ── Cached model proxies (lightweight, DB-independent) ────────────────────
@@ -25,26 +28,61 @@ class CachedGroup:
         self.id = id
         self.name = name
         self.description = description
-        self._orm = None
-
-    async def _get_orm(self, session=None):
-        if self._orm is None:
-            if session is None:
-                from flask import g
-                session = g.db_session
-            self._orm = await session.get(Group, self.id)
-        return self._orm
 
     async def get_users(self, session=None):
-        orm = await self._get_orm(session=session)
-        return orm.users if orm else []
+        """Return list of Users in this group, eager-loaded via the given session."""
+        if session is None:
+            from app import get_db_session
+            async with get_db_session() as _s:
+                return await self.get_users(session=_s)
+        result = await session.execute(
+            select(Group)
+            .options(selectinload(Group.users))
+            .where(Group.id == self.id)
+        )
+        group = result.scalars().first()
+        return list(group.users) if group else []
 
     async def get_api_keys(self, session=None):
-        orm = await self._get_orm(session=session)
-        return orm.api_keys if orm else []
+        """Return list of ApiKeys in this group, eager-loaded via the given session.
+
+        Eager-loads the relationships that ApiKey.to_dict_with_group() touches
+        (.group, .user, .policies) so callers can serialize without triggering
+        additional lazy loads outside the session.
+        """
+        if session is None:
+            from app import get_db_session
+            async with get_db_session() as _s:
+                return await self.get_api_keys(session=_s)
+        result = await session.execute(
+            select(ApiKey)
+            .options(
+                selectinload(ApiKey.group),
+                selectinload(ApiKey.user),
+                selectinload(ApiKey.policies),
+            )
+            .where(ApiKey.group_id == self.id)
+        )
+        return list(result.scalars().all())
 
     async def to_dict(self, session=None):
-        orm = await self._get_orm(session=session)
+        if session is None:
+            from app import get_db_session
+            async with get_db_session() as _s:
+                return await self.to_dict(session=_s)
+        # Group.to_dict() walks user_associations (+ug.user), api_keys (+k.user),
+        # and providers. Eager-load everything it touches so it can serialize
+        # without firing async-incompatible lazy loads.
+        result = await session.execute(
+            select(Group)
+            .options(
+                selectinload(Group.user_associations).selectinload(UserGroup.user),
+                selectinload(Group.api_keys).selectinload(ApiKey.user),
+                selectinload(Group.providers),
+            )
+            .where(Group.id == self.id)
+        )
+        orm = result.scalars().first()
         if orm:
             return orm.to_dict()
         return {'id': self.id, 'name': self.name, 'description': self.description}
@@ -125,9 +163,20 @@ async def get_user_by_id(user_id: int, session=None) -> CachedUser | None:
         pass
 
     if session is None:
-        from flask import g
-        session = g.db_session
-    orm_user = await session.get(User, user_id)
+        from app import get_db_session
+        async with get_db_session() as _s:
+            return await get_user_by_id(user_id, session=_s)
+    # Eager-load groups + group_associations so user_to_cache_dict() can walk
+    # them without triggering lazy loads (which would crash under async).
+    result = await session.execute(
+        select(User)
+        .options(
+            selectinload(User.groups),
+            selectinload(User.group_associations),
+        )
+        .where(User.id == user_id)
+    )
+    orm_user = result.scalars().first()
     if orm_user is None:
         return None
 

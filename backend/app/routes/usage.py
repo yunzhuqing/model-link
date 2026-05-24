@@ -5,13 +5,14 @@ Endpoints:
   GET /api/usage/records  - Paginated list of raw usage records with filters
   GET /api/usage/summary  - Aggregated statistics (by time / group / model / api-key)
 """
-from quart import Blueprint, request, jsonify, current_app, g
+from quart import Blueprint, request, jsonify, current_app
 from datetime import datetime
 from typing import Optional
 import os
 import logging
 
 from sqlalchemy import select, func
+from app import get_db_session
 from app.models import UsageRecord
 from jose import JWTError, jwt
 
@@ -149,21 +150,22 @@ async def list_records():
 
     # Count total matching records
     count_stmt = select(func.count()).select_from(stmt.subquery())
-    total_result = await g.db_session.execute(count_stmt)
-    total = total_result.scalar()
+    async with get_db_session() as session:
+        total_result = await session.execute(count_stmt)
+        total = total_result.scalar()
 
-    # Fetch paginated records
-    page_stmt = stmt.order_by(UsageRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
-    records_result = await g.db_session.execute(page_stmt)
-    records = records_result.scalars().all()
+        # Fetch paginated records
+        page_stmt = stmt.order_by(UsageRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        records_result = await session.execute(page_stmt)
+        records = records_result.scalars().all()
 
-    return jsonify({
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "pages": (total + page_size - 1) // page_size,
-        "records": [r.to_dict() for r in records],
-    })
+        return jsonify({
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": (total + page_size - 1) // page_size,
+            "records": [r.to_dict() for r in records],
+        })
 
 
 # ── Summary helpers ──────────────────────────────────────────────────────────
@@ -256,22 +258,23 @@ async def get_summary_totals():
         ),
         filters,
     )
-    result = await g.db_session.execute(stmt)
-    row = result.one()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        row = result.one()
 
-    return jsonify({
-        "requests": row.requests or 0,
-        "input_tokens": int(row.input_tokens or 0),
-        "output_tokens": int(row.output_tokens or 0),
-        "cache_creation_tokens": int(row.cache_creation_tokens or 0),
-        "cache_tokens": int(row.cache_tokens or 0),
-        "reasoning_tokens": int(row.reasoning_tokens or 0),
-        "output_image_number": int(row.output_image_number or 0),
-        "output_video_number": int(row.output_video_number or 0),
-        "output_audio_seconds": float(row.output_audio_seconds or 0),
-        "web_search_requests": int(row.web_search_requests or 0),
-        "total_cost": round(float(row.total_cost_usd or 0), 6),
-    })
+        return jsonify({
+            "requests": row.requests or 0,
+            "input_tokens": int(row.input_tokens or 0),
+            "output_tokens": int(row.output_tokens or 0),
+            "cache_creation_tokens": int(row.cache_creation_tokens or 0),
+            "cache_tokens": int(row.cache_tokens or 0),
+            "reasoning_tokens": int(row.reasoning_tokens or 0),
+            "output_image_number": int(row.output_image_number or 0),
+            "output_video_number": int(row.output_video_number or 0),
+            "output_audio_seconds": float(row.output_audio_seconds or 0),
+            "web_search_requests": int(row.web_search_requests or 0),
+            "total_cost": round(float(row.total_cost_usd or 0), 6),
+        })
 
 
 @usage_bp.route('/api/usage/summary/by_model', methods=['GET'])
@@ -299,23 +302,24 @@ async def get_summary_by_model():
         ),
         filters,
     ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20)
-    result = await g.db_session.execute(stmt)
-    rows = result.all()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        rows = result.all()
 
-    result_data = [
-        {
-            "model_name": r.model_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "reasoning_tokens": int(r.reasoning_tokens),
-            "total_cost": round(float(r.total_cost_usd or 0), 6),
-            "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
-        }
-        for r in rows
-    ]
+        result_data = [
+            {
+                "model_name": r.model_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "reasoning_tokens": int(r.reasoning_tokens),
+                "total_cost": round(float(r.total_cost_usd or 0), 6),
+                "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
+            }
+            for r in rows
+        ]
 
-    return jsonify(result_data)
+        return jsonify(result_data)
 
 
 @usage_bp.route('/api/usage/summary/by_group', methods=['GET'])
@@ -340,19 +344,20 @@ async def get_summary_by_group():
     ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
         func.count(UsageRecord.id).desc()
     ).limit(20)
-    result = await g.db_session.execute(stmt)
-    rows = result.all()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        rows = result.all()
 
-    return jsonify([
-        {
-            "group_id": r.group_id,
-            "group_name": r.group_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-        }
-        for r in rows
-    ])
+        return jsonify([
+            {
+                "group_id": r.group_id,
+                "group_name": r.group_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+            }
+            for r in rows
+        ])
 
 
 @usage_bp.route('/api/usage/summary/by_currency', methods=['GET'])
@@ -382,28 +387,29 @@ async def get_summary_by_currency():
         ),
         filters,
     ).group_by(UsageRecord.currency)
-    result = await g.db_session.execute(stmt)
-    rows = result.all()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        rows = result.all()
 
-    currency_items = []
-    total_usd = 0.0
+        currency_items = []
+        total_usd = 0.0
 
-    for r in rows:
-        currency = (r.currency or 'USD').upper()
-        native = float(r.total_cost_native or 0)
-        usd = float(r.total_cost_usd or 0)
+        for r in rows:
+            currency = (r.currency or 'USD').upper()
+            native = float(r.total_cost_native or 0)
+            usd = float(r.total_cost_usd or 0)
 
-        total_usd += usd
-        currency_items.append({
-            "currency": currency,
-            "total_cost_native": round(native, 6),
-            "total_cost_usd": round(usd, 6),
+            total_usd += usd
+            currency_items.append({
+                "currency": currency,
+                "total_cost_native": round(native, 6),
+                "total_cost_usd": round(usd, 6),
+            })
+
+        return jsonify({
+            "currencies": currency_items,
+            "total_cost_usd": round(total_usd, 6),
         })
-
-    return jsonify({
-        "currencies": currency_items,
-        "total_cost_usd": round(total_usd, 6),
-    })
 
 
 @usage_bp.route('/api/usage/summary/by_api_key', methods=['GET'])
@@ -434,24 +440,25 @@ async def get_summary_by_api_key():
     ).group_by(
         UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
     ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20)
-    result = await g.db_session.execute(stmt)
-    rows = result.all()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        rows = result.all()
 
-    result_data = [
-        {
-            "api_key_hash": r.api_key_hash,
-            "api_key_preview": r.api_key_preview,
-            "api_key_name": r.api_key_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "total_cost": round(float(r.total_cost_usd or 0), 6),
-            "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
-        }
-        for r in rows
-    ]
+        result_data = [
+            {
+                "api_key_hash": r.api_key_hash,
+                "api_key_preview": r.api_key_preview,
+                "api_key_name": r.api_key_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "total_cost": round(float(r.total_cost_usd or 0), 6),
+                "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
+            }
+            for r in rows
+        ]
 
-    return jsonify(result_data)
+        return jsonify(result_data)
 
 
 @usage_bp.route('/api/usage/summary/time_series_by_model', methods=['GET'])
@@ -490,24 +497,25 @@ async def get_summary_time_series_by_model():
         ),
         filters,
     ).group_by("period", UsageRecord.model_name).order_by("period", UsageRecord.model_name)
-    result = await g.db_session.execute(stmt)
-    rows = result.all()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        rows = result.all()
 
-    result_data = []
-    for r in rows:
-        result_data.append({
-            "period": str(r.period),
-            "model_name": r.model_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "reasoning_tokens": int(r.reasoning_tokens),
-            "cache_creation_tokens": int(r.cache_creation_tokens),
-            "total_cost": round(float(r.total_cost_usd or 0), 6),
-            "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
-        })
+        result_data = []
+        for r in rows:
+            result_data.append({
+                "period": str(r.period),
+                "model_name": r.model_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "reasoning_tokens": int(r.reasoning_tokens),
+                "cache_creation_tokens": int(r.cache_creation_tokens),
+                "total_cost": round(float(r.total_cost_usd or 0), 6),
+                "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
+            })
 
-    return jsonify(result_data)
+        return jsonify(result_data)
 
 
 @usage_bp.route('/api/usage/summary/time_series', methods=['GET'])
@@ -541,23 +549,24 @@ async def get_summary_time_series():
         ),
         filters,
     ).group_by("period").order_by("period")
-    result = await g.db_session.execute(stmt)
-    rows = result.all()
+    async with get_db_session() as session:
+        result = await session.execute(stmt)
+        rows = result.all()
 
-    result_data = []
-    for r in rows:
-        result_data.append({
-            "period": str(r.period),
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "reasoning_tokens": int(r.reasoning_tokens),
-            "cache_creation_tokens": int(r.cache_creation_tokens),
-            "total_cost": round(float(r.total_cost_usd or 0), 6),
-            "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
-        })
+        result_data = []
+        for r in rows:
+            result_data.append({
+                "period": str(r.period),
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "reasoning_tokens": int(r.reasoning_tokens),
+                "cache_creation_tokens": int(r.cache_creation_tokens),
+                "total_cost": round(float(r.total_cost_usd or 0), 6),
+                "total_cost_usd": round(float(r.total_cost_usd or 0), 6),
+            })
 
-    return jsonify(result_data)
+        return jsonify(result_data)
 
 
 # ── Legacy combined summary endpoint (kept for backward compatibility) ────────
@@ -585,159 +594,160 @@ async def get_summary():
 
     granularity = request.args.get("granularity", "day")
 
-    # ── Totals ────────────────────────────────────────────────────────────
-    totals_stmt = _apply_filters(
-        select(
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
-            func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
-            func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
-            func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    )
-    totals_result = await g.db_session.execute(totals_stmt)
-    row = totals_result.one()
-    totals = {
-        "requests": row.requests or 0,
-        "input_tokens": int(row.input_tokens or 0),
-        "output_tokens": int(row.output_tokens or 0),
-        "cache_creation_tokens": int(row.cache_creation_tokens or 0),
-        "cache_tokens": int(row.cache_tokens or 0),
-        "reasoning_tokens": int(row.reasoning_tokens or 0),
-        "output_image_number": int(row.output_image_number or 0),
-        "output_video_number": int(row.output_video_number or 0),
-        "output_audio_seconds": float(row.output_audio_seconds or 0),
-        "web_search_requests": int(row.web_search_requests or 0),
-        "total_cost": round(float(row.total_cost_usd or 0), 6),
-    }
-
-    # ── By model ──────────────────────────────────────────────────────────
-    by_model_stmt = _apply_filters(
-        select(
-            UsageRecord.model_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20)
-    by_model_result = await g.db_session.execute(by_model_stmt)
-    by_model_rows = by_model_result.all()
-
-    by_model = [
-        {
-            "model_name": r.model_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "reasoning_tokens": int(r.reasoning_tokens),
-            "total_cost": round(float(r.total_cost_usd or 0), 6),
+    async with get_db_session() as session:
+        # ── Totals ────────────────────────────────────────────────────────────
+        totals_stmt = _apply_filters(
+            select(
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_tokens), 0).label("cache_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_image_number), 0).label("output_image_number"),
+                func.coalesce(func.sum(UsageRecord.output_video_number), 0).label("output_video_number"),
+                func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label("output_audio_seconds"),
+                func.coalesce(func.sum(UsageRecord.web_search_requests), 0).label("web_search_requests"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        )
+        totals_result = await session.execute(totals_stmt)
+        row = totals_result.one()
+        totals = {
+            "requests": row.requests or 0,
+            "input_tokens": int(row.input_tokens or 0),
+            "output_tokens": int(row.output_tokens or 0),
+            "cache_creation_tokens": int(row.cache_creation_tokens or 0),
+            "cache_tokens": int(row.cache_tokens or 0),
+            "reasoning_tokens": int(row.reasoning_tokens or 0),
+            "output_image_number": int(row.output_image_number or 0),
+            "output_video_number": int(row.output_video_number or 0),
+            "output_audio_seconds": float(row.output_audio_seconds or 0),
+            "web_search_requests": int(row.web_search_requests or 0),
+            "total_cost": round(float(row.total_cost_usd or 0), 6),
         }
-        for r in by_model_rows
-    ]
 
-    # ── By group ──────────────────────────────────────────────────────────
-    by_group_stmt = _apply_filters(
-        select(
-            UsageRecord.group_id,
-            UsageRecord.group_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-        ),
-        filters,
-    ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
-        func.count(UsageRecord.id).desc()
-    ).limit(20)
-    by_group_result = await g.db_session.execute(by_group_stmt)
-    by_group_rows = by_group_result.all()
+        # ── By model ──────────────────────────────────────────────────────────
+        by_model_stmt = _apply_filters(
+            select(
+                UsageRecord.model_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(UsageRecord.model_name).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20)
+        by_model_result = await session.execute(by_model_stmt)
+        by_model_rows = by_model_result.all()
 
-    by_group = [
-        {
-            "group_id": r.group_id,
-            "group_name": r.group_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-        }
-        for r in by_group_rows
-    ]
+        by_model = [
+            {
+                "model_name": r.model_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "reasoning_tokens": int(r.reasoning_tokens),
+                "total_cost": round(float(r.total_cost_usd or 0), 6),
+            }
+            for r in by_model_rows
+        ]
 
-    # ── By API key ────────────────────────────────────────────────────────
-    by_api_key_stmt = _apply_filters(
-        select(
-            UsageRecord.api_key_hash,
-            UsageRecord.api_key_preview,
-            UsageRecord.api_key_name,
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
-        ),
-        filters,
-    ).group_by(
-        UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
-    ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20)
-    by_api_key_result = await g.db_session.execute(by_api_key_stmt)
-    by_api_key_rows = by_api_key_result.all()
+        # ── By group ──────────────────────────────────────────────────────────
+        by_group_stmt = _apply_filters(
+            select(
+                UsageRecord.group_id,
+                UsageRecord.group_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+            ),
+            filters,
+        ).group_by(UsageRecord.group_id, UsageRecord.group_name).order_by(
+            func.count(UsageRecord.id).desc()
+        ).limit(20)
+        by_group_result = await session.execute(by_group_stmt)
+        by_group_rows = by_group_result.all()
 
-    by_api_key = [
-        {
-            "api_key_hash": r.api_key_hash,
-            "api_key_preview": r.api_key_preview,
-            "api_key_name": r.api_key_name,
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "total_cost": round(float(r.total_cost_usd or 0), 6),
-        }
-        for r in by_api_key_rows
-    ]
+        by_group = [
+            {
+                "group_id": r.group_id,
+                "group_name": r.group_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+            }
+            for r in by_group_rows
+        ]
 
-    # ── Time series ───────────────────────────────────────────────────────
-    period_col = _granularity_trunc(granularity, UsageRecord.created_at)
-    time_series_stmt = _apply_filters(
-        select(
-            period_col.label("period"),
-            func.count(UsageRecord.id).label("requests"),
-            func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
-            func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
-        ),
-        filters,
-    ).group_by("period").order_by("period")
-    time_series_result = await g.db_session.execute(time_series_stmt)
-    time_series_rows = time_series_result.all()
+        # ── By API key ────────────────────────────────────────────────────────
+        by_api_key_stmt = _apply_filters(
+            select(
+                UsageRecord.api_key_hash,
+                UsageRecord.api_key_preview,
+                UsageRecord.api_key_name,
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label("total_cost_usd"),
+            ),
+            filters,
+        ).group_by(
+            UsageRecord.api_key_hash, UsageRecord.api_key_preview, UsageRecord.api_key_name
+        ).order_by(func.sum(UsageRecord.actual_amount_usd).desc()).limit(20)
+        by_api_key_result = await session.execute(by_api_key_stmt)
+        by_api_key_rows = by_api_key_result.all()
 
-    time_series = [
-        {
-            "period": str(r.period),
-            "requests": r.requests,
-            "input_tokens": int(r.input_tokens),
-            "output_tokens": int(r.output_tokens),
-            "reasoning_tokens": int(r.reasoning_tokens),
-            "cache_creation_tokens": int(r.cache_creation_tokens),
-        }
-        for r in time_series_rows
-    ]
+        by_api_key = [
+            {
+                "api_key_hash": r.api_key_hash,
+                "api_key_preview": r.api_key_preview,
+                "api_key_name": r.api_key_name,
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "total_cost": round(float(r.total_cost_usd or 0), 6),
+            }
+            for r in by_api_key_rows
+        ]
 
-    return jsonify({
-        "totals": totals,
-        "by_model": by_model,
-        "by_group": by_group,
-        "by_api_key": by_api_key,
-        "time_series": time_series,
-    })
+        # ── Time series ───────────────────────────────────────────────────────
+        period_col = _granularity_trunc(granularity, UsageRecord.created_at)
+        time_series_stmt = _apply_filters(
+            select(
+                period_col.label("period"),
+                func.count(UsageRecord.id).label("requests"),
+                func.coalesce(func.sum(UsageRecord.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageRecord.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(UsageRecord.cache_creation_tokens), 0).label("cache_creation_tokens"),
+            ),
+            filters,
+        ).group_by("period").order_by("period")
+        time_series_result = await session.execute(time_series_stmt)
+        time_series_rows = time_series_result.all()
+
+        time_series = [
+            {
+                "period": str(r.period),
+                "requests": r.requests,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "reasoning_tokens": int(r.reasoning_tokens),
+                "cache_creation_tokens": int(r.cache_creation_tokens),
+            }
+            for r in time_series_rows
+        ]
+
+        return jsonify({
+            "totals": totals,
+            "by_model": by_model,
+            "by_group": by_group,
+            "by_api_key": by_api_key,
+            "time_series": time_series,
+        })
 
 
 # ── Sync control endpoint ────────────────────────────────────────────────────

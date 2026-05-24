@@ -13,6 +13,7 @@ import time
 
 logger = logging.getLogger("gateway")
 
+from app import get_db_session
 from app.monitoring import create_tracer
 from app.group_service import get_group_monitoring_config
 from app.middleware.gateway_service import (
@@ -28,7 +29,6 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
-    G_API_KEY_PROVIDER_ID,
 )
 
 images_bp = Blueprint('images', __name__)
@@ -46,43 +46,49 @@ def _error_response(message, code="request_failed", param="", status_code=500):
     }), status_code
 
 
+async def _record_image_usage(
+    *, chat_response, auth_ctx, resolved, model_name: str, duration_ms: int, kind: str,
+) -> None:
+    try:
+        from app.usagerecord.usage_service import record_usage
+        await record_usage(
+            response=chat_response,
+            user_name=auth_ctx.user_name if auth_ctx else None,
+            user_id=auth_ctx.user_id if auth_ctx else None,
+            api_key_raw=auth_ctx.api_key_raw if auth_ctx else None,
+            api_key_name=auth_ctx.api_key_name if auth_ctx else None,
+            api_key_group_id=auth_ctx.api_key_group_id if auth_ctx else None,
+            api_key_group_name=auth_ctx.api_key_group_name if auth_ctx else None,
+            model_name=model_name,
+            provider_id=resolved.provider_id,
+            provider_name=resolved.provider_name,
+            input_price_unit=resolved.input_price,
+            output_price_unit=resolved.output_price,
+            cache_creation_price_unit=resolved.cache_creation_price,
+            cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+            cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+            cache_token_price_unit=resolved.cache_hit_price,
+            pricing_tiers=resolved.pricing_tiers,
+            output_pricing=resolved.output_pricing,
+            currency=resolved.currency,
+            discount=resolved.discount,
+            duration_ms=duration_ms,
+        )
+    except Exception as _ue:
+        logger.warning(f"[usage] Failed to trigger usage recording for {kind}: {_ue}")
+
+
 # ============== Images Generations API ==============
 
 @images_bp.route('/v1/images/generations', methods=['POST'])
 async def create_images():
-    """
-    OpenAI-compatible image generation endpoint.
-
-    Request body:
-    {
-        "model": "seedream-5.0",
-        "prompt": "A cute cat",
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "url",
-        "output_format": "png",
-        "quality": "standard",
-        "style": "vivid",
-        "user": "user-id"
-    }
-
-    Response:
-    {
-        "created": 1234567890,
-        "data": [
-            {"url": "https://...", "revised_prompt": "..."},
-            // or {"b64_json": "data:image/png;base64,..."}
-        ],
-        "output_format": "png"
-    }
-    """
-    # 1. 认证
-    user, api_key, error, status = await get_current_user_or_api_key()
+    """OpenAI-compatible image generation endpoint."""
+    # ── Phase 1: auth ──
+    auth_ctx, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("images_generations", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
-    # 2. 获取请求数据
     data = await _parse_json_body()
     if not data:
         _log_error("images_generations", 400, "Invalid or empty JSON request body")
@@ -98,13 +104,11 @@ async def create_images():
         _log_error("images_generations", 400, "Prompt is required")
         return _error_response('Prompt is required', code="invalid_request", param="prompt", status_code=400)
 
-    # 检查 API Key 的 allowed_models 限制
-    acl_error = _check_allowed_models(api_key, model_name)
+    acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
         _log_error("images_generations", 403, acl_error['detail'])
         return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
-    # 3. 提取参数
     images = data.get('images')
     n = data.get('n', 1)
     size = data.get('size', '1024x1024')
@@ -116,16 +120,31 @@ async def create_images():
     aspect_ratio = data.get('aspect_ratio')
     resolution = data.get('resolution')
 
-    # 4. 获取组 ID（用于访问控制）
-    group_id = api_key.group_id if api_key else None
-    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
+    group_id = auth_ctx.api_key_group_id if auth_ctx else None
+    provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
-    # 5. 设置 tracer
-    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
+    # ── Phase 2: resolve model ──
+    monitoring_config = None
+    try:
+        async with get_db_session() as session:
+            resolved = await _gateway_service.resolve_model(
+                session, model_name, group_id, provider_id=provider_id
+            )
+            if group_id:
+                try:
+                    monitoring_config = await get_group_monitoring_config(group_id, session=session)
+                except Exception as _e:
+                    logger.debug(f"[monitoring] fetch config failed: {_e}")
+    except ModelNotFoundError as e:
+        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
+    except GatewayServiceError as e:
+        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        return _error_response(e.message, code="request_failed", status_code=e.status_code)
+
     tracer = create_tracer(monitoring_config)
 
-    # 6. 调用中间层
-    _app = current_app._get_current_object()
+    # ── Phase 3: LLM call (no DB session) ──
     _request_start_time = time.monotonic()
     try:
         if tracer:
@@ -134,63 +153,50 @@ async def create_images():
             tracer.set_metadata({
                 "request_id": g.request_id,
                 "group_id": group_id,
-                "user": user.username if user else None,
+                "user": auth_ctx.user_name if auth_ctx else None,
                 "model_name": model_name,
-                "api_key_name": api_key.name if api_key else None,
+                "api_key_name": auth_ctx.api_key_name if auth_ctx else None,
             })
-        result, chat_response, resolved = await _gateway_service.generate_images(
-                model_name=model_name,
-                prompt=prompt,
-                images=images,
-                n=n,
-                size=size,
-                response_format=response_format,
-                output_format=output_format,
-                quality=quality,
-                style=style,
-                user=user_id,
-                group_id=group_id,
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
-                provider_id=provider_id,
-                tracer=tracer,
+        result, chat_response = await _gateway_service.generate_images(
+            resolved=resolved,
+            prompt=prompt,
+            images=images,
+            n=n,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            quality=quality,
+            style=style,
+            user=user_id,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            tracer=tracer,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         if tracer:
             tracer.log_output(result)
-            tracer.set_metadata({
-                "duration_ms": _duration_ms,
-            })
+            tracer.set_metadata({"duration_ms": _duration_ms})
             tracer.end()
-        try:
-            from app.usagerecord.usage_service import record_usage
-            await record_usage(
-                response=chat_response,
-                db_model=resolved.db_model,
-                db_provider=resolved.db_provider,
-                api_key=api_key,
-                user=user,
-                request_model_name=model_name,
-                duration_ms=_duration_ms,
-            )
-        except Exception as _ue:
-            logger.warning(f"[usage] Failed to trigger usage recording for image generation: {_ue}")
+        await _record_image_usage(
+            chat_response=chat_response, auth_ctx=auth_ctx, resolved=resolved,
+            model_name=model_name, duration_ms=_duration_ms, kind="image generation",
+        )
         return jsonify(result)
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("images_generations", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="provider_error", status_code=e.status_code)
@@ -200,45 +206,13 @@ async def create_images():
 
 @images_bp.route('/v1/images/edits', methods=['POST'])
 async def edit_images():
-    """
-    OpenAI-compatible image editing endpoint.
-
-    Request body:
-    {
-        "model": "gpt-image-1",
-        "prompt": "Add a red hat to the person",
-        "images": [{"image_url": "https://..."}],
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "url",
-        "output_format": "png",
-        "quality": "auto",
-        "background": "auto",
-        "input_fidelity": "high",
-        "mask": {"image_url": "https://..."},
-        "moderation": "auto",
-        "user": "user-id"
-    }
-
-    Response:
-    {
-        "created": 1234567890,
-        "data": [
-            {"url": "https://...", "revised_prompt": "..."}
-        ],
-        "output_format": "png",
-        "size": "1024x1024",
-        "quality": "auto",
-        "background": "opaque"
-    }
-    """
-    # 1. 认证
-    user, api_key, error, status = await get_current_user_or_api_key()
+    """OpenAI-compatible image editing endpoint."""
+    # ── Phase 1: auth ──
+    auth_ctx, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("images_edits", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
-    # 2. 获取请求数据
     data = await _parse_json_body()
     if not data:
         _log_error("images_edits", 400, "Invalid or empty JSON request body")
@@ -254,13 +228,11 @@ async def edit_images():
         _log_error("images_edits", 400, "Prompt is required")
         return _error_response('Prompt is required', code="invalid_request", param="prompt", status_code=400)
 
-    # 检查 API Key 的 allowed_models 限制
-    acl_error = _check_allowed_models(api_key, model_name)
+    acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
         _log_error("images_edits", 403, acl_error['detail'])
         return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
-    # 3. 提取参数
     images = data.get('images')
     mask = data.get('mask')
     n = data.get('n', 1)
@@ -273,16 +245,31 @@ async def edit_images():
     moderation = data.get('moderation')
     user_id = data.get('user')
 
-    # 4. 获取组 ID（用于访问控制）
-    group_id = api_key.group_id if api_key else None
-    provider_id = g.get(G_API_KEY_PROVIDER_ID, None) if api_key else None
+    group_id = auth_ctx.api_key_group_id if auth_ctx else None
+    provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
-    # 5. 设置 tracer
-    monitoring_config = await get_group_monitoring_config(group_id) if group_id else None
+    # ── Phase 2: resolve model ──
+    monitoring_config = None
+    try:
+        async with get_db_session() as session:
+            resolved = await _gateway_service.resolve_model(
+                session, model_name, group_id, provider_id=provider_id
+            )
+            if group_id:
+                try:
+                    monitoring_config = await get_group_monitoring_config(group_id, session=session)
+                except Exception as _e:
+                    logger.debug(f"[monitoring] fetch config failed: {_e}")
+    except ModelNotFoundError as e:
+        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
+    except GatewayServiceError as e:
+        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        return _error_response(e.message, code="request_failed", status_code=e.status_code)
+
     tracer = create_tracer(monitoring_config)
 
-    # 6. 调用中间层
-    _app = current_app._get_current_object()
+    # ── Phase 3: LLM call (no DB session) ──
     _request_start_time = time.monotonic()
     try:
         if tracer:
@@ -291,64 +278,51 @@ async def edit_images():
             tracer.set_metadata({
                 "request_id": g.request_id,
                 "group_id": group_id,
-                "user": user.username if user else None,
+                "user": auth_ctx.user_name if auth_ctx else None,
                 "model_name": model_name,
-                "api_key_name": api_key.name if api_key else None,
+                "api_key_name": auth_ctx.api_key_name if auth_ctx else None,
             })
-        result, chat_response, resolved = await _gateway_service.edit_images(
-                model_name=model_name,
-                prompt=prompt,
-                images=images,
-                mask=mask,
-                n=n,
-                size=size,
-                response_format=response_format,
-                output_format=output_format,
-                quality=quality,
-                background=background,
-                input_fidelity=input_fidelity,
-                moderation=moderation,
-                user=user_id,
-                group_id=group_id,
-                provider_id=provider_id,
-                tracer=tracer,
+        result, chat_response = await _gateway_service.edit_images(
+            resolved=resolved,
+            prompt=prompt,
+            images=images,
+            mask=mask,
+            n=n,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            quality=quality,
+            background=background,
+            input_fidelity=input_fidelity,
+            moderation=moderation,
+            user=user_id,
+            tracer=tracer,
         )
         _duration_ms = int((time.monotonic() - _request_start_time) * 1000)
         if tracer:
             tracer.log_output(result)
-            tracer.set_metadata({
-                "duration_ms": _duration_ms,
-            })
+            tracer.set_metadata({"duration_ms": _duration_ms})
             tracer.end()
-        try:
-            from app.usagerecord.usage_service import record_usage
-            await record_usage(
-                response=chat_response,
-                db_model=resolved.db_model,
-                db_provider=resolved.db_provider,
-                api_key=api_key,
-                user=user,
-                request_model_name=model_name,
-                duration_ms=_duration_ms,
-            )
-        except Exception as _ue:
-            logger.warning(f"[usage] Failed to trigger usage recording for image editing: {_ue}")
+        await _record_image_usage(
+            chat_response=chat_response, auth_ctx=auth_ctx, resolved=resolved,
+            model_name=model_name, duration_ms=_duration_ms, kind="image editing",
+        )
         return jsonify(result)
     except ModelNotFoundError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
-            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": api_key.name if api_key else None})
+            tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
         _log_error("images_edits", e.status_code, e.message, {"model": model_name})
         return _error_response(e.message, code="provider_error", status_code=e.status_code)
@@ -360,10 +334,6 @@ async def edit_images():
 async def serve_file(filename: str):
     """
     Serve a binary file (e.g. generated video) stored by the local storage backend.
-
-    Files are stored under ``{BACKGROUND_RESPONSE_STORAGE_DIR}/files/{filename}``.
-    No authentication is required — the filename itself acts as an unguessable
-    token.
     """
     storage = get_storage_backend()
 
