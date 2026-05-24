@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from dataclasses import dataclass, field
-import httpx
 
 from app.abstraction.messages import Message
 from app.abstraction.tools import ToolDefinition, ToolCall
@@ -65,19 +64,12 @@ class BaseProvider(ABC):
 
     def __init__(self, config: ProviderConfig):
         self.config = config
-        self._client = None
         self.tracer: Any = None  # Set by GatewayService before calling chat/stream_chat
 
-    @property
-    def client(self) -> httpx.AsyncClient:
-        """获取异步 HTTP 客户端"""
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
-                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
-                headers=self.config.get_headers(),
-            )
-        return self._client
+    async def _http(self):
+        """借用全局共享 httpx.AsyncClient。headers 在每次请求时通过 headers= 参数传入。"""
+        from app.http_client import get_shared_client
+        return await get_shared_client()
 
     @asynccontextmanager
     async def _trace_call(self, model_name: str, input_data: dict | None = None):
@@ -183,9 +175,8 @@ class BaseProvider(ABC):
         return ChatResponse(id=data.get("id", ""), model=model, choices=choices, usage=usage, created=data.get("created", 0), provider=self.PROVIDER_TYPE)
 
     async def close(self):
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        # Shared HTTP client lifetime is managed by app shutdown hook.
+        return
 
     async def __aenter__(self):
         return self

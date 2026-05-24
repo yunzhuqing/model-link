@@ -45,6 +45,8 @@ import sys
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 
 
@@ -201,7 +203,7 @@ async def execute_bailian_multimodal_embed(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with shared_client() as client:
             response = await client.post(multimodal_embedding_url, json=request_data, headers=headers)
 
         if response.status_code >= 400:

@@ -35,10 +35,8 @@ async def _get_poll_client() -> httpx.AsyncClient:
     if _poll_client is None:
         async with _poll_client_lock:
             if _poll_client is None:
-                _poll_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10.0, read=30.0, write=15.0, pool=10.0),
-                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=30, keepalive_expiry=30),
-                )
+                from app.http_client import make_async_client
+                _poll_client = make_async_client(scope="POLL")
     return _poll_client
 
 

@@ -38,6 +38,8 @@ import sys
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.rerank import (
     RerankRequest,
     RerankResponse,
@@ -121,7 +123,7 @@ async def execute_bailian_text_rerank(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with shared_client() as client:
             response = await client.post(rerank_url, json=request_data, headers=headers)
 
         if response.status_code >= 400:
@@ -216,7 +218,7 @@ async def execute_bailian_multimodal_rerank(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with shared_client() as client:
             response = await client.post(multimodal_rerank_url, json=request_data, headers=headers)
 
         if response.status_code >= 400:

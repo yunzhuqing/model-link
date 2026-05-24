@@ -32,6 +32,8 @@ from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -69,14 +71,8 @@ async def _get_ark_client() -> httpx.AsyncClient:
     if _ark_client is None:
         async with _ark_client_lock:
             if _ark_client is None:
-                _ark_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=10.0),
-                    limits=httpx.Limits(
-                        max_keepalive_connections=10,
-                        max_connections=30,
-                        keepalive_expiry=30,
-                    ),
-                )
+                from app.http_client import make_async_client
+                _ark_client = make_async_client(scope="ARK")
     return _ark_client
 
 
@@ -520,7 +516,7 @@ async def _create_video_task(
 
     try:
         payload_str = json.dumps(body, ensure_ascii=False)
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             response = await client.post(url, content=payload_str, headers=headers)
 
         if response.status_code >= 400:

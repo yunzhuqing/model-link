@@ -15,6 +15,8 @@ API 文档: https://www.volcengine.com/docs/82379/181798
 from typing import Optional, List, Dict, Any
 
 import httpx
+
+from app.http_client import shared_client
 import json
 import sys
 
@@ -140,7 +142,7 @@ class DoubaoImageProvider:
 
         try:
             read_timeout = timeout or 300
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=read_timeout, write=30.0, pool=15.0)) as client:
+            async with shared_client() as client:
                 response = await client.post(
                     f"{self.base_url}/images/generations",
                     json=request_body,

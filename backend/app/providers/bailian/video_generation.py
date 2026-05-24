@@ -39,6 +39,8 @@ from typing import Any, Dict, AsyncGenerator, List, Optional
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -501,7 +503,7 @@ async def check_happyhorse_task_status(
         task_query_url = _resolve_task_query_url(None)
     url = f"{task_query_url}/{task_id}"
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with shared_client() as client:
             response = await client.get(
                 url,
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -651,7 +653,7 @@ async def execute_happyhorse_video_generation(
     _trace_error: Optional[Exception] = None
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             try:
                 response = await client.post(
                     video_url,
@@ -1068,7 +1070,7 @@ async def stream_video_generation(
         delta_content="🎬 正在提交视频生成任务...\n",
     )
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with shared_client() as client:
         try:
             response = await client.post(
                 video_url,
@@ -1152,7 +1154,7 @@ async def stream_video_generation(
     last_status = task_status
     url = f"{task_query_url}/{task_id}"
 
-    async with httpx.AsyncClient(timeout=30) as poll_client:
+    async with shared_client() as poll_client:
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout:

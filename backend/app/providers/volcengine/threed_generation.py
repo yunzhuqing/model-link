@@ -72,6 +72,8 @@ from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -315,7 +317,7 @@ async def _create_3d_task(
 
     try:
         payload_str = json.dumps(body, ensure_ascii=False)
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             response = await client.post(url, content=payload_str, headers=headers)
 
         if response.status_code >= 400:

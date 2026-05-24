@@ -31,6 +31,8 @@ from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx as _httpx
 
+from app.http_client import shared_client, shared_redirect_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -221,7 +223,7 @@ async def execute_vertexai_veo_generation(
 
         operation_name = ""
         try:
-            async with _httpx.AsyncClient(timeout=60) as client:
+            async with shared_client() as client:
                 resp = await client.post(create_url, content=payload_str, headers=headers)
 
             if resp.status_code >= 400:
@@ -261,7 +263,7 @@ async def execute_vertexai_veo_generation(
         _poll_error: Optional[Exception] = None
 
         try:
-            async with _httpx.AsyncClient(timeout=60) as client:
+            async with shared_client() as client:
                 poll_count = 0
                 while time.time() < deadline:
                     poll_headers = await get_headers_fn()
@@ -438,7 +440,7 @@ async def _download_and_store_videos(
                     download_url = gcs_uri
 
                 dl_headers = await get_headers_fn()
-                async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as dl_client:
+                async with shared_redirect_client() as dl_client:
                     dl_resp = await dl_client.get(download_url, headers=dl_headers)
 
                 if dl_resp.status_code >= 400:

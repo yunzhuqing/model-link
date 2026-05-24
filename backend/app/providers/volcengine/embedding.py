@@ -39,6 +39,8 @@ import json
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 
 
@@ -162,7 +164,7 @@ async def execute_volcengine_multimodal_embed(
             child_span.log_input(request_data)
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with shared_client() as client:
             response = await client.post(url, json=request_data, headers=headers)
 
         if response.status_code >= 400:

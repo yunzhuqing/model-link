@@ -124,17 +124,6 @@ class GeminiProvider(BaseProvider):
                 config.base_url = config.base_url[:-len('/v1beta')]
         super().__init__(config)
 
-    @property
-    def client(self) -> Any:
-        if self._client is None:
-            import httpx
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
-                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
-                headers=self._get_headers()
-            )
-        return self._client
-
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for Gemini API requests.
         
@@ -589,7 +578,7 @@ class GeminiProvider(BaseProvider):
         try:
             req_timeout = self._get_request_timeout(request)
             async with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = await self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+                response = await (await self._http()).post(url, json=request_data, headers=self._get_headers(), **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     try:
@@ -674,7 +663,7 @@ class GeminiProvider(BaseProvider):
         try:
             req_timeout = self._get_request_timeout(request)
             async with self._trace_call(request.model, input_data=request_data) as child_span:
-                async with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                async with (await self._http()).stream("POST", url, json=request_data, headers=self._get_headers(), **({"timeout": req_timeout} if req_timeout else {})) as response:
                     if response.status_code >= 400:
                         error_text = ""
                         async for chunk_bytes in response.aiter_bytes():
@@ -879,7 +868,7 @@ class GeminiProvider(BaseProvider):
         url = self._get_embed_url(model)
 
         try:
-            response = await self.client.post(url, json=request_data)
+            response = await (await self._http()).post(url, json=request_data, headers=self._get_headers())
 
             if response.status_code >= 400:
                 try:
@@ -930,7 +919,7 @@ class GeminiProvider(BaseProvider):
         url = self._get_batch_embed_url(model)
 
         try:
-            response = await self.client.post(url, json=request_data)
+            response = await (await self._http()).post(url, json=request_data, headers=self._get_headers())
 
             if response.status_code >= 400:
                 try:

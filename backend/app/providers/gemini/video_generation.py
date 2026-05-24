@@ -29,6 +29,8 @@ from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
 
 import httpx
 
+from app.http_client import get_shared_client, get_shared_redirect_client, shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -288,8 +290,8 @@ async def _create_veo_operation(
     _error: Optional[Exception] = None
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(url, content=payload_str, headers=headers)
+        client = await get_shared_client()
+        response = await client.post(url, content=payload_str, headers=headers, timeout=60)
 
         if response.status_code >= 400:
             raise RuntimeError(
@@ -344,8 +346,8 @@ async def _download_and_store_video(uri: str, api_key: str, video_id: str) -> st
     separator = "&" if "?" in uri else "?"
     download_url = f"{uri}{separator}key={api_key}"
 
-    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-        response = await client.get(download_url)
+    client = await get_shared_redirect_client()
+    response = await client.get(download_url, timeout=300)
 
     if response.status_code >= 400:
         raise RuntimeError(
@@ -419,7 +421,7 @@ async def _poll_veo_operation(
     _error: Optional[Exception] = None
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             poll_count = 0
             while time.time() < deadline:
                 response = await client.get(poll_url, headers=headers)

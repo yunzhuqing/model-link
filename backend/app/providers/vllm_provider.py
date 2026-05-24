@@ -136,7 +136,7 @@ class VLLMProvider(OpenAIProvider):
 
         async def _do_stream(req_data: Dict[str, Any]) -> AsyncGenerator[StreamChunk, None]:
             async with self._trace_call(request.model, input_data=request_data) as child_span:
-                async with self.client.stream("POST", url, json=req_data) as response:
+                async with (await self._http()).stream("POST", url, json=req_data, headers=self.get_headers()) as response:
                     if response.status_code in (400, 422):
                         error_text = ""
                         async for chunk in response.aiter_bytes():
@@ -323,7 +323,7 @@ class VLLMProvider(OpenAIProvider):
         url = f"{self.config.base_url}/rerank"
 
         try:
-            response = await self.client.post(url, json=request_data)
+            response = await (await self._http()).post(url, json=request_data, headers=self.get_headers())
 
             if response.status_code >= 400:
                 try:

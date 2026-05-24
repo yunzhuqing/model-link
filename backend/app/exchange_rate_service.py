@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import httpx
+from app.http_client import get_shared_redirect_client
 
 logger = logging.getLogger("exchange_rate")
 
@@ -71,19 +71,19 @@ async def _fetch_once() -> None:
     global _current_rate
     url = f"https://api.frankfurter.app/latest?from={USD}&to={CNY}"
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if "rates" in data and CNY in data["rates"]:
-                    rate = float(data["rates"][CNY])
-                    async with _lock:
-                        _current_rate = rate
-                    logger.info(f"[exchange_rate] Updated {USD}→{CNY} rate: {rate}")
-                else:
-                    logger.warning(f"[exchange_rate] {CNY} rate not found in response: {data}")
+        client = await get_shared_redirect_client()
+        response = await client.get(url, timeout=10.0)
+        if response.status_code == 200:
+            data = response.json()
+            if "rates" in data and CNY in data["rates"]:
+                rate = float(data["rates"][CNY])
+                async with _lock:
+                    _current_rate = rate
+                logger.info(f"[exchange_rate] Updated {USD}→{CNY} rate: {rate}")
             else:
-                logger.error(f"[exchange_rate] Failed to fetch exchange rate. Status: {response.status_code}")
+                logger.warning(f"[exchange_rate] {CNY} rate not found in response: {data}")
+        else:
+            logger.error(f"[exchange_rate] Failed to fetch exchange rate. Status: {response.status_code}")
     except Exception as exc:
         logger.error(f"[exchange_rate] Error fetching exchange rate: {exc}")
 

@@ -40,6 +40,8 @@ import asyncio
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -364,7 +366,7 @@ async def _poll_mps_task(
     _error: Optional[Exception] = None
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             poll_count = 0
             while time.time() < deadline:
                 resp = await _describe_mps_task_detail(client, secret_id, secret_key, task_id)
@@ -560,7 +562,7 @@ async def execute_mps_video_erase(
     _trace_error: Optional[Exception] = None
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             task_id = await _create_process_media_task(
                 client=client,
                 secret_id=secret_id,

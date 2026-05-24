@@ -64,6 +64,8 @@ import base64
 import logging
 from urllib.request import urlopen
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -274,7 +276,6 @@ async def execute_qwen_image_generation(
     Raises:
         RuntimeError: On API error
     """
-    import httpx
     import sys
 
     # Convert messages to Dashscope format
@@ -333,7 +334,7 @@ async def execute_qwen_image_generation(
 
     try:
         http_timeout = int(metadata.get("timeout", 300) or 300)
-        async with httpx.AsyncClient(timeout=http_timeout) as client:
+        async with shared_client() as client:
             response = await client.post(
                 QWEN_IMAGE_API_URL,
                 json=request_body,

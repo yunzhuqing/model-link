@@ -42,6 +42,8 @@ import asyncio
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -554,7 +556,7 @@ async def check_hunyuan3d_job_status(
     payload_str = json.dumps(body, ensure_ascii=False)
     headers = _build_auth_headers(secret_id, secret_key, action, payload_str, region=region)
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             response = await client.post(HUNYUAN3D_API_URL, content=payload_str, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -851,7 +853,7 @@ async def execute_hunyuan3d_generation(
 
     try:
         # Submit 3D job
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             job_id, estimated_credits, _credit_breakdown = await _submit_3d_job(
                 client=client,
                 secret_id=secret_id,

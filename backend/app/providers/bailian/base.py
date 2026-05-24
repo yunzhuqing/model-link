@@ -314,7 +314,7 @@ class BailianProvider(OpenAIProvider):
 
         try:
             async with self._trace_call(request.model, input_data=request_data) as child_span:
-                response = await self.client.post(url, json=request_data)
+                response = await (await self._http()).post(url, json=request_data, headers=self.get_headers())
 
                 if response.status_code >= 400:
                     try:
@@ -433,7 +433,7 @@ class BailianProvider(OpenAIProvider):
 
         try:
             async with self._trace_call(request.model, input_data=request_data) as child_span:
-                async with self.client.stream("POST", url, json=request_data) as response:
+                async with (await self._http()).stream("POST", url, json=request_data, headers=self.get_headers()) as response:
                     if response.status_code >= 400:
                         error_text = ""
                         async for chunk in response.aiter_bytes():

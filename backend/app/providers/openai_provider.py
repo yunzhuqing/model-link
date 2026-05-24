@@ -286,19 +286,7 @@ class OpenAIProvider(BaseProvider):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}"
         }
-    
-    @property
-    def client(self) -> Any:
-        """获取 HTTP 客户端"""
-        if self._client is None:
-            import httpx
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=10.0),
-                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30),
-                headers=self.get_headers()
-            )
-        return self._client
-    
+
     def supports_model(self, model: str) -> bool:
         """检查是否支持某个模型"""
         return True  # OpenAI 支持自定义模型
@@ -693,7 +681,7 @@ class OpenAIProvider(BaseProvider):
 
         async with self._trace_call(request.model, input_data=request_data) as child_span:
             try:
-                response = await self.client.post(url, json=request_data, **({"timeout": req_timeout} if req_timeout else {}))
+                response = await (await self._http()).post(url, json=request_data, headers=self.get_headers(), **({"timeout": req_timeout} if req_timeout else {}))
 
                 if response.status_code >= 400:
                     try:
@@ -732,7 +720,7 @@ class OpenAIProvider(BaseProvider):
         try:
             req_timeout = self._get_request_timeout(request)
             async with self._trace_call(request.model, input_data=request_data) as child_span:
-                async with self.client.stream("POST", url, json=request_data, **({"timeout": req_timeout} if req_timeout else {})) as response:
+                async with (await self._http()).stream("POST", url, json=request_data, headers=self.get_headers(), **({"timeout": req_timeout} if req_timeout else {})) as response:
                     # Check for error status before streaming
                     if response.status_code >= 400:
                         # Read the error response and raise with details
@@ -866,7 +854,7 @@ class OpenAIProvider(BaseProvider):
         url = f"{self.config.base_url}/embeddings"
 
         try:
-            response = await self.client.post(url, json=request_data)
+            response = await (await self._http()).post(url, json=request_data, headers=self.get_headers())
 
             if response.status_code >= 400:
                 try:

@@ -27,6 +27,8 @@ import asyncio
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -304,7 +306,7 @@ async def execute_tencentvod_3d_generation(
     _trace_error: Optional[Exception] = None
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             task_id = await _create_3d_task(
                 client=client,
                 secret_id=secret_id,

@@ -41,6 +41,8 @@ import asyncio
 
 import httpx
 
+from app.http_client import shared_client
+
 from app.abstraction.chat import (
     ChatChoice,
     ChatRequest,
@@ -832,7 +834,7 @@ async def execute_tencentvod_video_generation(
 
     try:
         # Submit task
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with shared_client() as client:
             task_id = await _create_aigc_video_task(
                 client=client,
                 secret_id=secret_id,

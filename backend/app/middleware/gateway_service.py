@@ -46,9 +46,9 @@ async def _get_media_fetch_client() -> httpx.AsyncClient:
     if _media_fetch_client is None:
         async with _media_fetch_client_lock:
             if _media_fetch_client is None:
-                _media_fetch_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0),
-                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=50, keepalive_expiry=30),
+                from app.http_client import make_async_client
+                _media_fetch_client = make_async_client(
+                    scope="MEDIA",
                     follow_redirects=True,
                 )
     return _media_fetch_client
