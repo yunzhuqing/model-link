@@ -357,6 +357,21 @@ def create_app(config=None):
             )
         app.before_serving(_enable_aiodebug)
 
+    # Optional per-task duration tracing. TASK_TRACE_SLOW sets the slow-task
+    # threshold (seconds); TASK_TRACE_WATCHDOG (also seconds) additionally
+    # starts a watchdog that dumps the await-stack of any task still running
+    # past the threshold, so we can see *where* it is stuck.
+    _task_trace_threshold = os.getenv("TASK_TRACE_SLOW")
+    if _task_trace_threshold:
+        _task_trace_watchdog = os.getenv("TASK_TRACE_WATCHDOG")
+        async def _enable_task_tracing():
+            from app._task_tracing import enable
+            enable(
+                float(_task_trace_threshold),
+                float(_task_trace_watchdog) if _task_trace_watchdog else None,
+            )
+        app.before_serving(_enable_task_tracing)
+
     # Initialise the async DB engine. This must happen before any routes are served.
     app.before_serving(_init_async_engine)
 
