@@ -33,6 +33,7 @@ class ContentType(Enum):
     FILE_BASE64 = "file_base64"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    THINKING = "thinking"
 
 
 @dataclass
@@ -63,6 +64,7 @@ class ContentBlock:
     cache_control: Optional[Dict[str, Any]] = None  # Anthropic prompt caching: e.g. {"type": "ephemeral"}
     video_fps: Optional[str] = None  # FPS for video_url inputs (doubao, etc.)
     filename: Optional[str] = None  # filename for file content blocks (e.g. "document.pdf")
+    signature: Optional[str] = None  # Anthropic thinking 块签名（仅 THINKING 类型使用）
     
     @classmethod
     def from_text(cls, text: str) -> 'ContentBlock':
@@ -129,6 +131,11 @@ class ContentBlock:
             is_error=is_error
         )
 
+    @classmethod
+    def from_thinking(cls, thinking: str, signature: Optional[str] = None) -> 'ContentBlock':
+        """从 Anthropic thinking 块创建内容块（thinking 文本存于 text，签名存于 signature）"""
+        return cls(type=ContentType.THINKING, text=thinking, signature=signature)
+
 
 @dataclass
 class Message:
@@ -172,6 +179,12 @@ class Message:
                 content_type = ContentType(content_type_str)
             except ValueError:
                 content_type = ContentType.TEXT
+
+            # Anthropic thinking 块: {"type":"thinking","thinking":"...","signature":"..."}
+            # 文本字段是 'thinking'，需映射到 ContentBlock.text
+            text_val = item.get('text')
+            if content_type == ContentType.THINKING and text_val is None:
+                text_val = item.get('thinking')
 
             # Extract url: may be in 'url', or 'image_url' (string or dict)
             url = item.get('url')
@@ -219,7 +232,7 @@ class Message:
 
             return ContentBlock(
                 type=content_type,
-                text=item.get('text'),
+                text=text_val,
                 url=url,
                 media_type=item.get('media_type'),
                 data=data,
@@ -232,6 +245,7 @@ class Message:
                 is_error=item.get('is_error', False),
                 cache_control=item.get('cache_control'),
                 video_fps=item.get('video_fps'),
+                signature=item.get('signature'),
             )
         else:
             # Unknown type, return empty text block

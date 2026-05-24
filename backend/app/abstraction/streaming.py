@@ -85,6 +85,7 @@ class StreamChunk:
     delta_content: Optional[str] = None
     delta_role: Optional[str] = None
     delta_reasoning_content: Optional[str] = None  # 推理内容（如 DeepSeek R1）
+    delta_signature: Optional[str] = None  # Anthropic thinking 块签名（透传 signature_delta）
     anthropic_index: int = 0  # Anthropic 格式的内容块索引（由适配器设置）
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: Optional[FinishReason] = None
@@ -315,6 +316,17 @@ class StreamChunk:
                 "delta": {
                     "type": "thinking_delta",
                     "thinking": self.delta_reasoning_content
+                }
+            })
+
+        # 处理 thinking 签名（Anthropic 在 thinking 块结束前发送 signature_delta）
+        if self.delta_signature:
+            events.append({
+                "type": "content_block_delta",
+                "index": idx,
+                "delta": {
+                    "type": "signature_delta",
+                    "signature": self.delta_signature
                 }
             })
 

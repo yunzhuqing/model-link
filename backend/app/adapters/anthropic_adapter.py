@@ -7,6 +7,7 @@ import json
 import re
 import time
 from typing import Optional, AsyncGenerator
+from venv import logger
 
 from quart import Response
 
@@ -67,7 +68,6 @@ class AnthropicMessagesAdapter(BaseAdapter):
 
             if isinstance(content, list):
                 blocks = []
-                thinking_parts = []  # 收集 thinking 内容，转换为 reasoning_content
 
                 for item in content:
                     item_type = item.get('type', 'text')
@@ -76,11 +76,15 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     item_cache_control = item.get('cache_control')
 
                     if item_type == 'thinking':
-                        # Anthropic thinking 块 → 赋值给 Message.reasoning_content
-                        # 下游 OpenAI/Moonshot prepare_request 会将其放入消息的 reasoning_content 字段
+                        # Anthropic thinking 块 → ContentBlock(THINKING)
+                        # 保留 signature 以支持多轮对话回传
                         thinking_text = item.get('thinking', '')
-                        if thinking_text:
-                            thinking_parts.append(thinking_text)
+                        sig = item.get('signature')
+                        if thinking_text or sig:
+                            block = ContentBlock.from_thinking(thinking_text, sig)
+                            if item_cache_control:
+                                block.cache_control = item_cache_control
+                            blocks.append(block)
                     elif item_type == 'text':
                         block = ContentBlock.from_text(item.get('text', ''))
                         if item_cache_control:
@@ -156,22 +160,11 @@ class AnthropicMessagesAdapter(BaseAdapter):
                         )
                         blocks.append(block)
 
-                # 合并所有 thinking 块为 reasoning_content 字符串
-                reasoning_content = '\n'.join(thinking_parts) if thinking_parts else None
-
-                # 添加消息（包含 text、tool_use、tool_result 等所有内容块）
+                # 添加消息（包含 thinking、text、tool_use、tool_result 等所有内容块）
                 if blocks:
                     messages.append(Message(
                         role=role,
                         content=blocks,
-                        reasoning_content=reasoning_content
-                    ))
-                elif reasoning_content:
-                    # 消息中只有 thinking 块（无其他内容），用空字符串占位内容
-                    messages.append(Message(
-                        role=role,
-                        content='',
-                        reasoning_content=reasoning_content
                     ))
                 else:
                     # 如果没有任何内容块，添加空消息
@@ -320,17 +313,19 @@ class AnthropicMessagesAdapter(BaseAdapter):
         """
         content = []
         for choice in response.choices:
-            # 添加 thinking/reasoning 内容（来自 DeepSeek R1、Qwen 等模型）
-            reasoning = choice.reasoning_content
-            if not reasoning and choice.message and choice.message.reasoning_content:
-                reasoning = choice.message.reasoning_content
-            if reasoning:
-                content.append({'type': 'thinking', 'thinking': reasoning})
+            emitted_thinking_from_blocks = False
 
             if choice.message:
-                text = choice.message.get_text_content()
-                if text:
-                    content.append({'type': 'text', 'text': text})
+                # 先按内容块顺序输出 thinking / text，保留 signature
+                for block in choice.message.get_content_blocks():
+                    if block.type == ContentType.THINKING:
+                        thinking_block = {'type': 'thinking', 'thinking': block.text or ''}
+                        if block.signature:
+                            thinking_block['signature'] = block.signature
+                        content.append(thinking_block)
+                        emitted_thinking_from_blocks = True
+                    elif block.type == ContentType.TEXT and block.text:
+                        content.append({'type': 'text', 'text': block.text})
 
                 if choice.tool_calls:
                     for tc in choice.tool_calls:
@@ -340,6 +335,15 @@ class AnthropicMessagesAdapter(BaseAdapter):
                             'name': tc.name,
                             'input': tc.arguments
                         })
+
+            # 兜底：若内容块中没有 thinking 但 reasoning_content 字段有值
+            # （DeepSeek R1、Qwen 等通过 reasoning_content 表示思考的供应商）
+            if not emitted_thinking_from_blocks:
+                reasoning = choice.reasoning_content
+                if not reasoning and choice.message and choice.message.reasoning_content:
+                    reasoning = choice.message.reasoning_content
+                if reasoning:
+                    content.insert(0, {'type': 'thinking', 'thinking': reasoning})
 
         # Map finish_reason to Anthropic stop_reason
         stop_reason = 'end_turn'

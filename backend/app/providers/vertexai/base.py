@@ -637,6 +637,11 @@ class VertexAIProvider(BaseProvider):
         result: Dict[str, Any]
         if block.type == ContentType.TEXT:
             result = {"type": "text", "text": block.text or ""}
+        elif block.type == ContentType.THINKING:
+            # Anthropic thinking 块：thinking 文本存于 block.text，签名存于 block.signature
+            result = {"type": "thinking", "thinking": block.text or ""}
+            if block.signature:
+                result["signature"] = block.signature
         elif block.type == ContentType.IMAGE_URL:
             result = {"type": "image", "source": {"type": "url", "url": block.url}}
         elif block.type == ContentType.IMAGE_BASE64:
@@ -674,8 +679,11 @@ class VertexAIProvider(BaseProvider):
         for block in content_blocks:
             block_type = block.get("type", "")
             if block_type == "thinking":
-                # Claude extended thinking block - collect thinking summary
+                # Claude extended thinking block - 保留为 ContentBlock(THINKING) 含 signature
                 thinking_text = block.get("thinking", "")
+                signature = block.get("signature")
+                if thinking_text or signature:
+                    message_blocks.append(ContentBlock.from_thinking(thinking_text, signature))
                 if thinking_text:
                     thinking_parts.append(thinking_text)
             elif block_type == "text":
@@ -777,6 +785,8 @@ class VertexAIProvider(BaseProvider):
                 return StreamChunk(id=response_id, model=model, delta_content=delta.get("text", ""), event_type=StreamEventType.CONTENT_DELTA)
             elif delta_type == "thinking_delta":
                 return StreamChunk(id=response_id, model=model, delta_reasoning_content=delta.get("thinking", ""), event_type=StreamEventType.CONTENT_DELTA)
+            elif delta_type == "signature_delta":
+                return StreamChunk(id=response_id, model=model, delta_signature=delta.get("signature", ""), event_type=StreamEventType.CONTENT_DELTA)
             elif delta_type == "input_json_delta":
                 return StreamChunk(id=response_id, model=model, tool_calls=[{
                     "index": event_data.get("index", 0), "function": {"arguments": delta.get("partial_json", "")}
