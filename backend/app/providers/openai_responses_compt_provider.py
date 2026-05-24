@@ -329,7 +329,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         if error:
             raise ValueError(error)
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = False
 
         url = f"{self.config.base_url}/responses"
@@ -354,7 +354,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
                 response_data = response.json()
                 if child_span:
                     child_span.log_output(response_data)
-                return self.parse_response(response_data, request.model)
+                return await self.aparse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -611,7 +611,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         if error:
             raise ValueError(error)
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = True
 
         url = f"{self.config.base_url}/responses"
@@ -827,7 +827,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
                     )
 
             response.raise_for_status()
-            return self.parse_response(response.json(), model)
+            return await self.aparse_response(response.json(), model)
 
         except RuntimeError:
             raise

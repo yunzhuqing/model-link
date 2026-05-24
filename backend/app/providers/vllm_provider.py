@@ -127,7 +127,7 @@ class VLLMProvider(OpenAIProvider):
         if error:
             raise ValueError(error)
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = True
         request_data["stream_options"] = {"include_usage": True}
 

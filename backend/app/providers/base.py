@@ -123,8 +123,18 @@ class BaseProvider(ABC):
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         return {"model": request.model, "messages": []}
 
+    async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """Async entrypoint for prepare_request. Defaults to wrapping the sync version;
+        providers that need async work (e.g. Gemini's thoughtSignature cache lookup)
+        should override this directly."""
+        return self.prepare_request(request)
+
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         return self._parse_openai_response(response_data, model)
+
+    async def aparse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
+        """Async entrypoint for parse_response. Same convention as aprepare_request."""
+        return self.parse_response(response_data, model)
 
     def _parse_openai_response(self, data: Dict[str, Any], model: str) -> ChatResponse:
         from app.abstraction.messages import MessageRole, ContentBlock

@@ -23,7 +23,6 @@ from .base import (
     ModelPublisher,
     MODEL_PUBLISHER_MAP,
     detect_publisher,
-    _thought_signature_cache,
     _log_to_file,
 )
 from .image_generation import (
@@ -47,7 +46,6 @@ __all__ = [
     'ModelPublisher',
     'MODEL_PUBLISHER_MAP',
     'detect_publisher',
-    '_thought_signature_cache',
     '_log_to_file',
     # Image generation
     'is_vertexai_image_model',

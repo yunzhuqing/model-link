@@ -307,7 +307,7 @@ class BailianProvider(OpenAIProvider):
             )
 
         # 标准对话路径
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = False
 
         url = f"{self.config.base_url}/chat/completions"
@@ -331,7 +331,7 @@ class BailianProvider(OpenAIProvider):
                 response_data = response.json()
                 if child_span:
                     child_span.log_output(response_data)
-                return self.parse_response(response_data, request.model)
+                return await self.aparse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -420,7 +420,7 @@ class BailianProvider(OpenAIProvider):
             return
 
         # 准备请求数据
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = True
         # Request usage info in the final streaming chunk
         request_data["stream_options"] = {"include_usage": True}

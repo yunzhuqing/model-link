@@ -35,9 +35,14 @@ from .video_generation import (
 # Internal metadata keys set by the gateway service.
 _GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
 
-# In-memory cache for thoughtSignature mapping: tool_call_id -> thoughtSignature
-# This is needed because Gemini requires thoughtSignature to be passed back with functionCall
-_thought_signature_cache: Dict[str, str] = {}
+# Per-async-task context for thoughtSignature plumbing between sync prep/parse
+# and the async cache. aprepare_request prefetches signatures into _sig_read_ctx,
+# the sync builder reads from it; sync parse appends new signatures to
+# _sig_write_ctx, the async wrapper drains them into the cache.
+import contextvars as _contextvars  # noqa: E402
+
+_sig_read_ctx: "_contextvars.ContextVar[Dict[str, str]]" = _contextvars.ContextVar("gemini_sig_read", default={})
+_sig_write_ctx: "_contextvars.ContextVar[Optional[List[tuple]]]" = _contextvars.ContextVar("gemini_sig_write", default=None)
 
 
 class GeminiProvider(BaseProvider):
@@ -283,6 +288,66 @@ class GeminiProvider(BaseProvider):
 
         return result
 
+    # ---- Async overrides: thoughtSignature cache wiring ----
+
+    async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """Prefetch thoughtSignatures for any tool_call ids in the request,
+        then delegate to the sync builder which reads them from contextvar."""
+        sigs: Dict[str, str] = {}
+        try:
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            tcids: List[str] = []
+            for msg in (request.messages or []):
+                content = getattr(msg, "content", None)
+                if isinstance(content, list):
+                    for block in content:
+                        tcid = getattr(block, "tool_call_id", None)
+                        if tcid:
+                            tcids.append(tcid)
+            for tcid in set(tcids):
+                sig = await cache.get_thought_signature(tcid)
+                if sig:
+                    sigs[tcid] = sig
+        except Exception:
+            pass
+        token = _sig_read_ctx.set(sigs)
+        try:
+            return self.prepare_request(request)
+        finally:
+            _sig_read_ctx.reset(token)
+
+    async def _flush_sig_writes(self, buf: List[tuple]) -> None:
+        if not buf:
+            return
+        try:
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            for tcid, sig in buf:
+                await cache.set_thought_signature(tcid, sig)
+        except Exception:
+            pass
+
+    async def aparse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
+        buf: List[tuple] = []
+        token = _sig_write_ctx.set(buf)
+        try:
+            result = self.parse_response(response_data, model)
+        finally:
+            _sig_write_ctx.reset(token)
+        await self._flush_sig_writes(buf)
+        return result
+
+    async def _aparse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
+        buf: List[tuple] = []
+        token = _sig_write_ctx.set(buf)
+        try:
+            result = self._parse_stream_chunk(data, response_id, model)
+        finally:
+            _sig_write_ctx.reset(token)
+        await self._flush_sig_writes(buf)
+        return result
+
     def _message_to_gemini(self, message: Message, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
         """将 Message 转换为 Gemini 格式
 
@@ -379,9 +444,11 @@ class GeminiProvider(BaseProvider):
             if block.tool_call_id:
                 fc["id"] = block.tool_call_id
             part: Dict[str, Any] = {"functionCall": fc}
-            # Include thoughtSignature from cache if available (required for multi-turn tool calls)
-            if block.tool_call_id and block.tool_call_id in _thought_signature_cache:
-                part["thoughtSignature"] = _thought_signature_cache[block.tool_call_id]
+            # Include thoughtSignature if prefetched by aprepare_request (required for multi-turn tool calls)
+            if block.tool_call_id:
+                _sigs = _sig_read_ctx.get()
+                if block.tool_call_id in _sigs:
+                    part["thoughtSignature"] = _sigs[block.tool_call_id]
             return part
         elif block.type == ContentType.TOOL_RESULT:
             bid = block.tool_call_id or ""
@@ -475,10 +542,12 @@ class GeminiProvider(BaseProvider):
                     tc_name = fc.get("name", "")
                     tc_args = fc.get("args", {})
                     # Capture thoughtSignature if present (required for multi-turn tool calls)
-                    # Store in cache for later retrieval when building functionCall
+                    # Buffer the (tcid, sig) pair; aparse_response flushes to cache.
                     thought_sig = part.get("thoughtSignature")
                     if thought_sig:
-                        _thought_signature_cache[tc_id] = thought_sig
+                        _buf = _sig_write_ctx.get()
+                        if _buf is not None:
+                            _buf.append((tc_id, thought_sig))
                     tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, call_type="function"))
                     message_blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args))
 
@@ -572,7 +641,7 @@ class GeminiProvider(BaseProvider):
                 tracer=self.tracer,
             )
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         url = self._get_api_url(request.model, streaming=False)
 
         try:
@@ -595,7 +664,7 @@ class GeminiProvider(BaseProvider):
                 response_data = response.json()
                 if child_span:
                     child_span.log_output(response_data)
-                chat_response = self.parse_response(response_data, request.model)
+                chat_response = await self.aparse_response(response_data, request.model)
 
                 # Enrich image generation usage with resolution/aspect from request metadata
                 if (chat_response.usage and chat_response.usage.extra
@@ -651,7 +720,7 @@ class GeminiProvider(BaseProvider):
                 yield chunk
             return
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         url = self._get_api_url(request.model, streaming=True)
         response_id = gen_id("gemini")
 
@@ -697,7 +766,7 @@ class GeminiProvider(BaseProvider):
                             except json.JSONDecodeError:
                                 continue
 
-                            chunk = self._parse_stream_chunk(event_data, response_id, request.model)
+                            chunk = await self._aparse_stream_chunk(event_data, response_id, request.model)
                             if chunk:
                                 if chunk.tool_calls:
                                     gemini_saw_tool_calls = True
@@ -761,10 +830,12 @@ class GeminiProvider(BaseProvider):
                 fc = part["functionCall"]
                 tc_id = gen_id("call")
                 # Capture thoughtSignature if present (required for multi-turn tool calls)
-                # Store in cache for later retrieval when building functionCall
+                # Buffer; _aparse_stream_chunk flushes to cache.
                 thought_sig = part.get("thoughtSignature")
                 if thought_sig:
-                    _thought_signature_cache[tc_id] = thought_sig
+                    _buf = _sig_write_ctx.get()
+                    if _buf is not None:
+                        _buf.append((tc_id, thought_sig))
                 tool_calls_data.append({
                     "index": 0, "id": tc_id, "type": "function",
                     "function": {

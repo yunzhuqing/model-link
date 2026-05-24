@@ -877,6 +877,8 @@ class AsyncCacheService:
     _API_KEY_ID_PREFIX = "apikey_id:"
     _BUDGET_REMAINING_PREFIX = "budget_remaining:"
     _USER_PREFIX = "user:"
+    _THOUGHT_SIG_PREFIX = "thoughtsig:"
+    _THOUGHT_SIG_TTL = 24 * 3600  # 24 hours
 
     def __init__(self, backend: AsyncCacheBackend, api_key_ttl: Optional[int] = None):
         self._backend = backend
@@ -940,6 +942,29 @@ class AsyncCacheService:
 
     async def invalidate_user_info(self, user_id: int) -> None:
         await self._backend.delete(f"{self._USER_PREFIX}{user_id}")
+
+    # ── Gemini/Vertex thoughtSignature cache ──────────────────────────────
+    # tool_call_id → thoughtSignature(base64 string)。Gemini/Vertex 在 tool_call
+    # 续接里需要回传同一签名。后端失败时回退到本地 dict,保证不阻断主流程。
+
+    async def get_thought_signature(self, tool_call_id: str) -> Optional[str]:
+        try:
+            data = await self._backend.get(f"{self._THOUGHT_SIG_PREFIX}{tool_call_id}")
+        except Exception:
+            data = None
+        if data and isinstance(data, dict):
+            return data.get("sig")
+        return _thought_sig_local_fallback.get(tool_call_id)
+
+    async def set_thought_signature(self, tool_call_id: str, signature: str) -> None:
+        try:
+            await self._backend.set(
+                f"{self._THOUGHT_SIG_PREFIX}{tool_call_id}",
+                {"sig": signature},
+                self._THOUGHT_SIG_TTL,
+            )
+        except Exception:
+            _thought_sig_local_fallback[tool_call_id] = signature
 
     # ── Usage stats ───────────────────────────────────────────────────────
 
@@ -1029,6 +1054,35 @@ class AsyncCacheService:
 # ── Async module-level singleton ──────────────────────────────────────────────
 
 _async_cache: Optional[AsyncCacheService] = None
+
+# In-process fallback for thoughtSignature when Redis is unreachable.
+# Capped to avoid unbounded growth; capacity chosen to comfortably hold a
+# typical session's tool_call ids.
+from collections import OrderedDict as _OrderedDict_for_fallback
+
+
+class _ThoughtSigLocalFallback:
+    __slots__ = ("_data", "_capacity")
+
+    def __init__(self, capacity: int = 4096):
+        self._data: "_OrderedDict_for_fallback[str, str]" = _OrderedDict_for_fallback()
+        self._capacity = capacity
+
+    def get(self, key: str) -> Optional[str]:
+        if key in self._data:
+            self._data.move_to_end(key)
+            return self._data[key]
+        return None
+
+    def __setitem__(self, key: str, value: str) -> None:
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = value
+        while len(self._data) > self._capacity:
+            self._data.popitem(last=False)
+
+
+_thought_sig_local_fallback = _ThoughtSigLocalFallback(capacity=4096)
 
 
 def init_async_cache() -> AsyncCacheService:

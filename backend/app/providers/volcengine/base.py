@@ -412,7 +412,7 @@ class VolcengineProvider(BaseProvider):
         if self.is_image_generation_model(request.model):
             return await self._execute_image_generation_direct(request)
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = False
 
         url = f"{self.config.base_url}/responses"
@@ -780,7 +780,7 @@ class VolcengineProvider(BaseProvider):
                 yield chunk
             return
 
-        request_data = self.prepare_request(request)
+        request_data = await self.aprepare_request(request)
         request_data["stream"] = True
 
         url = f"{self.config.base_url}/responses"

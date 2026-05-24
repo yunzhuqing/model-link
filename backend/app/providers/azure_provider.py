@@ -671,7 +671,7 @@ class AzureProvider(OpenAIProvider):
             request_data = self._prepare_responses_api_request(request)
             request_data["stream"] = False
         else:
-            request_data = self.prepare_request(request)
+            request_data = await self.aprepare_request(request)
             request_data["stream"] = False
 
         try:
@@ -692,7 +692,7 @@ class AzureProvider(OpenAIProvider):
 
                 if self._uses_responses_api(deployment_name):
                     return self._parse_responses_api_response(response_data, request.model)
-                return self.parse_response(response_data, request.model)
+                return await self.aparse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -741,7 +741,7 @@ class AzureProvider(OpenAIProvider):
             except Exception as e:
                 raise RuntimeError(f"Azure Responses API streaming error: {str(e)}")
         else:
-            request_data = self.prepare_request(request)
+            request_data = await self.aprepare_request(request)
             request_data["stream"] = True
 
             try:

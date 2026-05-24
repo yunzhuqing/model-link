@@ -162,7 +162,14 @@ class _BoundedLRU:
                 self._data.popitem(last=False)
 
 
-_thought_signature_cache: _BoundedLRU = _BoundedLRU(capacity=4096)
+# Per-async-task context for thoughtSignature plumbing between sync prep/parse
+# and the async cache. aprepare_request prefetches signatures into _sig_read_ctx,
+# the sync builder reads from it; sync parse appends new signatures to
+# _sig_write_ctx, the async wrapper drains them into the cache.
+import contextvars as _contextvars  # noqa: E402
+
+_sig_read_ctx: "_contextvars.ContextVar[Dict[str, str]]" = _contextvars.ContextVar("vertex_sig_read", default={})
+_sig_write_ctx: "_contextvars.ContextVar[Optional[List[tuple]]]" = _contextvars.ContextVar("vertex_sig_write", default=None)
 
 
 def _strip_data_uri(s: str) -> str:
@@ -506,6 +513,64 @@ class VertexAIProvider(BaseProvider):
             return self._prepare_gemini_request(request)
         else:
             return self._prepare_openai_request(request)
+
+    # ---- Async overrides: thoughtSignature cache wiring (Gemini path) ----
+
+    async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        sigs: Dict[str, str] = {}
+        try:
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            tcids: List[str] = []
+            for msg in (request.messages or []):
+                content = getattr(msg, "content", None)
+                if isinstance(content, list):
+                    for block in content:
+                        tcid = getattr(block, "tool_call_id", None)
+                        if tcid:
+                            tcids.append(tcid)
+            for tcid in set(tcids):
+                sig = await cache.get_thought_signature(tcid)
+                if sig:
+                    sigs[tcid] = sig
+        except Exception:
+            pass
+        token = _sig_read_ctx.set(sigs)
+        try:
+            return self.prepare_request(request)
+        finally:
+            _sig_read_ctx.reset(token)
+
+    async def _flush_sig_writes(self, buf: List[tuple]) -> None:
+        if not buf:
+            return
+        try:
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            for tcid, sig in buf:
+                await cache.set_thought_signature(tcid, sig)
+        except Exception:
+            pass
+
+    async def aparse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
+        buf: List[tuple] = []
+        token = _sig_write_ctx.set(buf)
+        try:
+            result = self.parse_response(response_data, model)
+        finally:
+            _sig_write_ctx.reset(token)
+        await self._flush_sig_writes(buf)
+        return result
+
+    async def _adispatch_stream_parse(self, publisher: str, event_data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
+        buf: List[tuple] = []
+        token = _sig_write_ctx.set(buf)
+        try:
+            result = self._dispatch_stream_parse(publisher, event_data, response_id, model)
+        finally:
+            _sig_write_ctx.reset(token)
+        await self._flush_sig_writes(buf)
+        return result
 
     # ==================== Anthropic (Claude) 格式 ====================
 
@@ -918,9 +983,11 @@ class VertexAIProvider(BaseProvider):
             # Note: Vertex AI does not accept "id" in functionCall when sending request
             fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
             part: Dict[str, Any] = {"functionCall": fc}
-            # Include thoughtSignature from cache if available (required for multi-turn tool calls)
-            if block.tool_call_id and block.tool_call_id in _thought_signature_cache:
-                part["thoughtSignature"] = _thought_signature_cache[block.tool_call_id]
+            # Include thoughtSignature if prefetched by aprepare_request (required for multi-turn tool calls)
+            if block.tool_call_id:
+                _sigs = _sig_read_ctx.get()
+                if block.tool_call_id in _sigs:
+                    part["thoughtSignature"] = _sigs[block.tool_call_id]
             return part
         elif block.type == ContentType.TOOL_RESULT:
             bid = block.tool_call_id or ""
@@ -999,10 +1066,12 @@ class VertexAIProvider(BaseProvider):
                     tc_name = fc.get("name", "")
                     tc_args = fc.get("args", {})
                     # Capture thoughtSignature if present (required for multi-turn tool calls)
-                    # Store in cache for later retrieval when building functionResponse
+                    # Buffer the (tcid, sig) pair; aparse_response flushes to cache.
                     thought_sig = part.get("thoughtSignature")
                     if thought_sig:
-                        _thought_signature_cache[tc_id] = thought_sig
+                        _buf = _sig_write_ctx.get()
+                        if _buf is not None:
+                            _buf.append((tc_id, thought_sig))
                     tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, call_type="function"))
                     message_blocks.append(ContentBlock.from_tool_call(tc_id, tc_name, tc_args))
 
@@ -1081,10 +1150,12 @@ class VertexAIProvider(BaseProvider):
                 fc = part["functionCall"]
                 tc_id = gen_id("call")
                 # Capture thoughtSignature if present (required for multi-turn tool calls)
-                # Store in cache for later retrieval when building functionResponse
+                # Buffer; flushed to cache after parse.
                 thought_sig = part.get("thoughtSignature")
                 if thought_sig:
-                    _thought_signature_cache[tc_id] = thought_sig
+                    _buf = _sig_write_ctx.get()
+                    if _buf is not None:
+                        _buf.append((tc_id, thought_sig))
                 tool_calls_data.append({
                     "index": 0, "id": tc_id, "type": "function",
                     "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False)}
@@ -1368,7 +1439,7 @@ class VertexAIProvider(BaseProvider):
             return await self._execute_vertexai_veo_generation(request)
 
         try:
-            request_data = self.prepare_request(request)
+            request_data = await self.aprepare_request(request)
         except Exception as e:
             logger.error(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}")
             raise
@@ -1442,7 +1513,7 @@ class VertexAIProvider(BaseProvider):
                             )
                         return img_response
 
-                return self.parse_response(response_data, request.model)
+                return await self.aparse_response(response_data, request.model)
 
         except RuntimeError:
             raise
@@ -1477,7 +1548,7 @@ class VertexAIProvider(BaseProvider):
             return
 
         try:
-            request_data = self.prepare_request(request)
+            request_data = await self.aprepare_request(request)
         except Exception as e:
             logger.error(f"[VertexAI {publisher}] Request preparation error: {type(e).__name__}: {e}")
             raise
@@ -1535,7 +1606,7 @@ class VertexAIProvider(BaseProvider):
                             continue
 
                         try:
-                            chunk = self._dispatch_stream_parse(publisher, event_data, response_id, request.model)
+                            chunk = await self._adispatch_stream_parse(publisher, event_data, response_id, request.model)
                             if chunk:
                                 # For Gemini: track tool calls and fix trailing STOP→TOOL_CALLS.
                                 if publisher == ModelPublisher.GOOGLE:
