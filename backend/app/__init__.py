@@ -396,11 +396,14 @@ def create_app(config=None):
     from app.cache import close_async_cache as _close_async_cache
     from app.exchange_rate_service import stop_daily_refresh as _stop_daily_refresh
     from app.http_client import close_all_shared_clients as _close_shared_http_clients
+    from app.monitoring.langfuse_tracer import flush_all_clients as _flush_langfuse_clients
 
     async def _shutdown_cleanup():
         await _close_async_cache()
         await _stop_daily_refresh()
         await _close_shared_http_clients()
+        # Langfuse flush is sync and blocking — run off the event loop.
+        await asyncio.to_thread(_flush_langfuse_clients)
 
     app.after_serving(_shutdown_cleanup)
 

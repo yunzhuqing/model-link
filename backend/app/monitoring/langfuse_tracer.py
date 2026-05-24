@@ -354,7 +354,18 @@ class LangfuseTracer(BaseTracer):
                         status_message=str(error),
                     )
                 self._generation.end()
-            if self._client is not None:
-                self._client.flush()
         except Exception as e:
             logger.warning(f"[langfuse] Failed to end generation: {e}")
+
+
+def flush_all_clients() -> None:
+    """Flush every pooled Langfuse client. Call on graceful shutdown so
+    queued spans aren't lost. `flush()` is blocking, so never call it in
+    the request hot path."""
+    with _client_lock:
+        clients = list(_client_pool.values())
+    for client in clients:
+        try:
+            client.flush()
+        except Exception as e:
+            logger.warning(f"[langfuse] flush on shutdown failed: {e}")
