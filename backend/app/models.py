@@ -1190,6 +1190,24 @@ class UsageRecord(db.Model):
         }
 
 
+class ThinkingRecord(db.Model):
+    """Stores reasoning/thinking content keyed by tool_call_id.
+
+    Used by providers like DeepSeek that return reasoning_content alongside
+    tool_calls but cannot accept reasoning_content echoed back in subsequent
+    requests. When a follow-up turn contains a tool_result, the gateway
+    looks up the saved thinking by the tool_call_id and re-injects it.
+    """
+    __tablename__ = "ml_thinking_records"
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    thinking_id = db.Column(db.String(200), unique=True, nullable=False, index=True)
+    thinking_signature = db.Column(db.Text, nullable=True)
+    thinking_content = db.Column(db.Text, nullable=True)
+    created = db.Column(db.DateTime, default=datetime.utcnow)
+    updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 async def get_group_models_with_shares(group_id, session=None):
     """
     Return all active models available to a group, including shared models.

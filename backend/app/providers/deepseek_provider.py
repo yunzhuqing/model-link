@@ -5,15 +5,17 @@ DeepSeek 供应商实现 (DeepSeek Provider)
 DeepSeek API 采用 OpenAI 兼容格式，继承 OpenAIProvider 复用代码。
 DeepSeek API 文档: https://api-docs.deepseek.com/
 """
-from typing import Optional, List, Dict, Any
-import json
+from typing import Optional, List, Dict, Any, AsyncGenerator
+import logging
 import time
-import sys
 
 from .openai_provider import OpenAIProvider
 from .base import ProviderConfig, ProviderCapability
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
+from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+
+logger = logging.getLogger(__name__)
 
 
 class DeepSeekProvider(OpenAIProvider):
@@ -90,6 +92,69 @@ class DeepSeekProvider(OpenAIProvider):
                 result["thinking"] = {"type": "disabled"}
         return result
 
+    async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """
+        异步请求准备 — 在调用同步 prepare_request 之前，若本轮包含 tool_result
+        且最近一条 assistant 消息缺失 reasoning_content，则从数据库按上一轮
+        最后一个 tool_call_id 反查并回填到该 assistant 消息上。
+        """
+        await self._maybe_inject_saved_thinking(request)
+        return self.prepare_request(request)
+
+    async def _maybe_inject_saved_thinking(self, request: ChatRequest) -> None:
+        """对每一个包含 tool_calls 的 assistant 消息:
+          - 若用户已带上 reasoning_content（非 None）→ 跳过
+          - 否则按该消息的最后一个 tool_call_id 查 DB:
+              命中 → 回填 reasoning_content
+              未命中 → 强制设为空串 ""（避免上游因缺字段拒绝）
+        """
+        messages = request.messages or []
+        if not messages:
+            return
+
+        from app.thinking_record_dao import get_thinking
+
+        for assistant_msg in messages:
+            if assistant_msg.role != MessageRole.ASSISTANT:
+                continue
+
+            tool_call_ids: List[str] = []
+            if isinstance(assistant_msg.content, list):
+                for block in assistant_msg.content:
+                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL and block.tool_call_id:
+                        tool_call_ids.append(block.tool_call_id)
+            if not tool_call_ids:
+                continue
+
+            # 用户已带上 reasoning_content 则跳过（None 才视为未带）
+            if assistant_msg.reasoning_content is not None:
+                continue
+
+            last_tool_call_id = tool_call_ids[-1]
+            content = ""
+            try:
+                record = await get_thinking(last_tool_call_id)
+                if record and record.get("thinking_content"):
+                    content = record["thinking_content"]
+            except Exception as exc:
+                logger.warning("[deepseek] inject thinking lookup failed: %s", exc)
+
+            assistant_msg.reasoning_content = content
+
+    def _message_to_openai(self, message: Message) -> Dict[str, Any]:
+        """DeepSeek 特化:允许 reasoning_content="" 透传(基类用 truthy 判断会丢失空串)。
+
+        空串场景:assistant 含 tool_calls 且未命中数据库时,由
+        _maybe_inject_saved_thinking 设为 "",此处补上字段。
+        """
+        result = super()._message_to_openai(message)
+        if (
+            message.reasoning_content == ""
+            and "reasoning_content" not in result
+        ):
+            result["reasoning_content"] = ""
+        return result
+
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """
         解析 DeepSeek 响应数据
@@ -106,6 +171,31 @@ class DeepSeekProvider(OpenAIProvider):
                 response.choices[i].reasoning_content = message_data["reasoning_content"]
 
         return response
+
+    async def aparse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
+        """异步解析响应 — 解析完成后持久化 reasoning_content + 最后一个 tool_call_id。"""
+        response = self.parse_response(response_data, model)
+        await self._maybe_persist_from_response(response_data)
+        return response
+
+    async def _maybe_persist_from_response(self, response_data: Dict[str, Any]) -> None:
+        """从原始非流式响应中提取 reasoning_content + 最后一个 tool_call_id，写入数据库。"""
+        try:
+            choices = response_data.get("choices") or []
+            if not choices:
+                return
+            message_data = choices[0].get("message") or {}
+            reasoning = message_data.get("reasoning_content")
+            tool_calls = message_data.get("tool_calls") or []
+            if not reasoning or not tool_calls:
+                return
+            last_id = tool_calls[-1].get("id")
+            if not last_id:
+                return
+            from app.thinking_record_dao import save_thinking
+            await save_thinking(last_id, reasoning)
+        except Exception as exc:
+            logger.warning("[deepseek] persist thinking from response failed: %s", exc)
 
     def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """
@@ -124,6 +214,36 @@ class DeepSeekProvider(OpenAIProvider):
                     chunk.delta_reasoning_content = delta["reasoning_content"]
 
         return chunk
+
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
+        """流式对话 — 在基类流的基础上累积 reasoning_content 与 tool_call_id，
+        流结束时持久化思考内容。"""
+        reasoning_parts: List[str] = []
+        # tool_calls 在 delta 中按 index 分片增量到来，这里只关心最后出现的 id
+        tool_ids_by_index: Dict[int, str] = {}
+
+        async for chunk in super().stream_chat(request):
+            if chunk is not None:
+                if chunk.delta_reasoning_content:
+                    reasoning_parts.append(chunk.delta_reasoning_content)
+                for tc in (chunk.tool_calls or []):
+                    if not isinstance(tc, dict):
+                        continue
+                    idx = tc.get("index", 0) or 0
+                    tc_id = tc.get("id")
+                    if tc_id:
+                        tool_ids_by_index[idx] = tc_id
+            yield chunk
+
+        if reasoning_parts and tool_ids_by_index:
+            last_index = max(tool_ids_by_index.keys())
+            last_id = tool_ids_by_index.get(last_index)
+            if last_id:
+                try:
+                    from app.thinking_record_dao import save_thinking
+                    await save_thinking(last_id, "".join(reasoning_parts))
+                except Exception as exc:
+                    logger.warning("[deepseek] persist thinking from stream failed: %s", exc)
 
     def list_models(self) -> List[Dict[str, Any]]:
         """列出可用模型"""
