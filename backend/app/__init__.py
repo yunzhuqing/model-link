@@ -458,11 +458,6 @@ def create_app(config=None):
         from app.election_service import is_leader, get_node_id, get_leader_node_id
         return {
             "status": "healthy",
-            "election": {
-                "node_id": get_node_id(),
-                "is_leader": is_leader(),
-                "leader_node_id": get_leader_node_id(),
-            },
         }
 
     @app.route('/monitor/threads')
