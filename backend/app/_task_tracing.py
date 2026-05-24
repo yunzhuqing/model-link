@@ -25,6 +25,24 @@ _THRESHOLD = 1.0
 _WATCHDOG_TASK_NAME = "task_trace_watchdog"
 
 
+def _pool_status() -> str:
+    """Snapshot of the async DB pool — useful when a slow task is suspected
+    of being blocked on `async with get_db_session()`."""
+    try:
+        import app as _app_pkg
+        engine = getattr(_app_pkg, "_async_engine", None)
+        if engine is None:
+            return "<engine not initialised>"
+        pool = engine.pool
+        # SQLAlchemy's QueuePool exposes these; AsyncAdaptedQueuePool inherits.
+        return (
+            f"pool size={pool.size()} checked_out={pool.checkedout()} "
+            f"overflow={pool.overflow()} checked_in={pool.checkedin()}"
+        )
+    except Exception as e:
+        return f"<pool inspect failed: {e!r}>"
+
+
 class _TracedTask(asyncio.Task):
     """Asyncio Task subclass that records creation time and origin stack."""
 
@@ -85,10 +103,12 @@ async def _watchdog(interval: float) -> None:
                     rendered = "<no Python frame — likely in C-level await>\n"
                 coro = t.get_coro()
                 logger.warning(
-                    "long-running task age=%.3fs name=%s coro=%s\n--- current stack ---\n%s",
+                    "long-running task age=%.3fs name=%s coro=%s db_pool=[%s]\n"
+                    "--- current stack ---\n%s",
                     age,
                     t.get_name(),
                     getattr(coro, "__qualname__", repr(coro)),
+                    _pool_status(),
                     rendered,
                 )
         except asyncio.CancelledError:

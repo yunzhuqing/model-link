@@ -36,13 +36,36 @@ exchange_rate_service (refreshed daily from frankfurter.app).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import time
 from typing import Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.abstraction.chat import ChatResponse, UsageInfo
 
 logger = logging.getLogger("usage")
+
+
+# Per-segment timing for _persist_record. Set USAGE_PERSIST_TRACE=<seconds>
+# (e.g. "0.5") to log any segment slower than the threshold. Disabled when
+# the env var is unset or non-positive.
+_PERSIST_TRACE_THRESHOLD = float(os.getenv("USAGE_PERSIST_TRACE", "0") or 0)
+
+
+@contextlib.asynccontextmanager
+async def _timed(label: str):
+    if _PERSIST_TRACE_THRESHOLD <= 0:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        dt = time.perf_counter() - t0
+        if dt >= _PERSIST_TRACE_THRESHOLD:
+            logger.warning("[persist_trace] %s took %.3fs", label, dt)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -519,7 +542,7 @@ async def _persist_record(record, api_key_raw: str = None) -> None:
     """
     from app import get_db_session
 
-    async with get_db_session() as session:
+    async with _timed("acquire_db_session_and_body"), get_db_session() as session:
         session.add(record)
         # Don't commit yet — budget deduction must be in the same transaction
 
@@ -544,37 +567,43 @@ async def _persist_record(record, api_key_raw: str = None) -> None:
                 _credits = float(getattr(record, 'credits', 0.0) or 0.0)
 
                 # Only deduct budget if the key is NOT unlimited
-                cached_info = await cache.get_api_key_info(api_key_raw)
+                async with _timed("cache.get_api_key_info"):
+                    cached_info = await cache.get_api_key_info(api_key_raw)
                 is_unlimited = cached_info.get('unlimited_budget', True) if cached_info else True
                 if actual_usd > 0 and not is_unlimited:
                     # Deduct from DB budget records first (oldest first),
                     # then sync the cache so cache and DB stay consistent.
-                    await _deduct_budget_records(session, api_key_raw, actual_usd)
+                    async with _timed("deduct_budget_records"):
+                        await _deduct_budget_records(session, api_key_raw, actual_usd)
                     from app.budget_manager import get_async_budget_manager
-                    await get_async_budget_manager().deduct(api_key_raw, actual_usd)
+                    async with _timed("budget_manager.deduct"):
+                        await get_async_budget_manager().deduct(api_key_raw, actual_usd)
 
                 # Commit both the usage record and budget deduction atomically
-                await session.commit()
+                async with _timed("session.commit (with budget)"):
+                    await session.commit()
 
                 # Increment real-time usage stats in cache (uses local vars,
                 # not record attributes — record is expired after commit)
-                await cache.increment_usage_stats(
-                    api_key_raw,
-                    request_count=1,
-                    input_tokens=_input_tokens,
-                    output_tokens=_output_tokens,
-                    reasoning_tokens=_reasoning_tokens,
-                    cost_usd=actual_usd,
-                    image_count=_image_count,
-                    video_count=_video_count,
-                    audio_seconds=_audio_seconds,
-                    web_search_requests=_web_search_requests,
-                    credits=_credits,
-                )
+                async with _timed("cache.increment_usage_stats"):
+                    await cache.increment_usage_stats(
+                        api_key_raw,
+                        request_count=1,
+                        input_tokens=_input_tokens,
+                        output_tokens=_output_tokens,
+                        reasoning_tokens=_reasoning_tokens,
+                        cost_usd=actual_usd,
+                        image_count=_image_count,
+                        video_count=_video_count,
+                        audio_seconds=_audio_seconds,
+                        web_search_requests=_web_search_requests,
+                        credits=_credits,
+                    )
             except Exception as _ce:
                 logger.error(f"[cache] Failed to update cache after usage record: {_ce}", exc_info=True)
         else:
-            await session.commit()
+            async with _timed("session.commit (no budget)"):
+                await session.commit()
 
 
 def _build_record(
