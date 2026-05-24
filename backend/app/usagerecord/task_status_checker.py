@@ -18,9 +18,28 @@ import logging
 from enum import Enum
 from typing import Any, Dict, Optional
 
+import httpx
 from sqlalchemy import text as sa_text
 
 logger = logging.getLogger(__name__)
+
+
+# Shared httpx.AsyncClient for the resync poller. Per-record clients caused a
+# fresh TLS handshake + pool per stale record (leader scans hundreds per tick).
+_poll_client: Optional[httpx.AsyncClient] = None
+_poll_client_lock = asyncio.Lock()
+
+
+async def _get_poll_client() -> httpx.AsyncClient:
+    global _poll_client
+    if _poll_client is None:
+        async with _poll_client_lock:
+            if _poll_client is None:
+                _poll_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10.0, read=30.0, write=15.0, pool=10.0),
+                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=30, keepalive_expiry=30),
+                )
+    return _poll_client
 
 
 class TaskStatus(Enum):
@@ -138,8 +157,7 @@ async def resolve_and_check_task_status_async(
     if provider_type == "volcengine":
         try:
             from app.providers.volcengine.video_generation import check_seedance_task_status
-            result = await asyncio.to_thread(
-                check_seedance_task_status,
+            result = await check_seedance_task_status(
                 api_key,
                 base_url or "https://ark.cn-beijing.volces.com/api/v3",
                 task_id,
@@ -153,18 +171,17 @@ async def resolve_and_check_task_status_async(
     elif provider_type == "bailian":
         try:
             from app.providers.bailian.video_generation import _resolve_task_query_url
-            import httpx as _httpx
             domain = extra_config.get("domain")
             if domain:
                 task_query_url = f"{domain.rstrip('/')}/api/v1/tasks"
             else:
                 task_query_url = _resolve_task_query_url(None)
             url = f"{task_query_url}/{task_id}"
-            async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
-                if resp.status_code >= 400:
-                    return TaskStatus.UNKNOWN
-                result = resp.json()
+            client = await _get_poll_client()
+            resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            if resp.status_code >= 400:
+                return TaskStatus.UNKNOWN
+            result = resp.json()
             task_status = result.get("output", {}).get("task_status", "")
             return _map_bailian_status(task_status)
         except Exception as exc:
@@ -187,8 +204,7 @@ async def resolve_and_check_task_status_async(
                 sub_app_id = int(sub_app_id) if sub_app_id else None
             except (ValueError, TypeError):
                 sub_app_id = None
-            resp = await asyncio.to_thread(
-                check_tencentvod_task_status,
+            resp = await check_tencentvod_task_status(
                 secret_id, secret_key, task_id, sub_app_id=sub_app_id,
             )
             if not resp:
@@ -215,8 +231,11 @@ async def resolve_and_check_task_status_async(
                 secret_id, secret_key = parts[0], parts[1]
             region = extra_config.get("region", "ap-guangzhou")
             model = record.get("model", "")
-            resp = await asyncio.to_thread(
-                check_any_hunyuan3d_job_status,
+            # check_any_hunyuan3d_job_status is async — must be awaited
+            # directly. (It was previously wrapped in asyncio.to_thread,
+            # which silently returned an un-awaited coroutine and made
+            # every poll fall through to the except branch.)
+            resp = await check_any_hunyuan3d_job_status(
                 secret_id, secret_key, task_id, model=model, region=region,
             )
             if not resp:
@@ -229,19 +248,18 @@ async def resolve_and_check_task_status_async(
     # ── OpenAI-compatible Responses API upstream ────────────────────────
     elif provider_type == "openai":
         try:
-            import httpx as _httpx
             url = f"{base_url.rstrip('/')}/v1/responses/{task_id}"
-            async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
-                if resp.status_code >= 400:
-                    return TaskStatus.UNKNOWN
-                data = resp.json()
-                status = data.get("status", "")
-                if status == "completed":
-                    return TaskStatus.COMPLETED
-                if status == "failed":
-                    return TaskStatus.FAILED
-                return TaskStatus.RUNNING if status in ("queued", "in_progress") else TaskStatus.UNKNOWN
+            client = await _get_poll_client()
+            resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            if resp.status_code >= 400:
+                return TaskStatus.UNKNOWN
+            data = resp.json()
+            status = data.get("status", "")
+            if status == "completed":
+                return TaskStatus.COMPLETED
+            if status == "failed":
+                return TaskStatus.FAILED
+            return TaskStatus.RUNNING if status in ("queued", "in_progress") else TaskStatus.UNKNOWN
         except Exception as exc:
             logger.error(f"[task_status] OpenAI Responses check error for {task_id}: {exc}", exc_info=True)
             return TaskStatus.UNKNOWN

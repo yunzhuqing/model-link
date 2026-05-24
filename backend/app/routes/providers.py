@@ -21,7 +21,7 @@ from app.routes.permissions import (
 )
 
 
-def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
+async def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
     """
     For TencentVOD providers, auto-fetch or create an ApiToken.
 
@@ -32,6 +32,9 @@ def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
     provider.extra_config. The resulting ApiToken is stored in provider.api_key.
 
     Does nothing if api_key is already set.
+
+    The TencentVOD SDK calls are native async (httpx.AsyncClient), so they
+    do not block the event loop.
     """
     if provider.type != 'tencentvod':
         return
@@ -52,11 +55,15 @@ def _maybe_create_tencentvod_api_token(provider: Provider) -> None:
         sub_app_id = int(app_id) if app_id else None
 
         # Check for existing tokens first
-        existing_tokens = describe_aigc_api_tokens(secret_id, secret_key, sub_app_id)
+        existing_tokens = await describe_aigc_api_tokens(
+            secret_id, secret_key, sub_app_id
+        )
         if existing_tokens:
             provider.api_key = existing_tokens[0]
         else:
-            provider.api_key = create_aigc_api_token(secret_id, secret_key, sub_app_id)
+            provider.api_key = await create_aigc_api_token(
+                secret_id, secret_key, sub_app_id
+            )
     except Exception as e:
         import sys
         print(f"[TencentVOD] Failed to get or create ApiToken: {e}", file=sys.stderr)
@@ -135,7 +142,7 @@ async def create_provider(current_user):
         await session.flush()  # Get provider.id without committing
 
         # Auto-create ApiToken for TencentVOD providers
-        _maybe_create_tencentvod_api_token(provider)
+        await _maybe_create_tencentvod_api_token(provider)
 
         await session.commit()
         await session.refresh(provider)
@@ -204,7 +211,7 @@ async def update_provider(current_user, provider_id):
             provider.extra_config = data['extra_config']
 
         # Auto-create ApiToken for TencentVOD providers if not already set
-        _maybe_create_tencentvod_api_token(provider)
+        await _maybe_create_tencentvod_api_token(provider)
 
         await session.commit()
         await session.refresh(provider)

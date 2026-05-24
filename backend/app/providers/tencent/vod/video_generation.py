@@ -458,7 +458,9 @@ async def _poll_video_task(
     try:
         poll_count = 0
         while time.time() < deadline:
-            resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
+            resp = await check_tencentvod_task_status(
+                secret_id, secret_key, task_id, sub_app_id
+            )
             if not resp:
                 await asyncio.sleep(_POLL_INTERVAL_S)
                 continue

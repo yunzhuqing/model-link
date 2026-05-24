@@ -82,6 +82,30 @@ def _resolve_request_id() -> str:
     return gen_id("req")
 
 
+# Shared async HTTP client for TencentVOD control-plane calls.
+# Per-call ``httpx.Client`` creates a new TLS handshake + connection pool every
+# time and is sync (blocks the event loop). The shared AsyncClient eliminates
+# both costs.
+_tencentvod_client: Optional[httpx.AsyncClient] = None
+_tencentvod_client_lock = asyncio.Lock()
+
+
+async def _get_tencentvod_client() -> httpx.AsyncClient:
+    global _tencentvod_client
+    if _tencentvod_client is None:
+        async with _tencentvod_client_lock:
+            if _tencentvod_client is None:
+                _tencentvod_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=10.0),
+                    limits=httpx.Limits(
+                        max_keepalive_connections=10,
+                        max_connections=30,
+                        keepalive_expiry=30,
+                    ),
+                )
+    return _tencentvod_client
+
+
 def _upload_base64_image_to_storage(
     b64_data: str,
     media_type: str,
@@ -428,7 +452,7 @@ def _parse_api_key(api_key: str) -> Tuple[str, str]:
 # API 调用: CreateAigcApiToken
 # =============================================================================
 
-def create_aigc_api_token(
+async def create_aigc_api_token(
     secret_id: str,
     secret_key: str,
     sub_app_id: Optional[int] = None,
@@ -457,10 +481,10 @@ def create_aigc_api_token(
     payload_str = json.dumps(body, ensure_ascii=False)
     headers = _build_auth_headers(secret_id, secret_key, "CreateAigcApiToken", payload_str)
 
-    with httpx.Client(timeout=60) as client:
-        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    client = await _get_tencentvod_client()
+    response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+    response.raise_for_status()
+    data = response.json()
 
     resp = data.get("Response", {})
     if "Error" in resp:
@@ -482,7 +506,7 @@ def create_aigc_api_token(
 # API 调用: DescribeAigcApiTokens
 # =============================================================================
 
-def describe_aigc_api_tokens(
+async def describe_aigc_api_tokens(
     secret_id: str,
     secret_key: str,
     sub_app_id: Optional[int] = None,
@@ -508,10 +532,10 @@ def describe_aigc_api_tokens(
     payload_str = json.dumps(body, ensure_ascii=False)
     headers = _build_auth_headers(secret_id, secret_key, "DescribeAigcApiTokens", payload_str)
 
-    with httpx.Client(timeout=60) as client:
-        response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    client = await _get_tencentvod_client()
+    response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+    response.raise_for_status()
+    data = response.json()
 
     resp = data.get("Response", {})
     if "Error" in resp:
@@ -709,7 +733,7 @@ async def _describe_task_detail(
 # API 调用: 查询任务状态 (单次, 供轮询和 resync 共用)
 # =============================================================================
 
-def check_tencentvod_task_status(
+async def check_tencentvod_task_status(
     secret_id: str,
     secret_key: str,
     task_id: str,
@@ -734,10 +758,10 @@ def check_tencentvod_task_status(
             body["SubAppId"] = sub_app_id
         payload_str = json.dumps(body, ensure_ascii=False)
         headers = _build_auth_headers(secret_id, secret_key, "DescribeTaskDetail", payload_str)
-        with httpx.Client(timeout=30) as client:
-            response = client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        client = await _get_tencentvod_client()
+        response = await client.post(TENCENTVOD_API_URL, content=payload_str, headers=headers)
+        response.raise_for_status()
+        data = response.json()
         resp = data.get("Response", {})
         if "Error" in resp:
             err = resp["Error"]
@@ -792,7 +816,7 @@ async def _poll_task(
     try:
         poll_count = 0
         while time.time() < deadline:
-            resp = check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
+            resp = await check_tencentvod_task_status(secret_id, secret_key, task_id, sub_app_id)
             if not resp:
                 await asyncio.sleep(_POLL_INTERVAL_S)
                 continue

@@ -34,6 +34,26 @@ from app.abstraction.rerank import RerankRequest, RerankResponse
 from app.request_context import ResolvedModelData
 
 
+# Shared httpx.AsyncClient for in-request image/video URL → base64 conversion.
+# Per-request clients caused a TLS handshake + new pool per request; this
+# singleton keeps a small bounded keepalive pool and reuses connections.
+_media_fetch_client: Optional[httpx.AsyncClient] = None
+_media_fetch_client_lock = asyncio.Lock()
+
+
+async def _get_media_fetch_client() -> httpx.AsyncClient:
+    global _media_fetch_client
+    if _media_fetch_client is None:
+        async with _media_fetch_client_lock:
+            if _media_fetch_client is None:
+                _media_fetch_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0),
+                    limits=httpx.Limits(max_keepalive_connections=10, max_connections=50, keepalive_expiry=30),
+                    follow_redirects=True,
+                )
+    return _media_fetch_client
+
+
 class GatewayServiceError(Exception):
     """网关服务错误基类"""
     def __init__(self, message: str, status_code: int = 500):
@@ -143,6 +163,16 @@ class GatewayService:
         # Provider.__init__ may mutate config (e.g. set default base_url), so
         # we can't compare cached.config against db_provider directly.
         self._provider_db_fingerprint: dict[int, tuple[str, str | None]] = {}
+        # Strong refs to in-flight aclose() tasks for evicted providers, so the
+        # event loop doesn't GC them mid-close (which would leak the underlying
+        # httpx.AsyncClient connection pool — the very thing we're trying to free).
+        self._pending_closes: set[asyncio.Task] = set()
+        # Per-provider-id locks to serialize concurrent first-time construction
+        # so two parallel requests don't both build a VertexAIProvider (each
+        # with its own 100-socket httpx pool) and leak the loser.
+        self._provider_build_locks: dict[int, asyncio.Lock] = {}
+        # Guards mutation of _provider_build_locks itself.
+        self._build_locks_mutex = asyncio.Lock()
 
     async def resolve_model(self, session, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModelData:
         """
@@ -244,7 +274,7 @@ class GatewayService:
             raise ModelNotFoundError(model_name)
 
         # 创建供应商实例
-        provider_instance = self._create_provider_instance(db_provider)
+        provider_instance = await self._create_provider_instance(db_provider)
         if not provider_instance:
             raise GatewayServiceError(
                 f"Failed to create provider instance for '{db_provider.name}'",
@@ -529,13 +559,29 @@ class GatewayService:
         support_thinking = request.metadata.get('support_thinking', False)
         return bool(support_thinking)
 
-    def _create_provider_instance(self, db_provider: Provider) -> Optional[BaseProvider]:
+    def _schedule_provider_close(self, provider: BaseProvider) -> None:
+        """Fire-and-forget aclose() for an evicted provider, with a strong ref."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(provider.close())
+        self._pending_closes.add(task)
+        task.add_done_callback(self._pending_closes.discard)
+
+    async def _create_provider_instance(self, db_provider: Provider) -> Optional[BaseProvider]:
         """
         根据数据库供应商配置创建或返回缓存的供应商实例。
 
         Provider instances (and their httpx.AsyncClient connection pools) are
         cached by provider_id so that concurrent requests reuse a single
         managed connection pool instead of creating a new client per request.
+
+        Concurrent first-time construction is serialized via a per-provider
+        asyncio.Lock so two parallel requests don't both build a fresh
+        provider (each with its own 100-socket httpx pool) and orphan the
+        loser. Cache invalidation on credential change schedules an aclose()
+        on the evicted instance so its pool is actually freed.
 
         Args:
             db_provider: 数据库供应商对象
@@ -547,40 +593,60 @@ class GatewayService:
         raw_api_key = db_provider.api_key or ""
         raw_base_url = db_provider.base_url
 
+        # Fast path: cache hit with unchanged credentials.
         if cache_key in self._provider_cache:
             cached = self._provider_cache[cache_key]
             prev_key, prev_url = self._provider_db_fingerprint.get(cache_key, ("", None))
-            if raw_api_key != prev_key or raw_base_url != prev_url:
-                # DB values changed — invalidate cached instance so the next
-                # call recreates the provider with new config.
-                del self._provider_cache[cache_key]
-                self._provider_db_fingerprint.pop(cache_key, None)
-            else:
+            if raw_api_key == prev_key and raw_base_url == prev_url:
                 return cached
 
-        provider_type = db_provider.type
-        provider_class = get_provider_class(provider_type)
+        # Acquire (or create) the per-id build lock.
+        async with self._build_locks_mutex:
+            build_lock = self._provider_build_locks.get(cache_key)
+            if build_lock is None:
+                build_lock = asyncio.Lock()
+                self._provider_build_locks[cache_key] = build_lock
 
-        if not provider_class:
-            # 如果没有找到对应的供应商类，使用通用 OpenAI 兼容实现
-            from app.providers.bailian import BailianProvider
-            provider_class = BailianProvider
+        async with build_lock:
+            # Re-check under the per-id lock — another coroutine may have
+            # already constructed the instance while we were waiting.
+            if cache_key in self._provider_cache:
+                cached = self._provider_cache[cache_key]
+                prev_key, prev_url = self._provider_db_fingerprint.get(cache_key, ("", None))
+                if raw_api_key != prev_key or raw_base_url != prev_url:
+                    # DB values changed — invalidate cached instance so the next
+                    # call recreates the provider with new config. Schedule an
+                    # aclose() so the evicted provider's httpx.AsyncClient pool
+                    # (up to 100 sockets) is released instead of leaked.
+                    self._schedule_provider_close(cached)
+                    del self._provider_cache[cache_key]
+                    self._provider_db_fingerprint.pop(cache_key, None)
+                else:
+                    return cached
 
-        config = ProviderConfig(
-            name=db_provider.name,
-            api_key=raw_api_key,
-            base_url=raw_base_url,
-            authorization=db_provider.authorization or "Authorization",
-            extra_config=db_provider.extra_config or {},
-        )
+            provider_type = db_provider.type
+            provider_class = get_provider_class(provider_type)
 
-        try:
-            instance = provider_class(config)
-            self._provider_cache[cache_key] = instance
-            self._provider_db_fingerprint[cache_key] = (raw_api_key, raw_base_url)
-            return instance
-        except Exception as e:
-            return None
+            if not provider_class:
+                # 如果没有找到对应的供应商类，使用通用 OpenAI 兼容实现
+                from app.providers.bailian import BailianProvider
+                provider_class = BailianProvider
+
+            config = ProviderConfig(
+                name=db_provider.name,
+                api_key=raw_api_key,
+                base_url=raw_base_url,
+                authorization=db_provider.authorization or "Authorization",
+                extra_config=db_provider.extra_config or {},
+            )
+
+            try:
+                instance = provider_class(config)
+                self._provider_cache[cache_key] = instance
+                self._provider_db_fingerprint[cache_key] = (raw_api_key, raw_base_url)
+                return instance
+            except Exception as e:
+                return None
 
     @staticmethod
     async def _convert_image_urls_to_base64(request: ChatRequest) -> None:
@@ -591,19 +657,17 @@ class GatewayService:
         their API.  This method downloads each image and converts it to a base64
         data URI so the provider receives the raw image data instead.
 
-        The conversion happens in-place on the request's messages.
-
-        Args:
-            request: The ChatRequest whose messages should be transformed.
+        The conversion happens in-place on the request's messages. Downloads
+        across all messages run concurrently via asyncio.gather, and the
+        (potentially large) base64 encoding is off-loaded to a worker thread
+        so we don't freeze the event loop on multi-megabyte payloads.
         """
         import base64
         import logging
-        import httpx
         from app.abstraction.messages import ContentBlock, ContentType
 
         logger = logging.getLogger("gateway")
 
-        # Guess MIME type from Content-Type header or URL extension
         _EXT_MIME = {
             '.jpg': 'image/jpeg',
             '.jpeg': 'image/jpeg',
@@ -618,72 +682,72 @@ class GatewayService:
         }
 
         def _guess_mime(url: str, content_type: str = '') -> str:
-            """Determine MIME type from Content-Type header or URL extension."""
             if content_type:
-                # Strip parameters like '; charset=utf-8'
                 mime = content_type.split(';')[0].strip().lower()
                 if mime.startswith('image/'):
                     return mime
-            # Fall back to extension
             from urllib.parse import urlparse
             import os
             path = urlparse(url).path
             ext = os.path.splitext(path)[1].lower()
             return _EXT_MIME.get(ext, 'image/jpeg')
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            for message in request.messages:
-                if not isinstance(message.content, list):
-                    continue
+        client = await _get_media_fetch_client()
 
-                new_blocks = []
-                for block in message.content:
-                    if not isinstance(block, ContentBlock):
-                        new_blocks.append(block)
-                        continue
+        async def _download_and_encode(block: ContentBlock) -> ContentBlock:
+            try:
+                resp = await client.get(block.url)
+                resp.raise_for_status()
+                ct = resp.headers.get('content-type', '')
+                mime = _guess_mime(block.url, ct)
+                # base64 encode on a worker thread — multi-MB images would
+                # otherwise block the event loop (and /health with it).
+                b64_data = await asyncio.to_thread(
+                    lambda data: base64.b64encode(data).decode('ascii'),
+                    resp.content,
+                )
+                logger.info(
+                    f"Converted image URL to base64: {block.url[:80]}... "
+                    f"({len(resp.content)} bytes, {mime})"
+                )
+                return ContentBlock.from_image_base64(b64_data, mime)
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to download image URL {block.url[:120]}: {exc}. "
+                    f"Keeping original URL block."
+                )
+                return block
 
-                    if block.type == ContentType.IMAGE_URL and block.url:
-                        # Download the image and convert to base64
-                        try:
-                            resp = await client.get(block.url)
-                            resp.raise_for_status()
-                            ct = resp.headers.get('content-type', '')
-                            mime = _guess_mime(block.url, ct)
-                            b64_data = base64.b64encode(resp.content).decode('ascii')
-                            new_blocks.append(ContentBlock.from_image_base64(b64_data, mime))
-                            logger.info(
-                                f"Converted image URL to base64: {block.url[:80]}... "
-                                f"({len(resp.content)} bytes, {mime})"
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                f"Failed to download image URL {block.url[:120]}: {exc}. "
-                                f"Keeping original URL block."
-                            )
-                            # Keep the original block if download fails
-                            new_blocks.append(block)
-                    else:
-                        new_blocks.append(block)
+        # Collect (message_index, block_index, block) for every IMAGE_URL block,
+        # then download them all in parallel.
+        targets: List[tuple[int, int, ContentBlock]] = []
+        for mi, message in enumerate(request.messages):
+            if not isinstance(message.content, list):
+                continue
+            for bi, block in enumerate(message.content):
+                if (isinstance(block, ContentBlock)
+                        and block.type == ContentType.IMAGE_URL
+                        and block.url):
+                    targets.append((mi, bi, block))
 
-                message.content = new_blocks
+        if not targets:
+            return
+
+        results = await asyncio.gather(*(_download_and_encode(b) for _, _, b in targets))
+        for (mi, bi, _), new_block in zip(targets, results):
+            request.messages[mi].content[bi] = new_block
 
     @staticmethod
     async def _convert_video_urls_to_base64(request: ChatRequest) -> None:
         """
         Convert all VIDEO_URL content blocks in the request to VIDEO_BASE64.
 
-        Some providers do not support online video URLs in their API.  This
-        method downloads each video and converts it to a base64 data URI so the
-        provider receives the raw video data instead.
-
-        The conversion happens in-place on the request's messages.
-
-        Args:
-            request: The ChatRequest whose messages should be transformed.
+        Same shape as _convert_image_urls_to_base64: parallel downloads via
+        the shared httpx client and base64 encoding off-loaded to a worker
+        thread (videos can be tens of MB).
         """
         import base64
         import logging
-        import httpx
         from app.abstraction.messages import ContentBlock, ContentType
 
         logger = logging.getLogger("gateway")
@@ -710,39 +774,46 @@ class GatewayService:
             ext = os.path.splitext(path)[1].lower()
             return _EXT_MIME.get(ext, 'video/mp4')
 
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http_client:
-            for message in request.messages:
-                if not isinstance(message.content, list):
-                    continue
+        client = await _get_media_fetch_client()
 
-                new_blocks = []
-                for block in message.content:
-                    if not isinstance(block, ContentBlock):
-                        new_blocks.append(block)
-                        continue
+        async def _download_and_encode(block: ContentBlock) -> ContentBlock:
+            try:
+                resp = await client.get(block.url)
+                resp.raise_for_status()
+                ct = resp.headers.get('content-type', '')
+                mime = _guess_mime(block.url, ct)
+                b64_data = await asyncio.to_thread(
+                    lambda data: base64.b64encode(data).decode('ascii'),
+                    resp.content,
+                )
+                logger.info(
+                    f"Converted video URL to base64: {block.url[:80]}... "
+                    f"({len(resp.content)} bytes, {mime})"
+                )
+                return ContentBlock.from_video_base64(b64_data, mime)
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to download video URL {block.url[:120]}: {exc}. "
+                    f"Keeping original URL block."
+                )
+                return block
 
-                    if block.type == ContentType.VIDEO_URL and block.url:
-                        try:
-                            resp = await http_client.get(block.url)
-                            resp.raise_for_status()
-                            ct = resp.headers.get('content-type', '')
-                            mime = _guess_mime(block.url, ct)
-                            b64_data = base64.b64encode(resp.content).decode('ascii')
-                            new_blocks.append(ContentBlock.from_video_base64(b64_data, mime))
-                            logger.info(
-                                f"Converted video URL to base64: {block.url[:80]}... "
-                                f"({len(resp.content)} bytes, {mime})"
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                f"Failed to download video URL {block.url[:120]}: {exc}. "
-                                f"Keeping original URL block."
-                            )
-                            new_blocks.append(block)
-                    else:
-                        new_blocks.append(block)
+        targets: List[tuple[int, int, ContentBlock]] = []
+        for mi, message in enumerate(request.messages):
+            if not isinstance(message.content, list):
+                continue
+            for bi, block in enumerate(message.content):
+                if (isinstance(block, ContentBlock)
+                        and block.type == ContentType.VIDEO_URL
+                        and block.url):
+                    targets.append((mi, bi, block))
 
-                message.content = new_blocks
+        if not targets:
+            return
+
+        results = await asyncio.gather(*(_download_and_encode(b) for _, _, b in targets))
+        for (mi, bi, _), new_block in zip(targets, results):
+            request.messages[mi].content[bi] = new_block
 
     async def rerank(self, resolved: ResolvedModelData, request: RerankRequest) -> RerankResponse:
         """

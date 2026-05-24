@@ -56,6 +56,30 @@ _POLL_MAX_WAIT_S: int = 600   # 10 分钟
 _TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
+# Shared async HTTP client for Volcengine ARK control-plane calls.
+# Per-call ``httpx.Client`` creates a new TLS handshake + connection pool every
+# time and is sync (blocks the event loop). The shared AsyncClient eliminates
+# both costs.
+_ark_client: Optional[httpx.AsyncClient] = None
+_ark_client_lock = asyncio.Lock()
+
+
+async def _get_ark_client() -> httpx.AsyncClient:
+    global _ark_client
+    if _ark_client is None:
+        async with _ark_client_lock:
+            if _ark_client is None:
+                _ark_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=10.0),
+                    limits=httpx.Limits(
+                        max_keepalive_connections=10,
+                        max_connections=30,
+                        keepalive_expiry=30,
+                    ),
+                )
+    return _ark_client
+
+
 # =============================================================================
 # 模型检测
 # =============================================================================
@@ -528,7 +552,7 @@ async def _create_video_task(
 # API 调用: 查询任务状态 (单次, 供轮询和 resync 共用)
 # =============================================================================
 
-def check_seedance_task_status(
+async def check_seedance_task_status(
     api_key: str,
     base_url: str,
     task_id: str,
@@ -554,30 +578,30 @@ def check_seedance_task_status(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    with httpx.Client(timeout=60) as client:
-        response = client.get(url, headers=headers)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"Seedance DescribeVideoTask error ({response.status_code}): {response.text}"
-            )
-        data = response.json()
-        status = data.get("status", "")
-        result: Dict[str, Any] = {"status": status if status in _TERMINAL_STATUSES else "running", "data": data}
+    client = await _get_ark_client()
+    response = await client.get(url, headers=headers)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Seedance DescribeVideoTask error ({response.status_code}): {response.text}"
+        )
+    data = response.json()
+    status = data.get("status", "")
+    result: Dict[str, Any] = {"status": status if status in _TERMINAL_STATUSES else "running", "data": data}
 
-        if status == "succeeded":
-            content = data.get("content") or {}
-            video_url = content.get("video_url", "")
-            result["video_url"] = video_url
-            raw_usage = data.get("usage") or {}
-            completion_tokens = int(raw_usage.get("completion_tokens", 0))
-            total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
-            prompt_tokens = total_tokens - completion_tokens
-            result["usage"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            }
-        return result
+    if status == "succeeded":
+        content = data.get("content") or {}
+        video_url = content.get("video_url", "")
+        result["video_url"] = video_url
+        raw_usage = data.get("usage") or {}
+        completion_tokens = int(raw_usage.get("completion_tokens", 0))
+        total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
+        prompt_tokens = total_tokens - completion_tokens
+        result["usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+    return result
 
 
 # =============================================================================
@@ -624,7 +648,7 @@ async def _poll_video_task(
     try:
         while time.time() < deadline:
             poll_count += 1
-            result = check_seedance_task_status(api_key, base_url, task_id)
+            result = await check_seedance_task_status(api_key, base_url, task_id)
             status = result["status"]
 
             if _span:

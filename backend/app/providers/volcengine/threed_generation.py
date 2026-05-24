@@ -347,7 +347,7 @@ async def _create_3d_task(
 # API 调用: 轮询任务结果
 # =============================================================================
 
-def check_seed3d_task_status(
+async def check_seed3d_task_status(
     api_key: str,
     base_url: str,
     task_id: str,
@@ -370,36 +370,38 @@ def check_seed3d_task_status(
             "usage": {...},          # succeeded 时有值
         }
     """
+    from app.providers.volcengine.video_generation import _get_ark_client
+
     url = f"{base_url.rstrip('/')}/contents/generations/tasks/{task_id}"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    with httpx.Client(timeout=60) as client:
-        response = client.get(url, headers=headers)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"Seed3D Query3DTask error ({response.status_code}): {response.text}"
-            )
-        data = response.json()
-        status = data.get("status", "")
-        result: Dict[str, Any] = {"status": status if status in _TERMINAL_STATUSES else "running", "data": data}
+    client = await _get_ark_client()
+    response = await client.get(url, headers=headers)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Seed3D Query3DTask error ({response.status_code}): {response.text}"
+        )
+    data = response.json()
+    status = data.get("status", "")
+    result: Dict[str, Any] = {"status": status if status in _TERMINAL_STATUSES else "running", "data": data}
 
-        if status == "succeeded":
-            content = data.get("content") or {}
-            result["file_url"] = content.get("file_url", "")
-            result["file_format"] = data.get("fileformat", _DEFAULT_FILE_FORMAT)
-            result["subdivision_level"] = data.get("subdivisionlevel", _DEFAULT_SUBDIVISION_LEVEL)
-            raw_usage = data.get("usage") or {}
-            completion_tokens = int(raw_usage.get("completion_tokens", 0))
-            total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
-            prompt_tokens = total_tokens - completion_tokens
-            result["usage"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            }
-        return result
+    if status == "succeeded":
+        content = data.get("content") or {}
+        result["file_url"] = content.get("file_url", "")
+        result["file_format"] = data.get("fileformat", _DEFAULT_FILE_FORMAT)
+        result["subdivision_level"] = data.get("subdivisionlevel", _DEFAULT_SUBDIVISION_LEVEL)
+        raw_usage = data.get("usage") or {}
+        completion_tokens = int(raw_usage.get("completion_tokens", 0))
+        total_tokens = int(raw_usage.get("total_tokens", completion_tokens))
+        prompt_tokens = total_tokens - completion_tokens
+        result["usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+    return result
 
 
 async def _poll_3d_task(
@@ -444,7 +446,7 @@ async def _poll_3d_task(
     try:
         while time.time() < deadline:
             poll_count += 1
-            result = check_seed3d_task_status(api_key, base_url, task_id)
+            result = await check_seed3d_task_status(api_key, base_url, task_id)
             status = result["status"]
 
             if _span:

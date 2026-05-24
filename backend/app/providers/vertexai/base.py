@@ -23,6 +23,7 @@ https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/gemini
     如果为空，将尝试使用 Application Default Credentials (ADC)
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
+import asyncio
 import json
 import time
 import uuid
@@ -129,8 +130,39 @@ def _log_to_file(data: Any, prefix: str, publisher: str) -> str:
 
 
 # In-memory cache for thoughtSignature mapping: tool_call_id -> thoughtSignature
-# This is needed because Vertex AI requires thoughtSignature to be passed back with functionResponse
-_thought_signature_cache: Dict[str, str] = {}
+# This is needed because Vertex AI requires thoughtSignature to be passed back
+# with functionResponse. Bounded LRU so it can't grow without limit across a
+# long-lived process (tool_call_id is per-call and never reused).
+from collections import OrderedDict as _OrderedDict
+from threading import Lock as _Lock
+
+
+class _BoundedLRU:
+    def __init__(self, capacity: int = 4096):
+        self._capacity = capacity
+        self._data: "_OrderedDict[str, str]" = _OrderedDict()
+        self._lock = _Lock()
+
+    def __contains__(self, key: str) -> bool:
+        with self._lock:
+            return key in self._data
+
+    def __getitem__(self, key: str) -> str:
+        with self._lock:
+            value = self._data[key]
+            self._data.move_to_end(key)
+            return value
+
+    def __setitem__(self, key: str, value: str) -> None:
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = value
+            while len(self._data) > self._capacity:
+                self._data.popitem(last=False)
+
+
+_thought_signature_cache: _BoundedLRU = _BoundedLRU(capacity=4096)
 
 
 def _strip_data_uri(s: str) -> str:
@@ -301,6 +333,9 @@ class VertexAIProvider(BaseProvider):
         self._pending_base_url = config.base_url
         super().__init__(config)
         self._credentials = None
+        # Serializes credential bootstrap + token refresh so concurrent requests
+        # don't all fire blocking google-auth calls in parallel.
+        self._auth_lock = asyncio.Lock()
 
     # ==================== 认证 ====================
 
@@ -341,7 +376,12 @@ class VertexAIProvider(BaseProvider):
         return self._credentials
 
     def _get_access_token(self) -> str:
-        """获取有效的 OAuth2 访问令牌，自动刷新过期令牌"""
+        """获取有效的 OAuth2 访问令牌，自动刷新过期令牌
+
+        Synchronous variant kept for sync callers. Hot async paths should use
+        ``get_headers_async()`` which off-loads the blocking refresh to a
+        worker thread and serializes concurrent refreshes via ``_auth_lock``.
+        """
         import google.auth.transport.requests
 
         credentials = self._get_credentials()
@@ -355,12 +395,48 @@ class VertexAIProvider(BaseProvider):
         return credentials.token
 
     def get_headers(self) -> Dict[str, str]:
-        """获取请求头（包含 OAuth2 Bearer token）"""
+        """获取请求头（包含 OAuth2 Bearer token） — sync variant.
+
+        Prefer ``get_headers_async()`` in async code: this method performs
+        sync HTTP for OAuth2 refresh and will freeze the event loop.
+        """
         access_token = self._get_access_token()
         logger.debug(f"Obtained access token for Vertex AI")
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}"
+        }
+
+    async def get_headers_async(self) -> Dict[str, str]:
+        """Async-safe variant of get_headers.
+
+        Off-loads the blocking google-auth refresh to a worker thread and
+        serializes concurrent refreshes with ``_auth_lock`` so a token
+        expiry under load doesn't trigger N parallel sync HTTP calls that
+        each freeze the event loop.
+        """
+
+        def _token_is_fresh() -> bool:
+            if self._credentials is None or not self._credentials.token:
+                return False
+            expiry = self._credentials.expiry
+            if expiry is None:
+                return True
+            return expiry.timestamp() >= time.time() + 60
+
+        if _token_is_fresh():
+            token = self._credentials.token
+        else:
+            async with self._auth_lock:
+                # Re-check under lock — another coroutine may have just refreshed.
+                if not _token_is_fresh():
+                    token = await asyncio.to_thread(self._get_access_token)
+                else:
+                    token = self._credentials.token
+
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
         }
 
     @property
@@ -1260,13 +1336,13 @@ class VertexAIProvider(BaseProvider):
         Execute Veo video generation via Vertex AI predictLongRunning endpoint.
         Delegates to the vertexai.video_generation module.
         """
-        # IMPORTANT: call get_headers() BEFORE reading self.config.base_url.
-        # get_headers() triggers _get_credentials() which sets self.config.base_url
+        # IMPORTANT: call get_headers_async() BEFORE reading self.config.base_url.
+        # It triggers _get_credentials() which sets self.config.base_url
         # from the service account project_id when no explicit base_url is configured.
-        self.get_headers()
+        await self.get_headers_async()
         return await execute_vertexai_veo_generation(
             request=request,
-            get_headers_fn=self.get_headers,
+            get_headers_fn=self.get_headers_async,
             base_url=self.config.base_url,
             project_id=self._project_id,
             provider_type=self.PROVIDER_TYPE,
@@ -1319,7 +1395,7 @@ class VertexAIProvider(BaseProvider):
         if publisher == ModelPublisher.ANTHROPIC:
             request_data.pop("stream", None)
 
-        headers = self.get_headers()
+        headers = await self.get_headers_async()
         url = self._get_api_url(request.model, streaming=False)
 
         logger.debug(f"[VertexAI {publisher}] URL: {url}")
@@ -1332,13 +1408,13 @@ class VertexAIProvider(BaseProvider):
                 if response.status_code >= 400:
                     error_text = response.text
                     try:
-                        error_data = response.json()
+                        error_data = await asyncio.to_thread(response.json)
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                     except json.JSONDecodeError:
                         raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text[:500]}")
 
                 try:
-                    response_data = response.json()
+                    response_data = await asyncio.to_thread(response.json)
                 except json.JSONDecodeError as e:
                     raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {response.text[:500]}")
 
@@ -1424,7 +1500,7 @@ class VertexAIProvider(BaseProvider):
             # OpenAI-compatible models
             request_data["stream"] = True
 
-        headers = self.get_headers()
+        headers = await self.get_headers_async()
         url = self._get_api_url(request.model, streaming=True)
         response_id = gen_id("resp")
 

@@ -204,7 +204,8 @@ async def execute_vertexai_veo_generation(
         # IMPORTANT: call get_headers_fn() BEFORE reading base_url.
         # get_headers_fn() triggers _get_credentials() which sets base_url
         # from the service account project_id when no explicit base_url is configured.
-        headers = get_headers_fn()
+        # get_headers_fn is async (returns a coroutine) — see VertexAIProvider.get_headers_async.
+        headers = await get_headers_fn()
 
         veo_base_url = _resolve_veo_base_url(base_url, project_id)
         create_url = f"{veo_base_url}/publishers/google/models/{model}:predictLongRunning"
@@ -220,7 +221,7 @@ async def execute_vertexai_veo_generation(
 
         operation_name = ""
         try:
-            with _httpx.AsyncClient(timeout=60) as client:
+            async with _httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(create_url, content=payload_str, headers=headers)
 
             if resp.status_code >= 400:
@@ -260,10 +261,10 @@ async def execute_vertexai_veo_generation(
         _poll_error: Optional[Exception] = None
 
         try:
-            with _httpx.AsyncClient(timeout=60) as client:
+            async with _httpx.AsyncClient(timeout=60) as client:
                 poll_count = 0
                 while time.time() < deadline:
-                    poll_headers = get_headers_fn()
+                    poll_headers = await get_headers_fn()
                     poll_resp = await client.post(
                         fetch_url,
                         json=fetch_body,
@@ -436,7 +437,7 @@ async def _download_and_store_videos(
                 else:
                     download_url = gcs_uri
 
-                dl_headers = get_headers_fn()
+                dl_headers = await get_headers_fn()
                 async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as dl_client:
                     dl_resp = await dl_client.get(download_url, headers=dl_headers)
 
