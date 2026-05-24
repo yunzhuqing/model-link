@@ -30,13 +30,13 @@ from app.utils import json_loads
 
 
 async def _parse_json_body():
-    """Parse Quart request body as JSON, tolerating non-standard client input."""
-    raw = await request.get_data()
-    text = raw.decode("utf-8", errors="replace")
-    try:
-        return json_loads(text)
-    except Exception:
-        return None
+    """Parse Quart request body as JSON, tolerating non-standard client input.
+
+    Delegates to the shared helper which off-loads decode + parse to a worker
+    thread so multi-MB image payloads don't stall the event loop.
+    """
+    from app.routes.gateway_helpers import _parse_json_body as _shared
+    return await _shared()
 
 
 from app.middleware.gateway_service import (

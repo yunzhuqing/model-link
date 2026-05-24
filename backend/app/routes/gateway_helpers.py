@@ -35,23 +35,33 @@ G_API_KEY_PROVIDER_ID = "api_key_provider_id"
 _gateway_service = GatewayService()
 
 
+def _decode_and_parse(raw: bytes):
+    """Sync helper: utf-8 decode + tolerant JSON parse. Runs on a worker thread."""
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json_loads(text), None
+    except Exception as e:
+        return None, (e, text[:200])
+
+
 async def _parse_json_body():
     """Parse Quart request body as JSON, tolerating non-standard client input.
 
-    Tries standard json.loads first, falls back to demjson3 for:
-    - Python-style \\xNN hex escapes
-    - Raw control characters in strings
+    UTF-8 decode and JSON parse run on a worker thread because image-analysis
+    requests can carry multi-MB base64 payloads; doing those CPU-bound steps
+    on the event loop blocks every other coroutine (including /health).
     """
     raw = await request.get_data()
-    text = raw.decode("utf-8", errors="replace")
-    try:
-        return json_loads(text)
-    except Exception as e:
+    if not raw:
+        return None
+    result, err = await asyncio.to_thread(_decode_and_parse, raw)
+    if err is not None:
+        e, preview = err
         logger.warning(
             "_parse_json_body failed: %s | body preview: %.200r",
-            e, text[:200],
+            e, preview,
         )
-        return None
+    return result
 
 
 def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None, exc_info: bool = False) -> None:
