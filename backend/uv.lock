@@ -3,6 +3,17 @@ revision = 2
 requires-python = ">=3.12"
 
 [[package]]
+name = "aiodebug"
+version = "2.3.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/39/ac/0b32c4f7c7b726ff292d1e38e0bd180675768bec6f2ec9c109d086c384a1/aiodebug-2.3.0-py3-none-any.whl", hash = "sha256:ed408cd90869b395f5bc642acffcbaed3b2668e89b40e684a95e0fb60a3257cd" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -896,6 +907,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "aiodebug" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -903,12 +915,14 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiodebug" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiodebug", marker = "extra == 'dev'", specifier = ">=2.3.0" },
     { name = "aiomysql", specifier = ">=0.2.0" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "boto3", specifier = ">=1.42.88" },
@@ -942,6 +956,7 @@ provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiodebug", specifier = ">=2.3.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.23.0" },
 ]

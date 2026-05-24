@@ -340,7 +340,23 @@ def create_app(config=None):
 
     # Enable CORS for all origins
     quart_cors_init(app, allow_origin="*")
-    
+
+    # Optionally enable aiodebug.log_slow_callbacks for diagnosing event-loop
+    # stalls. Activated only when AIODEBUG_SLOW is set (e.g. "0.05" for 50ms);
+    # leaving it unset means zero overhead in production.
+    _aiodebug_threshold = os.getenv("AIODEBUG_SLOW")
+    if _aiodebug_threshold:
+        async def _enable_aiodebug():
+            import asyncio
+            from aiodebug import log_slow_callbacks
+            threshold = float(_aiodebug_threshold)
+            log_slow_callbacks.enable(threshold)
+            asyncio.get_running_loop().set_debug(True)
+            logging.getLogger("gateway").info(
+                "aiodebug.log_slow_callbacks enabled (threshold=%.3fs)", threshold
+            )
+        app.before_serving(_enable_aiodebug)
+
     # Initialise the async DB engine. This must happen before any routes are served.
     app.before_serving(_init_async_engine)
 
