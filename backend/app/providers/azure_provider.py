@@ -153,7 +153,21 @@ class AzureProvider(OpenAIProvider):
 
         return f"{base_url}/openai/deployments/{deployment_name}/chat/completions?api-version={self.api_version}"
 
-    def _prepare_responses_api_request(self, request: ChatRequest) -> Dict[str, Any]:
+    async def _download_file_to_base64(self, url: str) -> tuple:
+        """Download a file from URL and return (base64_data, media_type, filename)."""
+        import base64
+        import os
+
+        client = await self._http()
+        response = await client.get(url)
+        response.raise_for_status()
+
+        content_type = response.headers.get('content-type', 'application/octet-stream')
+        filename = os.path.basename(url.split('?')[0]) or 'file'
+        b64_data = base64.b64encode(response.content).decode('utf-8')
+        return b64_data, content_type, filename
+
+    async def _prepare_responses_api_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         Convert a ChatRequest to the OpenAI Responses API request body format.
 
@@ -268,6 +282,20 @@ class AzureProvider(OpenAIProvider):
                                     "type": "input_image",
                                     "image_url": f"data:{media_type};base64,{block.data or ''}"
                                 })
+                            elif block.type == ContentType.FILE_BASE64:
+                                media_type = block.media_type or "application/octet-stream"
+                                content_parts.append({
+                                    "type": "input_file",
+                                    "filename": block.filename or "document",
+                                    "file_data": f"data:{media_type};base64,{block.data or ''}"
+                                })
+                            elif block.type == ContentType.FILE_URL:
+                                b64_data, content_type, filename = await self._download_file_to_base64(block.url)
+                                content_parts.append({
+                                    "type": "input_file",
+                                    "filename": block.filename or filename,
+                                    "file_data": f"data:{content_type};base64,{b64_data}"
+                                })
                         if content_parts:
                             remaining_item: Dict[str, Any] = {
                                 "role": msg.role.value,
@@ -307,6 +335,20 @@ class AzureProvider(OpenAIProvider):
                         content_parts.append({
                             "type": "input_image",
                             "image_url": f"data:{media_type};base64,{block.data or ''}"
+                        })
+                    elif block.type == ContentType.FILE_BASE64:
+                        media_type = block.media_type or "application/octet-stream"
+                        content_parts.append({
+                            "type": "input_file",
+                            "filename": block.filename or "document",
+                            "file_data": f"data:{media_type};base64,{block.data or ''}"
+                        })
+                    elif block.type == ContentType.FILE_URL:
+                        b64_data, content_type, filename = await self._download_file_to_base64(block.url)
+                        content_parts.append({
+                            "type": "input_file",
+                            "filename": block.filename or filename,
+                            "file_data": f"data:{content_type};base64,{b64_data}"
                         })
                 if content_parts:
                     item["content"] = content_parts
@@ -668,7 +710,7 @@ class AzureProvider(OpenAIProvider):
 
         if self._uses_responses_api(deployment_name):
             # Build Responses API request body
-            request_data = self._prepare_responses_api_request(request)
+            request_data = await self._prepare_responses_api_request(request)
             request_data["stream"] = False
         else:
             request_data = await self.aprepare_request(request)
@@ -716,7 +758,7 @@ class AzureProvider(OpenAIProvider):
             response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
         if self._uses_responses_api(deployment_name):
-            request_data = self._prepare_responses_api_request(request)
+            request_data = await self._prepare_responses_api_request(request)
             request_data["stream"] = True
 
             try:

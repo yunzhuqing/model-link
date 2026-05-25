@@ -109,8 +109,9 @@ def parse_openai_request(data: dict) -> ChatRequest:
                         file_id = file_obj.get('file_id')
                         filename = file_obj.get('filename')
                         if file_data:
-                            # file_data may be "data:mime/type;base64,XXXX" or raw base64
-                            if file_data.startswith("data:") and "," in file_data:
+                            if file_data.startswith(("http://", "https://")):
+                                blocks.append(ContentBlock.from_file_url(file_data))
+                            elif file_data.startswith("data:") and "," in file_data:
                                 header, b64 = file_data.split(",", 1)
                                 media = header.replace("data:", "").replace(";base64", "")
                                 blocks.append(ContentBlock.from_file_base64(
@@ -506,7 +507,28 @@ class OpenAIProvider(BaseProvider):
                 "audio_url": {"url": f"data:{block.media_type or 'audio/mp3'};base64,{block.data}"}
             }
         elif block.type == ContentType.FILE_URL:
-            return {"type": "file_url", "file_url": {"url": block.url}}
+            import base64
+            import os
+            import urllib.request
+
+            try:
+                with urllib.request.urlopen(block.url or "") as resp:
+                    data = resp.read()
+                    content_type = resp.headers.get('Content-Type', 'application/octet-stream')
+                b64_data = base64.b64encode(data).decode('utf-8')
+            except Exception as e:
+                logger.warning("Failed to download file URL %s: %s, falling back to URL passthrough", block.url, e)
+                return {"type": "file_url", "file_url": {"url": block.url}}
+
+            ext = content_type.split("/")[-1] if "/" in content_type else "bin"
+            filename = block.filename or os.path.basename((block.url or "").split("?")[0]) or f"file.{ext}"
+            return {
+                "type": "file",
+                "file": {
+                    "file_data": f"data:{content_type};base64,{b64_data}",
+                    "filename": filename
+                }
+            }
         elif block.type == ContentType.FILE_BASE64:
             media_type = block.media_type or "application/octet-stream"
             ext = media_type.split("/")[-1] if "/" in media_type else "bin"
@@ -514,7 +536,7 @@ class OpenAIProvider(BaseProvider):
             return {
                 "type": "file",
                 "file": {
-                    "file_data": block.data,
+                    "file_data": f"data:{media_type};base64,{block.data}",
                     "filename": filename
                 }
             }

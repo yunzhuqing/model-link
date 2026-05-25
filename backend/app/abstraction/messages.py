@@ -201,7 +201,13 @@ class Message:
             file_obj = item.get('file', {})
             if isinstance(file_obj, dict):
                 if file_obj.get('file_data'):
-                    data = file_obj['file_data']
+                    fd = file_obj['file_data']
+                    if isinstance(fd, str) and fd.startswith(("http://", "https://")):
+                        url = fd
+                        if content_type == ContentType.FILE_BASE64:
+                            content_type = ContentType.FILE_URL
+                    else:
+                        data = fd
                 if file_obj.get('filename'):
                     filename = file_obj['filename']
                 # file_id → treat as file_url type
