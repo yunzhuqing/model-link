@@ -21,16 +21,59 @@ _CODE_FENCE_RE = re.compile(
 )
 
 # ── Reasoning Effort Constants ──────────────────────────────────────────────
-# Standard reasoning_effort levels used across adapters and providers.
-# Replaces hardcoded string values ('low', 'medium', 'high', 'none').
+# Internal reasoning_effort levels used across adapters and providers.
+# Values: none, minimal, low, medium, high, xhigh
+# These are the canonical set — provider-specific effort scales (e.g. Anthropic's
+# max, OpenAI's xhigh) map into this set via to_internal_effort().
+REASONING_EFFORT_NONE = 'none'
+REASONING_EFFORT_MINIMAL = 'minimal'
 REASONING_EFFORT_LOW = 'low'
 REASONING_EFFORT_MEDIUM = 'medium'
 REASONING_EFFORT_HIGH = 'high'
-REASONING_EFFORT_NONE = 'none'
+REASONING_EFFORT_XHIGH = 'xhigh'
 
 # Default reasoning_effort applied when the model name contains "thinking"
 # but no explicit reasoning_effort / thinking parameter was provided.
 REASONING_EFFORT_DEFAULT_FOR_THINKING = REASONING_EFFORT_MEDIUM
+
+# ── Anthropic effort ↔ internal reasoning_effort mapping ──────────────────────
+# Anthropic API effort scale: low, medium, high, xhigh, max
+# Internal scale:            none, minimal, low, medium, high, xhigh
+#
+# The mapping shifts Anthropic levels down by one because the Anthropic scale
+# is shifted upward relative to the internal/OAI-compatible scale:
+#   Anthropic low    → internal minimal
+#   Anthropic medium → internal low
+#   Anthropic high   → internal medium
+#   Anthropic xhigh  → internal high
+#   Anthropic max    → internal xhigh
+
+_ANTHROPIC_TO_INTERNAL: dict[str, str] = {
+    'low': REASONING_EFFORT_MINIMAL,
+    'medium': REASONING_EFFORT_LOW,
+    'high': REASONING_EFFORT_MEDIUM,
+    'xhigh': REASONING_EFFORT_HIGH,
+    'max': REASONING_EFFORT_XHIGH,
+}
+
+_INTERNAL_TO_ANTHROPIC: dict[str, str] = {
+    REASONING_EFFORT_MINIMAL: 'low',
+    REASONING_EFFORT_LOW: 'medium',
+    REASONING_EFFORT_MEDIUM: 'high',
+    REASONING_EFFORT_HIGH: 'xhigh',
+    REASONING_EFFORT_XHIGH: 'max',
+}
+
+
+def to_internal_effort(provider_effort: str) -> str | None:
+    """Convert a provider-specific effort string (e.g. Anthropic) to an internal
+    REASONING_EFFORT_* constant. Returns None for unrecognised values."""
+    return _ANTHROPIC_TO_INTERNAL.get(provider_effort)
+
+
+def to_anthropic_effort(internal_effort: str) -> str:
+    """Convert an internal REASONING_EFFORT_* value to an Anthropic effort string."""
+    return _INTERNAL_TO_ANTHROPIC.get(internal_effort, 'medium')
 
 
 def gen_id(prefix: str) -> str:

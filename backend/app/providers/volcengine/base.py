@@ -23,7 +23,7 @@ from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
-from app.utils import gen_id, json_loads
+from app.utils import gen_id, json_loads, REASONING_EFFORT_MINIMAL
 from .embedding import execute_volcengine_multimodal_embed
 from .image_generation import (
     DoubaoImageProvider,
@@ -198,7 +198,7 @@ class VolcengineProvider(BaseProvider):
             # Model supports thinking; build reasoning config
             effort = request.reasoning_effort
             if not effort or effort == 'none':
-                result["reasoning"] = {"effort": effort or "minimal"}
+                result["reasoning"] = {"effort": effort or REASONING_EFFORT_MINIMAL}
             else:
                 result["reasoning"] = {"effort": effort or "medium"}
         elif request.reasoning_effort and request.reasoning_effort != 'none':

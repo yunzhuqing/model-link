@@ -575,7 +575,7 @@ const ModelForm = ({
           { label: 'Context Size', key: 'context_size', type: 'number' },
           { label: 'Input Size', key: 'input_size', type: 'number' },
           { label: 'Output Size', key: 'output_size', type: 'number' },
-          { label: 'Reasoning Effort (none/low/medium/high)', key: 'reasoning_effort', type: 'text', placeholder: 'none' },
+          { label: 'Reasoning Effort (none/minimal/low/medium/high/xhigh)', key: 'reasoning_effort', type: 'text', placeholder: 'none' },
           { label: 'Input Price ($/M)', key: 'input_price', type: 'number', step: '0.01' },
           { label: 'Output Price ($/M)', key: 'output_price', type: 'number', step: '0.01' },
           { label: 'Cache Create ($/M)', key: 'cache_creation_price', type: 'number', step: '0.01' },

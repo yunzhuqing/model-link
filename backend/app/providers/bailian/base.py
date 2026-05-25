@@ -254,6 +254,14 @@ class BailianProvider(OpenAIProvider):
             data["enable_thinking"] = True
             if not has_reasoning_effort:
                 data["reasoning_effort"] = "medium"
+
+            # When an AI coding agent uses a DeepSeek V4 model, always max effort
+            if request.model.startswith(('deepseek-v4-pro', 'deepseek-v4-flash')):
+                system_text = request.get_system_message()
+                if system_text and any(
+                    kw in system_text for kw in ("Claude Code", "OpenCode", "Codex", "Cline")
+                ):
+                    data["reasoning_effort"] = "max"
         else:
             data["enable_thinking"] = False
 

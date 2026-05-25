@@ -575,98 +575,38 @@ class VertexAIProvider(BaseProvider):
     # ==================== Anthropic (Claude) 格式 ====================
 
     def _prepare_anthropic_request(self, request: ChatRequest) -> Dict[str, Any]:
-        """准备 Anthropic Messages API 格式的请求体"""
-        result = {
-            "anthropic_version": self.ANTHROPIC_VERSION,
-            "max_tokens": request.max_tokens or 4096,
-        }
+        """Build an Anthropic-format request body, reusing AnthropicProvider logic.
 
-        # system 消息直接透传（支持 string 或 List[Dict] 含 cache_control）
-        if request.system is not None:
-            result["system"] = request.system
+        Vertex AI differences from native Anthropic API:
+        - ``anthropic_version`` field in the body (different version string)
+        - Model name goes in the URL, not the body
+        - Empty content must be ``"(empty)"`` instead of ``""``
+        """
+        from app.providers.anthropic_provider import AnthropicProvider as _AnthropicBuilder
 
-        messages = []
-        for msg in request.messages:
-            if msg.role.is_system_like():
-                continue
-            messages.append(self._message_to_anthropic(msg))
-        result["messages"] = messages
+        if not hasattr(self, '_anthropic_builder'):
+            self._anthropic_builder = _AnthropicBuilder(
+                ProviderConfig(name='_vertex_builder', api_key='')
+            )
 
-        if request.temperature is not None:
-            result["temperature"] = request.temperature
-        if request.top_p is not None:
-            result["top_p"] = request.top_p
-        if request.stop:
-            result["stop_sequences"] = request.stop
+        result = self._anthropic_builder.prepare_request(request)
+        del result["model"]
+        result["anthropic_version"] = self.ANTHROPIC_VERSION
 
-        if request.tools:
-            result["tools"] = [self._tool_to_anthropic(t) for t in request.tools]
-        if request.tool_choice:
-            if isinstance(request.tool_choice, str):
-                if request.tool_choice == "auto":
-                    result["tool_choice"] = {"type": "auto"}
-                elif request.tool_choice == "required":
-                    result["tool_choice"] = {"type": "any"}
-                elif request.tool_choice != "none":
-                    result["tool_choice"] = {"type": "tool", "name": request.tool_choice}
-            elif isinstance(request.tool_choice, dict):
-                result["tool_choice"] = request.tool_choice
+        for msg in result.get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, str) and not content:
+                msg["content"] = "(empty)"
+            elif isinstance(content, list):
+                if not content:
+                    msg["content"] = "(empty)"
+                else:
+                    content[:] = [b for b in content if not (
+                        b.get("type") == "text" and not b.get("text")
+                    )]
+                    if not content:
+                        msg["content"] = "(empty)"
 
-        if request.stream:
-            result["stream"] = True
-
-        return result
-
-    def _message_to_anthropic(self, message: Message) -> Dict[str, Any]:
-        """将 Message 转换为 Anthropic 格式"""
-        result = {"role": message.role.value}
-
-        if isinstance(message.content, str):
-            result["content"] = message.content or "(empty)"
-        elif isinstance(message.content, list):
-            blocks = [self._content_block_to_anthropic(b) for b in message.content]
-            # Vertex AI requires text content blocks to be non-empty
-            blocks = [b for b in blocks if not (b.get("type") == "text" and not b.get("text"))]
-            result["content"] = blocks if blocks else "(empty)"
-        else:
-            result["content"] = "(empty)"
-        return result
-
-    def _content_block_to_anthropic(self, block: ContentBlock) -> Dict[str, Any]:
-        """将 ContentBlock 转换为 Anthropic 格式，保留 cache_control"""
-        result: Dict[str, Any]
-        if block.type == ContentType.TEXT:
-            result = {"type": "text", "text": block.text or ""}
-        elif block.type == ContentType.THINKING:
-            # Anthropic thinking 块：thinking 文本存于 block.text，签名存于 block.signature
-            result = {"type": "thinking", "thinking": block.text or ""}
-            if block.signature:
-                result["signature"] = block.signature
-        elif block.type == ContentType.IMAGE_URL:
-            result = {"type": "image", "source": {"type": "url", "url": block.url}}
-        elif block.type == ContentType.IMAGE_BASE64:
-            result = {"type": "image", "source": {"type": "base64", "media_type": block.media_type or "image/jpeg", "data": _strip_data_uri(block.data or "")}}
-        elif block.type == ContentType.TOOL_CALL:
-            result = {"type": "tool_use", "id": block.tool_call_id, "name": block.tool_name, "input": block.tool_arguments or {}}
-        elif block.type == ContentType.TOOL_RESULT:
-            result = {"type": "tool_result", "tool_use_id": block.tool_call_id, "content": block.tool_result or "", "is_error": block.is_error}
-        elif block.type in (ContentType.FILE_URL, ContentType.FILE_BASE64):
-            if block.type == ContentType.FILE_URL:
-                result = {"type": "document", "source": {"type": "url", "url": block.url}}
-            else:
-                result = {"type": "document", "source": {"type": "base64", "media_type": block.media_type or "application/pdf", "data": _strip_data_uri(block.data or "")}}
-        else:
-            result = {"type": "text", "text": block.text or ""}
-        # Attach cache_control if present
-        if block.cache_control:
-            result["cache_control"] = block.cache_control
-        return result
-
-    def _tool_to_anthropic(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """将 ToolDefinition 转换为 Anthropic 格式，保留 cache_control"""
-        result = {"name": tool.name, "description": tool.description, "input_schema": tool.get_parameters_schema()}
-        if tool.cache_control:
-            result["cache_control"] = tool.cache_control
         return result
 
     def _parse_anthropic_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:

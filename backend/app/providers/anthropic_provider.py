@@ -23,10 +23,31 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.utils import to_anthropic_effort
 
 # Internal metadata keys set by the gateway service.
 # These must be filtered out before sending requests to upstream provider APIs.
 _GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking'})
+
+# Claude 4.6+ (and all 5+) models support thinking.type = "adaptive".
+import re as _re
+
+
+def _supports_adaptive_thinking(model_name: str) -> bool:
+    """Return True if the model supports adaptive thinking (Claude >= 4.6)."""
+    nums = [int(n) for n in _re.findall(r'\d+', model_name)]
+    if not nums:
+        return False
+    major = nums[0]
+    # The second numeric token is the minor version *if* it's short;
+    # date stamps (8+ digits) are not version numbers.
+    minor = nums[1] if len(nums) > 1 and nums[1] < 100 else None
+    if minor is not None:
+        return major > 4 or (major == 4 and minor >= 6)
+    return major >= 5
+
+
+del _re
 
 
 class AnthropicProvider(BaseProvider):
@@ -200,16 +221,31 @@ class AnthropicProvider(BaseProvider):
             elif isinstance(request.tool_choice, dict):
                 result["tool_choice"] = request.tool_choice
 
-        # 处理 thinking（extended thinking）
-        # reasoning_effort: "high" → enable thinking, "none" → disable
+        # 处理 thinking（extended thinking / adaptive thinking）
+        # Map internal reasoning_effort to Anthropic effort + enable thinking.
+        # "none" → disabled; any other value → enabled with the corresponding effort.
+        #
+        # Claude 4.6+ supports thinking.type = "adaptive" (no budget_tokens).
+        # Older Claude models use thinking.type = "enabled" with budget_tokens.
         if request.reasoning_effort and request.reasoning_effort != 'none':
-            # Anthropic thinking 需要设置 budget_tokens
-            # 使用 max_tokens 的一定比例作为 budget，或使用合理默认值
-            budget_tokens = min(request.max_tokens or 4096, 32000)
-            result["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": budget_tokens,
-            }
+            anthropic_effort = to_anthropic_effort(request.reasoning_effort)
+
+            if _supports_adaptive_thinking(request.model):
+                thinking_config: dict = {
+                    "type": "adaptive",
+                    "display": "summarized",
+                }
+            else:
+                budget_tokens = min(request.max_tokens or 4096, 32000)
+                thinking_config = {
+                    "type": "enabled",
+                    "budget_tokens": budget_tokens,
+                    "effort": anthropic_effort,
+                }
+
+            result["thinking"] = thinking_config
+            # Also set output_config.effort for the Anthropic output_config pathway
+            result.setdefault("output_config", {})["effort"] = anthropic_effort
 
         # 处理 metadata 中的 response_format（如果由 Anthropic adapter 映射过来）
         if 'response_format' in request.metadata:
@@ -224,9 +260,9 @@ class AnthropicProvider(BaseProvider):
                 }
                 if 'description' in json_schema:
                     output_format['description'] = json_schema['description']
-                result['output_config'] = {'format': output_format}
+                result.setdefault('output_config', {})['format'] = output_format
             elif rf_type == 'json_object':
-                result['output_config'] = {'format': {'type': 'json'}}
+                result.setdefault('output_config', {})['format'] = {'type': 'json'}
 
         if request.stream:
             result["stream"] = True

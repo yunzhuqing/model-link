@@ -81,6 +81,13 @@ class DeepSeekProvider(OpenAIProvider):
 
         复用 OpenAI 格式，添加 DeepSeek 特有的参数处理。
         """
+        # When the system prompt indicates AI coding agent usage, force
+        # reasoning to the highest available effort level.
+        system_text = request.get_system_message()
+        if system_text and not request.reasoning_effort:
+            if any(kw in system_text for kw in ("Claude Code", "OpenCode", "Codex", "Cline")):
+                request.reasoning_effort = 'max'
+
         result = super().prepare_request(request)
 
         # DeepSeek 特有：根据模型是否支持思维和 reasoning_effort 设置 thinking 参数
