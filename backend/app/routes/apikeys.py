@@ -527,7 +527,11 @@ async def get_api_key(current_user, api_key_id):
     async with get_db_session() as session:
         if cached is not None:
             # Still need to verify group membership from DB
-            api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+            api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
             if not api_key:
                 cache.invalidate_api_key_by_id(api_key_id)
                 return jsonify({'detail': 'API key not found'}), 404
@@ -537,7 +541,11 @@ async def get_api_key(current_user, api_key_id):
                 return jsonify({'detail': 'You do not have access to this API key'}), 403
             return jsonify(api_key.to_dict_with_group())
 
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -618,7 +626,11 @@ async def update_api_key(current_user, api_key_id):
     Members can only edit their own keys if member.apikey.edit_own is enabled.
     Admins/root can edit any key in the group."""
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -733,7 +745,11 @@ async def get_api_key_models(current_user, api_key_id):
     import hashlib
 
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -811,7 +827,11 @@ async def get_api_key_detail(current_user, api_key_id):
     import hashlib
 
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -1011,7 +1031,11 @@ async def delete_api_key(current_user, api_key_id):
     Members can only delete their own keys if member.apikey.edit_own is enabled.
     Admins/root can delete any key in the group."""
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -1050,7 +1074,11 @@ async def regenerate_api_key(current_user, api_key_id):
     Members can only regenerate their own keys if member.apikey.edit_own is enabled.
     Admins/root can regenerate any key in the group."""
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -1093,7 +1121,11 @@ async def regenerate_api_key(current_user, api_key_id):
 async def list_budgets(current_user, api_key_id):
     """List all budget records for an API key."""
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
         if current_user not in api_key.group.users:
@@ -1122,7 +1154,11 @@ async def add_budget(current_user, api_key_id):
     (total remaining) for backward compatibility.
     """
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
@@ -1177,7 +1213,11 @@ async def add_budget(current_user, api_key_id):
 async def delete_budget(current_user, api_key_id, budget_id):
     """Delete a budget entry. Requires apikey.add_budget permission."""
     async with get_db_session() as session:
-        api_key = await session.get(ApiKey, api_key_id, options=[selectinload(ApiKey.group).selectinload(Group.users)])
+        api_key = await session.get(ApiKey, api_key_id, options=[
+                selectinload(ApiKey.group).selectinload(Group.users),
+                selectinload(ApiKey.policies),
+                selectinload(ApiKey.user),
+            ])
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
