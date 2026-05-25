@@ -217,8 +217,8 @@ def _extract_video_gen_metadata(tool_data: dict, file_id_media_map: dict) -> dic
     meta = {'_video_generation': True}
 
     size = tool_data.get('size')
-    if size:
-        meta['size'] = size
+    if size and isinstance(size, str):
+        meta['size'] = size.replace("*", "x").replace("×", "x")
     aspect_ratio = tool_data.get('aspect_ratio')
     if aspect_ratio:
         meta['aspect_ratio'] = aspect_ratio
@@ -256,8 +256,8 @@ def _extract_image_gen_metadata(tool_data: dict) -> dict:
     meta = {}
 
     size = tool_data.get('size')
-    if size:
-        meta['size'] = size
+    if size and isinstance(size, str):
+        meta['size'] = size.replace("*", "x").replace("×", "x")
     n = tool_data.get('n') or tool_data.get('number') or tool_data.get('count')
     if n is not None:
         meta['number'] = int(n)

@@ -125,7 +125,7 @@ export function HappyhorseSection() {
       <div className="p-6 border-b border-slate-100">
         <div className="flex items-center gap-3 mb-1">
           <h3 className="text-lg font-semibold text-slate-800">Happyhorse 视频生成</h3>
-          <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-pink-100 text-pink-700">巴巴玛</span>
+          <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-pink-100 text-pink-700">阿里巴巴</span>
         </div>
         <p className="text-sm text-slate-500">Happyhorse 系列视频模型，支持文生视频、图生视频、参考图生视频和视频编辑，通过 Bailian API 接入。</p>
       </div>

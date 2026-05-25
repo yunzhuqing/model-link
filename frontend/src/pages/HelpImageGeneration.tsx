@@ -1,23 +1,24 @@
-import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Copy, Check, ArrowLeft, ImageIcon } from 'lucide-react';
-import { useBaseUrl } from '../components/help/HelpShared';
-
-interface TocItem { id: string; label: string }
+import { ArrowLeft, ImageIcon } from 'lucide-react';
+import { useBaseUrl, TableOfContents, SectionCard, CodeBlock, CurlSection } from '../components/help/HelpShared';
+import type { TocItem } from '../components/help/HelpShared';
 const TOC_ITEMS: TocItem[] = [
   { id: 'overview', label: '功能说明' },
-  { id: 'responses-api', label: 'Responses API（推荐）' },
-  { id: 'responses-params', label: '工具参数' },
-  { id: 'responses-response', label: '工具响应格式' },
-  { id: 'images-api', label: 'Images API' },
-  { id: 'images-params', label: 'Images 请求参数' },
-  { id: 'images-response', label: 'Images 响应格式' },
-  { id: 'edits-api', label: 'Images Edits API' },
-  { id: 'edits-params', label: 'Edits 请求参数' },
-  { id: 'edits-response', label: 'Edits 响应格式' },
-  { id: 'seedream-sizes', label: 'Seedream 尺寸' },
-  { id: 'z-image-sizes', label: 'Z-Image 尺寸' },
-  { id: 'gemini-sizes', label: 'Gemini 尺寸' },
+  { id: 'api-section', label: 'API 调用' },
+  { id: 'responses-api', label: '　├ Responses API', indent: true },
+  { id: 'responses-params', label: '　│　├ 工具参数', indent: true },
+  { id: 'responses-response', label: '　│　└ 工具响应格式', indent: true },
+  { id: 'images-api', label: '　├ Image Generations', indent: true },
+  { id: 'images-params', label: '　│　├ 请求参数', indent: true },
+  { id: 'images-response', label: '　│　└ 响应格式', indent: true },
+  { id: 'edits-api', label: '　└ Image Edits', indent: true },
+  { id: 'edits-params', label: '　　　├ 请求参数', indent: true },
+  { id: 'edits-response', label: '　　　└ 响应格式', indent: true },
+  { id: 'models-section', label: '模型说明' },
+  { id: 'gpt-image-sizes', label: '　├ GPT Image', indent: true },
+  { id: 'gemini-sizes', label: '　├ Nano Banana', indent: true },
+  { id: 'seedream-sizes', label: '　├ Seedream', indent: true },
+  { id: 'z-image-sizes', label: '　└ Z-Image', indent: true },
 ];
 
 const RESPONSES_REQUEST = `{
@@ -124,127 +125,6 @@ const EDITS_RESPONSE = `{
   "background": "opaque"
 }`;
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={async () => { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-      className="absolute top-3 right-3 p-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white transition-colors"
-      title="复制"
-    >
-      {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-    </button>
-  );
-}
-
-function CodeBlock({ code, lang = 'json' }: { code: string; lang?: string }) {
-  return (
-    <div className="relative">
-      <pre className={`language-${lang} bg-slate-900 text-slate-100 rounded-xl p-4 pr-12 text-sm overflow-x-auto leading-relaxed`}>
-        <code>{code}</code>
-      </pre>
-      <CopyButton text={code} />
-    </div>
-  );
-}
-
-function SectionCard({ id, title, description, badge, badgeColor, children }: {
-  id: string; title: string; description: string; badge?: string; badgeColor?: string; children: React.ReactNode;
-}) {
-  return (
-    <div id={id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
-      <div className="p-6 border-b border-slate-100">
-        <div className="flex items-center gap-3 mb-1">
-          <h3 className="text-lg font-semibold text-slate-800">{title}</h3>
-          {badge && <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${badgeColor}`}>{badge}</span>}
-        </div>
-        <p className="text-sm text-slate-500">{description}</p>
-      </div>
-      <div className="p-6 space-y-4">{children}</div>
-    </div>
-  );
-}
-
-function CurlSection({ body, endpoint }: { body: string; endpoint?: string }) {
-  const baseUrl = useBaseUrl();
-  const [show, setShow] = useState(false);
-  const url = endpoint || `${baseUrl}/v1/responses`;
-  const curl = `curl -X POST ${url} \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">请求体</span>
-        <button onClick={() => setShow(v => !v)} className="text-xs text-blue-500 hover:text-blue-700 underline underline-offset-2">
-          {show ? '隐藏 cURL' : '查看 cURL'}
-        </button>
-      </div>
-      <CodeBlock code={body} />
-      {show && (
-        <div className="mt-3">
-          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">cURL 示例</span>
-          <CodeBlock code={curl} lang="bash" />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TableOfContents({ items }: { items: TocItem[] }) {
-  const [active, setActive] = useState(items[0]?.id ?? '');
-  const scrollRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    scrollRef.current = document.querySelector('main') as HTMLElement;
-    const container = scrollRef.current;
-    if (!container) return;
-    const onScroll = () => {
-      let cur = items[0]?.id ?? '';
-      for (const item of items) {
-        const el = document.getElementById(item.id);
-        if (el) {
-          const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
-          if (top <= 80) cur = item.id;
-        }
-      }
-      setActive(cur);
-    };
-    container.addEventListener('scroll', onScroll, { passive: true });
-    return () => container.removeEventListener('scroll', onScroll);
-  }, [items]);
-
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    const container = scrollRef.current;
-    if (el && container) {
-      const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
-      container.scrollTo({ top: container.scrollTop + top - 16, behavior: 'smooth' });
-    }
-  };
-
-  return (
-    <aside className="w-52 flex-shrink-0 hidden xl:block">
-      <div className="sticky top-0">
-        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3 px-1">本页内容</p>
-        <nav className="space-y-0.5">
-          {items.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => scrollTo(item.id)}
-              className={`w-full text-left px-3 py-1.5 rounded-lg text-sm transition-all duration-150 ${
-                active === item.id
-                  ? 'bg-pink-50 text-pink-600 font-medium border-l-2 border-pink-500'
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-      </div>
-    </aside>
-  );
-}
-
 export default function HelpImageGeneration() {
   const navigate = useNavigate();
   const baseUrl = useBaseUrl();
@@ -276,11 +156,11 @@ export default function HelpImageGeneration() {
         <div id="overview" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800 mb-1">功能说明</h3>
-            <p className="text-sm text-slate-500">提供多种图片生成和编辑方式，可根据场景选择合适的接入方式。</p>
+            <p className="text-sm text-slate-500">图片生成功能分为<strong> API 调用</strong>（三种接入方式）和<strong> 模型说明</strong>（各模型支持的尺寸参数）。</p>
           </div>
           <div className="p-6 space-y-3">
             <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-800">
-              <strong>三种接入方式对比：</strong>
+              <strong>接入方式对比：</strong>
               <ul className="mt-1.5 space-y-1 list-disc list-inside text-emerald-700">
                 <li><strong className="text-emerald-900">Responses API + image_generation 工具（推荐）</strong> — 对话式图片生成，支持多轮对话上下文、图生图、异步模式</li>
                 <li><strong className="text-emerald-900">/v1/images/generations</strong> — OpenAI 兼容接口，参数扁平化，文生图更简洁直接</li>
@@ -288,34 +168,29 @@ export default function HelpImageGeneration() {
               </ul>
             </div>
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-              <strong>注意：</strong>需要图片生成模型（如 Volcengine 的 seedream 系列、百炼的 qwen-image 系列、Gemini 图像生成模型等）。模型须在管理面板中配置。
+              <strong>注意：</strong>需要图片生成模型。模型须在管理面板中配置，支持的尺寸详见下方「模型说明」章节。
             </div>
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left">
                   <tr>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">模型系列</th>
                     <th className="px-4 py-2.5 font-semibold text-slate-600">模型 ID</th>
                     <th className="px-4 py-2.5 font-semibold text-slate-600">输出格式</th>
-                    <th className="px-4 py-2.5 font-semibold text-slate-600">输出尺寸范围</th>
+                    <th className="px-4 py-2.5 font-semibold text-slate-600">尺寸范围</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {[
-                    { model: 'qwen-image-2.0',                  format: 'png',       size: '512×512 ~ 2048×2048' },
-                    { model: 'qwen-image-2.0-pro',               format: 'png',       size: '512×512 ~ 2048×2048' },
-                    { model: 'z-image-turbo',                     format: 'png',       size: '1K / 1.5K / 2K（见下方尺寸表）' },
-                    { model: 'doubao-seedream-4.0',              format: 'jpeg',      size: '1K ~ 4K（见下方尺寸表）' },
-                    { model: 'doubao-seedream-4.5',              format: 'jpeg',      size: '2K ~ 4K（见下方尺寸表）' },
-                    { model: 'doubao-seedream-5.0',              format: 'png / jpg', size: '2K ~ 3K（见下方尺寸表）' },
-                    { model: 'seedream-4.0',                     format: 'jpeg',      size: '1K ~ 4K（见下方尺寸表）' },
-                    { model: 'seedream-4.5',                     format: 'jpeg',      size: '2K ~ 4K（见下方尺寸表）' },
-                    { model: 'seedream-5.0',                     format: 'png / jpg', size: '2K ~ 3K（见下方尺寸表）' },
-                    { model: 'gemini-2.5-flash-image',           format: 'png / jpg', size: '固定分辨率（见下方尺寸表）' },
-                    { model: 'gemini-3-pro-image-preview',       format: 'png / jpg', size: '1K ~ 4K（见下方尺寸表）' },
-                    { model: 'gemini-3.1-flash-image-preview',   format: 'png / jpg', size: '512 ~ 4K（见下方尺寸表）' },
+                    { family: 'GPT Image',    models: 'gpt-image-2',              format: 'png / jpg / webp', size: '1K ~ 4K（9 种比例）' },
+                    { family: 'Nano Banana',  models: 'gemini-2.5-flash-image / gemini-3-pro-image-preview / gemini-3.1-flash-image-preview', format: 'png / jpg', size: '512 ~ 4K' },
+                    { family: 'Seedream',     models: 'seedream-4.0 / 4.5 / 5.0 / doubao-seedream 系列', format: 'png / jpg', size: '1K ~ 4K' },
+                    { family: 'Z-Image',      models: 'z-image-turbo',             format: 'png', size: '1K / 1.5K / 2K（11 种比例）' },
+                    { family: 'Qwen Image',   models: 'qwen-image-2.0 / 2.0-pro',  format: 'png', size: '512x512 ~ 2048x2048' },
                   ].map((r) => (
-                    <tr key={r.model} className="hover:bg-slate-50">
-                      <td className="px-4 py-2.5"><code className="text-pink-600 font-semibold text-xs">{r.model}</code></td>
+                    <tr key={r.family} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-semibold text-slate-700 text-xs">{r.family}</td>
+                      <td className="px-4 py-2.5"><code className="text-pink-600 text-xs">{r.models}</code></td>
                       <td className="px-4 py-2.5 text-slate-600 font-mono text-xs">{r.format}</td>
                       <td className="px-4 py-2.5 text-slate-600 text-xs">{r.size}</td>
                     </tr>
@@ -326,11 +201,11 @@ export default function HelpImageGeneration() {
           </div>
         </div>
 
-        {/* ========== Responses API Section ========== */}
-        <div className="flex items-center gap-3">
-          <div className="h-px flex-1 bg-pink-200" />
-          <span className="text-xs font-semibold text-pink-400 uppercase tracking-widest px-2">方式一：Responses API（推荐）</span>
-          <div className="h-px flex-1 bg-pink-200" />
+        {/* ========== API 调用 Section ========== */}
+        <div id="api-section" className="flex items-center gap-3 scroll-mt-4">
+          <div className="h-px flex-1 bg-slate-300" />
+          <span className="text-sm font-bold text-slate-500 uppercase tracking-widest px-2">API 调用</span>
+          <div className="h-px flex-1 bg-slate-300" />
         </div>
 
         {/* Responses API endpoint info */}
@@ -414,7 +289,7 @@ export default function HelpImageGeneration() {
         {/* ========== Images Generations API Section ========== */}
         <div className="flex items-center gap-3">
           <div className="h-px flex-1 bg-orange-200" />
-          <span className="text-xs font-semibold text-orange-400 uppercase tracking-widest px-2">方式二：Images Generations API</span>
+          <span className="text-xs font-semibold text-orange-400 uppercase tracking-widest px-2">Image Generations API</span>
           <div className="h-px flex-1 bg-orange-200" />
         </div>
 
@@ -534,7 +409,7 @@ export default function HelpImageGeneration() {
         {/* ========== Images Edits API Section ========== */}
         <div className="flex items-center gap-3">
           <div className="h-px flex-1 bg-violet-200" />
-          <span className="text-xs font-semibold text-violet-400 uppercase tracking-widest px-2">方式三：Images Edits API</span>
+          <span className="text-xs font-semibold text-violet-400 uppercase tracking-widest px-2">Image Edits API</span>
           <div className="h-px flex-1 bg-violet-200" />
         </div>
 
@@ -656,147 +531,18 @@ export default function HelpImageGeneration() {
           </div>
         </SectionCard>
 
-        {/* ========== Seedream Sizes ========== */}
-        <div className="flex items-center gap-3">
-          <div className="h-px flex-1 bg-slate-200" />
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest px-2">尺寸参考</span>
-          <div className="h-px flex-1 bg-slate-200" />
+        {/* ========== 模型说明 Section ========== */}
+        <div id="models-section" className="flex items-center gap-3 scroll-mt-4">
+          <div className="h-px flex-1 bg-slate-300" />
+          <span className="text-sm font-bold text-slate-500 uppercase tracking-widest px-2">模型说明</span>
+          <div className="h-px flex-1 bg-slate-300" />
         </div>
 
+        {/* GPT Image 2 size reference */}
         <SectionCard
-          id="seedream-sizes"
-          title="Doubao Seedream 支持尺寸"
-          description='不同 Seedream 模型支持的图片尺寸参考表。size 参数可传入 "1K"、"2K"、"3K"、"4K" 或具体分辨率（如 "2048x2048"）。'
-        >
-          <div className="space-y-6">
-            {/* Seedream 5.0 lite */}
-            <div>
-              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 5.0 lite</h4>
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-left">
-                    <tr>
-                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {[
-                      { ratio: '1:1',  k1: '—', k2: '2048x2048', k3: '3072x3072', k4: '—' },
-                      { ratio: '3:4',  k1: '—', k2: '1728x2304', k3: '2592x3456', k4: '—' },
-                      { ratio: '4:3',  k1: '—', k2: '2304x1728', k3: '3456x2592', k4: '—' },
-                      { ratio: '16:9', k1: '—', k2: '2848x1600', k3: '4096x2304', k4: '—' },
-                      { ratio: '9:16', k1: '—', k2: '1600x2848', k3: '2304x4096', k4: '—' },
-                      { ratio: '3:2',  k1: '—', k2: '2496x1664', k3: '2496x3744', k4: '—' },
-                      { ratio: '2:3',  k1: '—', k2: '1664x2496', k3: '3744x2496', k4: '—' },
-                      { ratio: '21:9', k1: '—', k2: '3136x1344', k3: '4704x2016', k4: '—' },
-                    ].map((r) => (
-                      <tr key={r.ratio} className="hover:bg-slate-50">
-                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
-                        <td className="px-3 py-1.5 text-slate-400">{r.k1}</td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k3}</td>
-                        <td className="px-3 py-1.5 text-slate-400">{r.k4}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Seedream 4.5 */}
-            <div>
-              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 4.5</h4>
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-left">
-                    <tr>
-                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {[
-                      { ratio: '1:1',  k1: '—', k2: '2048x2048', k3: '—', k4: '4096x4096' },
-                      { ratio: '3:4',  k1: '—', k2: '1728x2304', k3: '—', k4: '3520x4704' },
-                      { ratio: '4:3',  k1: '—', k2: '2304x1728', k3: '—', k4: '4704x3520' },
-                      { ratio: '16:9', k1: '—', k2: '2848x1600', k3: '—', k4: '5504x3040' },
-                      { ratio: '9:16', k1: '—', k2: '1600x2848', k3: '—', k4: '3040x5504' },
-                      { ratio: '3:2',  k1: '—', k2: '2496x1664', k3: '—', k4: '3328x4992' },
-                      { ratio: '2:3',  k1: '—', k2: '1664x2496', k3: '—', k4: '4992x3328' },
-                      { ratio: '21:9', k1: '—', k2: '3136x1344', k3: '—', k4: '6240x2656' },
-                    ].map((r) => (
-                      <tr key={r.ratio} className="hover:bg-slate-50">
-                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
-                        <td className="px-3 py-1.5 text-slate-400">{r.k1}</td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
-                        <td className="px-3 py-1.5 text-slate-400">{r.k3}</td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Seedream 4.0 */}
-            <div>
-              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 4.0</h4>
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-left">
-                    <tr>
-                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
-                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {[
-                      { ratio: '1:1',  k1: '1024x1024', k2: '2048x2048', k3: '—', k4: '4096x4096' },
-                      { ratio: '3:4',  k1: '864x1152',  k2: '1728x2304', k3: '—', k4: '3520x4704' },
-                      { ratio: '4:3',  k1: '1152x864',  k2: '2304x1728', k3: '—', k4: '4704x3520' },
-                      { ratio: '16:9', k1: '1312x736',  k2: '2848x1600', k3: '—', k4: '5504x3040' },
-                      { ratio: '9:16', k1: '736x1312',  k2: '1600x2848', k3: '—', k4: '3040x5504' },
-                      { ratio: '2:3',  k1: '832x1248',  k2: '2496x1664', k3: '—', k4: '3328x4992' },
-                      { ratio: '3:2',  k1: '1248x832',  k2: '1664x2496', k3: '—', k4: '4992x3328' },
-                      { ratio: '21:9', k1: '1568x672',  k2: '3136x1344', k3: '—', k4: '6240x2656' },
-                    ].map((r) => (
-                      <tr key={r.ratio} className="hover:bg-slate-50">
-                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
-                        <td className="px-3 py-1.5 text-slate-400">{r.k3}</td>
-                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
-            <strong>提示：</strong>size 参数支持两种格式：
-            <ul className="mt-1 space-y-0.5 list-disc list-inside text-blue-700">
-              <li>分辨率等级：<code>"1K"</code>、<code>"2K"</code>、<code>"3K"</code>、<code>"4K"</code>（自动匹配默认比例 1:1）</li>
-              <li>精确分辨率：<code>"2048x2048"</code>、<code>"1728x2304"</code> 等（需与上表中的尺寸匹配）</li>
-            </ul>
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          id="z-image-sizes"
-          title="Z-Image Turbo 支持尺寸"
-          description="百炼 Z-Image Turbo 模型使用 aspect_ratio（宽高比）+ 分辨率档位（1K / 1.5K / 2K）来确定输出图片尺寸。仅支持文本输入。"
+          id="gpt-image-sizes"
+          title="GPT Image 2 支持尺寸"
+          description="OpenAI gpt-image-2 模型支持的图片尺寸参考表。size 参数传入 WxH 分辨率字符串，支持 1K、2K、4K 三个档位。"
         >
           <div className="overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">
@@ -804,48 +550,42 @@ export default function HelpImageGeneration() {
                 <tr>
                   <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
                   <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
-                  <th className="px-3 py-2 font-semibold text-slate-600">1.5K</th>
                   <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
                 {[
-                  { ratio: '1:1',  k1: '1024×1024',  k15: '1280×1280',  k2: '1536×1536' },
-                  { ratio: '2:3',  k1: '832×1248',   k15: '1024×1536',  k2: '1248×1872' },
-                  { ratio: '3:2',  k1: '1248×832',   k15: '1536×1024',  k2: '1872×1248' },
-                  { ratio: '3:4',  k1: '864×1152',   k15: '1104×1472',  k2: '1296×1728' },
-                  { ratio: '4:3',  k1: '1152×864',   k15: '1472×1104',  k2: '1728×1296' },
-                  { ratio: '7:9',  k1: '896×1152',   k15: '1120×1440',  k2: '1344×1728' },
-                  { ratio: '9:7',  k1: '1152×896',   k15: '1440×1120',  k2: '1728×1344' },
-                  { ratio: '9:16', k1: '720×1280',   k15: '864×1536',   k2: '1152×2048' },
-                  { ratio: '9:21', k1: '576×1344',   k15: '720×1680',   k2: '864×2016' },
-                  { ratio: '16:9', k1: '1280×720',   k15: '1536×864',   k2: '2048×1152' },
-                  { ratio: '21:9', k1: '1344×576',   k15: '1680×720',   k2: '2016×864' },
+                  { ratio: '1:1',  k1: '1024x1024',  k2: '2048x2048',  k4: '3840x3840' },
+                  { ratio: '3:2',  k1: '1536x1024',  k2: '3072x2048',  k4: '3840x2560' },
+                  { ratio: '2:3',  k1: '1024x1536',  k2: '2048x3072',  k4: '2560x3840' },
+                  { ratio: '3:4',  k1: '768x1024',   k2: '1536x2048',  k4: '2880x3840' },
+                  { ratio: '4:3',  k1: '1024x768',   k2: '2048x1536',  k4: '3840x2880' },
+                  { ratio: '16:9', k1: '1024x576',   k2: '2048x1152',  k4: '3840x2160' },
+                  { ratio: '9:16', k1: '576x1024',   k2: '1152x2048',  k4: '2160x3840' },
+                  { ratio: '21:9', k1: '1024x439',   k2: '2048x878',   k4: '3840x1646' },
+                  { ratio: '9:21', k1: '439x1024',   k2: '878x2048',   k4: '1646x3840' },
                 ].map((r) => (
                   <tr key={r.ratio} className="hover:bg-slate-50">
                     <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
                     <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
-                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k15}</td>
                     <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
-            <strong>提示：</strong>Z-Image Turbo 的 size 参数使用 WxH 精确分辨率格式（如 <code>"1024*1024"</code>），需与上表中的尺寸匹配。也可通过 aspect_ratio 参数指定宽高比，系统自动匹配对应分辨率：
-            <ul className="mt-1 space-y-0.5 list-disc list-inside text-blue-700">
-              <li>size 精确分辨率：<code>size: "1024*1024"</code> → 直接使用</li>
-              <li>仅 aspect_ratio：<code>aspect_ratio: "1:1"</code> → 默认 1K档 1024×1024</li>
-              <li>size 档位 + aspect_ratio：<code>size: "2K"</code> + <code>aspect_ratio: "16:9"</code> → 自动匹配 2048×1152</li>
-            </ul>
+            <strong>提示：</strong>gpt-image-2 的 size 参数使用 WxH 精确分辨率格式，需与上表中的尺寸匹配。
+            支持通过 TencentVOD 路由访问。
           </div>
         </SectionCard>
 
         <SectionCard
           id="gemini-sizes"
-          title="Gemini 图像模型支持尺寸"
-          description="不同 Gemini 图像模型支持的尺寸参考表，通过 TencentVOD 路由。"
+          title="Nano Banana（Gemini 图像模型）支持尺寸"
+          description="Nano Banana 即 Gemini 图像生成系列模型支持的尺寸参考表，通过 TencentVOD 路由。"
         >
           <div className="space-y-6">
             {/* Gemini 2.5 Flash Image */}
@@ -965,9 +705,184 @@ export default function HelpImageGeneration() {
             </div>
           </div>
         </SectionCard>
+        <SectionCard
+          id="seedream-sizes"
+          title="Seedream 支持尺寸"
+          description='doubao-seedream 为国内模型名称，seedream 为海外模型名称。size 参数传入 WxH 精确分辨率（如 "2048x2048"），需与下表中的尺寸匹配。'
+        >
+          <div className="space-y-6">
+            {/* Seedream 5.0 lite */}
+            <div>
+              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 5.0 lite</h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {[
+                      { ratio: '1:1',  k1: '—', k2: '2048x2048', k3: '3072x3072', k4: '—' },
+                      { ratio: '3:4',  k1: '—', k2: '1728x2304', k3: '2592x3456', k4: '—' },
+                      { ratio: '4:3',  k1: '—', k2: '2304x1728', k3: '3456x2592', k4: '—' },
+                      { ratio: '16:9', k1: '—', k2: '2848x1600', k3: '4096x2304', k4: '—' },
+                      { ratio: '9:16', k1: '—', k2: '1600x2848', k3: '2304x4096', k4: '—' },
+                      { ratio: '3:2',  k1: '—', k2: '2496x1664', k3: '2496x3744', k4: '—' },
+                      { ratio: '2:3',  k1: '—', k2: '1664x2496', k3: '3744x2496', k4: '—' },
+                      { ratio: '21:9', k1: '—', k2: '3136x1344', k3: '4704x2016', k4: '—' },
+                    ].map((r) => (
+                      <tr key={r.ratio} className="hover:bg-slate-50">
+                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
+                        <td className="px-3 py-1.5 text-slate-400">{r.k1}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k3}</td>
+                        <td className="px-3 py-1.5 text-slate-400">{r.k4}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Seedream 4.5 */}
+            <div>
+              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 4.5</h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {[
+                      { ratio: '1:1',  k1: '—', k2: '2048x2048', k3: '—', k4: '4096x4096' },
+                      { ratio: '3:4',  k1: '—', k2: '1728x2304', k3: '—', k4: '3520x4704' },
+                      { ratio: '4:3',  k1: '—', k2: '2304x1728', k3: '—', k4: '4704x3520' },
+                      { ratio: '16:9', k1: '—', k2: '2848x1600', k3: '—', k4: '5504x3040' },
+                      { ratio: '9:16', k1: '—', k2: '1600x2848', k3: '—', k4: '3040x5504' },
+                      { ratio: '3:2',  k1: '—', k2: '2496x1664', k3: '—', k4: '3328x4992' },
+                      { ratio: '2:3',  k1: '—', k2: '1664x2496', k3: '—', k4: '4992x3328' },
+                      { ratio: '21:9', k1: '—', k2: '3136x1344', k3: '—', k4: '6240x2656' },
+                    ].map((r) => (
+                      <tr key={r.ratio} className="hover:bg-slate-50">
+                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
+                        <td className="px-3 py-1.5 text-slate-400">{r.k1}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                        <td className="px-3 py-1.5 text-slate-400">{r.k3}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Seedream 4.0 */}
+            <div>
+              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 4.0</h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {[
+                      { ratio: '1:1',  k1: '1024x1024', k2: '2048x2048', k3: '—', k4: '4096x4096' },
+                      { ratio: '3:4',  k1: '864x1152',  k2: '1728x2304', k3: '—', k4: '3520x4704' },
+                      { ratio: '4:3',  k1: '1152x864',  k2: '2304x1728', k3: '—', k4: '4704x3520' },
+                      { ratio: '16:9', k1: '1312x736',  k2: '2848x1600', k3: '—', k4: '5504x3040' },
+                      { ratio: '9:16', k1: '736x1312',  k2: '1600x2848', k3: '—', k4: '3040x5504' },
+                      { ratio: '2:3',  k1: '832x1248',  k2: '2496x1664', k3: '—', k4: '3328x4992' },
+                      { ratio: '3:2',  k1: '1248x832',  k2: '1664x2496', k3: '—', k4: '4992x3328' },
+                      { ratio: '21:9', k1: '1568x672',  k2: '3136x1344', k3: '—', k4: '6240x2656' },
+                    ].map((r) => (
+                      <tr key={r.ratio} className="hover:bg-slate-50">
+                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                        <td className="px-3 py-1.5 text-slate-400">{r.k3}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
+            <strong>提示：</strong>Seedream 的 size 参数仅支持 WxH 精确分辨率格式（如 <code>"2048x2048"</code>），需与上表中的尺寸匹配。
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          id="z-image-sizes"
+          title="Z-Image Turbo 支持尺寸"
+          description="百炼 Z-Image Turbo 模型使用 aspect_ratio（宽高比）+ 分辨率档位（1K / 1.5K / 2K）来确定输出图片尺寸。仅支持文本输入。"
+        >
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">1.5K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {[
+                  { ratio: '1:1',  k1: '1024x1024',  k15: '1280x1280',  k2: '1536x1536' },
+                  { ratio: '2:3',  k1: '832x1248',   k15: '1024x1536',  k2: '1248x1872' },
+                  { ratio: '3:2',  k1: '1248x832',   k15: '1536x1024',  k2: '1872x1248' },
+                  { ratio: '3:4',  k1: '864x1152',   k15: '1104x1472',  k2: '1296x1728' },
+                  { ratio: '4:3',  k1: '1152x864',   k15: '1472x1104',  k2: '1728x1296' },
+                  { ratio: '7:9',  k1: '896x1152',   k15: '1120x1440',  k2: '1344x1728' },
+                  { ratio: '9:7',  k1: '1152x896',   k15: '1440x1120',  k2: '1728x1344' },
+                  { ratio: '9:16', k1: '720x1280',   k15: '864x1536',   k2: '1152x2048' },
+                  { ratio: '9:21', k1: '576x1344',   k15: '720x1680',   k2: '864x2016' },
+                  { ratio: '16:9', k1: '1280x720',   k15: '1536x864',   k2: '2048x1152' },
+                  { ratio: '21:9', k1: '1344x576',   k15: '1680x720',   k2: '2016x864' },
+                ].map((r) => (
+                  <tr key={r.ratio} className="hover:bg-slate-50">
+                    <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k15}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
+            <strong>提示：</strong>Z-Image Turbo 的 size 参数使用 WxH 精确分辨率格式（如 <code>"1024*1024"</code>），需与上表中的尺寸匹配。也可通过 aspect_ratio 参数指定宽高比，系统自动匹配对应分辨率：
+            <ul className="mt-1 space-y-0.5 list-disc list-inside text-blue-700">
+              <li>size 精确分辨率：<code>size: "1024*1024"</code> → 直接使用</li>
+              <li>仅 aspect_ratio：<code>aspect_ratio: "1:1"</code> → 默认 1K档 1024x1024</li>
+              <li>size 档位 + aspect_ratio：<code>size: "2K"</code> + <code>aspect_ratio: "16:9"</code> → 自动匹配 2048x1152</li>
+            </ul>
+          </div>
+        </SectionCard>
+
       </div>
 
-      <TableOfContents items={TOC_ITEMS} />
+      <TableOfContents items={TOC_ITEMS} accentColor="cyan" />
     </div>
   );
 }

@@ -10,6 +10,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'params', label: '请求参数' },
   { id: 'seedream-sizes', label: 'Seedream 尺寸' },
   { id: 'z-image-sizes', label: 'Z-Image 尺寸' },
+  { id: 'gpt-image-sizes', label: 'GPT Image 尺寸' },
   { id: 'response-format', label: '响应格式' },
   { id: 'curl-examples', label: 'cURL 示例' },
 ];
@@ -469,6 +470,50 @@ export default function HelpImagesGenerations() {
               <li>仅 aspect_ratio：<code>aspect_ratio: "1:1"</code> → 默认 1K档 1024×1024</li>
               <li>size 档位 + aspect_ratio：<code>size: "2K"</code> + <code>aspect_ratio: "16:9"</code> → 自动匹配 2048×1152</li>
             </ul>
+          </div>
+        </SectionCard>
+
+        {/* GPT Image 2 size reference */}
+        <SectionCard
+          id="gpt-image-sizes"
+          title="GPT Image 2 支持尺寸"
+          description="OpenAI gpt-image-2 模型支持的图片尺寸参考表。size 参数传入 WxH 分辨率字符串，支持 1K、2K、4K 三个档位。"
+        >
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                  <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {[
+                  { ratio: '1:1',  k1: '1024x1024',  k2: '2048x2048',  k4: '3840x3840' },
+                  { ratio: '3:2',  k1: '1536x1024',  k2: '3072x2048',  k4: '3840x2560' },
+                  { ratio: '2:3',  k1: '1024x1536',  k2: '2048x3072',  k4: '2560x3840' },
+                  { ratio: '3:4',  k1: '768x1024',   k2: '1536x2048',  k4: '2880x3840' },
+                  { ratio: '4:3',  k1: '1024x768',   k2: '2048x1536',  k4: '3840x2880' },
+                  { ratio: '16:9', k1: '1024x576',   k2: '2048x1152',  k4: '3840x2160' },
+                  { ratio: '9:16', k1: '576x1024',   k2: '1152x2048',  k4: '2160x3840' },
+                  { ratio: '21:9', k1: '1024x439',   k2: '2048x878',   k4: '3840x1646' },
+                  { ratio: '9:21', k1: '439x1024',   k2: '878x2048',   k4: '1646x3840' },
+                ].map((r) => (
+                  <tr key={r.ratio} className="hover:bg-slate-50">
+                    <td className="px-3 py-1.5"><code className="text-orange-600 font-semibold">{r.ratio}</code></td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
+            <strong>提示：</strong>gpt-image-2 的 size 参数使用 WxH 精确分辨率格式，需与上表中的尺寸匹配。
+            支持通过 TencentVOD 路由访问。
           </div>
         </SectionCard>
 
