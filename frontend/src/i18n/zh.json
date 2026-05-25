@@ -130,7 +130,12 @@
     "requests": "请求数",
     "cost": "花费",
     "proportion": "占比",
-    "modelName": "模型名称"
+    "modelName": "模型名称",
+    "baseUrlTitle": "接入地址",
+    "openaiChatCompletions": "OpenAI Chat Completions",
+    "openaiResponses": "OpenAI Responses",
+    "anthropicMessages": "Anthropic Messages",
+    "copied": "已复制"
   },
   "apiKey": {
     "manage": "API Key 管理",

@@ -130,7 +130,12 @@
     "requests": "Requests",
     "cost": "Cost",
     "proportion": "Share",
-    "modelName": "Model Name"
+    "modelName": "Model Name",
+    "baseUrlTitle": "Base URLs",
+    "openaiChatCompletions": "OpenAI Chat Completions",
+    "openaiResponses": "OpenAI Responses",
+    "anthropicMessages": "Anthropic Messages",
+    "copied": "Copied"
   },
   "apiKey": {
     "manage": "API Key Management",

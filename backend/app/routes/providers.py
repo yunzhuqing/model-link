@@ -145,7 +145,7 @@ async def create_provider(current_user):
         await _maybe_create_tencentvod_api_token(provider)
 
         await session.commit()
-        await session.refresh(provider)
+        provider = await session.get(Provider, provider.id, options=[selectinload(Provider.models)])
 
         return jsonify(provider.to_dict()), 201
 
