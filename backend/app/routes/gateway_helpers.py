@@ -66,7 +66,16 @@ async def _parse_json_body():
 
 def _log_error(endpoint: str, status_code: int, detail: str, extra: Optional[dict] = None, exc_info: bool = False) -> None:
     """Log gateway errors with consistent format."""
+    try:
+        req_id = getattr(g, "request_id", None)
+    except RuntimeError:
+        req_id = None
+    if not req_id:
+        from app import request_id_var
+        req_id = request_id_var.get("-")
+
     log_data = {
+        "request_id": req_id,
         "endpoint": endpoint,
         "status_code": status_code,
         "detail": detail,
