@@ -47,7 +47,7 @@ def _supports_adaptive_thinking(model_name: str) -> bool:
     return major >= 5
 
 
-del _re
+# Keep _re for _supports_adaptive_thinking
 
 
 class AnthropicProvider(BaseProvider):
