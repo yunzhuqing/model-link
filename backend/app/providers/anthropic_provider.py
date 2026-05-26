@@ -240,7 +240,6 @@ class AnthropicProvider(BaseProvider):
                 thinking_config = {
                     "type": "enabled",
                     "budget_tokens": budget_tokens,
-                    "effort": anthropic_effort,
                 }
 
             result["thinking"] = thinking_config
