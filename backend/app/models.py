@@ -4,7 +4,8 @@ Database models for Flask-SQLAlchemy (used with Quart via flask-sqlalchemy compa
 from datetime import datetime
 from decimal import Decimal
 from app import db
-from sqlalchemy import select, func
+from sqlalchemy import select, func, inspect as sa_inspect
+from sqlalchemy.orm.attributes import NO_VALUE
 import hashlib
 
 
@@ -321,6 +322,7 @@ class ApiKey(db.Model):
                               order_by="ApiKeyBudget.created_at")
 
     def to_dict(self):
+        state = sa_inspect(self)
         return {
             'id': self.id,
             'key': self.key,
@@ -329,7 +331,7 @@ class ApiKey(db.Model):
             'group_id': self.group_id,
             'user_id': self.user_id,
             'workspace_id': self.workspace_id,
-            'user_name': self.user.username if self.user else None,
+            'user_name': self.user.username if state.attrs.user.loaded_value is not NO_VALUE and self.user else None,
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
@@ -342,7 +344,7 @@ class ApiKey(db.Model):
             'unlimited_budget': self.unlimited_budget,
             'rpm': self.rpm,
             'tpm': self.tpm,
-            'policies': [p.to_dict() for p in self.policies] if self.policies else [],
+            'policies': [p.to_dict() for p in self.policies] if state.attrs.policies.loaded_value is not NO_VALUE else [],
         }
 
     def to_dict_simple(self):
