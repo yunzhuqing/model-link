@@ -305,15 +305,26 @@ class OpenAIProvider(BaseProvider):
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         准备请求数据
-        
+
         将 ChatRequest 转换为 OpenAI API 格式。
-        
+
         Args:
             request: 对话请求对象
-        
+
         Returns:
             OpenAI 请求字典
         """
+        # OpenAI 兼容协议不接受 THINKING content block；将其文本聚合到
+        # 消息的 reasoning_content 字段（OpenAI 兼容供应商通用的思考字段），
+        # 并从 content 中移除这些块。
+        for msg in request.messages:
+            if isinstance(msg.content, list):
+                thinking_blocks = [b for b in msg.content if b.type == ContentType.THINKING]
+                if thinking_blocks:
+                    if msg.reasoning_content is None:
+                        msg.reasoning_content = "".join(b.text or "" for b in thinking_blocks)
+                    msg.content = [b for b in msg.content if b.type != ContentType.THINKING]
+
         # Collect system text from the canonical system field
         system_text = ""
         if request.system is not None:
@@ -440,8 +451,9 @@ class OpenAIProvider(BaseProvider):
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
             tool_call_blocks = [b for b in message.content if b.type == ContentType.TOOL_CALL]
             # Exclude TOOL_RESULT blocks - they are handled by _expand_messages_to_openai
-            # and converted to separate "tool" role messages
-            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL, ContentType.TOOL_RESULT)]
+            # and converted to separate "tool" role messages.
+            # Exclude THINKING blocks - OpenAI-compatible APIs don't accept them as content.
+            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL, ContentType.TOOL_RESULT, ContentType.THINKING)]
             
             # content 只包含文本和其他类型（图片、视频等），不包含 tool_call
             if text_blocks and not other_blocks and not tool_call_blocks:
