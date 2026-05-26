@@ -146,7 +146,7 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   const origin = useMemo(() => window.location.origin, []);
 
   // ── Data queries ──────────────────────────────────────────────────────────
@@ -417,7 +417,7 @@ const Dashboard = () => {
                 { icon: MessagesSquare, color: 'text-amber-500', label: t('dashboard.anthropicMessages'), url: origin },
               ].map((item) => {
                 const Icon = item.icon;
-                const isCopied = copiedUrl === item.url;
+                const isCopied = copiedLabel === item.label;
                 return (
                   <div key={item.label} className="px-5 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
                     <div className="flex items-center gap-3 min-w-0">
@@ -430,7 +430,7 @@ const Dashboard = () => {
                         try {
                           if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(item.url); }
                           else { const el = document.createElement('textarea'); el.value = item.url; el.style.cssText = 'position:fixed;left:-9999px'; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); }
-                          setCopiedUrl(item.url); setTimeout(() => setCopiedUrl(null), 2000);
+                          setCopiedLabel(item.label); setTimeout(() => setCopiedLabel(null), 2000);
                         } catch { /* */ }
                       }}
                       className={`shrink-0 p-1.5 rounded-md transition-colors ${
