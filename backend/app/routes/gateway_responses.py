@@ -485,7 +485,7 @@ async def openai_responses():
             "parallel_tool_calls": bool(data.get('parallel_tool_calls', False)),
             "metadata": user_metadata,
             "background": True,
-        }), 202
+        }), 200
 
     # ─── Sync path ───
     try:
