@@ -73,8 +73,8 @@ class BailianProvider(OpenAIProvider):
         "multimodal-embedding/multimodal-embedding"
     )
 
-    # 百炼文本 Rerank API 的默认 URL（compatible-api 模式，注意与 compatible-mode 不同）
-    BAILIAN_TEXT_RERANK_URL = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+    # 百炼文本 Rerank API 的默认 URL
+    BAILIAN_TEXT_RERANK_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 
     # 百炼多模态 Rerank API 的默认 URL（Dashscope 专用格式）
     BAILIAN_MULTIMODAL_RERANK_URL = (
@@ -190,8 +190,8 @@ class BailianProvider(OpenAIProvider):
                 f"{domain}/api/v1/services/embeddings/"
                 "multimodal-embedding/multimodal-embedding"
             )
-            # 文本 Rerank 走 compatible-api 路径（非 compatible-mode）
-            self._text_rerank_url = f"{domain}/compatible-api/v1/reranks"
+            # 文本 Rerank URL
+            self._text_rerank_url = f"{domain}/api/v1/services/rerank/text-rerank/text-rerank"
             self._multimodal_rerank_url = (
                 f"{domain}/api/v1/services/rerank/text-rerank/text-rerank"
             )

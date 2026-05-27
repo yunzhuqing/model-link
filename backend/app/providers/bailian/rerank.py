@@ -101,21 +101,22 @@ async def execute_bailian_text_rerank(
         for d in request.documents
     ]
 
+    parameters: Dict[str, Any] = {
+        "return_documents": True,
+    }
+    if request.top_n is not None:
+        parameters["top_n"] = request.top_n
+    if request.instruct:
+        parameters["instruct"] = request.instruct
+
     request_data: Dict[str, Any] = {
         "model": request.model,
-        "query": request.query if isinstance(request.query, str) else request.query.get("text", ""),
-        "documents": documents,
-        "parameters": {
-            "return_documents": True,
-        }
+        "input": {
+            "query": request.query if isinstance(request.query, str) else request.query.get("text", ""),
+            "documents": documents,
+        },
+        "parameters": parameters,
     }
-    request_data['return_documents'] = True
-    if request.top_n is not None:
-        request_data["top_n"] = request.top_n
-        request_data["parameters"]["top_n"] = request.top_n
-    if request.instruct:
-        request_data["instruct"] = request.instruct
-        request_data["parameters"]["instruct"] = request.instruct
 
     headers = {
         "Content-Type": "application/json",
