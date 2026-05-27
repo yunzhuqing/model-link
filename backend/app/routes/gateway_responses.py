@@ -130,6 +130,12 @@ async def _run_background_response(
                 raise RuntimeError(f"Input not found at storage key: {input_key}")
             data = json_loads(raw)
 
+            model = data.get('model', '')
+            logger.info(
+                f"[background] Start processing response_id={response_id!r} "
+                f"request_id={request_id} model={model}"
+            )
+
             adapter = OpenAIResponsesAdapter()
             chat_request = adapter.parse_request(data)
 
@@ -171,7 +177,7 @@ async def _run_background_response(
                     request_id=request_id,
                 )
             except Exception as _meta_exc:
-                logger.warning(f"[background] Failed to update provider_id for {response_id!r}: {_meta_exc}")
+                logger.warning(f"[background] Failed to update provider_id for {response_id!r} (request_id={request_id}): {_meta_exc}")
 
             # ─── Phase 3: LLM call (NO DB session) ───
             if tracer:
@@ -208,7 +214,7 @@ async def _run_background_response(
                     request_id=request_id,
                 )
             except Exception as _meta_exc:
-                logger.warning(f"[background] Failed to update task metadata for {response_id!r}: {_meta_exc}")
+                logger.warning(f"[background] Failed to update task metadata for {response_id!r} (request_id={request_id}): {_meta_exc}")
 
             # ─── Async upstream polling (NO DB) ───
             upstream_status = response.usage.extra.get('_upstream_status', 'completed')
@@ -224,7 +230,7 @@ async def _run_background_response(
                         task_id=upstream_response_id,
                     )
                 except Exception as _meta_exc:
-                    logger.warning(f"[background] Failed to store upstream task_id for {response_id!r}: {_meta_exc}")
+                    logger.warning(f"[background] Failed to store upstream task_id for {response_id!r} (request_id={request_id}): {_meta_exc}")
 
                 # We already have provider_instance from `resolved`. Use it directly.
                 provider_instance = resolved.provider_instance
@@ -246,7 +252,7 @@ async def _run_background_response(
                     logger.info(
                         f"[background] Upstream response {upstream_response_id!r} is "
                         f"{upstream_status!r}; waiting {wait}s before next poll "
-                        f"(elapsed={elapsed}s, our_response_id={response_id!r})"
+                        f"(elapsed={elapsed}s, response_id={response_id!r}, request_id={request_id})"
                     )
                     await asyncio.sleep(wait)
                     elapsed += wait
@@ -310,7 +316,7 @@ async def _run_background_response(
                     duration_ms=_bg_duration_ms,
                 )
             except Exception as _ue:
-                logger.warning(f"[usage] Failed to record usage for background response {response_id!r}: {_ue}")
+                logger.warning(f"[usage] Failed to record usage for background response {response_id!r} (request_id={request_id}): {_ue}")
 
             if tracer:
                 tracer.set_metadata({
@@ -319,6 +325,12 @@ async def _run_background_response(
                 })
                 tracer.end()
 
+            _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
+            logger.info(
+                f"[background] Completed response_id={response_id!r} "
+                f"request_id={request_id} duration_ms={_bg_duration_ms}"
+            )
+
         except Exception as exc:
             if tracer:
                 try:
@@ -326,7 +338,11 @@ async def _run_background_response(
                     tracer.end(error=exc)
                 except Exception:
                     pass
-            logger.exception(f"[background] Error processing {response_id!r}: {exc}")
+            _bg_duration_ms = int((time.monotonic() - _bg_start_time) * 1000)
+            logger.exception(
+                f"[background] Failed response_id={response_id!r} "
+                f"request_id={request_id} duration_ms={_bg_duration_ms}: {exc}"
+            )
             final_error = str(exc)
 
         # Write output to storage (outside any DB transaction)
@@ -334,7 +350,7 @@ async def _run_background_response(
             try:
                 await asyncio.to_thread(storage.write, output_key, formatted_output)
             except Exception as write_exc:
-                logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
+                logger.exception(f"[background] Failed to write output for {response_id!r} (request_id={request_id}): {write_exc}")
                 final_error = str(write_exc)
                 formatted_output = None
 
