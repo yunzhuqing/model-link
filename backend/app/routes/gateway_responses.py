@@ -278,7 +278,7 @@ async def _run_background_response(
                 parallel_tool_calls=chat_request.parallel_tool_calls,
                 metadata=chat_request.metadata.get('_user_metadata'),
             )
-            _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
+            await _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
             _strip_internal_fields(formatted.get('output', []))
             formatted_output = json.dumps(formatted, ensure_ascii=False)
 
@@ -644,9 +644,9 @@ async def openai_responses():
                 parallel_tool_calls=chat_request.parallel_tool_calls,
                 metadata=chat_request.metadata.get('_user_metadata'),
             )
-            _save_image_data_uris_to_storage(formatted.get('output', []), get_storage_backend(), formatted.get('id', ''))
+            await _save_image_data_uris_to_storage(formatted.get('output', []), get_storage_backend(), formatted.get('id', ''))
             if formatted.get('response_format') == 'b64_json':
-                _apply_b64_json_to_image_output(formatted.get('output', []), storage=get_storage_backend())
+                await _apply_b64_json_to_image_output(formatted.get('output', []), storage=get_storage_backend())
             _strip_internal_fields(formatted.get('output', []))
             return jsonify(formatted)
     except ProviderError as e:
@@ -720,7 +720,7 @@ async def get_response(response_id: str):
         else:
             result = {"error": {"code": "server_error", "message": "Output not found in storage"}}
         if isinstance(result, dict) and result.get('response_format') == 'b64_json':
-            _apply_b64_json_to_image_output(result.get('output', []), storage=storage)
+            await _apply_b64_json_to_image_output(result.get('output', []), storage=storage)
         _strip_internal_fields(result.get('output', []) if isinstance(result, dict) else [])
         return jsonify(result), 200
 

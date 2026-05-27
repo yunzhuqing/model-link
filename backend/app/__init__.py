@@ -223,22 +223,45 @@ async def _init_async_engine():
         pool_pre_ping=os.getenv('SQLALCHEMY_POOL_PRE_PING', 'true').lower() == 'true',
     )
 
-    # aiomysql + uvloop edge case: when the underlying TCP transport is closed
-    # (e.g. MySQL killed the connection, or it was checked out across event-loop
-    # transitions), the pre-ping write raises a bare `RuntimeError("unable to
-    # perform operation on <TCPTransport closed=True ...>")` instead of a
-    # DBAPI disconnection error. SQLAlchemy's pre-ping then can't recognise it
-    # as a disconnect and re-raises it to the caller, taking down the request.
+    # When the underlying TCP transport is closed (MySQL killed the connection,
+    # network blip, load-balancer timeout), the pre-ping and terminate writes
+    # may raise a bare RuntimeError("unable to perform operation on
+    # <TCPTransport closed=True>") instead of a DBAPI disconnection error.
+    # This is most common with uvloop but can happen with plain asyncio too.
     #
-    # Tell SQLAlchemy to treat that RuntimeError as a disconnect so the pool
-    # invalidates the dead connection and transparently retrieves a fresh one.
-    from sqlalchemy import event as _sa_event
+    # _do_ping_w_event only catches `loaded_dbapi.Error` (e.g. pymysql.Error),
+    # so RuntimeError bypasses the is_disconnect check entirely and propagates
+    # to the caller.  We wrap the aiomysql dialect's do_ping and do_terminate
+    # to translate RuntimeError into a proper DBAPI OperationalError so the
+    # pool can recognise stale connections and invalidate them transparently.
+    _original_do_ping = _async_engine.sync_engine.dialect.do_ping
 
-    @_sa_event.listens_for(_async_engine.sync_engine, "handle_error")
-    def _treat_closed_transport_as_disconnect(ctx):  # noqa: ARG001
-        exc = ctx.original_exception
-        if isinstance(exc, RuntimeError) and "closed" in str(exc).lower():
-            ctx.is_disconnect = True
+    def _do_ping_wrapper(dbapi_connection, orig=_original_do_ping):
+        try:
+            return orig(dbapi_connection)
+        except RuntimeError as e:
+            if "closed" in str(e).lower():
+                # 2013 = CR_SERVER_LOST — recognised by MySQL dialect's
+                # is_disconnect as a disconnection, so the pool discards
+                # this connection and gets a fresh one.
+                raise _async_engine.sync_engine.dialect.loaded_dbapi.OperationalError(
+                    2013, str(e)
+                ) from e
+            raise
+
+    _async_engine.sync_engine.dialect.do_ping = _do_ping_wrapper
+
+    _original_do_terminate = _async_engine.sync_engine.dialect.do_terminate
+
+    def _do_terminate_wrapper(dbapi_connection, orig=_original_do_terminate):
+        try:
+            return orig(dbapi_connection)
+        except RuntimeError as e:
+            if "closed" in str(e).lower():
+                return  # transport already gone, nothing to terminate
+            raise
+
+    _async_engine.sync_engine.dialect.do_terminate = _do_terminate_wrapper
 
     _async_session_factory = _async_sessionmaker(
         _async_engine, class_=_AsyncSession, expire_on_commit=False,

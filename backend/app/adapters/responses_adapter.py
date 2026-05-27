@@ -10,6 +10,7 @@ OpenAI Responses API 是 OpenAI 的新一代 API 格式，
 - 响应使用 `output` 替代 `choices`
 - 流式事件使用更细粒度的事件类型
 """
+import asyncio
 import json
 import logging
 import os
@@ -287,27 +288,33 @@ def _extract_image_gen_metadata(tool_data: dict) -> dict:
     return meta
 
 
-def _convert_image_url_to_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
+async def _convert_image_url_to_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
     """Download an image URL and return it as a base64 data URI.
 
     Returns ``data:<mime>;base64,<b64data>`` on success, or ``None`` on failure.
     """
-    import httpx
+    from app.http_client import shared_redirect_client
     import base64 as _base64
     try:
-        resp = httpx.get(url, timeout=60)
-        resp.raise_for_status()
-        content_type = (
-            resp.headers.get("content-type", "").split(";")[0].strip()
-            or fallback_mime
-        )
-        b64 = _base64.b64encode(resp.content).decode("ascii")
-        return f"data:{content_type};base64,{b64}"
+        async with shared_redirect_client() as client:
+            resp = await client.get(url, timeout=60)
+            resp.raise_for_status()
+            content_type = (
+                resp.headers.get("content-type", "").split(";")[0].strip()
+                or fallback_mime
+            )
+            content = resp.content
+
+        def _encode():
+            b64 = _base64.b64encode(content).decode("ascii")
+            return f"data:{content_type};base64,{b64}"
+
+        return await asyncio.to_thread(_encode)
     except Exception:
         return None
 
 
-def _apply_b64_json_to_image_output(output: list, storage=None) -> None:
+async def _apply_b64_json_to_image_output(output: list, storage=None) -> None:
     """Convert ``image_generation_call`` result URLs to base64 data URIs in-place.
 
     Resolution order:
@@ -343,16 +350,19 @@ def _apply_b64_json_to_image_output(output: list, storage=None) -> None:
         # Priority 2: try storage backend for local file paths
         if storage is not None and url.startswith('/'):
             try:
-                raw = storage.read_binary(url)
-                if raw:
-                    content_type = "image/png"  # best guess for local files
-                    b64_data = _base64.b64encode(raw).decode("ascii")
+                def _read_and_encode():
+                    raw = storage.read_binary(url)
+                    if raw:
+                        return "image/png", _base64.b64encode(raw).decode("ascii")
+                    return None, None
+
+                content_type, b64_data = await asyncio.to_thread(_read_and_encode)
             except Exception:
                 pass
 
         # Priority 3: HTTP download fallback
         if b64_data is None:
-            b64_result = _convert_image_url_to_b64(url)
+            b64_result = await _convert_image_url_to_b64(url)
             if b64_result:
                 item['result'] = b64_result
             continue
@@ -360,7 +370,7 @@ def _apply_b64_json_to_image_output(output: list, storage=None) -> None:
         item['result'] = f"data:{content_type};base64,{b64_data}"
 
 
-def _save_image_data_uris_to_storage(output: list, storage, response_id: str) -> None:
+async def _save_image_data_uris_to_storage(output: list, storage, response_id: str) -> None:
     """Save image data URIs to binary storage and replace with storage URLs.
 
     Scans *output* for ``image_generation_call`` items whose ``result`` is a
@@ -404,12 +414,15 @@ def _save_image_data_uris_to_storage(output: list, storage, response_id: str) ->
             }
             ext = _MIME_EXT.get(mime_type, '.png')
 
-            # Decode base64 to binary
-            image_bytes = _base64.b64decode(b64_data)
-
-            # Save to storage
+            # Decode base64 and save to storage in a thread to avoid
+            # blocking the event loop on CPU-heavy base64 decode and I/O.
             image_key = f"{response_id}_{i}{ext}"
-            url = storage.write_binary(image_key, image_bytes, mime_type)
+
+            def _decode_and_save():
+                image_bytes = _base64.b64decode(b64_data)
+                return storage.write_binary(image_key, image_bytes, mime_type)
+
+            url = await asyncio.to_thread(_decode_and_save)
 
             # Replace data URI with storage URL
             item['result'] = url
