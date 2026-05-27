@@ -23,6 +23,7 @@ from app.routes.gateway_helpers import (
     get_current_user_or_api_key,
     _parse_json_body,
     _log_error,
+    _build_error_context,
     _check_allowed_models,
 )
 
@@ -58,22 +59,22 @@ async def create_rerank():
 
     model_name = data.get('model')
     if not model_name:
-        _log_error("rerank", 400, "Model is required")
+        _log_error("rerank", 400, "Model is required", _build_error_context(auth_ctx))
         return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
     query = data.get('query')
     if not query:
-        _log_error("rerank", 400, '"query" is required')
+        _log_error("rerank", 400, '"query" is required', _build_error_context(auth_ctx, model_name))
         return _error_response('"query" is required', code="invalid_request", param="query", status_code=400)
 
     documents = data.get('documents')
     if not documents or not isinstance(documents, list):
-        _log_error("rerank", 400, '"documents" must be a non-empty list')
+        _log_error("rerank", 400, '"documents" must be a non-empty list', _build_error_context(auth_ctx, model_name))
         return _error_response('"documents" must be a non-empty list', code="invalid_request", param="documents", status_code=400)
 
     acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
-        _log_error("rerank", 403, acl_error['detail'])
+        _log_error("rerank", 403, acl_error['detail'], _build_error_context(auth_ctx, model_name))
         return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
     rerank_request = RerankRequest(
@@ -95,10 +96,10 @@ async def create_rerank():
                 session, model_name, group_id, provider_id=provider_id
             )
     except ModelNotFoundError as e:
-        _log_error("rerank", e.status_code, e.message, {"model": model_name})
+        _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
-        _log_error("rerank", e.status_code, e.message, {"model": model_name})
+        _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
 
     # ── Phase 3: LLM call (no DB session) ──
@@ -106,11 +107,12 @@ async def create_rerank():
         response = await _gateway_service.rerank(resolved, rerank_request)
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
-        _log_error("rerank", e.status_code, e.message, {"model": model_name})
+        _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
-        _log_error("rerank", e.status_code, e.message, {"model": model_name})
+        _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
-        _log_error("rerank", e.status_code, e.message, {"model": model_name})
+        _log_error("rerank", e.status_code, e.message,
+                   _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="provider_error", status_code=e.status_code)

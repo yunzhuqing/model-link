@@ -60,6 +60,7 @@ from app.routes.gateway import (
     _check_allowed_models,
     _gateway_service,
     _log_error,
+    _build_error_context,
 )
 
 gateway_responses_bp = Blueprint('gateway_responses', __name__)
@@ -397,7 +398,7 @@ async def openai_responses():
 
     acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
-        _log_error("responses", 403, acl_error['detail'])
+        _log_error("responses", 403, acl_error['detail'], _build_error_context(auth_ctx, model_name))
         return jsonify(adapter.format_error_response(acl_error['detail'], 403)), 403
 
     group_id = auth_ctx.api_key_group_id if auth_ctx else None
@@ -474,7 +475,7 @@ async def openai_responses():
     try:
         chat_request = adapter.parse_request(data)
     except Exception as e:
-        _log_error("responses", 400, f"Invalid request format: {e}")
+        _log_error("responses", 400, f"Invalid request format: {e}", _build_error_context(auth_ctx, model_name))
         return jsonify(adapter.format_error_response(f'Invalid request format: {str(e)}', 400)), 400
 
     logger.debug(f"Original request logged to: {json.dumps(data, ensure_ascii=False)}")
@@ -488,10 +489,10 @@ async def openai_responses():
                     session, model_name, group_id, provider_id=provider_id_override
                 )
             except ModelNotFoundError as e:
-                _log_error("responses", e.status_code, e.message, {"model": model_name})
+                _log_error("responses", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
                 return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
             except GatewayServiceError as e:
-                _log_error("responses", e.status_code, e.message, {"model": model_name})
+                _log_error("responses", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
                 return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
             if group_id:
@@ -653,21 +654,22 @@ async def openai_responses():
             tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
                                  "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("responses", e.status_code, e.message, {"model": model_name, "error_data": e.error_data})
+        _log_error("responses", e.status_code, e.message,
+                 _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name) | {"error_data": e.error_data})
         return jsonify(adapter.format_error_response(e.message, e.status_code, e.error_data)), e.status_code
     except ModelNotFoundError as e:
         if tracer:
             tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
                                  "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("responses", e.status_code, e.message, {"model": model_name})
+        _log_error("responses", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": _request_id, "model_name": model_name,
                                  "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("responses", e.status_code, e.message, {"model": model_name})
+        _log_error("responses", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
 
@@ -683,13 +685,13 @@ async def get_response(response_id: str):
 
     bg_record = await _bg_dao.get_record_async(response_id)
     if bg_record is None:
-        _log_error("get_response", 404, f"Response {response_id!r} not found")
+        _log_error("get_response", 404, f"Response {response_id!r} not found", _build_error_context(auth_ctx))
         return jsonify({'detail': f'Response {response_id!r} not found'}), 404
 
     # API-key callers may only retrieve their own responses. JWT users (admin) may retrieve any.
     caller_api_key = auth_ctx.api_key_raw if auth_ctx else None
     if caller_api_key and bg_record.get("apikey") and bg_record["apikey"] != caller_api_key:
-        _log_error("get_response", 403, f"Unauthorised access to response {response_id!r}")
+        _log_error("get_response", 403, f"Unauthorised access to response {response_id!r}", _build_error_context(auth_ctx))
         return jsonify({'detail': 'Not authorised to access this response'}), 403
 
     record_status = bg_record.get("status", "")

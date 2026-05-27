@@ -28,6 +28,7 @@ from app.routes.gateway_helpers import (
     get_current_user_or_api_key,
     _parse_json_body,
     _log_error,
+    _build_error_context,
     _check_allowed_models,
 )
 
@@ -96,17 +97,17 @@ async def create_images():
 
     model_name = data.get('model')
     if not model_name:
-        _log_error("images_generations", 400, "Model is required")
+        _log_error("images_generations", 400, "Model is required", _build_error_context(auth_ctx))
         return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
     prompt = data.get('prompt')
     if not prompt:
-        _log_error("images_generations", 400, "Prompt is required")
+        _log_error("images_generations", 400, "Prompt is required", _build_error_context(auth_ctx, model_name))
         return _error_response('Prompt is required', code="invalid_request", param="prompt", status_code=400)
 
     acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
-        _log_error("images_generations", 403, acl_error['detail'])
+        _log_error("images_generations", 403, acl_error['detail'], _build_error_context(auth_ctx, model_name))
         return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
     images = data.get('images')
@@ -136,10 +137,10 @@ async def create_images():
                 except Exception as _e:
                     logger.debug(f"[monitoring] fetch config failed: {_e}")
     except ModelNotFoundError as e:
-        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        _log_error("images_generations", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
-        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        _log_error("images_generations", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
 
     tracer = create_tracer(monitoring_config)
@@ -186,19 +187,20 @@ async def create_images():
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        _log_error("images_generations", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        _log_error("images_generations", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("images_generations", e.status_code, e.message, {"model": model_name})
+        _log_error("images_generations", e.status_code, e.message,
+                   _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="provider_error", status_code=e.status_code)
 
 
@@ -220,17 +222,17 @@ async def edit_images():
 
     model_name = data.get('model')
     if not model_name:
-        _log_error("images_edits", 400, "Model is required")
+        _log_error("images_edits", 400, "Model is required", _build_error_context(auth_ctx))
         return _error_response('Model is required', code="invalid_request", param="model", status_code=400)
 
     prompt = data.get('prompt')
     if not prompt:
-        _log_error("images_edits", 400, "Prompt is required")
+        _log_error("images_edits", 400, "Prompt is required", _build_error_context(auth_ctx, model_name))
         return _error_response('Prompt is required', code="invalid_request", param="prompt", status_code=400)
 
     acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
-        _log_error("images_edits", 403, acl_error['detail'])
+        _log_error("images_edits", 403, acl_error['detail'], _build_error_context(auth_ctx, model_name))
         return _error_response(acl_error['detail'], code="model_not_allowed", status_code=403)
 
     images = data.get('images')
@@ -261,10 +263,10 @@ async def edit_images():
                 except Exception as _e:
                     logger.debug(f"[monitoring] fetch config failed: {_e}")
     except ModelNotFoundError as e:
-        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        _log_error("images_edits", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
-        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        _log_error("images_edits", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
 
     tracer = create_tracer(monitoring_config)
@@ -312,19 +314,20 @@ async def edit_images():
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        _log_error("images_edits", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        _log_error("images_edits", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("images_edits", e.status_code, e.message, {"model": model_name})
+        _log_error("images_edits", e.status_code, e.message,
+                   _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="provider_error", status_code=e.status_code)
 
 
