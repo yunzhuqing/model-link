@@ -254,7 +254,6 @@ class AnthropicProvider(BaseProvider):
                 json_schema = rf.get('json_schema', {})
                 output_format = {
                     'type': 'json_schema',
-                    'name': json_schema.get('name', 'response'),
                     'schema': json_schema.get('schema', {}),
                 }
                 if 'description' in json_schema:
