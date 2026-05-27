@@ -694,21 +694,23 @@ async def get_response(response_id: str):
     """
     Retrieve a background response by ID.
     """
+    adapter = OpenAIResponsesAdapter()
+
     auth_ctx, error, status = await get_current_user_or_api_key()
     if error:
         _log_error("get_response", status, error.get('detail', 'Not authenticated'))
-        return jsonify({'detail': error.get('detail', 'Not authenticated')}), status
+        return jsonify(adapter.format_error_response(error.get('detail', 'Not authenticated'), status)), status
 
     bg_record = await _bg_dao.get_record_async(response_id)
     if bg_record is None:
         _log_error("get_response", 404, f"Response {response_id!r} not found", _build_error_context(auth_ctx))
-        return jsonify({'detail': f'Response {response_id!r} not found'}), 404
+        return jsonify(adapter.format_error_response(f'Response {response_id!r} not found', 404)), 404
 
     # API-key callers may only retrieve their own responses. JWT users (admin) may retrieve any.
     caller_api_key = auth_ctx.api_key_raw if auth_ctx else None
     if caller_api_key and bg_record.get("apikey") and bg_record["apikey"] != caller_api_key:
         _log_error("get_response", 403, f"Unauthorised access to response {response_id!r}", _build_error_context(auth_ctx))
-        return jsonify({'detail': 'Not authorised to access this response'}), 403
+        return jsonify(adapter.format_error_response('Not authorised to access this response', 403)), 403
 
     record_status = bg_record.get("status", "")
 

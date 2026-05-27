@@ -221,7 +221,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
         thinking_config = data.get('thinking')
         if isinstance(thinking_config, dict):
             if thinking_config.get('type') == 'enabled':
-                reasoning_effort = REASONING_EFFORT_HIGH
+                reasoning_effort = REASONING_EFFORT_MEDIUM
             else:
                 reasoning_effort = REASONING_EFFORT_NONE
 
