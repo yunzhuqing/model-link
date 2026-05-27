@@ -733,6 +733,8 @@ async def execute_seedance_video_generation(
     if not resolution:
         resolution = "720p"
 
+    resolution = resolution.lower()
+
     # Duration (seconds, int)
     seconds_raw = metadata.get("seconds")
     duration: Optional[int] = int(float(seconds_raw)) if seconds_raw is not None else None
