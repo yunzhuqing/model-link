@@ -76,8 +76,24 @@ class RerankResult:
 
 @dataclass
 class RerankUsage:
-    """Token usage info for a rerank request."""
+    """Token usage info for a rerank request.
+
+    Compatible with UsageInfo / EmbeddingUsage so that _build_record can
+    treat all usage types uniformly.  prompt_tokens is derived from
+    total_tokens (rerank has no output tokens).  All other fields are
+    always zero for rerank.
+    """
     total_tokens: int
+    completion_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def prompt_tokens(self) -> int:
+        return self.total_tokens
 
     def to_dict(self) -> Dict[str, Any]:
         return {"total_tokens": self.total_tokens}
