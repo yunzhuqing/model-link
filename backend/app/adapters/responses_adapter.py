@@ -89,6 +89,7 @@ def _parse_image_block(block: dict) -> ContentBlock:
     else:
         cb = ContentBlock.from_text('')
     cb.role = image_role or cb.role
+    cb.view = block.get('view')  # 3D multi-view angle
     return cb
 
 
@@ -286,27 +287,6 @@ def _extract_image_gen_metadata(tool_data: dict) -> dict:
     return meta
 
 
-def _collect_multi_view_images(data: dict) -> list:
-    """Collect multi-view images from input blocks for 3D generation tools."""
-    images = []
-    for item in _safe_list(data.get('input')):
-        if not isinstance(item, dict):
-            continue
-        for blk in _safe_list(item.get('content')):
-            if not isinstance(blk, dict):
-                continue
-            if blk.get('type') not in ('input_image', 'image'):
-                continue
-            view = blk.get('view', '')
-            if not view:
-                continue
-            url = _extract_str(blk, 'image_url')
-            b64 = blk.get('image_base64', '')
-            if url or b64:
-                images.append({'url': url, 'image_base64': b64, 'view': view})
-    return images
-
-
 def _convert_image_url_to_b64(url: str, fallback_mime: str = "image/png") -> Optional[str]:
     """Download an image URL and return it as a base64 data URI.
 
@@ -477,7 +457,7 @@ def _extract_video_erase_metadata(tool_data: dict, file_id_media_map: dict) -> d
     return meta
 
 
-def _extract_3d_gen_metadata(tool_data: dict, data: dict) -> dict:
+def _extract_3d_gen_metadata(tool_data: dict) -> dict:
     """Extract 3d_generation tool params → metadata dict."""
     meta = {'_3d_generation': True}
 
@@ -508,10 +488,6 @@ def _extract_3d_gen_metadata(tool_data: dict, data: dict) -> dict:
     polygon_type = tool_data.get('polygon_type')
     if polygon_type:
         meta['polygon_type'] = polygon_type
-
-    multi_view = _collect_multi_view_images(data)
-    if multi_view:
-        meta['multi_view_images'] = multi_view
 
     return meta
 
@@ -590,7 +566,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             elif ttype == 'image_generation':
                 img_meta.update(_extract_image_gen_metadata(tool_data))
             elif ttype == '3d_generation':
-                vid_meta.update(_extract_3d_gen_metadata(tool_data, data))
+                vid_meta.update(_extract_3d_gen_metadata(tool_data))
 
         return tools, img_meta, vid_meta, erase_meta
 

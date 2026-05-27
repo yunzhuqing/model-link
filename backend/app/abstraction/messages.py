@@ -56,6 +56,7 @@ class ContentBlock:
     media_type: Optional[str] = None  # MIME type: image/jpeg, audio/mp3, etc.
     data: Optional[str] = None  # Base64 data
     role: Optional[str] = None  # Media role: first_frame, last_frame, reference_image, reference_video, reference_audio
+    view: Optional[str] = None  # 3D multi-view angle: front, back, left, right, up, down, left_front, right_front
     tool_call_id: Optional[str] = None
     tool_name: Optional[str] = None
     tool_arguments: Optional[Dict[str, Any]] = None

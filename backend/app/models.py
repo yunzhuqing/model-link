@@ -393,6 +393,7 @@ class Provider(db.Model):
         return raw_key[:5] + '...' + raw_key[-4:]
 
     def to_dict(self):
+        state = sa_inspect(self)
         return {
             'id': self.id,
             'name': self.name,
@@ -405,7 +406,7 @@ class Provider(db.Model):
             'extra_config': self.extra_config or {},
             'tags': self.tags or [],
             'is_active': self.is_active,
-            'models': [m.to_dict() for m in self.models]
+            'models': [m.to_dict() for m in self.models] if state.attrs.models.loaded_value is not NO_VALUE else [],
         }
 
     def to_dict_simple(self):

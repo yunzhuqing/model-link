@@ -27,6 +27,7 @@ from app.routes.gateway_helpers import (
     _parse_json_body,
     _log_error,
     _check_allowed_models,
+    _build_error_context,
 )
 
 embeddings_bp = Blueprint('embeddings', __name__)
@@ -98,13 +99,14 @@ async def create_embeddings():
                 ]
             elif 'type' in first:
                 content_blocks = input_data
+        
 
         if content_blocks is not None:
             messages = [{"role": "user", "content": content_blocks}]
             input_data = None
         elif messages_from_input is not None:
             messages = messages_from_input
-            input_data = None
+            input_data = messages_from_input
 
     embedding_request = EmbeddingRequest(
         model=model_name,
@@ -131,10 +133,10 @@ async def create_embeddings():
                 except Exception as _e:
                     logger.debug(f"[monitoring] fetch config failed: {_e}")
     except ModelNotFoundError as e:
-        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        _log_error("embeddings", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
-        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        _log_error("embeddings", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
 
     tracer = create_tracer(monitoring_config)
@@ -191,17 +193,17 @@ async def create_embeddings():
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        _log_error("embeddings", e.status_code, e.message, _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        _log_error("embeddings", e.status_code, e.message, _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
         if tracer:
             tracer.set_metadata({"request_id": g.request_id, "model_name": model_name, "api_key_name": auth_ctx.api_key_name if auth_ctx else None})
             tracer.end(error=e)
-        _log_error("embeddings", e.status_code, e.message, {"model": model_name})
+        _log_error("embeddings", e.status_code, e.message, _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="provider_error", status_code=e.status_code)

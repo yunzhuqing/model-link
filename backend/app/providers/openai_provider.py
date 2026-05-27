@@ -874,10 +874,8 @@ class OpenAIProvider(BaseProvider):
         }
 
         # Multimodal embedding uses "messages" instead of "input"
-        if request.is_multimodal:
-            request_data["messages"] = request.messages
-        else:
-            request_data["input"] = request.input
+        request_data["messages"] = request.messages
+        request_data["input"] = request.input
 
         if request.dimensions is not None:
             request_data["dimensions"] = request.dimensions

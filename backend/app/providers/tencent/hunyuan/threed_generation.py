@@ -437,13 +437,13 @@ async def _submit_3d_job(
         mv_list = []
         for img in multi_view_images:
             entry: Dict[str, str] = {}
-            view = img.get("view_type") or img.get("ViewType") or img.get("view") or ""
+            view = img.get("view_type", "")
             if view:
                 entry["ViewType"] = view
-            img_url = img.get("image_url") or img.get("ViewImageUrl") or img.get("url") or ""
+            img_url = img.get("image_url", "")
             if img_url:
                 entry["ViewImageUrl"] = img_url
-            img_b64 = img.get("image_base64") or img.get("ViewImageBase64") or ""
+            img_b64 = img.get("image_base64", "")
             if img_b64:
                 entry["ViewImageBase64"] = img_b64
             if entry:
@@ -733,22 +733,25 @@ async def _poll_3d_job(
 # 辅助: 从消息中提取图片 URL / Base64 和文本
 # =============================================================================
 
-def _extract_inputs(messages) -> Tuple[Optional[str], Optional[str], str]:
-    """
-    Extract image URL, image base64, and text prompt from the last user message.
+def _extract_inputs(
+    messages,
+) -> Tuple[Optional[str], Optional[str], str, List[Dict[str, str]]]:
+    """Extract image URL, image base64, text prompt, and multi-view images.
 
-    API Version: 2025-05-13
-    ImageBase64、ImageUrl and Prompt are mutually exclusive — exactly one
-    must be provided.
+    Examines the last user message for image content blocks.  Blocks with a
+    ``view`` attribute are classified as 3D multi-view images: ``front`` becomes
+    the primary image, ``up`` / ``down`` are mapped to ``top`` / ``bottom``,
+    and remaining views become multi-view entries.
 
     Returns:
-        (image_url, image_base64, text_prompt)
-        Only one of image_url / image_base64 will be non-None.
-        text_prompt is returned (non-empty) only when neither image field is set.
+        (image_url, image_base64, text_prompt, multi_view_images)
     """
+    VIEW_MAP = {"up": "top", "down": "bottom"}
+
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
     text_prompt = ""
+    multi_view_images: List[Dict[str, str]] = []
 
     for msg in reversed(messages):
         role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
@@ -760,10 +763,29 @@ def _extract_inputs(messages) -> Tuple[Optional[str], Optional[str], str]:
             for block in msg.content:
                 if not hasattr(block, "type"):
                     continue
-                if block.type == ContentType.IMAGE_URL and block.url and not image_url:
-                    image_url = block.url
-                elif block.type == ContentType.IMAGE_BASE64 and block.data and not image_base64:
-                    image_base64 = block.data
+
+                view = getattr(block, "view", None) or ""
+
+                if block.type == ContentType.IMAGE_URL and block.url:
+                    if view:
+                        mapped = VIEW_MAP.get(view, view)
+                        if view == "front":
+                            if not image_url:
+                                image_url = block.url
+                        elif mapped:
+                            multi_view_images.append({"image_url": block.url, "view_type": mapped})
+                    elif not image_url:
+                        image_url = block.url
+                elif block.type == ContentType.IMAGE_BASE64 and block.data:
+                    if view:
+                        mapped = VIEW_MAP.get(view, view)
+                        if view == "front":
+                            if not image_base64 and not image_url:
+                                image_base64 = block.data
+                        elif mapped:
+                            multi_view_images.append({"image_base64": block.data, "view_type": mapped})
+                    elif not image_base64 and not image_url:
+                        image_base64 = block.data
                 elif hasattr(block, "text") and block.text:
                     text_parts.append(block.text)
             text_prompt = " ".join(text_parts).strip()
@@ -771,7 +793,7 @@ def _extract_inputs(messages) -> Tuple[Optional[str], Optional[str], str]:
             text_prompt = msg.content.strip()
         break
 
-    return image_url, image_base64, text_prompt
+    return image_url, image_base64, text_prompt, multi_view_images
 
 
 # =============================================================================
@@ -817,7 +839,6 @@ async def execute_hunyuan3d_generation(
     enable_geometry: bool = bool(metadata.get("enable_geometry", False))
 
     # Pro-only params
-    multi_view_images: Optional[List[Dict[str, str]]] = metadata.get("multi_view_images") or None
     face_count_raw = metadata.get("face_count")
     face_count: Optional[int] = int(face_count_raw) if face_count_raw is not None else None
     generate_type: Optional[str] = metadata.get("generate_type") or None
@@ -827,8 +848,8 @@ async def execute_hunyuan3d_generation(
     if generate_type == "Geometry" and result_format.upper() == "OBJ":
         result_format = "GLB"
 
-    # Extract inputs from messages (single image URL/base64 or text prompt)
-    image_url, image_base64, text_prompt = _extract_inputs(messages)
+    # Extract all inputs (images, text, multi-view) from messages
+    image_url, image_base64, text_prompt, multi_view_images = _extract_inputs(messages)
 
     if not multi_view_images and not image_url and not image_base64 and not text_prompt:
         raise RuntimeError(
