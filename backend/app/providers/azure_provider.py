@@ -167,6 +167,35 @@ class AzureProvider(OpenAIProvider):
         b64_data = base64.b64encode(response.content).decode('utf-8')
         return b64_data, content_type, filename
 
+    @staticmethod
+    def _normalize_tool_choice_for_responses(tool_choice):
+        """Convert tool_choice to Responses API format.
+
+        Chat Completions uses:
+          - strings: "auto", "none", "required", or a function name
+          - dict:   {"type": "function", "function": {"name": "..."}}
+
+        Responses API uses:
+          - strings: "auto", "none", "required"
+          - dict:    {"type": "function", "name": "..."}
+        """
+        if isinstance(tool_choice, str):
+            if tool_choice in ("auto", "none", "required"):
+                return tool_choice
+            # specific function name
+            return {"type": "function", "name": tool_choice}
+        if isinstance(tool_choice, dict):
+            tc_type = tool_choice.get("type", "")
+            if tc_type == "function":
+                name = ""
+                if "function" in tool_choice and isinstance(tool_choice["function"], dict):
+                    name = tool_choice["function"].get("name", "")
+                elif "name" in tool_choice:
+                    name = tool_choice["name"]
+                return {"type": "function", "name": name}
+            return tool_choice
+        return tool_choice
+
     async def _prepare_responses_api_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         Convert a ChatRequest to the OpenAI Responses API request body format.
@@ -379,7 +408,7 @@ class AzureProvider(OpenAIProvider):
         if request.tools:
             result["tools"] = [self._tool_to_responses_api(t) for t in request.tools]
         if request.tool_choice:
-            result["tool_choice"] = request.tool_choice
+            result["tool_choice"] = self._normalize_tool_choice_for_responses(request.tool_choice)
         if request.stop:
             result["stop"] = request.stop
         if request.presence_penalty is not None:
@@ -895,11 +924,9 @@ class AzureProvider(OpenAIProvider):
             if response.status_code >= 400:
                 try:
                     error_data = response.json()
-                    raise RuntimeError(f"Azure API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                    raise RuntimeError(f"Azure embedding API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
                 except json.JSONDecodeError:
-                    raise RuntimeError(f"Azure API error ({response.status_code}): {response.text}")
-
-            response.raise_for_status()
+                    raise RuntimeError(f"Azure embedding API error ({response.status_code}): {response.text}")
 
             response_data = response.json()
             return self._parse_embedding_response(response_data, request.model)
@@ -907,7 +934,15 @@ class AzureProvider(OpenAIProvider):
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Azure embedding API error: {str(e)}")
+            model = request.model if request else "unknown"
+            context = f"model={model} url={url}"
+            resp_info = ""
+            try:
+                if 'response' in locals():
+                    resp_info = f" status={response.status_code} body={response.text[:500]}"
+            except Exception:
+                pass
+            raise RuntimeError(f"Azure embedding API error: {str(e)} [{context}{resp_info}]")
 
 
 # 导出解析函数（与 OpenAI 格式相同）

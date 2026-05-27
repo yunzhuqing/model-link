@@ -125,7 +125,7 @@ async def _run_background_response(
 
         try:
             # Read request payload
-            raw = storage.read(input_key)
+            raw = await asyncio.to_thread(storage.read, input_key)
             if raw is None:
                 raise RuntimeError(f"Input not found at storage key: {input_key}")
             data = json_loads(raw)
@@ -332,7 +332,7 @@ async def _run_background_response(
         # Write output to storage (outside any DB transaction)
         if formatted_output is not None:
             try:
-                storage.write(output_key, formatted_output)
+                await asyncio.to_thread(storage.write, output_key, formatted_output)
             except Exception as write_exc:
                 logger.exception(f"[background] Failed to write output for {response_id!r}: {write_exc}")
                 final_error = str(write_exc)
@@ -422,7 +422,7 @@ async def openai_responses():
         input_key = storage.make_key(response_id, "input")
         output_key = storage.make_key(response_id, "output")
 
-        storage.write(input_key, json.dumps(data, ensure_ascii=False))
+        await asyncio.to_thread(storage.write, input_key, json.dumps(data, ensure_ascii=False))
 
         await _bg_dao.create_record_async(
             response_id=response_id,
@@ -696,10 +696,10 @@ async def get_response(response_id: str):
 
     record_status = bg_record.get("status", "")
 
-    def _extract_response_fields() -> tuple:
+    async def _extract_response_fields() -> tuple:
         try:
             storage = get_storage_backend()
-            raw = storage.read(bg_record.get("input_key")) if bg_record.get("input_key") else None
+            raw = await asyncio.to_thread(storage.read, bg_record.get("input_key")) if bg_record.get("input_key") else None
             if raw:
                 data = json_loads(raw)
                 ptc = bool(data.get('parallel_tool_calls', False))
@@ -711,7 +711,7 @@ async def get_response(response_id: str):
 
     if record_status == "completed":
         storage = get_storage_backend()
-        raw = storage.read(bg_record["output_key"]) if bg_record.get("output_key") else None
+        raw = await asyncio.to_thread(storage.read, bg_record["output_key"]) if bg_record.get("output_key") else None
         if raw:
             try:
                 result = json_loads(raw)
@@ -755,7 +755,7 @@ async def get_response(response_id: str):
             return obj
 
         error_obj = _normalise_error(error_raw)
-        ptc, um = _extract_response_fields()
+        ptc, um = await _extract_response_fields()
         return jsonify({
             "id": bg_record["response_id"],
             "object": "response",
@@ -769,7 +769,7 @@ async def get_response(response_id: str):
 
     # Still in_progress (or queued)
     created_at = bg_record.get("created_at")
-    ptc, um = _extract_response_fields()
+    ptc, um = await _extract_response_fields()
     return jsonify({
         "id": bg_record["response_id"],
         "object": "response",

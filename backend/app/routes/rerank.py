@@ -17,6 +17,8 @@ from app.middleware.gateway_service import (
     ModelNotFoundError,
     ProviderError,
 )
+from app.monitoring import create_tracer
+from app.group_service import get_group_monitoring_config
 
 from app.routes.gateway_helpers import (
     _gateway_service,
@@ -90,11 +92,17 @@ async def create_rerank():
     provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
     # ── Phase 2: resolve model ──
+    monitoring_config = None
     try:
         async with get_db_session() as session:
             resolved = await _gateway_service.resolve_model(
                 session, model_name, group_id, provider_id=provider_id
             )
+            if group_id:
+                try:
+                    monitoring_config = await get_group_monitoring_config(group_id, session=session)
+                except Exception:
+                    pass
     except ModelNotFoundError as e:
         _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
@@ -102,17 +110,43 @@ async def create_rerank():
         _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
 
+    tracer = create_tracer(monitoring_config)
+
     # ── Phase 3: LLM call (no DB session) ──
+    _request_id = g.request_id
+
     try:
+        if tracer:
+            tracer.start(model_name, input_data=data)
+            tracer.log_input(data)
+            tracer.set_metadata({
+                "request_id": _request_id,
+                "group_id": group_id,
+                "user": auth_ctx.user_name if auth_ctx else None,
+                "model_name": model_name,
+                "api_key_name": auth_ctx.api_key_name if auth_ctx else None,
+            })
+
         response = await _gateway_service.rerank(resolved, rerank_request)
+
+        if tracer:
+            tracer.log_output(response.to_dict())
+            tracer.end()
+
         return jsonify(response.to_dict())
     except ModelNotFoundError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="model_not_found", param="model", status_code=e.status_code)
     except GatewayServiceError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("rerank", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
         return _error_response(e.message, code="request_failed", status_code=e.status_code)
     except ProviderError as e:
+        if tracer:
+            tracer.end(error=e)
         _log_error("rerank", e.status_code, e.message,
                    _build_error_context(auth_ctx, model_name, provider_id=resolved.provider_id, provider_name=resolved.provider_name))
         return _error_response(e.message, code="provider_error", status_code=e.status_code)
