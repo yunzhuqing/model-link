@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, groupsApi } from '../api/client';
@@ -7,22 +7,224 @@ import type { ApiKey } from '../api/client';
 import { Key, Plus, Edit2, Trash2, Copy, RefreshCw, Check, X, Calendar, Hash, Users, User, Eye, EyeOff, Tag, Search } from 'lucide-react';
 import TagSelector from '../components/TagSelector';
 import { useAuth } from '../contexts/AuthContext';
+import { fuzzyMatchTokens } from '../utils/fuzzyMatch';
 
-/** Fuzzy match model name / provider / sharedFromGroup by query. */
-function fuzzyMatchOption(query: string, m: { name: string; providerName: string; sharedFromGroup?: string }): boolean {
-  const q = query.toLowerCase().trim();
-  if (!q) return true;
-  if (m.name.toLowerCase().includes(q)) return true;
-  if (m.providerName.toLowerCase().includes(q)) return true;
-  if (m.sharedFromGroup && m.sharedFromGroup.toLowerCase().includes(q)) return true;
-  // Normalized subsequence match: "gpt4" matches "gpt-4"
-  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const nq = normalize(query);
-  if (normalize(m.name).includes(nq)) return true;
-  if (m.providerName && normalize(m.providerName).includes(nq)) return true;
-  if (m.sharedFromGroup && normalize(m.sharedFromGroup).includes(nq)) return true;
-  return false;
+interface ModelOption {
+  name: string;
+  alias?: string | null;
+  providerName: string;
+  sharedFromGroup?: string;
+  groupId?: number;
 }
+
+/** Fuzzy match model name / alias / provider / sharedFromGroup by query. */
+function fuzzyMatchOption(query: string, m: ModelOption): boolean {
+  return fuzzyMatchTokens(query, [m.name, m.alias, m.providerName, m.sharedFromGroup]);
+}
+
+/* ── ModelTagSelector ─────────────────────────────────────────────────────
+ * Module-level so React keeps the same component identity across parent
+ * renders — otherwise the search <input> remounts on every keystroke and
+ * loses focus. */
+interface ModelTagSelectorProps {
+  selected: string[];
+  onAdd: (name: string) => void;
+  onRemove: (name: string) => void;
+  searchInput: string;
+  onSearchChange: (v: string) => void;
+  allModels: ModelOption[];
+  providers?: any[];
+  groupId?: number;
+  disabled?: boolean;
+  groupFilter?: number;
+}
+
+const ModelTagSelector = ({
+  selected,
+  onAdd,
+  onRemove,
+  searchInput,
+  onSearchChange,
+  allModels,
+  providers,
+  groupId,
+  disabled = false,
+  groupFilter,
+}: ModelTagSelectorProps) => {
+  const [isFocused, setIsFocused] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  let availableModels = allModels.length > 0 ? allModels : (providers ? (() => {
+    // Fallback: build from providers only when allModels is empty (standalone mode)
+    const seen = new Set<string>();
+    const result: ModelOption[] = [];
+    for (const p of providers) {
+      if (p.models) {
+        for (const m of p.models) {
+          if (!seen.has(m.name)) {
+            seen.add(m.name);
+            result.push({ name: m.name, alias: m.alias, providerName: p.name });
+          }
+        }
+      }
+    }
+    return result.sort((a, b) => a.name.localeCompare(b.name));
+  })() : []);
+
+  // In standalone mode, filter by the key's group when groupFilter is provided
+  if (groupFilter && !groupId) {
+    availableModels = availableModels.filter(
+      m => m.groupId === groupFilter || m.sharedFromGroup != null
+    );
+  }
+
+  // Flatten each model into separate dropdown rows for its name and alias.
+  // The row's `identifier` is what gets stored in `selected` (and ultimately
+  // in api_key.allowed_models) — the backend's _check_allowed_models compares
+  // the request payload's `model` field verbatim against this string, so
+  // storing the alias lets callers invoke by alias.
+  type Row = { identifier: string; kind: 'name' | 'alias'; option: ModelOption };
+  const rows: Row[] = [];
+  for (const m of availableModels) {
+    rows.push({ identifier: m.name, kind: 'name', option: m });
+    if (m.alias) {
+      rows.push({ identifier: m.alias, kind: 'alias', option: m });
+    }
+  }
+
+  const filtered = rows.filter(
+    r => !selected.includes(r.identifier) && fuzzyMatchOption(searchInput, r.option)
+  );
+
+  const showDropdown = (isFocused || !!searchInput) && filtered.length > 0;
+
+  return (
+    <div className={disabled ? 'opacity-50 pointer-events-none' : ''}>
+      <label className="block text-sm font-medium text-slate-700 mb-2">
+        可用模型限制（留空表示不限制）
+      </label>
+      {/* Selected tags */}
+      {selected.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {selected.map(id => {
+            // `id` may be either a model name or an alias (whichever the user
+            // picked). Look up which one it is, so we can label the chip.
+            const opt = availableModels.find(m => m.name === id || m.alias === id);
+            const isAlias = !!(opt && opt.alias === id);
+            const tooltip = opt
+              ? `${opt.providerName}${isAlias ? ` · 别名指向 ${opt.name}` : opt.alias ? ` · 别名 ${opt.alias}` : ''}${opt.sharedFromGroup ? ` · 共享自 ${opt.sharedFromGroup}` : ''}`
+              : id;
+            return (
+              <span
+                key={id}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium ${
+                  isAlias ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'
+                }`}
+                title={tooltip}
+              >
+                {isAlias && (
+                  <span className="text-emerald-400 font-normal text-[10px]">别名</span>
+                )}
+                {id}
+                <button
+                  onClick={() => onRemove(id)}
+                  className={isAlias ? 'text-emerald-400 hover:text-emerald-600 ml-0.5' : 'text-blue-400 hover:text-blue-600 ml-0.5'}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {/* Search input */}
+      <div className="relative">
+        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => onSearchChange(e.target.value)}
+          onFocus={() => {
+            if (blurTimer.current) {
+              clearTimeout(blurTimer.current);
+              blurTimer.current = null;
+            }
+            setIsFocused(true);
+          }}
+          onBlur={() => {
+            // Delay so clicks on dropdown items register before the list collapses.
+            blurTimer.current = setTimeout(() => setIsFocused(false), 150);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && searchInput.trim()) {
+              e.preventDefault();
+              const q = searchInput.toLowerCase();
+              const exactMatch = filtered.find(r => r.identifier.toLowerCase() === q);
+              if (exactMatch) {
+                onAdd(exactMatch.identifier);
+              } else if (filtered.length === 1) {
+                // Only one candidate left — pick it (typical narrowing behavior).
+                onAdd(filtered[0].identifier);
+              } else if (searchInput.trim() && !selected.includes(searchInput.trim())) {
+                onAdd(searchInput.trim());
+              }
+              onSearchChange('');
+            }
+          }}
+          className="w-full pl-9 p-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+          placeholder="搜索模型名称、别名、供应商（支持空格分词，如 gpt 4o）"
+        />
+      </div>
+      {/* Dropdown suggestions */}
+      {showDropdown && (
+        <div className="mt-1 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg z-10 relative">
+          {filtered.map(r => (
+            <button
+              key={`${r.kind}:${r.identifier}`}
+              onMouseDown={(e) => {
+                // mouseDown fires before blur — prevents the input's onBlur from
+                // collapsing the list before the click is registered.
+                e.preventDefault();
+                onAdd(r.identifier);
+                onSearchChange('');
+              }}
+              className="w-full text-left px-3 py-2 hover:bg-blue-50 hover:text-blue-700 transition-colors first:rounded-t-xl last:rounded-b-xl"
+            >
+              <div className="text-sm font-medium text-slate-800 flex items-center gap-2">
+                <span>{r.identifier}</span>
+                {r.kind === 'alias' ? (
+                  <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] font-medium">
+                    别名 → {r.option.name}
+                  </span>
+                ) : (
+                  <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-medium">
+                    模型名
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
+                <span>{r.option.providerName}</span>
+                {r.option.sharedFromGroup && (
+                  <span className="px-1 py-0.5 bg-amber-50 text-amber-600 rounded text-[10px] font-medium">
+                    共享自 {r.option.sharedFromGroup}
+                  </span>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+      {selected.length > 0 && (
+        <p className="text-xs text-slate-400 mt-1.5">
+          已选择 {selected.length} 个模型 · 共 {availableModels.length} 个可用
+        </p>
+      )}
+      {disabled && (
+        <p className="text-xs text-amber-500 mt-1">您没有编辑可用模型的权限</p>
+      )}
+    </div>
+  );
+};
 
 /** When groupId is provided the component acts as an embedded panel (GroupDetail).
  *  When omitted it acts as a standalone page showing all API keys. */
@@ -124,13 +326,6 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     enabled: !!modelsKeyId,
   });
 
-  interface ModelOption {
-    name: string;
-    providerName: string;
-    sharedFromGroup?: string;
-    groupId?: number;
-  }
-
   // Build available model list from providers + shared models (embedded mode)
   const allModels = useMemo<ModelOption[]>(() => {
     const seen = new Set<string>();
@@ -143,7 +338,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
           for (const m of p.models) {
             if (!seen.has(m.name)) {
               seen.add(m.name);
-              result.push({ name: m.name, providerName: p.name, groupId: p.group_id });
+              result.push({ name: m.name, alias: m.alias, providerName: p.name, groupId: p.group_id });
             }
           }
         }
@@ -158,6 +353,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
           seen.add(share.model_name);
           result.push({
             name: share.model_name,
+            alias: share.model_alias,
             providerName: share.provider_name,
             sharedFromGroup: share.source_group_name,
           });
@@ -303,142 +499,6 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
     if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
     if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
     return count.toString();
-  };
-
-  // Model tag selector component
-  const ModelTagSelector = ({
-    selected,
-    onAdd,
-    onRemove,
-    searchInput,
-    onSearchChange,
-    disabled = false,
-    groupFilter,
-  }: {
-    selected: string[];
-    onAdd: (name: string) => void;
-    onRemove: (name: string) => void;
-    searchInput: string;
-    onSearchChange: (v: string) => void;
-    disabled?: boolean;
-    groupFilter?: number;
-  }) => {
-    let availableModels = allModels.length > 0 ? allModels : (providers ? (() => {
-      // Fallback: build from providers only when allModels is empty (standalone mode)
-      const seen = new Set<string>();
-      const result: ModelOption[] = [];
-      if (providers) {
-        for (const p of providers) {
-          if (p.models) {
-            for (const m of p.models) {
-              if (!seen.has(m.name)) {
-                seen.add(m.name);
-                result.push({ name: m.name, providerName: p.name });
-              }
-            }
-          }
-        }
-      }
-      return result.sort((a, b) => a.name.localeCompare(b.name));
-    })() : []);
-
-    // In standalone mode, filter by the key's group when groupFilter is provided
-    if (groupFilter && !groupId) {
-      availableModels = availableModels.filter(
-        m => m.groupId === groupFilter || m.sharedFromGroup != null
-      );
-    }
-
-    const filtered = availableModels.filter(
-      m => !selected.includes(m.name) && fuzzyMatchOption(searchInput, m)
-    );
-
-    return (
-      <div className={disabled ? 'opacity-50 pointer-events-none' : ''}>
-        <label className="block text-sm font-medium text-slate-700 mb-2">
-          可用模型限制（留空表示不限制）
-        </label>
-        {/* Selected tags */}
-        {selected.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {selected.map(name => {
-              const opt = availableModels.find(m => m.name === name);
-              return (
-                <span
-                  key={name}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-medium"
-                  title={opt ? `${opt.providerName}${opt.sharedFromGroup ? ` · 共享自 ${opt.sharedFromGroup}` : ''}` : name}
-                >
-                  {name}
-                  <button
-                    onClick={() => onRemove(name)}
-                    className="text-blue-400 hover:text-blue-600 ml-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-        )}
-        {/* Search input */}
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={searchInput}
-            onChange={(e) => onSearchChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && searchInput.trim()) {
-                e.preventDefault();
-                const exactMatch = filtered.find(m => m.name.toLowerCase() === searchInput.toLowerCase());
-                if (exactMatch) {
-                  onAdd(exactMatch.name);
-                } else if (searchInput.trim() && !selected.includes(searchInput.trim())) {
-                  onAdd(searchInput.trim());
-                }
-                onSearchChange('');
-              }
-            }}
-            className="w-full pl-9 p-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-            placeholder="搜索模型名称、供应商或共享来源..."
-          />
-        </div>
-        {/* Dropdown suggestions */}
-        {searchInput && filtered.length > 0 && (
-          <div className="mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg z-10 relative">
-            {filtered.slice(0, 20).map(m => (
-              <button
-                key={m.name}
-                onClick={() => {
-                  onAdd(m.name);
-                  onSearchChange('');
-                }}
-                className="w-full text-left px-3 py-2 hover:bg-blue-50 hover:text-blue-700 transition-colors first:rounded-t-xl last:rounded-b-xl"
-              >
-                <div className="text-sm font-medium text-slate-800">{m.name}</div>
-                <div className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
-                  <span>{m.providerName}</span>
-                  {m.sharedFromGroup && (
-                    <span className="px-1 py-0.5 bg-amber-50 text-amber-600 rounded text-[10px] font-medium">
-                      共享自 {m.sharedFromGroup}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-        {selected.length > 0 && (
-          <p className="text-xs text-slate-400 mt-1.5">
-            已选择 {selected.length} 个模型
-          </p>
-        )}
-        {disabled && (
-          <p className="text-xs text-amber-500 mt-1">您没有编辑可用模型的权限</p>
-        )}
-      </div>
-    );
   };
 
   if (isLoading) {
@@ -638,6 +698,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   onRemove={(name) => setNewKeyAllowedModels(prev => prev.filter(n => n !== name))}
                   searchInput={modelSearchInput}
                   onSearchChange={setModelSearchInput}
+                  allModels={allModels}
+                  providers={providers}
+                  groupId={groupId}
                   disabled={!canEditModels}
                   groupFilter={newKeyGroupId}
                 />
@@ -744,6 +807,9 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   onRemove={(name) => setEditAllowedModels(prev => prev.filter(n => n !== name))}
                   searchInput={editModelSearchInput}
                   onSearchChange={setEditModelSearchInput}
+                  allModels={allModels}
+                  providers={providers}
+                  groupId={groupId}
                   disabled={!canEditModels}
                   groupFilter={selectedKey?.group?.id}
                 />
@@ -1067,6 +1133,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 onRemove={(name) => setNewKeyAllowedModels(prev => prev.filter(n => n !== name))}
                 searchInput={modelSearchInput}
                 onSearchChange={setModelSearchInput}
+                allModels={allModels}
+                providers={providers}
+                groupId={groupId}
+                groupFilter={newKeyGroupId}
               />
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
@@ -1183,6 +1253,10 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                 onRemove={(name) => setEditAllowedModels(prev => prev.filter(n => n !== name))}
                 searchInput={editModelSearchInput}
                 onSearchChange={setEditModelSearchInput}
+                allModels={allModels}
+                providers={providers}
+                groupId={groupId}
+                groupFilter={selectedKey?.group?.id}
               />
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2 mt-4">标签</label>
@@ -1306,12 +1380,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
                   <div className="col-span-1 text-right">推理</div>
                 </div>
                 {modelsData.models
-                  .filter(m =>
-                    !modelsSearchFilter ||
-                    m.name.toLowerCase().includes(modelsSearchFilter.toLowerCase()) ||
-                    (m.alias && m.alias.toLowerCase().includes(modelsSearchFilter.toLowerCase())) ||
-                    (m.provider_name && m.provider_name.toLowerCase().includes(modelsSearchFilter.toLowerCase()))
-                  )
+                  .filter(m => fuzzyMatchTokens(modelsSearchFilter, [m.name, m.alias, m.provider_name]))
                   .map((model) => (
                     <div
                       key={model.name}

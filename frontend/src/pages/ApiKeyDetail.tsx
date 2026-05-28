@@ -17,22 +17,12 @@ import BudgetEditModal from './ApiKeyDetail/BudgetEditModal';
 import CompressionSettingsModal from './ApiKeyDetail/CompressionSettingsModal';
 import { fmtNum, fmtCost, fmtDate } from './ApiKeyDetail/utils';
 import { Search } from 'lucide-react';
+import { fuzzyMatchTokens } from '../utils/fuzzyMatch';
 
-/** Fuzzy match: search each token against model name / alias / provider */
+/** Fuzzy match: every whitespace-separated token must appear in at least one
+ *  of name / alias / provider (case-insensitive, ignoring symbols). */
 function fuzzyMatchModel(query: string, model: { name: string; alias?: string | null; provider_name?: string | null }): boolean {
-  const q = query.toLowerCase().trim();
-  if (!q) return true;
-  // Direct substring match (case-insensitive)
-  if (model.name.toLowerCase().includes(q)) return true;
-  if (model.alias && model.alias.toLowerCase().includes(q)) return true;
-  if (model.provider_name && model.provider_name.toLowerCase().includes(q)) return true;
-  // Normalized subsequence match: "gpt4" → "gpt4" vs "gpt-4" → "gpt4"
-  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const nq = normalize(query);
-  const nname = normalize(model.name);
-  if (nname.includes(nq)) return true;
-  if (model.alias && normalize(model.alias).includes(nq)) return true;
-  return false;
+  return fuzzyMatchTokens(query, [model.name, model.alias, model.provider_name]);
 }
 
 /* ── Component ─────────────────────────────────────────────────────────── */
