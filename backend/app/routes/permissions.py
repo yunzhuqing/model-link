@@ -102,7 +102,7 @@ def require_api_key_access(f):
                 return jsonify({"detail": "API key not found"}), 404
 
             if api_key.user_id != current_user.id and (
-                not api_key.group_id or not await _is_admin_or_above(api_key.group_id, current_user.id, session=session)
+                not api_key.group_id or not await _is_admin_or_above(current_user, api_key.group_id, session=session)
             ):
                 return jsonify({"detail": "Access denied"}), 403
 
