@@ -119,12 +119,11 @@ async def _resync_loop(app, interval: float) -> None:
     finally:
         logger.info("[bg_resync] Resync loop terminated.")
 
-
-async def _do_resync(app) -> None:
+async def _do_resync(app, min_age_minutes: int = 10) -> None:
     """
     Perform one resync cycle:
 
-    1. Query stale in_progress records (created > 10 min ago)
+    1. Query stale in_progress records (created > min_age_minutes ago)
     2. For each record, classify model and check age threshold
     3. Query provider task status if threshold met
     4. Update DB if status is terminal
@@ -140,7 +139,7 @@ async def _do_resync(app) -> None:
         TaskStatus,
     )
 
-    stale_records = await _bg_dao.find_stale_in_progress_records_async(min_age_minutes=10)
+    stale_records = await _bg_dao.find_stale_in_progress_records_async(min_age_minutes=min_age_minutes)
     if not stale_records:
         return
 

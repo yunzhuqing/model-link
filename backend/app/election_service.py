@@ -125,6 +125,33 @@ def get_leader_node_id() -> Optional[str]:
     with _lock:
         return _leader_node_id
 
+def get_group_members() -> dict[str, dict]:
+    """
+    Return all members in the election group and their capabilities.
+
+    Returns a dict of ``{node_id: capabilities}`` where capabilities is a
+    dict of key-value pairs (e.g. timestamps, heartbeats).  Returns an empty
+    dict if the coordinator is not connected or the group hasn't been joined.
+    """
+    coord = _coordinator
+    if coord is None:
+        return {}
+    try:
+        members = coord.get_members()
+        return {mid.decode() if isinstance(mid, bytes) else mid: caps
+                for mid, caps in members.items()}
+    except Exception as exc:
+        logger.warning(f"[election] get_members failed: {exc}")
+        return {}
+
+
+def get_coordinator_info() -> dict:
+    """Return coordinator metadata for debugging."""
+    return {
+        "coordinator_url": os.getenv("COORDINATOR_URL", "").strip() or _DEFAULT_COORDINATOR,
+        "election_group": os.getenv("ELECTION_GROUP", _DEFAULT_GROUP),
+        "heartbeat_interval": float(os.getenv("ELECTION_HEARTBEAT_INTERVAL", _DEFAULT_HEARTBEAT)),
+    }
 
 def register_on_leader(callback) -> None:
     """
@@ -201,6 +228,12 @@ def stop_election() -> None:
     coord = _coordinator
     if coord is not None:
         try:
+            group_name = os.getenv("ELECTION_GROUP", _DEFAULT_GROUP)
+            coord.leave_group(group_name.encode("utf-8"))
+            logger.info("[election] Left the election group.")
+        except Exception as exc:
+            logger.warning(f"[election] Error leaving group: {exc}")
+        try:
             coord.stop()
             logger.info("[election] Coordinator stopped.")
         except Exception as exc:
@@ -257,6 +290,13 @@ def _election_loop() -> None:
         )
         _coordinator.start(start_heart=True)
         logger.info("[election] Coordinator connected.")
+
+        # Join the group so get_members() can discover other nodes
+        try:
+            _coordinator.join_group(group_name.encode("utf-8"))
+            logger.info(f"[election] Joined group '{group_name}'.")
+        except Exception as exc:
+            logger.warning(f"[election] join_group failed: {exc}")
     except Exception as exc:
         logger.error(f"[election] Failed to start coordinator: {exc}")
         # Fall back to "always leader" so a single dev node still works.

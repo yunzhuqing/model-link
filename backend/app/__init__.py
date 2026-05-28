@@ -519,6 +519,30 @@ def create_app(config=None):
             "status": "healthy",
         }
 
+    @app.route('/monitor/election')
+    async def monitor_election():
+        """Return leader election status and group membership.
+
+        Response JSON:
+            node_id: this node's identifier
+            is_leader: whether this node is the elected leader
+            leader_node_id: current leader's node identifier (None if unknown)
+            group_members: dict of {node_id: capabilities} for all group members
+            coordinator: backend URL, group name, and heartbeat interval
+        """
+        from app.election_service import (
+            is_leader, get_node_id, get_leader_node_id,
+            get_group_members, get_coordinator_info,
+        )
+
+        return {
+            "node_id": get_node_id(),
+            "is_leader": is_leader(),
+            "leader_node_id": get_leader_node_id(),
+            "group_members": get_group_members(),
+            "coordinator": get_coordinator_info(),
+        }
+
     @app.route('/monitor/threads')
     async def monitor_threads():
         """Return information about all running Python threads.

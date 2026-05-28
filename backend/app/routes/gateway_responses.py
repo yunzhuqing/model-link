@@ -802,16 +802,23 @@ async def get_response(response_id: str):
 
 @gateway_responses_bp.route('/v1/test/background-resync', methods=['POST'])
 async def test_background_resync():
-    """Test endpoint: manually trigger one background resync cycle."""
+    """Manually trigger one background resync cycle.
+
+    Optional JSON body: {"min_age_minutes": 5} to override the default (10).
+    """
     from app.usagerecord.background_resync_service import _do_resync
+
+    data = await request.get_json(silent=True) or {}
+    min_age_minutes = int(data.get("min_age_minutes", 10))
 
     t0 = time.time()
     try:
-        await _do_resync(current_app)
+        await _do_resync(current_app, min_age_minutes=min_age_minutes)
         elapsed = round(time.time() - t0, 3)
         return jsonify({
             "status": "ok",
-            "message": f"Resync cycle completed in {elapsed}s — check server logs for details",
+            "message": f"Resync cycle completed in {elapsed}s — check logs for details",
+            "min_age_minutes": min_age_minutes,
         }), 200
     except Exception as exc:
         elapsed = round(time.time() - t0, 3)
@@ -819,5 +826,6 @@ async def test_background_resync():
         return jsonify({
             "status": "error",
             "message": str(exc),
+            "min_age_minutes": min_age_minutes,
             "elapsed_s": elapsed,
         }), 500
