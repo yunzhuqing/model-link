@@ -323,6 +323,7 @@ def _compress_by_granularity(session, storage, key_hash: str, last_compress_id: 
 
             # ── Merge batch into the first record (UPDATE in-place) ──
             _merge_into_record(batch[0], batch[1:])
+            session.flush()  # Persist merge UPDATE before DELETE to avoid autoflush
 
             # ── Delete the other records (NOT batch[0]) ──
             ids_to_delete = [r.id for r in batch[1:]]
