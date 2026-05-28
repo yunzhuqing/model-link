@@ -339,6 +339,7 @@ def _election_loop() -> None:
         if not is_leader():
             _try_acquire_leadership()
 
+        logger.info(f"[election] Node {_node_id} heartbeat OK, is_leader={is_leader()}")
         _stop_event.wait(timeout=heartbeat)
 
     logger.info("[election] Election loop terminated.")
@@ -373,8 +374,10 @@ def _try_acquire_leadership() -> None:
     global _is_leader, _leader_node_id
 
     if _election_lock is None:
+        logger.warning("[election] _try_acquire_leadership called but _election_lock is None — coordinator may not have started.")
         return
 
+    logger.info(f"[election] Node {_node_id} attempting to acquire lock...")
     try:
         acquired = _election_lock.acquire(blocking=False)
         if acquired:
@@ -387,6 +390,13 @@ def _try_acquire_leadership() -> None:
             if not was_leader:
                 _fire_on_leader_callbacks()
         else:
+            # Log member info to help diagnose why lock is unavailable
+            members = get_group_members()
+            member_ids = list(members.keys())
+            logger.info(
+                f"[election] Node {_node_id} failed to acquire lock. "
+                f"Group members ({len(member_ids)}): {member_ids}"
+            )
             was_leader = False
             with _lock:
                 was_leader = _is_leader
@@ -397,7 +407,10 @@ def _try_acquire_leadership() -> None:
             if was_leader:
                 _fire_on_lost_leader_callbacks()
     except Exception as exc:
-        logger.error(f"[election] Error acquiring lock: {exc}")
+        logger.error(
+            f"[election] Error acquiring lock: {type(exc).__name__}: {exc}. "
+            f"Coordinator type: {type(_coordinator).__name__}"
+        )
         was_leader = False
         with _lock:
             was_leader = _is_leader
