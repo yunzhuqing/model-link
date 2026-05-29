@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 import os
 import threading
@@ -136,6 +137,7 @@ async def _do_resync(app, min_age_minutes: int = 10) -> None:
     )
     from app.usagerecord.task_status_checker import (
         resolve_and_check_task_status_async,
+        TaskCheckResult,
         TaskStatus,
     )
 
@@ -215,16 +217,54 @@ async def _do_resync(app, min_age_minutes: int = 10) -> None:
             f"model={model} category={category.value} age={age_minutes:.1f}m"
         )
 
-        status = await resolve_and_check_task_status_async(record)
+        result = await resolve_and_check_task_status_async(record)
 
-        if status == TaskStatus.RUNNING:
+        if result.status == TaskStatus.RUNNING:
             continue
 
-        if status == TaskStatus.COMPLETED:
+        if result.status == TaskStatus.COMPLETED:
+            # Save output to storage when resync detects a completed task
+            if result.output_items:
+                try:
+                    output_key = record.get("output_key")
+                    if output_key:
+                        from app.storage.factory import get_storage_backend
+                        storage = get_storage_backend()
+                        output_items_with_ids = []
+                        for i, item in enumerate(result.output_items):
+                            item_with_id = dict(item)
+                            if "id" not in item_with_id:
+                                item_with_id["id"] = f"{response_id}-{i}" if i > 0 else response_id
+                            output_items_with_ids.append(item_with_id)
+                        output_json = {
+                            "id": response_id,
+                            "object": "response",
+                            "status": "completed",
+                            "model": model,
+                            "output": output_items_with_ids,
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": len(output_items_with_ids),
+                                "total_tokens": len(output_items_with_ids),
+                            },
+                        }
+                        await asyncio.to_thread(
+                            storage.write, output_key,
+                            json.dumps(output_json, ensure_ascii=False),
+                        )
+                        logger.info(
+                            f"[bg_resync] Output saved for {response_id!r} "
+                            f"({len(output_items_with_ids)} items)"
+                        )
+                except Exception as save_exc:
+                    logger.error(
+                        f"[bg_resync] Failed to save output for {response_id!r}: {save_exc}",
+                        exc_info=True,
+                    )
             await _bg_dao.mark_completed_async(response_id)
             logger.info(f"[bg_resync] Record {response_id!r} synced to completed")
             resolved_count += 1
-        elif status == TaskStatus.FAILED:
+        elif result.status == TaskStatus.FAILED:
             await _bg_dao.mark_failed_async(response_id, "Task failed at upstream provider")
             logger.info(f"[bg_resync] Record {response_id!r} synced to failed")
             resolved_count += 1

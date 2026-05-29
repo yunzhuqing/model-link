@@ -15,8 +15,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from sqlalchemy import text as sa_text
@@ -45,6 +46,59 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     UNKNOWN = "unknown"
+
+
+@dataclass
+class TaskCheckResult:
+    """Result of an upstream task status check.
+
+    Attributes:
+        status:       Terminal or running status.
+        output_items: For COMPLETED tasks, the formatted output items
+                      (e.g. image_generation_call / video_generation_call)
+                      ready to be saved to storage.  None otherwise.
+    """
+    status: TaskStatus
+    output_items: Optional[List[Dict[str, Any]]] = None
+
+
+# ── TencentVOD output extraction ──────────────────────────────────────────────
+
+def _extract_tencentvod_output(resp: Dict[str, Any], model: str) -> Optional[List[Dict[str, Any]]]:
+    """Extract output items from a TencentVOD DescribeTaskDetail response.
+
+    Handles image (AigcImageTask), video (AigcVideoTask), and 3D (AigcVideoTask
+    for 3D scene types).  Returns None when no output file URLs are found.
+    """
+    aigc_image = resp.get("AigcImageTask") or {}
+    aigc_video = resp.get("AigcVideoTask") or {}
+    aigc_task = aigc_image if aigc_image else aigc_video
+    if not aigc_task:
+        return None
+
+    output = aigc_task.get("Output") or {}
+    if not output:
+        return None
+
+    model_lower = (model or "").lower()
+    if aigc_image:
+        item_type = "image_generation_call"
+    elif "3d" in model_lower or model_lower.startswith("hunyuan-3d-"):
+        item_type = "3d_generation_call"
+    else:
+        item_type = "video_generation_call"
+
+    items: List[Dict[str, Any]] = []
+    file_url = output.get("FileUrl", "")
+    if file_url:
+        items.append({"type": item_type, "status": "completed", "result": file_url})
+
+    for fi in output.get("FileInfos") or []:
+        url = fi.get("FileUrl", "")
+        if url:
+            items.append({"type": item_type, "status": "completed", "result": url})
+
+    return items if items else None
 
 
 # ── Reusable status helpers ──────────────────────────────────────────────────
@@ -110,7 +164,7 @@ async def _lookup_provider_credentials_async(provider_id: Optional[int]) -> Opti
 
 async def resolve_and_check_task_status_async(
     record: Dict[str, Any],
-) -> TaskStatus:
+) -> TaskCheckResult:
     """
     Given a stale background response record, determine the provider and
     check the upstream task status.
@@ -126,21 +180,21 @@ async def resolve_and_check_task_status_async(
         record: Background response record dict with task_id, model, provider_id
 
     Returns:
-        Current TaskStatus (RUNNING, COMPLETED, FAILED, or UNKNOWN)
+        TaskCheckResult with status and optionally output_items for COMPLETED tasks
     """
     task_id = record.get("task_id")
     provider_id = record.get("provider_id")
 
     if not task_id:
-        return TaskStatus.UNKNOWN
+        return TaskCheckResult(TaskStatus.UNKNOWN)
 
     creds = await _lookup_provider_credentials_async(provider_id)
     if not creds:
-        return TaskStatus.UNKNOWN
+        return TaskCheckResult(TaskStatus.UNKNOWN)
 
     provider_type = (creds.get("type") or "").lower()
     if not provider_type:
-        return TaskStatus.UNKNOWN
+        return TaskCheckResult(TaskStatus.UNKNOWN)
 
     api_key = creds["api_key"]
     base_url = creds.get("base_url") or ""
@@ -160,10 +214,18 @@ async def resolve_and_check_task_status_async(
                 base_url or "https://ark.cn-beijing.volces.com/api/v3",
                 task_id,
             )
-            return _map_volcengine_status(result["status"])
+            mapped = _map_volcengine_status(result["status"])
+            output_items = None
+            if mapped == TaskStatus.COMPLETED and result.get("video_url"):
+                output_items = [{
+                    "type": "video_generation_call",
+                    "status": "completed",
+                    "result": result["video_url"],
+                }]
+            return TaskCheckResult(mapped, output_items=output_items)
         except Exception as exc:
             logger.error(f"[task_status] Volcengine check error for {task_id}: {exc}", exc_info=True)
-            return TaskStatus.UNKNOWN
+            return TaskCheckResult(TaskStatus.UNKNOWN)
 
     # ── Bailian — Dashscope video generation ────────────────────────────
     elif provider_type == "bailian":
@@ -178,13 +240,24 @@ async def resolve_and_check_task_status_async(
             client = await _get_poll_client()
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
             if resp.status_code >= 400:
-                return TaskStatus.UNKNOWN
+                return TaskCheckResult(TaskStatus.UNKNOWN)
             result = resp.json()
-            task_status = result.get("output", {}).get("task_status", "")
-            return _map_bailian_status(task_status)
+            output = result.get("output", {})
+            task_status = output.get("task_status", "")
+            mapped = _map_bailian_status(task_status)
+            output_items = None
+            if mapped == TaskStatus.COMPLETED:
+                video_url = output.get("video_url", "")
+                if video_url:
+                    output_items = [{
+                        "type": "video_generation_call",
+                        "status": "completed",
+                        "result": video_url,
+                    }]
+            return TaskCheckResult(mapped, output_items=output_items)
         except Exception as exc:
             logger.error(f"[task_status] Bailian check error for {task_id}: {exc}", exc_info=True)
-            return TaskStatus.UNKNOWN
+            return TaskCheckResult(TaskStatus.UNKNOWN)
 
     # ── TencentVOD — shared DescribeTaskDetail API ──────────────────────
     elif provider_type == "tencentvod":
@@ -195,7 +268,7 @@ async def resolve_and_check_task_status_async(
             if not secret_id or not secret_key:
                 parts = api_key.split(":", 1)
                 if len(parts) != 2:
-                    return TaskStatus.UNKNOWN
+                    return TaskCheckResult(TaskStatus.UNKNOWN)
                 secret_id, secret_key = parts[0], parts[1]
             sub_app_id = extra_config.get("sub_app_id") or extra_config.get("app_id")
             try:
@@ -206,15 +279,20 @@ async def resolve_and_check_task_status_async(
                 secret_id, secret_key, task_id, sub_app_id=sub_app_id,
             )
             if not resp:
-                return TaskStatus.UNKNOWN
+                return TaskCheckResult(TaskStatus.UNKNOWN)
             status = resp.get("Status") or ""
             aigc_task = resp.get("AigcVideoTask") or resp.get("AigcImageTask") or {}
             task_status = aigc_task.get("Status", "") if aigc_task else status
             err_code = aigc_task.get("ErrCode", 0) if aigc_task else 0
-            return _map_tencent_status(task_status, err_code)
+            mapped = _map_tencent_status(task_status, err_code)
+            output_items = None
+            if mapped == TaskStatus.COMPLETED:
+                model = record.get("model", "")
+                output_items = _extract_tencentvod_output(resp, model)
+            return TaskCheckResult(mapped, output_items=output_items)
         except Exception as exc:
             logger.error(f"[task_status] TencentVOD check error for {task_id}: {exc}", exc_info=True)
-            return TaskStatus.UNKNOWN
+            return TaskCheckResult(TaskStatus.UNKNOWN)
 
     # ── Hunyuan3D — tries both Rapid and Pro actions ────────────────────
     elif provider_type == "hunyuan":
@@ -225,23 +303,33 @@ async def resolve_and_check_task_status_async(
             if not secret_id or not secret_key:
                 parts = api_key.split(":", 1)
                 if len(parts) != 2:
-                    return TaskStatus.UNKNOWN
+                    return TaskCheckResult(TaskStatus.UNKNOWN)
                 secret_id, secret_key = parts[0], parts[1]
             region = extra_config.get("region", "ap-guangzhou")
             model = record.get("model", "")
-            # check_any_hunyuan3d_job_status is async — must be awaited
-            # directly. (It was previously wrapped in asyncio.to_thread,
-            # which silently returned an un-awaited coroutine and made
-            # every poll fall through to the except branch.)
             resp = await check_any_hunyuan3d_job_status(
                 secret_id, secret_key, task_id, model=model, region=region,
             )
             if not resp:
-                return TaskStatus.UNKNOWN
-            return _map_hunyuan3d_status(resp.get("Status", ""), resp.get("ErrorCode", ""))
+                return TaskCheckResult(TaskStatus.UNKNOWN)
+            mapped = _map_hunyuan3d_status(resp.get("Status", ""), resp.get("ErrorCode", ""))
+            output_items = None
+            if mapped == TaskStatus.COMPLETED:
+                result_files = resp.get("ResultFile3Ds") or []
+                items: list = []
+                for f in result_files:
+                    items.append({
+                        "type": "3d_generation_call",
+                        "status": "completed",
+                        "result": f.get("Url", ""),
+                        "preview_url": f.get("PreviewImageUrl", ""),
+                    })
+                if items:
+                    output_items = items
+            return TaskCheckResult(mapped, output_items=output_items)
         except Exception as exc:
             logger.error(f"[task_status] Hunyuan3D check error for {task_id}: {exc}", exc_info=True)
-            return TaskStatus.UNKNOWN
+            return TaskCheckResult(TaskStatus.UNKNOWN)
 
     # ── OpenAI-compatible Responses API upstream ────────────────────────
     elif provider_type == "openai":
@@ -250,16 +338,18 @@ async def resolve_and_check_task_status_async(
             client = await _get_poll_client()
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
             if resp.status_code >= 400:
-                return TaskStatus.UNKNOWN
+                return TaskCheckResult(TaskStatus.UNKNOWN)
             data = resp.json()
             status = data.get("status", "")
+            output_items = None
             if status == "completed":
-                return TaskStatus.COMPLETED
+                output_items = data.get("output")
+                return TaskCheckResult(TaskStatus.COMPLETED, output_items=output_items)
             if status == "failed":
-                return TaskStatus.FAILED
-            return TaskStatus.RUNNING if status in ("queued", "in_progress") else TaskStatus.UNKNOWN
+                return TaskCheckResult(TaskStatus.FAILED)
+            return TaskCheckResult(TaskStatus.RUNNING if status in ("queued", "in_progress") else TaskStatus.UNKNOWN)
         except Exception as exc:
             logger.error(f"[task_status] OpenAI Responses check error for {task_id}: {exc}", exc_info=True)
-            return TaskStatus.UNKNOWN
+            return TaskCheckResult(TaskStatus.UNKNOWN)
 
-    return TaskStatus.UNKNOWN
+    return TaskCheckResult(TaskStatus.UNKNOWN)

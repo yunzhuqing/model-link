@@ -160,16 +160,40 @@ async def find_stale_in_progress_records_async(
     cutoff = datetime.utcnow() - timedelta(minutes=min_age_minutes)
     sql = _sa_text(
         "SELECT response_id, task_id, model, apikey, status, "
-        "provider_id, session_id, request_id, created_at, completed_at, error "
+        "provider_id, session_id, request_id, created_at, completed_at, error, "
+        "output_key "
         "FROM ml_background_responses "
         "WHERE status = 'in_progress' AND created_at < :cutoff "
         "ORDER BY created_at ASC "
         "LIMIT :limit"
     )
+    count_sql = _sa_text(
+        "SELECT COUNT(*) AS total, "
+        "MIN(created_at) AS oldest, MAX(created_at) AS newest "
+        "FROM ml_background_responses WHERE status = 'in_progress'"
+    )
     try:
         async with get_db_session() as session:
             rows = (await session.execute(sql, {"cutoff": cutoff, "limit": limit})).mappings().all()
-            return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+
+            # Diagnostic: when no results, show total in_progress state
+            if not result:
+                diag = (await session.execute(count_sql)).mappings().first()
+                if diag:
+                    logger.info(
+                        f"[background_response_dao] find_stale: 0 rows matched "
+                        f"(cutoff < {cutoff.isoformat()}, min_age={min_age_minutes}m). "
+                        f"In-progress total: {diag['total']}, "
+                        f"oldest_created_at: {diag['oldest']}, "
+                        f"newest_created_at: {diag['newest']}"
+                    )
+            else:
+                logger.info(
+                    f"[background_response_dao] find_stale: {len(result)} rows matched "
+                    f"(cutoff < {cutoff.isoformat()}, min_age={min_age_minutes}m)"
+                )
+            return result
     except Exception as exc:
         logger.warning(f"[background_response_dao] async find_stale failed: {exc}")
         return []
