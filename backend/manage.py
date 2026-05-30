@@ -38,19 +38,22 @@ def create_app():
 
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url or "sqlite:///./sql_app.db"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    engine_options = {
         "pool_size": int(os.getenv("SQLALCHEMY_POOL_SIZE", 10)),
         "max_overflow": int(os.getenv("SQLALCHEMY_MAX_OVERFLOW", 20)),
         "pool_timeout": int(os.getenv("SQLALCHEMY_POOL_TIMEOUT", 30)),
         "pool_recycle": int(os.getenv("SQLALCHEMY_POOL_RECYCLE", 1800)),
         "pool_pre_ping": os.getenv("SQLALCHEMY_POOL_PRE_PING", "true").lower()
         == "true",
-        "connect_args": {
+    }
+    # MySQL-specific connect args (pymysql supports these; other drivers don't)
+    if database_url and "mysql" in database_url:
+        engine_options["connect_args"] = {
             "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", 10)),
             "read_timeout": int(os.getenv("DB_READ_TIMEOUT", 30)),
             "write_timeout": int(os.getenv("DB_WRITE_TIMEOUT", 30)),
-        },
-    }
+        }
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options
 
     db.init_app(app)
     migrate.init_app(app, db)
