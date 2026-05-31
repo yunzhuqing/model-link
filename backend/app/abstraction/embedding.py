@@ -3,7 +3,10 @@ Embedding abstraction module.
 Defines the unified embedding request and response models.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.abstraction.chat import PriceInfo
 
 
 @dataclass
@@ -52,6 +55,7 @@ class EmbeddingUsage:
     cache_read_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    price: Optional['PriceInfo'] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -69,6 +73,12 @@ class EmbeddingResponse:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format."""
+        usage_dict: Dict[str, Any] = {
+            "prompt_tokens": self.usage.prompt_tokens if self.usage else 0,
+            "total_tokens": self.usage.total_tokens if self.usage else 0
+        }
+        if self.usage and self.usage.price is not None:
+            usage_dict["price"] = self.usage.price.to_dict()
         return {
             "object": self.object,
             "data": [
@@ -80,8 +90,5 @@ class EmbeddingResponse:
                 for d in self.data
             ],
             "model": self.model,
-            "usage": {
-                "prompt_tokens": self.usage.prompt_tokens if self.usage else 0,
-                "total_tokens": self.usage.total_tokens if self.usage else 0
-            }
+            "usage": usage_dict
         }

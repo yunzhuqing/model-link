@@ -182,6 +182,22 @@ async def create_images():
             chat_response=chat_response, auth_ctx=auth_ctx, resolved=resolved,
             model_name=model_name, duration_ms=_duration_ms, kind="image generation",
         )
+        # Attach price info to response
+        if chat_response and chat_response.usage:
+            from app.usagerecord.usage_service import calculate_price
+            result["price"] = calculate_price(
+                usage=chat_response.usage,
+                input_price_unit=resolved.input_price,
+                output_price_unit=resolved.output_price,
+                cache_creation_price_unit=resolved.cache_creation_price,
+                cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                cache_token_price_unit=resolved.cache_hit_price,
+                pricing_tiers=resolved.pricing_tiers,
+                output_pricing=resolved.output_pricing,
+                currency=resolved.currency,
+                discount=resolved.discount,
+            ).to_dict()
         return jsonify(result)
     except ModelNotFoundError as e:
         if tracer:
@@ -309,6 +325,22 @@ async def edit_images():
             chat_response=chat_response, auth_ctx=auth_ctx, resolved=resolved,
             model_name=model_name, duration_ms=_duration_ms, kind="image editing",
         )
+        # Attach price info to response
+        if chat_response and chat_response.usage:
+            from app.usagerecord.usage_service import calculate_price
+            result["price"] = calculate_price(
+                usage=chat_response.usage,
+                input_price_unit=resolved.input_price,
+                output_price_unit=resolved.output_price,
+                cache_creation_price_unit=resolved.cache_creation_price,
+                cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                cache_token_price_unit=resolved.cache_hit_price,
+                pricing_tiers=resolved.pricing_tiers,
+                output_pricing=resolved.output_pricing,
+                currency=resolved.currency,
+                discount=resolved.discount,
+            ).to_dict()
         return jsonify(result)
     except ModelNotFoundError as e:
         if tracer:

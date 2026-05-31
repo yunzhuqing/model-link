@@ -32,7 +32,7 @@ import os
 import sys
 import traceback
 
-from ..base import BaseProvider, ProviderConfig, ProviderCapability
+from ..base import BaseProvider, ProviderConfig, ProviderCapability, UpstreamProviderError
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -177,6 +177,43 @@ def _strip_data_uri(s: str) -> str:
     if s.startswith("data:") and "," in s:
         return s.split(",", 1)[1]
     return s
+
+
+def _normalize_error(error_data: dict) -> dict:
+    """
+    Convert upstream error bodies to a unified Anthropic-compatible format.
+
+    Handles:
+      - Anthropic format (passthrough):  {"type":"error","error":{"type":"...","message":"..."}}
+      - GCP / Vertex AI format:          {"error":{"code":...,"message":"...","status":"..."}}
+
+    Returns a dict suitable for serialization into a RuntimeError message so
+    that downstream ``_parse_provider_error`` and adapters can handle it
+    without format-specific branching.
+    """
+    # Already in Anthropic error format — pass through as-is
+    if 'type' in error_data and 'error' in error_data:
+        return error_data
+
+    # GCP / Vertex AI error format: {"error": {"code": ..., "message": ..., "status": ...}}
+    if 'error' in error_data and isinstance(error_data['error'], dict):
+        gcp_err = error_data['error']
+        return {
+            'type': 'error',
+            'error': {
+                'type': 'invalid_request_error',
+                'message': gcp_err.get('message', str(error_data)),
+            }
+        }
+
+    # Unknown format — wrap it minimally
+    return {
+        'type': 'error',
+        'error': {
+            'type': 'api_error',
+            'message': str(error_data),
+        }
+    }
 
 
 class VertexAIProvider(BaseProvider):
@@ -764,7 +801,14 @@ class VertexAIProvider(BaseProvider):
 
         elif event_type == "error":
             error_info = event_data.get("error", {})
-            raise RuntimeError(f"Vertex AI Claude stream error: {error_info.get('type', 'unknown')}: {error_info.get('message', 'Unknown error')}")
+            raise UpstreamProviderError(
+                f"Vertex AI Claude stream error: {error_info.get('type', 'unknown')}: {error_info.get('message', 'Unknown error')}",
+                status_code=400,
+                error_data={'type': 'error', 'error': {
+                    'type': error_info.get('type', 'invalid_request_error'),
+                    'message': error_info.get('message', 'Unknown error'),
+                }},
+            )
 
         return None  # ping, message_stop, content_block_stop, etc.
 
@@ -1419,14 +1463,25 @@ class VertexAIProvider(BaseProvider):
                     error_text = response.text
                     try:
                         error_data = await asyncio.to_thread(response.json)
-                        raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                        normalized = _normalize_error(error_data)
+                        raise UpstreamProviderError(
+                            f"Vertex AI API error ({response.status_code})",
+                            status_code=response.status_code,
+                            error_data=normalized,
+                        )
                     except json.JSONDecodeError:
-                        raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text[:500]}")
+                        raise UpstreamProviderError(
+                            f"Vertex AI API error ({response.status_code}): {error_text[:500]}",
+                            status_code=response.status_code,
+                        )
 
                 try:
                     response_data = await asyncio.to_thread(response.json)
                 except json.JSONDecodeError as e:
-                    raise RuntimeError(f"Vertex AI API response parse error: {e}, raw response: {response.text[:500]}")
+                    raise UpstreamProviderError(
+                        f"Vertex AI API response parse error: {e}",
+                        status_code=500,
+                    )
 
                 if child_span:
                     child_span.log_output(response_data)
@@ -1465,11 +1520,11 @@ class VertexAIProvider(BaseProvider):
 
                 return await self.aparse_response(response_data, request.model)
 
-        except RuntimeError:
+        except UpstreamProviderError:
             raise
         except Exception as e:
             logger.error(f"[VertexAI {publisher}] Unexpected error: {type(e).__name__}: {e}")
-            raise RuntimeError(f"Vertex AI API error ({publisher}): {str(e)}")
+            raise UpstreamProviderError(f"Vertex AI API error ({publisher}): {str(e)}", status_code=500)
 
     async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
@@ -1533,9 +1588,17 @@ class VertexAIProvider(BaseProvider):
                             error_text += chunk.decode('utf-8')
                     try:
                         error_data = json.loads(error_text)
-                        raise RuntimeError(f"Vertex AI API error ({response.status_code}): {json.dumps(error_data, ensure_ascii=False)}")
+                        normalized = _normalize_error(error_data)
+                        raise UpstreamProviderError(
+                            f"Vertex AI API error ({response.status_code})",
+                            status_code=response.status_code,
+                            error_data=normalized,
+                        )
                     except json.JSONDecodeError:
-                        raise RuntimeError(f"Vertex AI API error ({response.status_code}): {error_text}")
+                        raise UpstreamProviderError(
+                            f"Vertex AI API error ({response.status_code}): {error_text}",
+                            status_code=response.status_code,
+                        )
 
                 async for line in response.aiter_lines():
                     if not line:
@@ -1575,11 +1638,11 @@ class VertexAIProvider(BaseProvider):
                             logger.error(f"[VertexAI {publisher} Stream] Stream chunk parse error: {type(e).__name__}: {e}")
                             raise
 
-        except RuntimeError:
+        except UpstreamProviderError:
             raise
         except Exception as e:
             logger.error(f"[VertexAI {publisher} Stream] Unexpected error: {type(e).__name__}: {e}")
-            raise RuntimeError(f"Vertex AI streaming API error ({publisher}): {str(e)}")
+            raise UpstreamProviderError(f"Vertex AI streaming API error ({publisher}): {str(e)}", status_code=500)
 
     def _dispatch_stream_parse(self, publisher: str, event_data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """根据发布者类型分发流式解析"""

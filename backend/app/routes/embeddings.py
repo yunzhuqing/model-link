@@ -162,7 +162,22 @@ async def create_embeddings():
             tracer.end()
         # ── Phase 4: usage record ──
         try:
-            from app.usagerecord.usage_service import record_usage
+            from app.usagerecord.usage_service import record_usage, calculate_price
+            # Attach price info to usage for API response
+            if response.usage is not None:
+                response.usage.price = calculate_price(
+                    usage=response.usage,
+                    input_price_unit=resolved.input_price,
+                    output_price_unit=resolved.output_price,
+                    cache_creation_price_unit=resolved.cache_creation_price,
+                    cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                    cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                    cache_token_price_unit=resolved.cache_hit_price,
+                    pricing_tiers=resolved.pricing_tiers,
+                    output_pricing=resolved.output_pricing,
+                    currency=resolved.currency,
+                    discount=resolved.discount,
+                )
             await record_usage(
                 response=response,
                 user_name=auth_ctx.user_name if auth_ctx else None,

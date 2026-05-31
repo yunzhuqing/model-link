@@ -5,7 +5,10 @@ Defines the unified rerank request and response models.
 Compatible with the vLLM /v1/rerank API format.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.abstraction.chat import PriceInfo
 
 
 @dataclass
@@ -89,6 +92,7 @@ class RerankUsage:
     cache_read_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    price: Optional['PriceInfo'] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -96,7 +100,10 @@ class RerankUsage:
         return self.total_tokens
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"total_tokens": self.total_tokens}
+        d: Dict[str, Any] = {"total_tokens": self.total_tokens}
+        if self.price is not None:
+            d["price"] = self.price.to_dict()
+        return d
 
 
 @dataclass

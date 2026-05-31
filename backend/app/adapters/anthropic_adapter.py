@@ -399,6 +399,10 @@ class AnthropicMessagesAdapter(BaseAdapter):
         if cache_write:
             usage_dict['cache_creation_input_tokens'] = cache_write
 
+        # Include price information in usage if available
+        if response.usage.price is not None:
+            usage_dict['price'] = response.usage.price.to_dict()
+
         return {
             'id': response_id,
             'type': 'message',
@@ -445,6 +449,9 @@ class AnthropicMessagesAdapter(BaseAdapter):
             # 透传 cache_creation 嵌套对象（存储在 extra 中）
             if 'cache_creation' in usage.extra:
                 start_usage['cache_creation'] = usage.extra['cache_creation']
+            # Include price information if available
+            if usage.price is not None:
+                start_usage['price'] = usage.price.to_dict()
 
         msg_id = message_id or ('msg_' + str(int(time.time())))
         # Normalize ID to msg_ prefix
@@ -483,9 +490,19 @@ class AnthropicMessagesAdapter(BaseAdapter):
         """将错误转换为 Anthropic 格式的流式错误事件"""
 
         if isinstance(error, ProviderError) and error.error_data:
+            ed = error.error_data
+            # If already in Anthropic error format, pass through as-is
+            if 'type' in ed and 'error' in ed:
+                inner = ed
+            # GCP / Vertex AI format: {"error": {"code": ..., "message": ...}}
+            # → extract the inner dict to prevent double-wrapping
+            elif 'error' in ed and isinstance(ed['error'], dict):
+                inner = ed['error']
+            else:
+                inner = ed
             error_event = {
                 "type": "error",
-                "error": error.error_data
+                "error": inner
             }
         else:
             error_event = {
@@ -515,6 +532,14 @@ class AnthropicMessagesAdapter(BaseAdapter):
             # If upstream already returned Anthropic-format error, pass through
             if 'type' in error_data and 'error' in error_data:
                 return error_data
+            # GCP / Vertex AI error format: {"error": {"code": ..., "message": ...}}
+            # → extract the inner dict to prevent double-wrapping
+            #   (current check above fails because GCP format lacks a top-level 'type')
+            if 'error' in error_data and isinstance(error_data['error'], dict):
+                return {
+                    'type': 'error',
+                    'error': error_data['error']
+                }
             # Wrap raw error data
             return {
                 'type': 'error',

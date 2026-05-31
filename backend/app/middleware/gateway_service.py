@@ -26,7 +26,7 @@ from sqlalchemy.orm import selectinload
 from app.utils import json_loads
 from app.models import Provider, Model
 from app.providers import get_provider_class
-from app.providers.base import BaseProvider, ProviderConfig
+from app.providers.base import BaseProvider, ProviderConfig, UpstreamProviderError
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
@@ -438,6 +438,10 @@ class GatewayService:
             return response
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
+        except UpstreamProviderError as e:
+            raise ProviderError(str(e), status_code=e.status_code, error_data=e.error_data,
+                                     provider_id=resolved.provider_id,
+                                     provider_name=resolved.provider_name)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,
@@ -844,6 +848,10 @@ class GatewayService:
             return await resolved.provider_instance.rerank(request)
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
+        except UpstreamProviderError as e:
+            raise ProviderError(str(e), status_code=e.status_code, error_data=e.error_data,
+                                     provider_id=resolved.provider_id,
+                                     provider_name=resolved.provider_name)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,
@@ -908,6 +916,10 @@ class GatewayService:
             return response
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
+        except UpstreamProviderError as e:
+            raise ProviderError(str(e), status_code=e.status_code, error_data=e.error_data,
+                                     provider_id=resolved.provider_id,
+                                     provider_name=resolved.provider_name)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,

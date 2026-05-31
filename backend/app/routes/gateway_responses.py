@@ -286,6 +286,22 @@ async def _run_background_response(
             )
             await _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
             _strip_internal_fields(formatted.get('output', []))
+            # Attach price info to formatted response usage
+            if response and response.usage:
+                from app.usagerecord.usage_service import calculate_price
+                formatted['usage']['price'] = calculate_price(
+                    usage=response.usage,
+                    input_price_unit=resolved.input_price,
+                    output_price_unit=resolved.output_price,
+                    cache_creation_price_unit=resolved.cache_creation_price,
+                    cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                    cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                    cache_token_price_unit=resolved.cache_hit_price,
+                    pricing_tiers=resolved.pricing_tiers,
+                    output_pricing=resolved.output_pricing,
+                    currency=resolved.currency,
+                    discount=resolved.discount,
+                ).to_dict()
             formatted_output = json.dumps(formatted, ensure_ascii=False)
 
             # ─── Phase 4: usage recording (fire-and-forget) ───
@@ -544,6 +560,7 @@ async def openai_responses():
                 last_usage = None
                 _accumulated_extra = {}
                 _content_parts: list[str] = []
+                _last_chunk_meta = {}
                 try:
                     async for chunk in chunks_gen:
                         if chunk.usage is not None:
@@ -552,6 +569,12 @@ async def openai_responses():
                             last_usage = chunk.usage
                         if chunk.delta_content:
                             _content_parts.append(chunk.delta_content)
+                        if chunk.id:
+                            _last_chunk_meta['id'] = chunk.id
+                        if chunk.model:
+                            _last_chunk_meta['model'] = chunk.model
+                        if chunk.created:
+                            _last_chunk_meta['created'] = chunk.created
                         yield chunk
                     if last_usage is not None and _accumulated_extra:
                         if hasattr(last_usage, 'extra'):
@@ -560,6 +583,30 @@ async def openai_responses():
                                     last_usage.extra[k] = v
                         else:
                             last_usage.extra = _accumulated_extra
+                    # Calculate and yield price chunk after stream completes
+                    if last_usage is not None:
+                        from app.usagerecord.usage_service import calculate_price
+                        from app.abstraction.streaming import StreamChunk
+                        last_usage.price = calculate_price(
+                            usage=last_usage,
+                            input_price_unit=resolved.input_price,
+                            output_price_unit=resolved.output_price,
+                            cache_creation_price_unit=resolved.cache_creation_price,
+                            cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                            cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                            cache_token_price_unit=resolved.cache_hit_price,
+                            pricing_tiers=resolved.pricing_tiers,
+                            output_pricing=resolved.output_pricing,
+                            currency=resolved.currency,
+                            discount=resolved.discount,
+                        )
+                        price_chunk = StreamChunk(
+                            id=_last_chunk_meta.get('id', ''),
+                            model=_last_chunk_meta.get('model', model_name),
+                            created=_last_chunk_meta.get('created', int(time.time())),
+                            usage=last_usage,
+                        )
+                        yield price_chunk
                     if tracer:
                         tracer.log_output({
                             "content": "".join(_content_parts) if _content_parts else None,
@@ -629,7 +676,21 @@ async def openai_responses():
                 tracer.end()
 
             try:
-                from app.usagerecord.usage_service import record_usage
+                from app.usagerecord.usage_service import record_usage, calculate_price
+                # Attach price info to usage for API response
+                response.usage.price = calculate_price(
+                    usage=response.usage,
+                    input_price_unit=resolved.input_price,
+                    output_price_unit=resolved.output_price,
+                    cache_creation_price_unit=resolved.cache_creation_price,
+                    cache_5m_creation_price_unit=resolved.cache_5m_creation_price,
+                    cache_1h_creation_price_unit=resolved.cache_1h_creation_price,
+                    cache_token_price_unit=resolved.cache_hit_price,
+                    pricing_tiers=resolved.pricing_tiers,
+                    output_pricing=resolved.output_pricing,
+                    currency=resolved.currency,
+                    discount=resolved.discount,
+                )
                 await record_usage(
                     response=response,
                     user_name=auth_ctx.user_name if auth_ctx else None,

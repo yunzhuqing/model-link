@@ -205,6 +205,10 @@ class StreamChunk:
             completion_details[k] = v
         formatted["completion_tokens_details"] = completion_details
 
+        # Include price information if set on the usage object
+        if usage.price is not None:
+            formatted["price"] = usage.price.to_dict()
+
         return formatted
     
     def _build_anthropic_usage(self) -> Dict[str, Any]:
@@ -263,6 +267,10 @@ class StreamChunk:
         # 透传 cache_creation 嵌套对象（包含 ephemeral_5m_input_tokens 等），存储在 extra 中
         if "cache_creation" in self.usage.extra:
             result["cache_creation"] = self.usage.extra["cache_creation"]
+
+        # Include price information if set on the usage object
+        if self.usage.price is not None:
+            result["price"] = self.usage.price.to_dict()
 
         return result
 

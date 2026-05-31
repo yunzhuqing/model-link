@@ -22,6 +22,25 @@ class FinishReason(Enum):
 
 
 @dataclass
+class PriceInfo:
+    """Price information for a usage response."""
+    payable_amount: float = 0.0
+    discount: float = 1.0
+    actual_amount: float = 0.0
+    currency: str = 'USD'
+    exchange_rate: float = 1.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "payable_amount": self.payable_amount,
+            "discount": self.discount,
+            "actual_amount": self.actual_amount,
+            "currency": self.currency,
+            "exchange_rate": self.exchange_rate,
+        }
+
+
+@dataclass
 class UsageInfo:
     """使用量信息"""
     prompt_tokens: int = 0
@@ -32,6 +51,8 @@ class UsageInfo:
     # Detailed token breakdown
     reasoning_tokens: int = 0          # output tokens used for reasoning
     cached_tokens: int = 0             # cached prompt tokens (OpenAI / Azure)
+    # Price information
+    price: Optional['PriceInfo'] = None
     # Arbitrary extra key-value pairs for provider-specific data
     # (e.g. "_azure_completed_response", "cache_creation", …)
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -69,6 +90,8 @@ class UsageInfo:
             d["reasoning_tokens"] = self.reasoning_tokens
         if self.cached_tokens:
             d["cached_tokens"] = self.cached_tokens
+        if self.price is not None:
+            d["price"] = self.price.to_dict()
         d.update(self.extra)
         return d
 

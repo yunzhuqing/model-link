@@ -1017,6 +1017,10 @@ class OpenAIResponsesAdapter(BaseAdapter):
         if output_details:
             usage_dict['output_tokens_details'] = output_details
 
+        # Include price information if available
+        if response.usage.price is not None:
+            usage_dict['price'] = response.usage.price.to_dict()
+
         # Always include the requested format in the response so that upper
         # layers (sync return / async GET polling) can decide whether to
         # convert image URLs to base64 data URIs.
@@ -1326,6 +1330,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             usage_out['input_tokens_details'] = {'cached_tokens': chunk.usage.cached_tokens}
                         if chunk.usage.reasoning_tokens:
                             usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage.reasoning_tokens}
+                        if chunk.usage.price is not None:
+                            usage_out['price'] = chunk.usage.price.to_dict()
                         completed_resp['usage'] = usage_out
                 completed: dict = {
                     'type': 'response.completed',
@@ -1384,6 +1390,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         'output_tokens': chunk.usage.completion_tokens,
                         'total_tokens': chunk.usage.total_tokens,
                     }
+                    if chunk.usage.price is not None:
+                        usage_out['price'] = chunk.usage.price.to_dict()
                     completed['response']['usage'] = usage_out
                 events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
 
@@ -1845,6 +1853,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             'output_tokens': deferred_usage.completion_tokens,
                             'total_tokens': deferred_usage.total_tokens,
                         }
+                        if deferred_usage.price is not None:
+                            usage_out['price'] = deferred_usage.price.to_dict()
                         completed_resp['usage'] = usage_out
                     completed_event = {
                         'type': 'response.completed',

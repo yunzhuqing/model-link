@@ -16,6 +16,26 @@ from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 from app.utils import json_loads
 
 
+class UpstreamProviderError(Exception):
+    """
+    Raised by providers when the upstream API returns an error.
+
+    Carries structured error data so that the gateway layer does not
+    need to regex-parse a RuntimeError message string.
+
+    Attributes:
+        status_code: HTTP status code from the upstream API.
+        error_data: Normalised error body dict (Anthropic-compatible format
+                    preferred: ``{"type":"error","error":{...}}``).
+        message: Human-readable error message.
+    """
+    def __init__(self, message: str, *, status_code: int = 500,
+                 error_data: Optional[dict] = None):
+        self.status_code = status_code
+        self.error_data = error_data
+        super().__init__(message)
+
+
 class ProviderCapability(Enum):
     """供应商能力枚举"""
     CHAT = "chat"

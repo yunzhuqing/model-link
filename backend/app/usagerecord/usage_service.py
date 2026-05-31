@@ -394,6 +394,242 @@ def _resolve_output_price(
     return base_price
 
 
+def _compute_price_details(
+    *,
+    usage,
+    input_price_unit: float = 0.0,
+    output_price_unit: float = 0.0,
+    cache_creation_price_unit: float = 0.0,
+    cache_5m_creation_price_unit: float = 0.0,
+    cache_1h_creation_price_unit: float = 0.0,
+    cache_token_price_unit: float = 0.0,
+    pricing_tiers: Optional[list] = None,
+    output_pricing: Optional[dict] = None,
+    currency: str = 'USD',
+    discount: float = 1.0,
+) -> dict:
+    """
+    Compute all price-related values from a usage object and pricing config.
+
+    This is the single source of truth for price computation, shared by both
+    ``calculate_price()`` (used by route handlers for API responses) and
+    ``_build_record()`` (used for persisting UsageRecord rows).
+
+    Returns a dict with all token counts, resolved price units, output
+    resource counts, and final billing amounts.
+    """
+    # ── Token counts ───────────────────────────────────────────────────
+    raw_prompt_tokens: int = usage.prompt_tokens or 0
+    output_tokens: int = usage.completion_tokens or 0
+    cache_creation_tokens: int = usage.cache_write_tokens or 0
+    cache_tokens: int = usage.cache_read_tokens or getattr(usage, 'cached_tokens', 0) or 0
+
+    # Extract 5m/1h cache creation tokens
+    usage_extra = getattr(usage, 'extra', {}) or {}
+    cache_creation_detail = usage_extra.get('cache_creation', {})
+    cache_5m_creation_tokens: int = 0
+    cache_1h_creation_tokens: int = 0
+    if isinstance(cache_creation_detail, dict):
+        cache_5m_creation_tokens = int(cache_creation_detail.get('ephemeral_5m_input_tokens', 0) or 0)
+        cache_1h_creation_tokens = int(cache_creation_detail.get('ephemeral_1h_input_tokens', 0) or 0)
+    reasoning_tokens: int = getattr(usage, 'reasoning_tokens', 0) or 0
+
+    # Input tokens = prompt_tokens excluding cache_read
+    input_tokens: int = max(raw_prompt_tokens - cache_tokens, 0)
+
+    # ── Tier-aware pricing ────────────────────────────────────────────
+    (
+        input_price_unit,
+        output_price_unit,
+        cache_creation_price_unit,
+        cache_token_price_unit,
+    ) = _resolve_price_tier(
+        pricing_tiers=pricing_tiers,
+        input_tokens=input_tokens,
+        default_input_price=input_price_unit,
+        default_output_price=output_price_unit,
+        default_cache_creation_price=cache_creation_price_unit,
+        default_cache_hit_price=cache_token_price_unit,
+    )
+
+    # ── Image / Video / Audio / Web search from usage.extra ───────────
+    output_image_number: int = usage_extra.get('output_image_number', 0) or 0
+    output_image_tokens: int = usage_extra.get('output_image_tokens', 0) or 0
+    output_image_resolution: Optional[str] = usage_extra.get('output_image_resolution')
+    output_image_aspect: Optional[str] = usage_extra.get('output_image_aspect')
+    output_image_quality: Optional[str] = usage_extra.get('output_image_quality')
+    output_image_price_unit: float = usage_extra.get('output_image_price_unit', 0.0) or 0.0
+
+    output_video_number: int = usage_extra.get('output_video_number', 0) or 0
+    output_video_tokens: int = usage_extra.get('output_video_tokens', 0) or 0
+    output_video_resolution: Optional[str] = usage_extra.get('output_video_resolution')
+    output_video_aspect: Optional[str] = usage_extra.get('output_video_aspect')
+    output_video_seconds: float = usage_extra.get('output_video_seconds', 0.0) or 0.0
+    output_video_price_unit: float = usage_extra.get('output_video_price_unit', 0.0) or 0.0
+    output_video_audio: Optional[bool] = usage_extra.get('output_video_audio')
+    output_video_reference_video: Optional[bool] = usage_extra.get('output_video_reference_video')
+
+    output_audio_tokens: int = usage_extra.get('output_audio_tokens', 0) or 0
+    output_audio_seconds: float = usage_extra.get('output_audio_seconds', 0.0) or 0.0
+    output_audio_price_unit: float = usage_extra.get('output_audio_price_unit', 0.0) or 0.0
+
+    web_search_requests: int = usage_extra.get('web_search_requests', 0) or 0
+    web_search_price_unit: float = usage_extra.get('web_search_price_unit', 0.0) or 0.0
+
+    credits: float = float(usage_extra.get('credits', 0) or 0)
+    credit_price_unit: float = float(usage_extra.get('credit_price_unit', 0.0) or 0.0)
+
+    # ── Resolve output pricing from model config ──────────────────────
+    if output_pricing and isinstance(output_pricing, dict):
+        if output_image_price_unit == 0.0:
+            output_image_price_unit = _resolve_output_price(
+                output_pricing.get('image'), output_image_resolution,
+                quality=output_image_quality)
+        video_pricing_config = output_pricing.get('video')
+        if video_pricing_config and isinstance(video_pricing_config, dict):
+            video_pricing_type = video_pricing_config.get('type', '')
+            resolved_video_price = _resolve_output_price(
+                video_pricing_config, output_video_resolution,
+                audio=output_video_audio,
+                reference_video=output_video_reference_video)
+            if video_pricing_type == 'per_token' and resolved_video_price > 0:
+                output_price_unit = resolved_video_price
+            elif output_video_price_unit == 0.0:
+                output_video_price_unit = resolved_video_price
+        if output_audio_price_unit == 0.0:
+            output_audio_price_unit = _resolve_output_price(
+                output_pricing.get('audio'), None)
+        if credit_price_unit == 0.0:
+            td_config = output_pricing.get('3d')
+            if td_config and isinstance(td_config, dict):
+                credit_price_unit = float(td_config.get('price', 0.0) or 0.0)
+
+    # ── Cache creation cost ───────────────────────────────────────────
+    cache_creation_cost: float = 0.0
+    if cache_5m_creation_tokens > 0 or cache_1h_creation_tokens > 0:
+        cache_creation_cost = (
+            cache_5m_creation_tokens * cache_5m_creation_price_unit / 1_000_000
+            + cache_1h_creation_tokens * cache_1h_creation_price_unit / 1_000_000
+        )
+        remaining_tokens = max(cache_creation_tokens - cache_5m_creation_tokens - cache_1h_creation_tokens, 0)
+        cache_creation_cost += remaining_tokens * cache_creation_price_unit / 1_000_000
+    elif cache_creation_price_unit > 0:
+        cache_creation_cost = cache_creation_tokens * cache_creation_price_unit / 1_000_000
+
+    # ── Billing amounts ───────────────────────────────────────────────
+    payable_amount: float = float(
+        input_tokens * input_price_unit / 1_000_000
+        + output_tokens * output_price_unit / 1_000_000
+        + cache_creation_cost
+        + cache_tokens * cache_token_price_unit / 1_000_000
+        + output_image_number * output_image_price_unit
+        + output_video_number * output_video_price_unit
+        + output_audio_seconds * output_audio_price_unit
+        + web_search_requests * web_search_price_unit
+        + credits * credit_price_unit
+    )
+    effective_discount: float = float(discount) if discount and discount > 0 else 1.0
+    actual_amount: float = payable_amount * effective_discount
+    exchange_rate = _get_exchange_rate_for_currency(currency)
+
+    return {
+        # Token counts
+        'input_tokens': input_tokens,
+        'output_tokens': output_tokens,
+        'cache_creation_tokens': cache_creation_tokens,
+        'cache_5m_creation_tokens': cache_5m_creation_tokens,
+        'cache_1h_creation_tokens': cache_1h_creation_tokens,
+        'cache_tokens': cache_tokens,
+        'reasoning_tokens': reasoning_tokens,
+        # Resolved price units
+        'input_price_unit': input_price_unit,
+        'output_price_unit': output_price_unit,
+        'cache_creation_price_unit': cache_creation_price_unit,
+        'cache_5m_creation_price_unit': cache_5m_creation_price_unit,
+        'cache_1h_creation_price_unit': cache_1h_creation_price_unit,
+        'cache_token_price_unit': cache_token_price_unit,
+        # Image
+        'output_image_number': output_image_number,
+        'output_image_tokens': output_image_tokens,
+        'output_image_resolution': output_image_resolution,
+        'output_image_aspect': output_image_aspect,
+        'output_image_price_unit': output_image_price_unit,
+        # Video
+        'output_video_number': output_video_number,
+        'output_video_tokens': output_video_tokens,
+        'output_video_resolution': output_video_resolution,
+        'output_video_aspect': output_video_aspect,
+        'output_video_seconds': output_video_seconds,
+        'output_video_price_unit': output_video_price_unit,
+        # Audio
+        'output_audio_tokens': output_audio_tokens,
+        'output_audio_seconds': output_audio_seconds,
+        'output_audio_price_unit': output_audio_price_unit,
+        # Web search
+        'web_search_requests': web_search_requests,
+        'web_search_price_unit': web_search_price_unit,
+        # 3D credits
+        'credits': credits,
+        'credit_price_unit': credit_price_unit,
+        # Billing
+        'payable_amount': payable_amount,
+        'discount': effective_discount,
+        'actual_amount': actual_amount,
+        'currency': currency or 'USD',
+        'exchange_rate': exchange_rate,
+        'actual_amount_usd': actual_amount / exchange_rate if exchange_rate and exchange_rate > 0 else actual_amount,
+    }
+
+
+def calculate_price(
+    *,
+    usage,
+    input_price_unit: float = 0.0,
+    output_price_unit: float = 0.0,
+    cache_creation_price_unit: float = 0.0,
+    cache_5m_creation_price_unit: float = 0.0,
+    cache_1h_creation_price_unit: float = 0.0,
+    cache_token_price_unit: float = 0.0,
+    pricing_tiers: Optional[list] = None,
+    output_pricing: Optional[dict] = None,
+    currency: str = 'USD',
+    discount: float = 1.0,
+):
+    """
+    Calculate price information from a usage object synchronously.
+
+    Delegates to ``_compute_price_details()`` and extracts only the
+    PriceInfo fields.  Can be called from route handlers before
+    ``record_usage()`` so that price data can be attached to the API
+    response.
+
+    Returns:
+        PriceInfo dataclass populated with all price fields.
+    """
+    from app.abstraction.chat import PriceInfo
+
+    details = _compute_price_details(
+        usage=usage,
+        input_price_unit=input_price_unit,
+        output_price_unit=output_price_unit,
+        cache_creation_price_unit=cache_creation_price_unit,
+        cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+        cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+        cache_token_price_unit=cache_token_price_unit,
+        pricing_tiers=pricing_tiers,
+        output_pricing=output_pricing,
+        currency=currency,
+        discount=discount,
+    )
+    return PriceInfo(
+        payable_amount=details['payable_amount'],
+        discount=details['discount'],
+        actual_amount=details['actual_amount'],
+        currency=details['currency'],
+        exchange_rate=details['exchange_rate'],
+    )
+
+
 async def _deduct_budget_records(session, api_key_raw: str, amount_usd: float) -> None:
     """
     Deduct spending from budget records in the ml_api_key_budgets table.
@@ -643,150 +879,20 @@ def _build_record(
         api_key_hash = UsageRecord._hash_key(api_key_raw)
         api_key_preview = UsageRecord._mask_key(api_key_raw)
 
-    # ── Token counts from UsageInfo ─────────────────────────────────────────
-    raw_prompt_tokens: int = usage.prompt_tokens or 0
-    output_tokens: int = usage.completion_tokens or 0
-    cache_creation_tokens: int = usage.cache_write_tokens or 0
-    cache_tokens: int = usage.cache_read_tokens or usage.cached_tokens or 0
-
-    # Extract 5m and 1h cache creation tokens from Anthropic's cache_creation nested object
-    cache_creation_detail = usage.extra.get('cache_creation', {}) if usage.extra else {}
-    cache_5m_creation_tokens: int = 0
-    cache_1h_creation_tokens: int = 0
-    if isinstance(cache_creation_detail, dict):
-        # Anthropic format: ephemeral_5m_input_tokens, ephemeral_1h_input_tokens
-        cache_5m_creation_tokens = int(cache_creation_detail.get('ephemeral_5m_input_tokens', 0) or 0)
-        cache_1h_creation_tokens = int(cache_creation_detail.get('ephemeral_1h_input_tokens', 0) or 0)
-    reasoning_tokens: int = usage.reasoning_tokens or 0
-
-    # prompt_tokens includes cache_read and cache_creation tokens.
-    # For billing: input_tokens = raw_input + cache_creation (both billed at
-    # input_price_unit).  Only cache_read tokens are billed separately at
-    # cache_token_price_unit (cache_hit price).  So we only subtract
-    # cache_tokens (cache_read) from prompt_tokens to get input_tokens.
-    input_tokens: int = max(raw_prompt_tokens - cache_tokens, 0)
-
-    # ── Tier-aware pricing ─────────────────────────────────────────────────
-    # Select the appropriate price tier based on actual input_tokens.
-    # Falls back to flat model prices when no tiers are configured.
-    (
-        input_price_unit,
-        output_price_unit,
-        cache_creation_price_unit,
-        cache_token_price_unit,
-    ) = _resolve_price_tier(
+    # ── Compute all price-related values (single source of truth) ────────────
+    d = _compute_price_details(
+        usage=usage,
+        input_price_unit=input_price_unit,
+        output_price_unit=output_price_unit,
+        cache_creation_price_unit=cache_creation_price_unit,
+        cache_5m_creation_price_unit=cache_5m_creation_price_unit,
+        cache_1h_creation_price_unit=cache_1h_creation_price_unit,
+        cache_token_price_unit=cache_token_price_unit,
         pricing_tiers=pricing_tiers,
-        input_tokens=input_tokens,
-        default_input_price=input_price_unit,
-        default_output_price=output_price_unit,
-        default_cache_creation_price=cache_creation_price_unit,
-        default_cache_hit_price=cache_token_price_unit,
+        output_pricing=output_pricing,
+        currency=currency,
+        discount=discount,
     )
-
-    # ── Image / Video / Audio / Web search from usage.extra ────────────────
-    extra = usage.extra if usage else {}
-
-    output_image_number: int = extra.get('output_image_number', 0) or 0
-    output_image_tokens: int = extra.get('output_image_tokens', 0) or 0
-    output_image_resolution: Optional[str] = extra.get('output_image_resolution')
-    output_image_aspect: Optional[str] = extra.get('output_image_aspect')
-    output_image_quality: Optional[str] = extra.get('output_image_quality')
-    output_image_price_unit: float = extra.get('output_image_price_unit', 0.0) or 0.0
-
-    output_video_number: int = extra.get('output_video_number', 0) or 0
-    output_video_tokens: int = extra.get('output_video_tokens', 0) or 0
-    output_video_resolution: Optional[str] = extra.get('output_video_resolution')
-    output_video_aspect: Optional[str] = extra.get('output_video_aspect')
-    output_video_seconds: float = extra.get('output_video_seconds', 0.0) or 0.0
-    output_video_price_unit: float = extra.get('output_video_price_unit', 0.0) or 0.0
-    output_video_audio: Optional[bool] = extra.get('output_video_audio')
-    output_video_reference_video: Optional[bool] = extra.get('output_video_reference_video')
-
-    output_audio_tokens: int = extra.get('output_audio_tokens', 0) or 0
-    output_audio_seconds: float = extra.get('output_audio_seconds', 0.0) or 0.0
-    output_audio_price_unit: float = extra.get('output_audio_price_unit', 0.0) or 0.0
-
-    web_search_requests: int = extra.get('web_search_requests', 0) or 0
-    web_search_price_unit: float = extra.get('web_search_price_unit', 0.0) or 0.0
-
-    credits: float = float(extra.get('credits', 0) or 0)
-    credit_price_unit: float = float(extra.get('credit_price_unit', 0.0) or 0.0)
-
-    # ── Resolve output pricing from model config ──────────────────────────
-    # If the model defines output_pricing, use it to set the price_unit
-    # fields unless the provider already supplied a non-zero value via extra.
-    if output_pricing and isinstance(output_pricing, dict):
-        if output_image_price_unit == 0.0:
-            output_image_price_unit = _resolve_output_price(
-                output_pricing.get('image'), output_image_resolution,
-                quality=output_image_quality)
-        # For video: per_token pricing uses output_price_unit (per M tokens),
-        # while per_second/per_video pricing uses output_video_price_unit.
-        video_pricing_config = output_pricing.get('video')
-        if video_pricing_config and isinstance(video_pricing_config, dict):
-            video_pricing_type = video_pricing_config.get('type', '')
-            resolved_video_price = _resolve_output_price(
-                video_pricing_config, output_video_resolution,
-                audio=output_video_audio,
-                reference_video=output_video_reference_video)
-            if video_pricing_type == 'per_token' and resolved_video_price > 0:
-                # per_token: price is ¥/M output tokens → override output_price_unit
-                output_price_unit = resolved_video_price
-            elif output_video_price_unit == 0.0:
-                # per_second / per_video: use output_video_price_unit
-                output_video_price_unit = resolved_video_price
-        if output_audio_price_unit == 0.0:
-            output_audio_price_unit = _resolve_output_price(
-                output_pricing.get('audio'), None)
-
-        # 3D generation: resolve credit price from model config if not set by provider
-        if credit_price_unit == 0.0:
-            td_config = output_pricing.get('3d')
-            if td_config and isinstance(td_config, dict):
-                credit_price_unit = float(td_config.get('price', 0.0) or 0.0)
-
-    # ── Billing amounts ───────────────────────────────────────────────────
-    # payable_amount = total cost before discount (in native currency)
-    # Prices are per 1M tokens for text; per unit for image/video/audio/search.
-    # Note: input_tokens already includes cache_creation_tokens; both are
-    # billed at input_price_unit.  cache_tokens (cache_read) are billed
-    # separately at cache_token_price_unit.
-    # Cache creation cost calculation:
-    # - If the response includes 5m/1h ephemeral cache creation tokens (Anthropic),
-    #   use the respective 5m/1h prices for those tokens.
-    # - Remaining cache_creation_tokens (not accounted by 5m/1h) use cache_creation_price_unit.
-    # - If no 5m/1h tokens, use simple cache_creation_price_unit for all cache_creation_tokens.
-    cache_creation_cost: float = 0.0
-    if cache_5m_creation_tokens > 0 or cache_1h_creation_tokens > 0:
-        # Anthropic ephemeral cache pricing: 5m and 1h tokens billed at their respective prices
-        cache_creation_cost = (
-            cache_5m_creation_tokens * cache_5m_creation_price_unit / 1_000_000
-            + cache_1h_creation_tokens * cache_1h_creation_price_unit / 1_000_000
-        )
-        # Remaining tokens (cache_creation_tokens - 5m - 1h) use simple price
-        remaining_tokens = max(cache_creation_tokens - cache_5m_creation_tokens - cache_1h_creation_tokens, 0)
-        cache_creation_cost += remaining_tokens * cache_creation_price_unit / 1_000_000
-    elif cache_creation_price_unit > 0:
-        # Simple per-token cache creation pricing (legacy / other models)
-        cache_creation_cost = cache_creation_tokens * cache_creation_price_unit / 1_000_000
-
-    payable_amount: float = float(
-        input_tokens * input_price_unit / 1_000_000
-        + output_tokens * output_price_unit / 1_000_000
-        + cache_creation_cost
-        + cache_tokens * cache_token_price_unit / 1_000_000
-        + output_image_number * output_image_price_unit
-        + output_video_number * output_video_price_unit
-        + output_audio_seconds * output_audio_price_unit
-        + web_search_requests * web_search_price_unit
-        + credits * credit_price_unit
-    )
-    # Ensure discount is valid (coerce to float to handle decimal.Decimal from DB)
-    effective_discount: float = float(discount) if discount and discount > 0 else 1.0
-    actual_amount: float = payable_amount * effective_discount
-    # Convert to USD: actual_amount is in native currency, exchange_rate is USD→native
-    effective_exchange_rate: float = float(exchange_rate) if exchange_rate and exchange_rate > 0 else 1.0
-    actual_amount_usd: float = actual_amount / effective_exchange_rate
 
     return UsageRecord(
         user_name=user_name,
@@ -800,50 +906,50 @@ def _build_record(
         provider_id=provider_id,
         provider_name=provider_name,
         # Text tokens
-        input_tokens=input_tokens,
-        input_price_unit=input_price_unit,
-        output_tokens=output_tokens,
-        output_price_unit=output_price_unit,
-        cache_creation_tokens=cache_creation_tokens,
-        cache_creation_price_unit=cache_creation_price_unit,
-        cache_5m_creation_tokens=cache_5m_creation_tokens,
-        cache_5m_creation_price_unit=cache_5m_creation_price_unit,
-        cache_1h_creation_tokens=cache_1h_creation_tokens,
-        cache_1h_creation_price_unit=cache_1h_creation_price_unit,
-        cache_tokens=cache_tokens,
-        cache_token_price_unit=cache_token_price_unit,
-        reasoning_tokens=reasoning_tokens,
+        input_tokens=d['input_tokens'],
+        input_price_unit=d['input_price_unit'],
+        output_tokens=d['output_tokens'],
+        output_price_unit=d['output_price_unit'],
+        cache_creation_tokens=d['cache_creation_tokens'],
+        cache_creation_price_unit=d['cache_creation_price_unit'],
+        cache_5m_creation_tokens=d['cache_5m_creation_tokens'],
+        cache_5m_creation_price_unit=d['cache_5m_creation_price_unit'],
+        cache_1h_creation_tokens=d['cache_1h_creation_tokens'],
+        cache_1h_creation_price_unit=d['cache_1h_creation_price_unit'],
+        cache_tokens=d['cache_tokens'],
+        cache_token_price_unit=d['cache_token_price_unit'],
+        reasoning_tokens=d['reasoning_tokens'],
         # Image
-        output_image_number=output_image_number,
-        output_image_tokens=output_image_tokens,
-        output_image_resolution=output_image_resolution,
-        output_image_aspect=output_image_aspect,
-        output_image_price_unit=output_image_price_unit,
+        output_image_number=d['output_image_number'],
+        output_image_tokens=d['output_image_tokens'],
+        output_image_resolution=d['output_image_resolution'],
+        output_image_aspect=d['output_image_aspect'],
+        output_image_price_unit=d['output_image_price_unit'],
         # Video
-        output_video_number=output_video_number,
-        output_video_tokens=output_video_tokens,
-        output_video_resolution=output_video_resolution,
-        output_video_aspect=output_video_aspect,
-        output_video_seconds=output_video_seconds,
-        output_video_price_unit=output_video_price_unit,
+        output_video_number=d['output_video_number'],
+        output_video_tokens=d['output_video_tokens'],
+        output_video_resolution=d['output_video_resolution'],
+        output_video_aspect=d['output_video_aspect'],
+        output_video_seconds=d['output_video_seconds'],
+        output_video_price_unit=d['output_video_price_unit'],
         # Audio
-        output_audio_tokens=output_audio_tokens,
-        output_audio_seconds=output_audio_seconds,
-        output_audio_price_unit=output_audio_price_unit,
+        output_audio_tokens=d['output_audio_tokens'],
+        output_audio_seconds=d['output_audio_seconds'],
+        output_audio_price_unit=d['output_audio_price_unit'],
         # Web search
-        web_search_requests=web_search_requests,
-        web_search_price_unit=web_search_price_unit,
+        web_search_requests=d['web_search_requests'],
+        web_search_price_unit=d['web_search_price_unit'],
         # 3D credits
-        credits=credits,
-        credit_price_unit=credit_price_unit,
+        credits=d['credits'],
+        credit_price_unit=d['credit_price_unit'],
         # Duration
         duration_ms=duration_ms,
         # Currency / exchange rate
-        currency=currency,
-        exchange_rate=effective_exchange_rate,
+        currency=d['currency'],
+        exchange_rate=d['exchange_rate'],
         # Billing
-        payable_amount=payable_amount,
-        discount=effective_discount,
-        actual_amount=actual_amount,
-        actual_amount_usd=actual_amount_usd,
+        payable_amount=d['payable_amount'],
+        discount=d['discount'],
+        actual_amount=d['actual_amount'],
+        actual_amount_usd=d['actual_amount_usd'],
     )
