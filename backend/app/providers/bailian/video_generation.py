@@ -701,11 +701,15 @@ async def execute_happyhorse_video_generation(
                         model, video_output_url, output, task_id, metadata=metadata, tracer=_child_span
                     )
                 elif task_status == TASK_STATUS_FAILED:
-                    return _build_failure_response(
-                        model, output, task_id, tracer=_child_span
+                    code = output.get("code", "UnknownError")
+                    message = output.get("message", "Video generation failed")
+                    raise RuntimeError(
+                        f"Video generation task {task_id} failed: [{code}] {message}"
                     )
                 elif task_status in (TASK_STATUS_CANCELED, TASK_STATUS_UNKNOWN):
-                    return _build_canceled_response(model, task_id, task_status, tracer=_child_span)
+                    raise RuntimeError(
+                        f"Video generation task {task_id} ended with status={task_status}"
+                    )
 
             except httpx.RequestError as e:
                 raise RuntimeError(f"Dashscope video-synthesis network error: {e}")
@@ -720,8 +724,9 @@ async def execute_happyhorse_video_generation(
                 tracer=_child_span,
             )
         except TimeoutError:
-            # Return a response indicating timeout
-            return _build_timeout_response(model, task_id, tracer=_child_span)
+            raise RuntimeError(
+                f"Video generation task {task_id} timed out after {timeout}s"
+            )
 
         final_output = final_result.get("output", {})
         final_status = final_output.get("task_status", TASK_STATUS_UNKNOWN)
@@ -732,9 +737,15 @@ async def execute_happyhorse_video_generation(
                 model, video_output_url, final_output, task_id, metadata=metadata, tracer=_child_span
             )
         elif final_status == TASK_STATUS_FAILED:
-            return _build_failure_response(model, final_output, task_id, tracer=_child_span)
+            code = final_output.get("code", "UnknownError")
+            message = final_output.get("message", "Video generation failed")
+            raise RuntimeError(
+                f"Video generation task {task_id} failed: [{code}] {message}"
+            )
         else:
-            return _build_canceled_response(model, task_id, final_status, tracer=_child_span)
+            raise RuntimeError(
+                f"Video generation task {task_id} ended with status={final_status}"
+            )
     except Exception as e:
         _trace_error = e
         raise
@@ -845,7 +856,7 @@ def _build_success_response(
     if metadata is None:
         metadata = {}
 
-    response_id = gen_id("vid-")
+    response_id = gen_id("vid")
 
     # Resolve output video duration for usage tracking
     duration = output.get("output_video_duration") or output.get("duration")
@@ -869,6 +880,7 @@ def _build_success_response(
     # Build video_generation_call item compatible with Responses API adapter
     video_call_items = [
         {
+            "id": response_id,
             "type": "video_generation_call",
             "status": "completed",
             "result": video_url,
@@ -888,133 +900,6 @@ def _build_success_response(
         model=model,
         choices=[choice],
         usage=usage,
-        provider="bailian",
-    )
-
-
-def _build_failure_response(
-    model: str,
-    output: Dict[str, Any],
-    task_id: str,
-    tracer: Any = None,
-) -> ChatResponse:
-    """Build a ChatResponse for a failed video generation task."""
-    if tracer:
-        tracer.log_output({"task_id": task_id, "status": "failed", "code": output.get("code", "UnknownError"), "message": output.get("message", "Video generation failed")})
-
-    response_id = gen_id("vid-")
-    code = output.get("code", "UnknownError")
-    message = output.get("message", "Video generation failed")
-
-    video_call_items = [
-        {
-            "type": "video_generation_call",
-            "status": "failed",
-            "result": "",
-            "error": {"code": code, "message": message, "task_id": task_id},
-        }
-    ]
-    content = json.dumps(video_call_items, ensure_ascii=False)
-
-    choice = ChatChoice(
-        index=0,
-        message=Message(role=MessageRole.ASSISTANT, content=content),
-        finish_reason=FinishReason.ERROR,
-    )
-
-    return ChatResponse(
-        id=response_id,
-        created=int(time.time()),
-        model=model,
-        choices=[choice],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0,
-                       extra={"_task_id": task_id}),
-        provider="bailian",
-    )
-
-
-def _build_canceled_response(
-    model: str,
-    task_id: str,
-    task_status: str,
-    tracer: Any = None,
-) -> ChatResponse:
-    """Build a ChatResponse for a canceled/unknown video generation task."""
-    if tracer:
-        tracer.log_output({"task_id": task_id, "status": task_status.lower()})
-
-    response_id = gen_id("vid-")
-
-    status_texts = {
-        TASK_STATUS_CANCELED: "任务已取消",
-        TASK_STATUS_UNKNOWN: "任务状态未知",
-    }
-    status_text = status_texts.get(task_status, f"任务状态: {task_status}")
-
-    video_call_items = [
-        {
-            "type": "video_generation_call",
-            "status": task_status.lower(),
-            "result": "",
-            "error": {"message": status_text, "task_id": task_id},
-        }
-    ]
-    content = json.dumps(video_call_items, ensure_ascii=False)
-
-    choice = ChatChoice(
-        index=0,
-        message=Message(role=MessageRole.ASSISTANT, content=content),
-        finish_reason=FinishReason.ERROR,
-    )
-
-    return ChatResponse(
-        id=response_id,
-        created=int(time.time()),
-        model=model,
-        choices=[choice],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0,
-                       extra={"_task_id": task_id}),
-        provider="bailian",
-    )
-
-
-def _build_timeout_response(
-    model: str,
-    task_id: str,
-    tracer: Any = None,
-) -> ChatResponse:
-    """Build a ChatResponse for a timed-out video generation task."""
-    if tracer:
-        tracer.log_output({"task_id": task_id, "status": "timeout"})
-
-    response_id = gen_id("vid-")
-
-    video_call_items = [
-        {
-            "type": "video_generation_call",
-            "status": "timeout",
-            "result": "",
-            "error": {
-                "message": "视频生成超时，请稍后使用任务ID查询结果",
-                "task_id": task_id,
-            },
-        }
-    ]
-    content = json.dumps(video_call_items, ensure_ascii=False)
-
-    choice = ChatChoice(
-        index=0,
-        message=Message(role=MessageRole.ASSISTANT, content=content),
-        finish_reason=FinishReason.ERROR,
-    )
-
-    return ChatResponse(
-        id=response_id,
-        created=int(time.time()),
-        model=model,
-        choices=[choice],
-        usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0,
-                        extra={"_task_id": task_id}),
         provider="bailian",
     )
 
@@ -1047,7 +932,7 @@ async def stream_video_generation(
     Yields:
         StreamChunk objects with progress updates and final result
     """
-    response_id = gen_id("vid-")
+    response_id = gen_id("vid")
     model = request.model
 
     # Step 1: Build the request body and initiate the async job

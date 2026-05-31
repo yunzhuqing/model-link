@@ -185,6 +185,7 @@ async def _run_background_response(
                 tracer.log_input(request_data or data)
                 tracer.set_metadata({
                     "request_id": request_id,
+                    "response_id": response_id,
                     "group_id": group_id,
                     "user": user_name,
                     "model_name": model_name,
@@ -197,7 +198,7 @@ async def _run_background_response(
                     tracer.log_output(adapter.format_response(response))
             except Exception:
                 if tracer:
-                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
+                    tracer.set_metadata({"request_id": request_id, "response_id": response_id, "model_name": model_name, "api_key_name": api_key_name})
                     tracer.end(error=Exception("background generation error"))
                 raise
 
@@ -283,6 +284,7 @@ async def _run_background_response(
                 response,
                 parallel_tool_calls=chat_request.parallel_tool_calls,
                 metadata=chat_request.metadata.get('_user_metadata'),
+                response_id=response_id,
             )
             await _save_image_data_uris_to_storage(formatted.get('output', []), storage, formatted.get('id', ''))
             _strip_internal_fields(formatted.get('output', []))
@@ -337,7 +339,8 @@ async def _run_background_response(
             if tracer:
                 tracer.set_metadata({
                     "duration_ms": _bg_duration_ms,
-                    "response_id": response.id if response else None,
+                    "response_id": response_id,
+                    "provider_response_id": response.id if response else None,
                 })
                 tracer.end()
 
@@ -350,7 +353,7 @@ async def _run_background_response(
         except Exception as exc:
             if tracer:
                 try:
-                    tracer.set_metadata({"request_id": request_id, "model_name": model_name, "api_key_name": api_key_name})
+                    tracer.set_metadata({"request_id": request_id, "response_id": response_id, "model_name": model_name, "api_key_name": api_key_name})
                     tracer.end(error=exc)
                 except Exception:
                     pass
@@ -720,6 +723,7 @@ async def openai_responses():
                 response,
                 parallel_tool_calls=chat_request.parallel_tool_calls,
                 metadata=chat_request.metadata.get('_user_metadata'),
+                response_id=gen_id("resp"),
             )
             await _save_image_data_uris_to_storage(formatted.get('output', []), get_storage_backend(), formatted.get('id', ''))
             if formatted.get('response_format') == 'b64_json':

@@ -773,7 +773,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
     def format_response(self, response: ChatResponse,
                         parallel_tool_calls: Optional[bool] = None,
-                        metadata: Optional[dict] = None) -> dict:
+                        metadata: Optional[dict] = None,
+                        response_id: Optional[str] = None) -> dict:
         """
         将 ChatResponse 转换为 OpenAI Responses API 格式。
 
@@ -804,28 +805,57 @@ class OpenAIResponsesAdapter(BaseAdapter):
         """
         output = []
 
-        # Detect image generation responses by ID prefix or provider type.
-        # These are returned by image generation providers (Volcengine, Gemini)
-        # and should be rendered as image_generation_call output items, not messages.
-        # gen_id("img") produces "img_xxxx" format.
+        # ── Detect generation type by model name ──────────────────────────
+        # Rather than relying on response.id prefix conventions, inspect the
+        # model name to decide how to render the output.
+        model_lower = (response.model or "").lower()
+
+        # Image generation models:
+        #   Bailian:          qwen-image-*, z-image-turbo
+        #   Volcengine:       *seedream*
+        #   Gemini/VertexAI:  imagen*, *image-generation*, *native-image*,
+        #                     gemini-*-image* (e.g. gemini-2.5-flash-image,
+        #                     gemini-3-pro-image-preview, gemini-3.1-flash-image-preview)
+        #   TencentVOD:       gem-*, mingmou-*, hy-image-*, gpt-image-*
+        #   Other:            *flux*, *nanobanana*
         is_image_generation = (
-            response.id.startswith("img-") or
-            response.id.startswith("img_") or
+            "qwen-image" in model_lower or
+            model_lower == "z-image-turbo" or
+            "seedream" in model_lower or
+            "imagen" in model_lower or
+            "image-generation" in model_lower or
+            "native-image" in model_lower or
+            (model_lower.startswith("gemini-") and "image" in model_lower) or
+            model_lower.startswith("gem-") or
+            model_lower.startswith("mingmou-") or
+            model_lower.startswith("hy-image-") or
+            model_lower.startswith("gpt-image-") or
+            "flux" in model_lower or
+            "nanobanana" in model_lower or
             getattr(response, 'provider', '') == "volcengine_image"
         )
 
-        # Detect video generation responses by ID prefix.
-        # gen_id("vid") produces "vid_xxxx" format.
+        # Video generation models:
+        #   Bailian:       happyhorse-*
+        #   Volcengine:    *seedance*
+        #   Gemini/Vertex: veo*
+        #   TencentVOD:    kling-*, vidu*, pixverse-*, gv-*, hy-video-*
         is_video_generation = (
-            response.id.startswith("vid-") or
-            response.id.startswith("vid_")
+            model_lower.startswith("happyhorse") or
+            "seedance" in model_lower or
+            model_lower.startswith("veo") or
+            model_lower.startswith("kling-") or
+            model_lower.startswith("vidu") or
+            model_lower.startswith("pixverse-") or
+            model_lower.startswith("gv-") or
+            model_lower.startswith("hy-video-")
         )
 
-        # Detect 3D generation responses by ID prefix.
-        # gen_id("3d") produces "3d_xxxx" format.
+        # 3D generation models: hunyuan-3d* / hy-3d* (Tencent), *seed3d* (Volcengine)
         is_3d_generation = (
-            response.id.startswith("3d-") or
-            response.id.startswith("3d_")
+            model_lower.startswith("hunyuan-3d") or
+            model_lower.startswith("hy-3d") or
+            "seed3d" in model_lower
         )
 
         if is_3d_generation:
@@ -888,7 +918,10 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     items = []
 
             for i, item in enumerate(items):
-                call_id = f"{response.id}-{i}" if i > 0 else response.id
+                # Prefer item's own id (set by provider, e.g. gen_id("vid")).
+                # Fall back to deriving from the enclosing response id.
+                default_id = f"{response.id}-{i}" if i > 0 else response.id
+                call_id = item.get("id", default_id) if isinstance(item, dict) else default_id
                 if isinstance(item, dict):
                     status = item.get("status", "completed")
                     result = item.get("result", "")
@@ -1025,7 +1058,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         # layers (sync return / async GET polling) can decide whether to
         # convert image URLs to base64 data URIs.
         result = {
-            'id': response.id.replace('chatcmpl-', 'resp_') if response.id.startswith('chatcmpl-') else response.id,
+            'id': response_id or (response.id.replace('chatcmpl-', 'resp_') if response.id.startswith('chatcmpl-') else response.id),
             'object': 'response',
             'created_at': response.created,
             'model': response.model,
