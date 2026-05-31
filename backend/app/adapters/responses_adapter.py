@@ -123,10 +123,9 @@ def _parse_content_blocks(blocks: list) -> list:
                     f"audio/{a.get('format', 'wav')}"
                 ))
         elif block_type == 'input_file':
-            if 'file_url' in block:
-                result.append(ContentBlock.from_file_url(
-                    block['file_url'].get('url', '')
-                ))
+            file_url = block.get('file_url', '')
+            if file_url:
+                result.append(ContentBlock.from_file_url(file_url))
     return result
 
 

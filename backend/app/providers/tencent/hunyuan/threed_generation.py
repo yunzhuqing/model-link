@@ -1,15 +1,17 @@
 """
 混元 3D 生成模块 (Hunyuan 3D Generation)
 
-通过混元 3D 生成 API 从图片或文本生成 3D 模型，兼容 /v1/responses 3d_generation 工具。
+通过混元 3D 生成 API 从图片、文本或 3D 文件生成 3D 模型，兼容 /v1/responses 3d_generation 工具。
 
 流程：
 1. 发起请求:
    - Rapid 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitHunyuanTo3DRapidJob
    - Pro   模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitHunyuanTo3DProJob
+   - Part  模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitHunyuan3DPartJob  (Model=1.5, File 输入)
 2. 轮询结果:
    - Rapid 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuanTo3DRapidJob
    - Pro   模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuanTo3DProJob
+   - Part  模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuan3DPartJob
    直到 Status == "DONE"
 
 认证方式：
@@ -78,6 +80,9 @@ _POLL_MAX_WAIT_S = 600   # 最大等待时间（秒）
 # Rapid 模型标识
 _RAPID_MODELS = {"hunyuan-3d-rapid", "hy-3d-express"}
 
+# Part 模型标识 (3D 部件分割 / 拆分)
+_PART_MODELS = {"hunyuan-3d-1.5-part"}
+
 # Pro 模型与 API Model 参数的映射
 # key: 模型名前缀（小写），value: API 中 Model 字段的值（None 表示不传）
 _PRO_MODEL_MAP: Dict[str, Optional[str]] = {
@@ -105,6 +110,9 @@ _PRO_RESULT_FORMAT_CREDITS = 5     # ResultFormat (non-OBJ)
 _RAPID_BASE_CREDITS = 15           # 文本或图片输入
 _RAPID_PBR_CREDITS = 10            # EnablePBR
 
+# Part 版本: 基础积分
+_PART_BASE_CREDITS = 15            # 文件输入 (FBX)
+
 
 def _calculate_credits(
     model: str,
@@ -125,12 +133,19 @@ def _calculate_credits(
     Returns (total_credits, breakdown_dict) suitable for tracing.
     """
     is_pro = _is_pro_model(model)
-    breakdown: Dict[str, Any] = {"model": model, "model_type": "pro" if is_pro else "rapid"}
+    is_part = _is_part_model(model)
+    model_type = "part" if is_part else ("pro" if is_pro else "rapid")
+    breakdown: Dict[str, Any] = {"model": model, "model_type": model_type}
     total = 0
 
     rules = credit_rules or {}
 
-    if is_pro:
+    if is_part:
+        # Part: base credits for file input (FBX or other 3D format)
+        base_credits = rules.get("base", _PART_BASE_CREDITS)
+        breakdown["base"] = {"credits": base_credits}
+        total += base_credits
+    elif is_pro:
         # GenerateType
         gt = generate_type or "Normal"
         gt_map = rules.get("generate_type", _PRO_GENERATE_TYPE_CREDITS)
@@ -192,6 +207,7 @@ def is_hunyuan3d_model(model: str) -> bool:
       Rapid: hunyuan-3d-rapid, hy-3d-express
       Pro:   hunyuan-3d-pro, hunyuan-3d-3.0-pro, hunyuan-3d-3.1-pro,
              hy-3d-3.0, hy-3d-3.1
+      Part:  hunyuan-3d-1.5-part
 
     Args:
         model: Model name (case-insensitive)
@@ -225,10 +241,20 @@ def has_threed_generation_tool(request: ChatRequest) -> bool:
 def _is_pro_model(model: str) -> bool:
     """Check whether the given model identifier is a Pro variant.
 
-    A model is Pro if it is NOT in the known Rapid set.
+    A model is Pro if it is NOT in the known Rapid or Part set.
     All new hy-3d-* models (except hy-3d-express) default to Pro.
     """
-    return model.lower() not in _RAPID_MODELS
+    lower = model.lower()
+    return lower not in _RAPID_MODELS and lower not in _PART_MODELS
+
+
+def _is_part_model(model: str) -> bool:
+    """Check whether the given model identifier is a Part variant (3D part segmentation).
+
+    Part models use SubmitHunyuan3DPartJob / QueryHunyuan3DPartJob actions
+    and take a 3D file (FBX) as input instead of images or text prompts.
+    """
+    return model.lower() in _PART_MODELS
 
 
 def _get_api_model_version(model: str) -> Optional[str]:
@@ -371,6 +397,9 @@ async def _submit_3d_job(
     face_count: Optional[int] = None,
     generate_type: Optional[str] = None,
     polygon_type: Optional[str] = None,
+    # Part-only params
+    file_url: Optional[str] = None,
+    file_type: str = "FBX",
     region: str = HUNYUAN3D_API_REGION,
     credit_rules: Optional[Dict[str, Any]] = None,
     tracer: Any = None,
@@ -381,12 +410,13 @@ async def _submit_3d_job(
     API Version: 2025-05-13
     For Rapid models: SubmitHunyuanTo3DRapidJob
     For Pro models:   SubmitHunyuanTo3DProJob
+    For Part models:  SubmitHunyuan3DPartJob
 
     Args:
         client:            httpx client
         secret_id:         腾讯云 SecretId
         secret_key:        腾讯云 SecretKey
-        model:             模型名称，用于区分 Rapid / Pro
+        model:             模型名称，用于区分 Rapid / Pro / Part
         image_url:         输入图 URL（可选，与 image_base64/prompt 互斥）
         image_base64:      输入图 Base64（可选，与 image_url/prompt 互斥）
         prompt:            文本提示词（可选，与 image_url/image_base64 互斥）
@@ -399,6 +429,8 @@ async def _submit_3d_job(
         face_count:        生成面数（Pro 专用，LowPoly 时无效）: 3000–1500000
         generate_type:     生成类型（Pro 专用）: Normal|LowPoly|Geometry|Sketch
         polygon_type:      多边形类型（Pro+LowPoly 专用）: triangle|quadrilateral
+        file_url:          输入 3D 文件 URL（Part 专用），如 FBX 文件地址
+        file_type:         输入 3D 文件类型（Part 专用），默认 "FBX"
         region:            API 区域
 
     Returns:
@@ -408,7 +440,14 @@ async def _submit_3d_job(
         RuntimeError: On API error
     """
     is_pro = _is_pro_model(model)
-    action = "SubmitHunyuanTo3DProJob" if is_pro else "SubmitHunyuanTo3DRapidJob"
+    is_part = _is_part_model(model)
+
+    if is_part:
+        action = "SubmitHunyuan3DPartJob"
+    elif is_pro:
+        action = "SubmitHunyuanTo3DProJob"
+    else:
+        action = "SubmitHunyuanTo3DRapidJob"
 
     # Calculate estimated credits based on input parameters
     estimated_credits, credit_breakdown = _calculate_credits(
@@ -423,6 +462,10 @@ async def _submit_3d_job(
 
     body: Dict[str, Any] = {}
 
+    # Part model: always set Model=1.5
+    if is_part:
+        body["Model"] = "1.5"
+
     # Pro-only: Model version field (3.0 / 3.1)
     if is_pro:
         api_model_version = _get_api_model_version(model)
@@ -430,10 +473,17 @@ async def _submit_3d_job(
             body["Model"] = api_model_version
 
     # Input handling:
+    # - Part models: set File parameter with file URL and type
     # - Pro + multi_view_images: set MultiViewImages for angle views.
     #   Additionally, if a primary image (without view) is provided, set ImageUrl/ImageBase64.
     # - Otherwise: exactly one of ImageUrl, ImageBase64, or Prompt.
-    if is_pro and multi_view_images:
+    if is_part:
+        if file_url:
+            body["File"] = {
+                "Type": file_type,
+                "Url": file_url,
+            }
+    elif is_pro and multi_view_images:
         mv_list = []
         for img in multi_view_images:
             entry: Dict[str, str] = {}
@@ -463,11 +513,11 @@ async def _submit_3d_job(
         body["Prompt"] = prompt
 
     # Common optional params
-    if result_format:
+    if result_format and not is_part:
         body["ResultFormat"] = result_format
-    if enable_pbr:
+    if enable_pbr and not is_part:
         body["EnablePBR"] = True
-    if enable_geometry:
+    if enable_geometry and not is_part:
         body["EnableGeometry"] = True
 
     # Pro-only optional params
@@ -584,17 +634,22 @@ async def check_any_hunyuan3d_job_status(
     查询 Hunyuan3D Job 状态。
 
     如果提供了 model 参数，直接使用对应的 action 查询。
-    否则依次尝试 Rapid 和 Pro。
+    否则依次尝试 Rapid、Pro、Part。
 
     返回匹配到的 Response dict，匹配不到返回空 dict。
     """
     if model:
-        action = "QueryHunyuanTo3DProJob" if _is_pro_model(model) else "QueryHunyuanTo3DRapidJob"
+        if _is_part_model(model):
+            action = "QueryHunyuan3DPartJob"
+        elif _is_pro_model(model):
+            action = "QueryHunyuanTo3DProJob"
+        else:
+            action = "QueryHunyuanTo3DRapidJob"
         resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
         if resp:
             return resp
 
-    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob"):
+    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob", "QueryHunyuan3DPartJob"):
         resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
         if resp:
             return resp
@@ -620,17 +675,18 @@ async def _poll_3d_job(
 
     For Rapid models: QueryHunyuanTo3DRapidJob
     For Pro models:   QueryHunyuanTo3DProJob
+    For Part models:  QueryHunyuan3DPartJob
 
     Args:
         secret_id:        腾讯云 SecretId
         secret_key:       腾讯云 SecretKey
         job_id:           Submit 返回的 JobId
         model:            模型名称
-        estimated_credits: 预估积分消耗（Rapid 模型无 API 返回值时使用）
+        estimated_credits: 预估积分消耗（Rapid/Part 模型无 API 返回值时使用）
 
     Returns:
         Tuple of (result_items, credits_consumed). For Pro models credits_consumed
-        comes from ResultCreditConsumed; for Rapid models falls back to
+        comes from ResultCreditConsumed; for Rapid/Part models falls back to
         estimated_credits.
         {"type": file_type, "url": ..., "preview_url": ...}
 
@@ -638,7 +694,14 @@ async def _poll_3d_job(
         RuntimeError: On task failure or timeout
     """
     is_pro = _is_pro_model(model)
-    action = "QueryHunyuanTo3DProJob" if is_pro else "QueryHunyuanTo3DRapidJob"
+    is_part = _is_part_model(model)
+
+    if is_part:
+        action = "QueryHunyuan3DPartJob"
+    elif is_pro:
+        action = "QueryHunyuanTo3DProJob"
+    else:
+        action = "QueryHunyuanTo3DRapidJob"
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     deadline = time.time() + max_wait
 
@@ -735,21 +798,22 @@ async def _poll_3d_job(
 
 def _extract_inputs(
     messages,
-) -> Tuple[Optional[str], Optional[str], str, List[Dict[str, str]]]:
-    """Extract image URL, image base64, text prompt, and multi-view images.
+) -> Tuple[Optional[str], Optional[str], str, List[Dict[str, str]], Optional[str]]:
+    """Extract image URL, image base64, text prompt, multi-view images, and file URL.
 
-    Examines the last user message for image content blocks.  Blocks with a
+    Examines the last user message for image and file content blocks.  Blocks with a
     ``view`` attribute are classified as 3D multi-view images: ``front`` becomes
     the primary image, ``up`` / ``down`` are mapped to ``top`` / ``bottom``,
     and remaining views become multi-view entries.
 
     Returns:
-        (image_url, image_base64, text_prompt, multi_view_images)
+        (image_url, image_base64, text_prompt, multi_view_images, file_url)
     """
     VIEW_MAP = {"up": "top", "down": "bottom"}
 
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
+    file_url: Optional[str] = None
     text_prompt = ""
     multi_view_images: List[Dict[str, str]] = []
 
@@ -786,6 +850,9 @@ def _extract_inputs(
                             multi_view_images.append({"image_base64": block.data, "view_type": mapped})
                     elif not image_base64 and not image_url:
                         image_base64 = block.data
+                elif block.type == ContentType.FILE_URL and block.url:
+                    if not file_url:
+                        file_url = block.url
                 elif hasattr(block, "text") and block.text:
                     text_parts.append(block.text)
             text_prompt = " ".join(text_parts).strip()
@@ -793,7 +860,28 @@ def _extract_inputs(
             text_prompt = msg.content.strip()
         break
 
-    return image_url, image_base64, text_prompt, multi_view_images
+    return image_url, image_base64, text_prompt, multi_view_images, file_url
+
+
+def _extract_file_type_from_url(url: str) -> Optional[str]:
+    """Extract a 3D file type from a URL by inspecting its file extension.
+
+    Recognised extensions: OBJ, FBX, GLB, STL, USDZ, MP4, GLTF, PLY, ABC, BLEND.
+
+    Returns the uppercased extension (e.g. ``"FBX"``) or ``None`` when no
+    recognisable 3D extension is found.
+    """
+    _KNOWN = frozenset({"OBJ", "FBX", "GLB", "STL", "USDZ", "MP4", "GLTF", "PLY", "ABC", "BLEND"})
+
+    # Strip query string and fragment
+    path = url.split("?")[0].split("#")[0]
+    # Get the last path segment
+    filename = path.rstrip("/").rsplit("/", 1)[-1]
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[-1].upper()
+        if ext in _KNOWN:
+            return ext
+    return None
 
 
 # =============================================================================
@@ -813,14 +901,16 @@ async def execute_hunyuan3d_generation(
 
     API Version: 2025-05-13
 
-    Extracts image URL / base64 / text prompt from the last user message,
+    Extracts image URL / base64 / text prompt from the last user message
+    (or file URL / type for Part models),
     submits the 3D generation job, polls until done, and returns the result as a
     JSON-encoded list of 3d_generation_call content items in the message
     content — compatible with the Responses API adapter format.
 
     Args:
         api_key:  "SecretId:SecretKey" credential string
-        model:    Model identifier, e.g. "hunyuan-3d-rapid" or "hunyuan-3d-pro"
+        model:    Model identifier, e.g. "hunyuan-3d-rapid", "hunyuan-3d-pro",
+                  or "hunyuan-3d-1.5-part"
         messages: List of Message objects from the ChatRequest
         metadata: ChatRequest.metadata dict (carries 3d generation params)
         region:   Tencent Cloud region
@@ -832,6 +922,7 @@ async def execute_hunyuan3d_generation(
         RuntimeError: On API error or task failure
     """
     secret_id, secret_key = _parse_api_key(api_key)
+    is_part = _is_part_model(model)
 
     # Extract generation parameters from metadata
     enable_pbr: bool = bool(metadata.get("enable_pbr", metadata.get("pbr", False)))
@@ -848,14 +939,33 @@ async def execute_hunyuan3d_generation(
     if generate_type == "Geometry" and result_format.upper() == "OBJ":
         result_format = "GLB"
 
-    # Extract all inputs (images, text, multi-view) from messages
-    image_url, image_base64, text_prompt, multi_view_images = _extract_inputs(messages)
+    if is_part:
+        # Part models take a 3D file (e.g. FBX) as input.  The file URL is
+        # extracted from FILE_URL content blocks in the last user message.
+        _, _, text_prompt, _, file_url = _extract_inputs(messages)
 
-    if not multi_view_images and not image_url and not image_base64 and not text_prompt:
-        raise RuntimeError(
-            "Hunyuan 3D generation: no image URL, image base64, multi-view images, "
-            "or text prompt found in user messages / tool parameters"
-        )
+        if not file_url:
+            raise RuntimeError(
+                "Hunyuan 3D Part generation: no file URL found in messages"
+            )
+
+        # Determine file_type from URL extension, defaulting to "FBX"
+        file_type = _extract_file_type_from_url(file_url) or "FBX"
+
+        image_url = None
+        image_base64 = None
+        multi_view_images = None
+    else:
+        # Extract all inputs (images, text, multi-view) from messages
+        image_url, image_base64, text_prompt, multi_view_images, _ = _extract_inputs(messages)
+
+        if not multi_view_images and not image_url and not image_base64 and not text_prompt:
+            raise RuntimeError(
+                "Hunyuan 3D generation: no image URL, image base64, multi-view images, "
+                "or text prompt found in user messages / tool parameters"
+            )
+        file_url = None
+        file_type = "FBX"
 
     # ── Tracing ────────────────────────────────────────────────────────────
     _request_data: Dict[str, Any] = {"model": model, "prompt": text_prompt}
@@ -890,6 +1000,8 @@ async def execute_hunyuan3d_generation(
                 face_count=face_count,
                 generate_type=generate_type,
                 polygon_type=polygon_type,
+                file_url=file_url,
+                file_type=file_type,
                 region=region,
                 credit_rules=_credit_rules,
                 tracer=_child_span,
