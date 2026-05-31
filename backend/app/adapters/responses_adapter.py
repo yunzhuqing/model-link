@@ -1890,14 +1890,17 @@ class OpenAIResponsesAdapter(BaseAdapter):
         """
         Format an error for the Responses API.
 
-        OpenAI Responses API returns errors in the same format as Chat Completions:
-        {"error": {"message": "...", "type": "...", "param": "...", "code": null}}
-
-        When error_data is provided from the upstream provider, it already contains the
-        full error structure (e.g. {"error": {...}}), so we return it as-is.
+        Canonical error_data is built from UpstreamProviderError fields:
+            {"type": "...", "message": "...", "request_id": "..."}
         """
-        if error_data:
-            return error_data
+        if error_data and isinstance(error_data, dict):
+            return {
+                'error': {
+                    'type': error_data.get('type', 'server_error'),
+                    'message': error_data.get('message', message),
+                    'code': status_code,
+                }
+            }
         return {
             'error': {
                 'message': message,
@@ -1911,11 +1914,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
         from app.middleware.gateway_service import ProviderError
 
         if isinstance(error, ProviderError) and error.error_data:
-            # error_data may already be wrapped as {"error": {...}}; unwrap if so
-            inner = error.error_data
-            if 'error' in inner and isinstance(inner['error'], dict):
-                inner = inner['error']
-            error_event = inner
+            ed = error.error_data
+            # Canonical error_data: {"type": "...", "message": "...", "request_id": "..."}
+            error_event = {
+                'error': {
+                    'type': ed.get('type', 'server_error'),
+                    'message': ed.get('message', str(error)),
+                }
+            }
         else:
             error_event = {
                 'type': 'server_error',

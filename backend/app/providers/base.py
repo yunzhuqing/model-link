@@ -20,20 +20,27 @@ class UpstreamProviderError(Exception):
     """
     Raised by providers when the upstream API returns an error.
 
-    Carries structured error data so that the gateway layer does not
-    need to regex-parse a RuntimeError message string.
+    Carries canonical fields that are independent of any API format
+    (Anthropic, OpenAI, GCP, etc.).  Adapters convert these fields into
+    their own format-specific error responses — there is no passthrough
+    of raw upstream error bodies.
 
     Attributes:
-        status_code: HTTP status code from the upstream API.
-        error_data: Normalised error body dict (Anthropic-compatible format
-                    preferred: ``{"type":"error","error":{...}}``).
-        message: Human-readable error message.
+        status_code:  HTTP status code from the upstream API.
+        error_type:   Canonical error type string (e.g. ``"invalid_request_error"``,
+                      ``"authentication_error"``).
+        error_message:Human-readable error message from the upstream API.
+        request_id:   Optional upstream request / trace ID for diagnostics.
     """
-    def __init__(self, message: str, *, status_code: int = 500,
-                 error_data: Optional[dict] = None):
+    def __init__(self, error_message: str, *,
+                 status_code: int = 500,
+                 error_type: str = 'api_error',
+                 request_id: Optional[str] = None):
         self.status_code = status_code
-        self.error_data = error_data
-        super().__init__(message)
+        self.error_type = error_type
+        self.error_message = error_message
+        self.request_id = request_id
+        super().__init__(error_message)
 
 
 class ProviderCapability(Enum):

@@ -162,16 +162,25 @@ class BaseAdapter(ABC):
         Default implementation returns OpenAI-compatible format.
         Subclasses can override for provider-specific formats (e.g. Anthropic).
 
+        Canonical error_data (from UpstreamProviderError):
+            {"type": "...", "message": "...", "request_id": "..."}
+
         Args:
             message: Error message
             status_code: HTTP status code
-            error_data: Optional raw error data from upstream provider
+            error_data: Canonical error data from UpstreamProviderError
 
         Returns:
             Error response dictionary
         """
-        if error_data:
-            return error_data
+        if error_data and isinstance(error_data, dict):
+            return {
+                'error': {
+                    'type': error_data.get('type', 'server_error'),
+                    'message': error_data.get('message', message),
+                    'code': status_code,
+                }
+            }
         return {
             'error': {
                 'message': message,

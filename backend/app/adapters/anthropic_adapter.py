@@ -486,67 +486,26 @@ class AnthropicMessagesAdapter(BaseAdapter):
         end_data = {"type": "message_stop"}
         return f"event: message_stop\ndata: {json.dumps(end_data)}\n\n"
 
-    def format_stream_error(self, error: Exception) -> str:
-        """将错误转换为 Anthropic 格式的流式错误事件"""
-
-        if isinstance(error, ProviderError) and error.error_data:
-            ed = error.error_data
-            # If already in Anthropic error format, pass through as-is
-            if 'type' in ed and 'error' in ed:
-                inner = ed
-            # GCP / Vertex AI format: {"error": {"code": ..., "message": ...}}
-            # → extract the inner dict to prevent double-wrapping
-            elif 'error' in ed and isinstance(ed['error'], dict):
-                inner = ed['error']
-            else:
-                inner = ed
-            error_event = {
-                "type": "error",
-                "error": inner
-            }
-        else:
-            error_event = {
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": str(error)
-                }
-            }
-
-        return f"event: error\ndata: {json.dumps(error_event)}\n\n"
-
-    def format_error_response(self, message: str, status_code: int, error_data: Optional[dict] = None) -> dict:
+    def _build_anthropic_error(self, error_data: Optional[dict], message: str, status_code: int) -> dict:
         """
-        Format errors in Anthropic-compatible structure.
+        Build an Anthropic-format error dict from canonical error data.
 
-        Anthropic error format:
-        {
-            "type": "error",
-            "error": {
-                "type": "not_found_error",
-                "message": "Model not found"
-            }
-        }
+        Canonical error_data shape (from UpstreamProviderError):
+            {"type": "invalid_request_error", "message": "...", "request_id": "..."}
+
+        The adapter always *constructs* the Anthropic format from canonical
+        fields — there is no passthrough of raw upstream error bodies.
         """
-        if error_data:
-            # If upstream already returned Anthropic-format error, pass through
-            if 'type' in error_data and 'error' in error_data:
-                return error_data
-            # GCP / Vertex AI error format: {"error": {"code": ..., "message": ...}}
-            # → extract the inner dict to prevent double-wrapping
-            #   (current check above fails because GCP format lacks a top-level 'type')
-            if 'error' in error_data and isinstance(error_data['error'], dict):
-                return {
-                    'type': 'error',
-                    'error': error_data['error']
-                }
-            # Wrap raw error data
+        if error_data and isinstance(error_data, dict):
             return {
                 'type': 'error',
-                'error': error_data
+                'error': {
+                    'type': error_data.get('type', 'api_error'),
+                    'message': error_data.get('message', message),
+                }
             }
 
-        # Map HTTP status codes to Anthropic error types
+        # No error_data — build from status code
         error_type_map = {
             400: 'invalid_request_error',
             401: 'authentication_error',
@@ -556,15 +515,32 @@ class AnthropicMessagesAdapter(BaseAdapter):
             500: 'api_error',
             529: 'overloaded_error',
         }
-        error_type = error_type_map.get(status_code, 'api_error')
-
         return {
             'type': 'error',
             'error': {
-                'type': error_type,
+                'type': error_type_map.get(status_code, 'api_error'),
                 'message': message,
             }
         }
+
+    def format_stream_error(self, error: Exception) -> str:
+        """将错误转换为 Anthropic 格式的流式错误事件"""
+
+        if isinstance(error, ProviderError) and error.error_data:
+            error_event = self._build_anthropic_error(error.error_data, str(error), error.status_code)
+        else:
+            error_event = self._build_anthropic_error(None, str(error), 500)
+
+        return f"event: error\ndata: {json.dumps(error_event)}\n\n"
+
+    def format_error_response(self, message: str, status_code: int, error_data: Optional[dict] = None) -> dict:
+        """
+        Format errors in Anthropic-compatible structure.
+
+        Canonical error_data is always constructed from UpstreamProviderError
+        fields — the adapter builds the Anthropic envelope around it.
+        """
+        return self._build_anthropic_error(error_data, message, status_code)
 
     def create_stream_response(
         self,

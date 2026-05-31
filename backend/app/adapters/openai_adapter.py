@@ -131,7 +131,16 @@ class OpenAIChatAdapter(BaseAdapter):
         from app.middleware.gateway_service import ProviderError
 
         if isinstance(error, ProviderError) and error.error_data:
-            return f"event: error\ndata: {json.dumps(error.error_data)}\n\n"
+            ed = error.error_data
+            # Canonical error_data: {"type": "...", "message": "...", "request_id": "..."}
+            # Build OpenAI format from canonical fields
+            error_dict = {
+                'error': {
+                    'type': ed.get('type', 'server_error'),
+                    'message': ed.get('message', str(error)),
+                }
+            }
+            return f"event: error\ndata: {json.dumps(error_dict)}\n\n"
 
         error_data = {'error': {'message': str(error), 'type': 'server_error'}}
         return f"event: error\ndata: {json.dumps(error_data)}\n\n"

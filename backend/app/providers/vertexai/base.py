@@ -179,41 +179,40 @@ def _strip_data_uri(s: str) -> str:
     return s
 
 
-def _normalize_error(error_data: dict) -> dict:
+def _extract_canonical_error(error_data: dict) -> tuple:
     """
-    Convert upstream error bodies to a unified Anthropic-compatible format.
+    Extract canonical error fields from an upstream error body.
 
-    Handles:
-      - Anthropic format (passthrough):  {"type":"error","error":{"type":"...","message":"..."}}
-      - GCP / Vertex AI format:          {"error":{"code":...,"message":"...","status":"..."}}
-
-    Returns a dict suitable for serialization into a RuntimeError message so
-    that downstream ``_parse_provider_error`` and adapters can handle it
-    without format-specific branching.
+    Returns ``(error_type, error_message, request_id)`` regardless of
+    whether the upstream returned GCP format, Anthropic format, or
+    something else.
     """
-    # Already in Anthropic error format — pass through as-is
-    if 'type' in error_data and 'error' in error_data:
-        return error_data
+    # Anthropic / Vertex AI Anthropic format:
+    #   {"type":"error","error":{"type":"...","message":"..."},"request_id":"..."}
+    if 'type' in error_data and 'error' in error_data and isinstance(error_data['error'], dict):
+        inner = error_data['error']
+        return (
+            inner.get('type', 'invalid_request_error'),
+            inner.get('message', str(error_data)),
+            error_data.get('request_id'),
+        )
 
-    # GCP / Vertex AI error format: {"error": {"code": ..., "message": ..., "status": ...}}
+    # GCP / Vertex AI Gemini format:
+    #   {"error":{"code":...,"message":"...","status":"..."}}
     if 'error' in error_data and isinstance(error_data['error'], dict):
         gcp_err = error_data['error']
-        return {
-            'type': 'error',
-            'error': {
-                'type': 'invalid_request_error',
-                'message': gcp_err.get('message', str(error_data)),
-            }
-        }
+        return (
+            'invalid_request_error',
+            gcp_err.get('message', str(error_data)),
+            None,
+        )
 
-    # Unknown format — wrap it minimally
-    return {
-        'type': 'error',
-        'error': {
-            'type': 'api_error',
-            'message': str(error_data),
-        }
-    }
+    # Unknown — treat the whole body as the message
+    return (
+        'api_error',
+        str(error_data),
+        None,
+    )
 
 
 class VertexAIProvider(BaseProvider):
@@ -802,12 +801,9 @@ class VertexAIProvider(BaseProvider):
         elif event_type == "error":
             error_info = event_data.get("error", {})
             raise UpstreamProviderError(
-                f"Vertex AI Claude stream error: {error_info.get('type', 'unknown')}: {error_info.get('message', 'Unknown error')}",
+                error_info.get('message', 'Unknown error'),
                 status_code=400,
-                error_data={'type': 'error', 'error': {
-                    'type': error_info.get('type', 'invalid_request_error'),
-                    'message': error_info.get('message', 'Unknown error'),
-                }},
+                error_type=error_info.get('type', 'invalid_request_error'),
             )
 
         return None  # ping, message_stop, content_block_stop, etc.
@@ -1463,11 +1459,12 @@ class VertexAIProvider(BaseProvider):
                     error_text = response.text
                     try:
                         error_data = await asyncio.to_thread(response.json)
-                        normalized = _normalize_error(error_data)
+                        error_type, error_message, request_id = _extract_canonical_error(error_data)
                         raise UpstreamProviderError(
-                            f"Vertex AI API error ({response.status_code})",
+                            error_message,
                             status_code=response.status_code,
-                            error_data=normalized,
+                            error_type=error_type,
+                            request_id=request_id,
                         )
                     except json.JSONDecodeError:
                         raise UpstreamProviderError(
@@ -1588,11 +1585,12 @@ class VertexAIProvider(BaseProvider):
                             error_text += chunk.decode('utf-8')
                     try:
                         error_data = json.loads(error_text)
-                        normalized = _normalize_error(error_data)
+                        error_type, error_message, request_id = _extract_canonical_error(error_data)
                         raise UpstreamProviderError(
-                            f"Vertex AI API error ({response.status_code})",
+                            error_message,
                             status_code=response.status_code,
-                            error_data=normalized,
+                            error_type=error_type,
+                            request_id=request_id,
                         )
                     except json.JSONDecodeError:
                         raise UpstreamProviderError(

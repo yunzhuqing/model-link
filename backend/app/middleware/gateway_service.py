@@ -439,7 +439,13 @@ class GatewayService:
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except UpstreamProviderError as e:
-            raise ProviderError(str(e), status_code=e.status_code, error_data=e.error_data,
+            canonical_data: dict = {
+                'type': e.error_type,
+                'message': str(e),
+            }
+            if e.request_id:
+                canonical_data['request_id'] = e.request_id
+            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
                                      provider_id=resolved.provider_id,
                                      provider_name=resolved.provider_name)
         except RuntimeError as e:
@@ -849,7 +855,13 @@ class GatewayService:
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except UpstreamProviderError as e:
-            raise ProviderError(str(e), status_code=e.status_code, error_data=e.error_data,
+            canonical_data: dict = {
+                'type': e.error_type,
+                'message': str(e),
+            }
+            if e.request_id:
+                canonical_data['request_id'] = e.request_id
+            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
                                      provider_id=resolved.provider_id,
                                      provider_name=resolved.provider_name)
         except RuntimeError as e:
@@ -917,7 +929,13 @@ class GatewayService:
         except ValueError as e:
             raise GatewayServiceError(str(e), status_code=400)
         except UpstreamProviderError as e:
-            raise ProviderError(str(e), status_code=e.status_code, error_data=e.error_data,
+            canonical_data: dict = {
+                'type': e.error_type,
+                'message': str(e),
+            }
+            if e.request_id:
+                canonical_data['request_id'] = e.request_id
+            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
                                      provider_id=resolved.provider_id,
                                      provider_name=resolved.provider_name)
         except RuntimeError as e:
