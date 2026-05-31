@@ -398,6 +398,19 @@ def create_app(config=None):
     # Initialise the async DB engine. This must happen before any routes are served.
     app.before_serving(_init_async_engine)
 
+    # Initialise the ARQ client for offloading DB writes to a task queue.
+    from app.arq_client import init_arq as _init_arq
+    app.before_serving(_init_arq)
+
+    # Start an embedded ARQ worker so this process is both producer AND
+    # consumer of background jobs.  Enabled by default; set
+    # ARQ_EMBEDDED_WORKER=false to disable.
+    if os.getenv("ARQ_EMBEDDED_WORKER", "true").lower() not in ("0", "false", "no"):
+        async def _start_embedded_worker():
+            from app.arq_worker import start_embedded_worker as _start_ew
+            await _start_ew(get_db_session)
+        app.before_serving(_start_embedded_worker)
+
     # Schedule the async exchange-rate refresh on startup.
     from app.exchange_rate_service import start_daily_refresh as _start_exchange_rate_refresh
     app.before_serving(lambda: _start_exchange_rate_refresh() or None)
@@ -420,11 +433,16 @@ def create_app(config=None):
     from app.exchange_rate_service import stop_daily_refresh as _stop_daily_refresh
     from app.http_client import close_all_shared_clients as _close_shared_http_clients
     from app.monitoring.langfuse_tracer import flush_all_clients as _flush_langfuse_clients
+    from app.arq_client import close_arq as _close_arq
+    from app.arq_worker import stop_embedded_worker as _stop_embedded_worker
 
     async def _shutdown_cleanup():
         await _close_async_cache()
         await _stop_daily_refresh()
         await _close_shared_http_clients()
+        # Stop embedded ARQ worker before closing the ARQ client pool.
+        await _stop_embedded_worker()
+        await _close_arq()
         # Langfuse flush is sync and blocking — run off the event loop.
         await asyncio.to_thread(_flush_langfuse_clients)
 

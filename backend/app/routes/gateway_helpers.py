@@ -12,7 +12,7 @@ import re
 import os
 
 from quart import request, g
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from jose import JWTError, jwt
 
@@ -21,6 +21,7 @@ from app.models import ApiKey, User
 from app.middleware.gateway_service import GatewayService
 from app.request_context import AuthContext
 from app.utils import json_loads
+from app.arq_client import enqueue_apikey_usage
 
 logger = logging.getLogger("gateway")
 
@@ -173,27 +174,6 @@ def _build_auth_context_from_api_key(api_key: ApiKey, provider_id_override: Opti
     )
 
 
-async def _async_update_apikey_usage(api_key_id: int) -> None:
-    """Fire-and-forget background task: bump last_used_at + request_count.
-
-    Runs in its own short-lived DB session so the request path never blocks on
-    this write. Failures are logged but never surface to the caller.
-    """
-    try:
-        async with get_db_session() as s:
-            await s.execute(
-                update(ApiKey)
-                .where(ApiKey.id == api_key_id)
-                .values(
-                    last_used_at=datetime.utcnow(),
-                    request_count=ApiKey.request_count + 1,
-                )
-            )
-            await s.commit()
-    except Exception as e:
-        logger.warning(f"[auth] async last_used_at/request_count update failed: {e}")
-
-
 async def get_current_user_or_api_key() -> Tuple[Optional[AuthContext], Optional[dict], int]:
     """Authenticate via either JWT token, API key, or Anthropic x-api-key header.
 
@@ -269,8 +249,8 @@ async def get_current_user_or_api_key() -> Tuple[Optional[AuthContext], Optional
                 auth_ctx = _build_auth_context_from_api_key(api_key, provider_id_override)
 
         if cached_info is not None and api_key is not None:
-            # Fire-and-forget last_used_at / request_count update
-            asyncio.create_task(_async_update_apikey_usage(auth_ctx.api_key_id))
+            # Enqueue debounced last_used_at / request_count update via ARQ
+            await enqueue_apikey_usage(auth_ctx.api_key_id)
             return auth_ctx, None, 200
         # Otherwise fall through to cache-miss path
 
@@ -305,7 +285,7 @@ async def get_current_user_or_api_key() -> Tuple[Optional[AuthContext], Optional
                 logger.debug(f"[cache] Failed to populate API key cache: {_ce}")
 
     if api_key is not None:
-        asyncio.create_task(_async_update_apikey_usage(auth_ctx.api_key_id))
+        await enqueue_apikey_usage(auth_ctx.api_key_id)
         return auth_ctx, None, 200
 
     # ── JWT path ──
