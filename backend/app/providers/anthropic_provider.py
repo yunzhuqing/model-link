@@ -211,7 +211,7 @@ class AnthropicProvider(BaseProvider):
             if isinstance(request.tool_choice, str):
                 if request.tool_choice == "auto":
                     result["tool_choice"] = {"type": "auto"}
-                elif request.tool_choice == "required":
+                elif request.tool_choice in ("required", "any"):
                     result["tool_choice"] = {"type": "any"}
                 elif request.tool_choice == "none":
                     # Anthropic doesn't have a "none" tool_choice; omit tools instead
