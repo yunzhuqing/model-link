@@ -82,6 +82,12 @@ class VLLMProvider(OpenAIProvider):
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         return headers
 
+    # Internal metadata keys that must NOT be forwarded to the upstream vLLM API.
+    _INTERNAL_METADATA_KEYS = frozenset({
+        '_raw_tools', '_user_metadata', '_video_generation',
+        'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
+    })
+
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         准备请求数据。
@@ -90,6 +96,7 @@ class VLLMProvider(OpenAIProvider):
         - 移除 ``reasoning_effort``：vLLM 不支持该参数
         - 添加 ``chat_template_kwargs.enable_thinking``：当设置了
           reasoning_effort 或模型名包含 "thinking" 时开启思考模式
+        - 将 request.metadata 中的非内部键合并到请求中，透传给 vLLM
         """
         # 在调用 super() 之前保存 reasoning_effort，因为后续要用它判断是否开启 thinking
         has_reasoning = bool(
@@ -108,6 +115,15 @@ class VLLMProvider(OpenAIProvider):
             chat_template_kwargs = data.get("chat_template_kwargs", {})
             chat_template_kwargs["enable_thinking"] = True
             data["chat_template_kwargs"] = chat_template_kwargs
+
+        # 将 metadata 中的非内部键透传到 vLLM 请求中
+        if request.metadata:
+            for key, value in request.metadata.items():
+                if key.startswith('_') or key in self._INTERNAL_METADATA_KEYS:
+                    continue
+                if key not in data:
+                    data[key] = value
+
         logging.debug(f"Prepared vLLM request data: {data}")
 
         return data
