@@ -11,6 +11,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'single-image', label: '　└ 单图生成', indent: true },
   { id: 'multi-view', label: '　└ 多视角图生成', indent: true },
   { id: 'text-to-3d', label: '　└ 文本生成 3D', indent: true },
+  { id: 'part', label: '　└ 3D 部件分割', indent: true },
   { id: 'seed3d', label: 'Doubao Seed3D' },
   { id: 'seed3d-usage', label: '　└ 请求示例', indent: true },
   { id: 'params', label: '工具参数' },
@@ -122,6 +123,28 @@ const THREED_TEXT = `{
       "type": "3d_generation",
       "output_format": "GLB",
       "generate_type": "Sketch"
+    }
+  ]
+}`;
+
+const THREED_PART = `{
+  "model": "hunyuan-3d-1.5-part",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_file",
+          "file_url": "https://example.com/model.fbx"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "3d_generation"
     }
   ]
 }`;
@@ -317,7 +340,7 @@ export default function HelpThreed() {
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800 mb-1">功能说明</h3>
             <p className="text-sm text-slate-500">
-              通过在 tools 中指定 3d_generation 类型，触发 3D 模型生成功能。支持混元 3D（单图、多视角、文本）和 Doubao Seed3D（单图）模型，生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
+              通过在 tools 中指定 3d_generation 类型，触发 3D 模型生成功能。支持混元 3D（单图、多视角、文本、3D 文件部件分割）和 Doubao Seed3D（单图）模型，生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
             </p>
           </div>
           <div className="p-6 space-y-3">
@@ -354,6 +377,7 @@ export default function HelpThreed() {
                   { name: 'hunyuan-3d-pro',      vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（兼容旧版）' },
                   { name: 'hunyuan-3d-3.0-pro',  vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 3.0 版本' },
                   { name: 'hunyuan-3d-3.1-pro',  vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 3.1 版本（推荐）' },
+                  { name: 'hunyuan-3d-1.5-part', vendor: '混元', input: '3D 文件（FBX）', desc: 'Part 1.5 部件分割' },
                   { name: 'hy-3d-3.0',           vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（别名映射差异）' },
                   { name: 'hy-3d-3.1',           vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（别名映射差异）' },
                   { name: 'doubao-seed3d-2.0',   vendor: 'Doubao', input: '单图（必填）', desc: 'Doubao Seed3D 2.0，仅支持图生 3D' },
@@ -381,7 +405,7 @@ export default function HelpThreed() {
               <h3 className="text-lg font-semibold text-slate-800">混元 3D 模型</h3>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">Hunyuan</span>
             </div>
-            <p className="text-sm text-slate-500">腾讯混元 3D 模型，支持单图、多视角图片和文本描述三种输入方式生成 3D 模型。</p>
+            <p className="text-sm text-slate-500">腾讯混元 3D 模型，支持单图、多视角图片、文本描述和 3D 文件四种输入方式生成 3D 模型。</p>
           </div>
           <div className="p-6 space-y-6">
             {/* Single image */}
@@ -423,6 +447,26 @@ export default function HelpThreed() {
           description="当不传入图片时，使用文本描述生成 3D 模型。generate_type: Sketch 模式下 prompt 和图片可同时传入。"
         >
           <CurlSection body={THREED_TEXT} />
+        </SectionCard>
+
+        {/* Part — 3D file segmentation */}
+        <SectionCard
+          id="part"
+          title="3D 部件分割（hunyuan-3d-1.5-part）"
+          badge="input_file"
+          badgeColor="bg-orange-100 text-orange-700"
+          description="传入一个 3D 文件（如 FBX），自动分割为独立部件并输出分离后的模型文件。"
+        >
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>约束：</strong>
+            <ul className="list-disc list-inside mt-1.5 space-y-1">
+              <li>输入 <code>input_file</code> <strong>必填</strong>，<code>file_url</code> 指向 3D 文件地址</li>
+              <li>支持的文件格式：FBX、OBJ、GLB 等 3D 文件格式</li>
+              <li>返回分离后的部件模型文件（OBJ、FBX）和预览图（IMAGE）</li>
+              <li>需设置 <code>"background": true</code> 进行异步任务</li>
+            </ul>
+          </div>
+          <CurlSection body={THREED_PART} />
         </SectionCard>
           </div>
         </div>
