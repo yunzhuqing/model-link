@@ -613,6 +613,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             'max_output_tokens', 'stream', 'tools', 'tool_choice',
             'stop', 'presence_penalty', 'frequency_penalty', 'user',
             'metadata', 'store', 'truncation', 'reasoning',
+            'n', 'seed',
         }
         metadata = {k: v for k, v in data.items() if k not in _KNOWN}
 
@@ -767,6 +768,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
             session_id=data.get('session_id'),
             reasoning_effort=reasoning_effort,
             parallel_tool_calls=parallel_tool_calls,
+            n=data.get('n'),
+            seed=data.get('seed'),
             metadata=metadata,
         )
 
