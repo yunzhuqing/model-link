@@ -114,7 +114,9 @@ async def create_group(current_user):
         except Exception as e:
             await session.rollback()
             return jsonify({'detail': str(e)}), 400
-        await session.refresh(group)
+        # Re-fetch with eager-loaded relationships so to_dict()
+        # won't trigger async-incompatible lazy loads.
+        group = await get_group_by_id(group.id, session=session)
 
         return jsonify(group.to_dict()), 201
 
