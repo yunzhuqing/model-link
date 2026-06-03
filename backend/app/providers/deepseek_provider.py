@@ -88,6 +88,11 @@ class DeepSeekProvider(OpenAIProvider):
             if any(kw in system_text for kw in ("Claude Code", "OpenCode", "Codex", "Cline")):
                 request.reasoning_effort = 'max'
 
+        # DeepSeek 要求 tool 消息必须紧跟在 assistant(tool_calls) 之后，
+        # 中间不能有其他消息类型（如另一个 assistant 消息）。
+        # 对消息列表进行重排，确保满足此约束。
+        self._reorder_tool_messages(request.messages)
+
         result = super().prepare_request(request)
 
         # DeepSeek 特有：根据模型是否支持思维和 reasoning_effort 设置 thinking 参数
@@ -98,6 +103,89 @@ class DeepSeekProvider(OpenAIProvider):
             else:
                 result["thinking"] = {"type": "disabled"}
         return result
+
+    @staticmethod
+    def _reorder_tool_messages(messages: list) -> None:
+        """重排消息列表，确保 tool 消息紧跟在对应的 assistant(tool_calls) 之后。
+
+        DeepSeek / Bailian 等严格实现的 Chat Completions API 要求：
+        assistant(tool_calls) 之后必须紧跟 tool 消息响应每个 tool_call_id，
+        中间不能插入其他 assistant 或 user 消息。
+
+        例如：
+            [assistant(tool_calls=[A]), assistant(text), tool(A)]
+            → [assistant(tool_calls=[A]), tool(A), assistant(text)]
+
+        此方法原地修改消息列表。
+        """
+        if len(messages) < 2:
+            return
+
+        pending_call_ids = None       # 当前 tool_calls 的 call_id 集合
+        non_tool_start = None         # 第一个待延迟的非 tool 消息的索引
+        tool_indices_to_move = []     # 需要移动到前面的 tool 消息索引
+
+        def _flush():
+            """提交当前轮次的重排。"""
+            nonlocal non_tool_start, tool_indices_to_move
+            if non_tool_start is not None and tool_indices_to_move:
+                _apply_reorder(messages, non_tool_start, tool_indices_to_move)
+            non_tool_start = None
+            tool_indices_to_move = []
+
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+
+            # 提取消息中的 tool_call_ids
+            msg_call_ids = set()
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                        if block.tool_call_id:
+                            msg_call_ids.add(block.tool_call_id)
+
+            if msg_call_ids:
+                # 遇到新的 assistant(tool_calls)，提交上一轮的重排
+                _flush()
+                pending_call_ids = msg_call_ids
+                i += 1
+
+            elif pending_call_ids and msg.role == MessageRole.TOOL and msg.tool_call_id in pending_call_ids:
+                # 匹配的 tool 消息，记录其位置（稍后移到 non_tool_start 之前）
+                tool_indices_to_move.append(i)
+                pending_call_ids.discard(msg.tool_call_id)
+                i += 1
+
+            elif pending_call_ids:
+                # 在等待 tool 响应期间遇到了非 tool 消息
+                if non_tool_start is None:
+                    non_tool_start = i
+                i += 1
+
+            else:
+                i += 1
+
+        # 最后一轮重排
+        _flush()
+
+
+def _apply_reorder(messages: list, insert_at: int, tool_indices: list) -> None:
+    """将 tool_indices 位置的 tool 消息移动到 insert_at 位置，原地修改列表。
+
+    例如 messages=[A, B(assistant), C(tool)], insert_at=1, tool_indices=[2]
+    → [A, C(tool), B(assistant)]
+    """
+    # 从后往前提取，保持索引有效
+    extracted = []
+    for idx in reversed(tool_indices):
+        extracted.append(messages.pop(idx))
+    extracted.reverse()
+
+    # 按原顺序插入到目标位置
+    for tool_msg in extracted:
+        messages.insert(insert_at, tool_msg)
+        insert_at += 1
 
     async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """

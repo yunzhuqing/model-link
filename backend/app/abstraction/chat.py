@@ -143,6 +143,7 @@ class ChatRequest:
     parallel_tool_calls: Optional[bool] = None  # 是否允许并行工具调用
     n: Optional[int] = None  # 候选回复数量（OpenAI/vLLM 兼容）
     seed: Optional[int] = None  # 随机种子，用于复现采样结果（OpenAI/vLLM 兼容）
+    response_format: Optional[Dict[str, Any]] = None  # 响应格式（JSON mode / Structured Outputs）
     metadata: Dict[str, Any] = field(default_factory=dict)  # 额外参数
     
     def get_system_message(self) -> Optional[str]:

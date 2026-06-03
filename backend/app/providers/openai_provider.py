@@ -196,7 +196,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         'model', 'messages', 'temperature', 'top_p', 'max_tokens',
         'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
         'frequency_penalty', 'user', 'session_id', 'reasoning_effort',
-        'n', 'seed',
+        'n', 'seed', 'response_format',
     }
     metadata = {k: v for k, v in data.items() if k not in known_keys}
     
@@ -218,6 +218,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         reasoning_effort=data.get('reasoning_effort'),
         n=data.get('n'),
         seed=data.get('seed'),
+        response_format=data.get('response_format'),
         metadata=metadata
     )
 
@@ -382,6 +383,8 @@ class OpenAIProvider(BaseProvider):
             result["n"] = request.n
         if request.seed is not None:
             result["seed"] = request.seed
+        if request.response_format is not None:
+            result["response_format"] = request.response_format
         return result
     
     def _expand_messages_to_openai(self, messages: List[Message]) -> List[Dict[str, Any]]:
