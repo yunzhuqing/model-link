@@ -850,7 +850,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
             model_lower.startswith("vidu") or
             model_lower.startswith("pixverse-") or
             model_lower.startswith("gv-") or
-            model_lower.startswith("hy-video-")
+            model_lower.startswith("hy-video-") or 
+            model_lower.startswith("mps-")
         )
 
         # 3D generation models: hunyuan-3d* / hy-3d* (Tencent), *seed3d* (Volcengine)
