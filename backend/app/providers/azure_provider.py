@@ -166,6 +166,38 @@ class AzureProvider(OpenAIProvider):
         return b64_data, content_type, filename
 
     @staticmethod
+    def _response_format_to_responses_api(response_format: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert Chat Completions response_format to Responses API text.format.
+
+        Chat Completions format:
+            {"type": "json_object"}
+            {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}
+
+        Responses API format:
+            {"format": {"type": "json_object"}}
+            {"format": {"type": "json_schema", "name": "...", "schema": {...}, "strict": true}}
+        """
+        fmt_type = response_format.get("type")
+        if fmt_type == "json_schema":
+            json_schema = response_format.get("json_schema", {})
+            format_def: Dict[str, Any] = {
+                "type": "json_schema",
+                "name": json_schema.get("name", "response"),
+                "schema": json_schema.get("schema", {}),
+            }
+            if json_schema.get("strict") is not None:
+                format_def["strict"] = json_schema["strict"]
+            else:
+                format_def["strict"] = True
+            return {"format": format_def}
+        elif fmt_type == "json_object":
+            return {"format": {"type": "json_object"}}
+        else:
+            # Unknown format, pass through verbatim under format
+            return {"format": response_format}
+
+    @staticmethod
     def _normalize_tool_choice_for_responses(tool_choice):
         """Convert tool_choice to Responses API format.
 
@@ -415,6 +447,8 @@ class AzureProvider(OpenAIProvider):
             result["frequency_penalty"] = request.frequency_penalty
         if request.user:
             result["user"] = request.user
+        if request.response_format is not None:
+            result["text"] = self._response_format_to_responses_api(request.response_format)
 
         # Add reasoning parameter for models that support it.
         # Always include "summary": "auto" so Azure emits reasoning_summary streaming events
