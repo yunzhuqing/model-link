@@ -270,18 +270,18 @@ class ApiKey(db.Model):
     last_used_at = db.Column(db.DateTime, nullable=True)
     
     # Usage stats (updated periodically from cache by leader node)
-    request_count = db.Column(db.Integer, default=0)
-    token_count = db.Column(db.Integer, default=0)
+    request_count = db.Column(db.BigInteger, default=0)
+    token_count = db.Column(db.BigInteger, default=0)
     
     # Historical cumulative usage stats (synced from cache)
     total_input_tokens = db.Column(db.BigInteger, default=0)
     total_output_tokens = db.Column(db.BigInteger, default=0)
     total_reasoning_tokens = db.Column(db.BigInteger, default=0)
     total_cost_usd = db.Column(db.Float, default=0.0)        # Total cost in USD
-    total_image_count = db.Column(db.Integer, default=0)      # Total images generated
-    total_video_count = db.Column(db.Integer, default=0)      # Total videos generated
-    total_audio_seconds = db.Column(db.Float, default=0.0)    # Total audio seconds generated
-    total_web_search_requests = db.Column(db.Integer, default=0)  # Total web search requests
+    total_image_count = db.Column(db.BigInteger, default=0)      # Total images generated
+    total_video_count = db.Column(db.BigInteger, default=0)      # Total videos generated
+    total_audio_seconds = db.Column(db.Float, default=0.0)       # Total audio seconds generated
+    total_web_search_requests = db.Column(db.BigInteger, default=0)  # Total web search requests
     total_credits = db.Column(db.Float, default=0.0)            # Total 3D generation credits
 
     # Incremental sync position — the max UsageRecord.id covered by the last sync cycle
