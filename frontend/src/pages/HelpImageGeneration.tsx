@@ -8,6 +8,8 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'responses-api', label: '　├ Responses API', indent: true },
   { id: 'responses-params', label: '　│　├ 工具参数', indent: true },
   { id: 'responses-response', label: '　│　└ 工具响应格式', indent: true },
+  { id: 'responses-background', label: '　│　├ 后台异步模式', indent: true },
+  { id: 'responses-background-poll', label: '　│　└ 轮询查询结果', indent: true },
   { id: 'images-api', label: '　├ Image Generations', indent: true },
   { id: 'images-params', label: '　│　├ 请求参数', indent: true },
   { id: 'images-response', label: '　│　└ 响应格式', indent: true },
@@ -58,6 +60,76 @@ const RESPONSES_RESPONSE = `{
       "result": "https://..."
     }
   ]
+}`;
+
+const RESPONSES_BACKGROUND_REQUEST = `{
+  "model": "gemini-2.5-flash-image",
+  "input": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "一个男人牵着两条狗"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://images.pexels.com/photos/1108099/pexels-photo-1108099.jpeg?auto=compress&cs=tinysrgb&w=800"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "tools": [
+    {
+      "type": "image_generation",
+      "size": "424x632",
+      "response_format": "url"
+    }
+  ],
+  "background": true
+}`;
+
+const RESPONSES_BACKGROUND_RESPONSE = `{
+  "background": true,
+  "created_at": 1780579243,
+  "id": "resp_f02401170f528b4263618ad18e932cf2bda6b2e77cdc0cb2",
+  "metadata": null,
+  "model": "gemini-2.5-flash-image",
+  "object": "response",
+  "parallel_tool_calls": false,
+  "status": "in_progress"
+}`;
+
+const RESPONSES_BACKGROUND_COMPLETED = `{
+  "created_at": 1780579271,
+  "id": "resp_f02401170f528b4263618ad18e932cf2bda6b2e77cdc0cb2",
+  "metadata": null,
+  "model": "gemini-2.5-flash-image",
+  "object": "response",
+  "output": [
+    {
+      "id": "img_566eca5eb50e8550e77db2a332fd6df793d4f18590e85952",
+      "result": "http://251000800.vod2.myqcloud.com/.../aigcImageGenFile.png",
+      "status": "completed",
+      "type": "image_generation_call"
+    }
+  ],
+  "parallel_tool_calls": false,
+  "response_format": "url",
+  "status": "completed",
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 1,
+    "price": {
+      "actual_amount": 0.333,
+      "currency": "CNY",
+      "discount": 1.0,
+      "exchange_rate": 7.0,
+      "payable_amount": 0.333
+    },
+    "total_tokens": 1
+  }
 }`;
 
 const IMAGES_REQUEST = `{
@@ -258,7 +330,7 @@ export default function HelpImageGeneration() {
                   { name: 'type',            required: true,  type: 'string',  desc: '固定为 "image_generation"' },
                   { name: 'n',               required: false, type: 'number',  desc: '生成图片数量，别名：number、count' },
                   { name: 'size',            required: false, type: 'string',  desc: '图片尺寸，如 "1024x1024"' },
-                  { name: 'response_format', required: false, type: 'string',  desc: '"b64_json"（默认）或 "url"' },
+                  { name: 'response_format', required: false, type: 'string',  desc: '"url" 或 "b64_json"，默认按模型行为（Gemini / GPT Image 系列默认返回 base64）' },
                   { name: 'image_format',    required: false, type: 'string',  desc: '"png"（默认）或 "jpg"；别名：output_format' },
                   { name: 'seed',            required: false, type: 'number',  desc: '随机种子，用于结果可复现' },
                   { name: 'aspect_ratio',   required: false, type: 'string',  desc: '宽高比，如 "1:1"、"16:9"、"9:16"（Z-Image Turbo 使用）' },
@@ -284,6 +356,59 @@ export default function HelpImageGeneration() {
           description="output 包含 image_generation_call 类型的输出项，result 为图片 URL 或 base64。"
         >
           <CodeBlock code={RESPONSES_RESPONSE} />
+        </SectionCard>
+
+        {/* Responses API background async mode */}
+        <SectionCard
+          id="responses-background"
+          title="后台异步模式（图生图）"
+          badge="async"
+          badgeColor="bg-amber-100 text-amber-700"
+          description='设置 "background": true 后，请求立即返回 202 并附带 response_id，实际图片生成在后台执行。适合耗时较长的图生图场景，避免客户端长时间等待。'
+        >
+          <CurlSection body={RESPONSES_BACKGROUND_REQUEST} />
+          <div>
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">立即响应（status: in_progress）</span>
+            <CodeBlock code={RESPONSES_BACKGROUND_RESPONSE} />
+          </div>
+        </SectionCard>
+
+        {/* Responses API background poll */}
+        <SectionCard
+          id="responses-background-poll"
+          title="轮询查询异步结果"
+          description="使用 response_id 通过 GET 请求轮询查询后台任务的状态和结果。"
+        >
+          <div>
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">请求</span>
+            <CodeBlock code={`GET ${baseUrl}/v1/responses/{response_id}\nAuthorization: Bearer <YOUR_API_KEY>`} lang="bash" />
+          </div>
+          <div>
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">任务完成响应（status: completed）</span>
+            <CodeBlock code={RESPONSES_BACKGROUND_COMPLETED} />
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">status</th>
+                  <th className="px-4 py-2.5 font-semibold text-slate-600">说明</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {[
+                  { status: 'in_progress', desc: '任务正在执行中，继续轮询' },
+                  { status: 'completed',   desc: '任务完成，output 包含生成的图片信息' },
+                  { status: 'failed',      desc: '任务执行失败，响应体包含 error 字段' },
+                ].map((r) => (
+                  <tr key={r.status} className="hover:bg-slate-50">
+                    <td className="px-4 py-2.5"><code className="text-emerald-600 font-semibold">{r.status}</code></td>
+                    <td className="px-4 py-2.5 text-slate-600">{r.desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </SectionCard>
 
         {/* ========== Images Generations API Section ========== */}

@@ -1,4 +1,4 @@
-import { CurlSection } from './HelpShared';
+import { CurlSection, CodeBlock } from './HelpShared';
 
 // ---------- code samples ----------
 
@@ -23,6 +23,47 @@ const KLING_V3_OMNI_TEXT_TO_VIDEO = `{
       "aspect_ratio": "9:16"
     }
   ]
+}`;
+
+const KLING_BACKGROUND_RESPONSE = `{
+  "background": true,
+  "created_at": 1780580262,
+  "id": "resp_eebe6924290bd7a18c785c144b188807ff4727bb11a84102",
+  "metadata": null,
+  "model": "kling-v3-omni",
+  "object": "response",
+  "parallel_tool_calls": false,
+  "status": "in_progress"
+}`;
+
+const KLING_BACKGROUND_COMPLETED = `{
+  "created_at": 1780580344,
+  "id": "resp_eebe6924290bd7a18c785c144b188807ff4727bb11a84102",
+  "metadata": null,
+  "model": "kling-v3-omni",
+  "object": "response",
+  "output": [
+    {
+      "id": "vid_91677010b8e1159a88ec29976f81fa9c27c79d045e9857a7",
+      "result": "http://251000800.vod2.myqcloud.com/.../aigcVideoGenFile.mp4",
+      "status": "completed",
+      "type": "video_generation_call"
+    }
+  ],
+  "parallel_tool_calls": false,
+  "status": "completed",
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 1,
+    "price": {
+      "actual_amount": 1.0,
+      "currency": "CNY",
+      "discount": 1.0,
+      "exchange_rate": 7.0,
+      "payable_amount": 1.0
+    },
+    "total_tokens": 1
+  }
 }`;
 
 const KLING_V3_OMNI_IMAGE_TO_VIDEO = `{
@@ -111,6 +152,25 @@ export function KlingSection() {
         <div id="kling-t2v" className="scroll-mt-4">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">文本生成视频 (T2V)</p>
           <CurlSection body={KLING_V3_OMNI_TEXT_TO_VIDEO} />
+        </div>
+
+        {/* Background async response */}
+        <div id="kling-t2v-response" className="scroll-mt-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">异步响应示例</p>
+          <div className="space-y-4">
+            <div>
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-2">立即响应（status: in_progress）</span>
+              <CodeBlock code={KLING_BACKGROUND_RESPONSE} />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-2">轮询查询</span>
+              <CodeBlock code={`GET /v1/responses/{response_id}\nAuthorization: Bearer <YOUR_API_KEY>`} lang="bash" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-2">任务完成响应（status: completed）</span>
+              <CodeBlock code={KLING_BACKGROUND_COMPLETED} />
+            </div>
+          </div>
         </div>
 
         {/* Image to video */}

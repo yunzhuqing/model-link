@@ -16,6 +16,8 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'seed3d-usage', label: '　└ 请求示例', indent: true },
   { id: 'params', label: '工具参数' },
   { id: 'response-format', label: '响应格式' },
+  { id: 'response-single', label: '　├ 单个输出项', indent: true },
+  { id: 'response-multi', label: '　└ 多个输出项', indent: true },
 ];
 
 const THREED_SINGLE = `{
@@ -168,6 +170,45 @@ const THREED_RESPONSE = `{
       ]
     }
   ]
+}`;
+
+const THREED_PART_RESPONSE = `{
+  "id": "resp_f07e518e6118f27ffd8a88fc673021e41e584f752d12b201",
+  "object": "response",
+  "status": "completed",
+  "model": "hunyuan-3d-1.5-part",
+  "output": [
+    {
+      "type": "3d_generation_call",
+      "id": "1452645336451072000",
+      "status": "completed",
+      "content": [
+        {
+          "type": "GLB",
+          "url": "https://.../part_0.glb",
+          "preview_url": ""
+        }
+      ]
+    },
+    {
+      "type": "3d_generation_call",
+      "id": "1452645336451072000-1",
+      "status": "completed",
+      "content": [
+        {
+          "type": "GLB",
+          "url": "https://.../part_1.glb",
+          "preview_url": ""
+        }
+      ]
+    }
+    // ... 更多部件（part_2 ~ part_N）
+  ],
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 9,
+    "total_tokens": 9
+  }
 }`;
 
 function CopyButton({ text }: { text: string }) {
@@ -547,10 +588,27 @@ export default function HelpThreed() {
         <div id="response-format" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800">响应格式</h3>
-            <p className="text-sm text-slate-500 mt-1">output 包含 3d_generation_call 类型的输出项，content 为生成的 3D 文件列表，每项含 type、url 和 preview_url。</p>
+            <p className="text-sm text-slate-500 mt-1">3D 生成任务为异步执行，提交后需通过 GET 轮询获取结果。output 为 3d_generation_call 类型的输出项数组，单模型通常返回 1 项，部件分割等多结果场景返回多项。content 数组中每项含 type（文件格式）和 url（下载地址）。</p>
           </div>
-          <div className="p-6">
-            <CodeBlock code={THREED_RESPONSE} />
+          <div className="p-6 space-y-6">
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">轮询查询</span>
+              <CodeBlock code={`GET ${baseUrl}/v1/responses/{response_id}\nAuthorization: Bearer <YOUR_API_KEY>`} lang="bash" />
+            </div>
+
+            {/* Single output item */}
+            <div id="response-single" className="scroll-mt-4">
+              <p className="text-sm font-semibold text-slate-700 mb-2">单个输出项（hunyuan-3d / Seed3D / hunyuan-3d-1.5-part 都适用）</p>
+              <p className="text-sm text-slate-500 mb-3">output 包含 1 个 3d_generation_call 项，content 为生成的 3D 文件列表，每项含 type（GLB / OBJ / FBX 等）和 url。</p>
+              <CodeBlock code={THREED_RESPONSE} />
+            </div>
+
+            {/* Multiple output items */}
+            <div id="response-multi" className="scroll-mt-4">
+              <p className="text-sm font-semibold text-slate-700 mb-2">多个输出项（hunyuan-3d-1.5-part 部件分割等场景）</p>
+              <p className="text-sm text-slate-500 mb-3">output 包含多个 3d_generation_call 项，每个 item 对应一个独立输出（如分割后的各个 3D 部件），各自有独立的 content 数组。</p>
+              <CodeBlock code={THREED_PART_RESPONSE} />
+            </div>
           </div>
         </div>
       </div>
