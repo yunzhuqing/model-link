@@ -18,6 +18,24 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 logger = logging.getLogger(__name__)
 
 
+def _apply_reorder(messages: list, insert_at: int, tool_indices: list) -> None:
+    """将 tool_indices 位置的 tool 消息移动到 insert_at 位置，原地修改列表。
+
+    例如 messages=[A, B(assistant), C(tool)], insert_at=1, tool_indices=[2]
+    → [A, C(tool), B(assistant)]
+    """
+    # 从后往前提取，保持索引有效
+    extracted = []
+    for idx in reversed(tool_indices):
+        extracted.append(messages.pop(idx))
+    extracted.reverse()
+
+    # 按原顺序插入到目标位置
+    for tool_msg in extracted:
+        messages.insert(insert_at, tool_msg)
+        insert_at += 1
+
+
 class DeepSeekProvider(OpenAIProvider):
     """
     DeepSeek 供应商实现
@@ -170,23 +188,6 @@ class DeepSeekProvider(OpenAIProvider):
         _flush()
 
 
-def _apply_reorder(messages: list, insert_at: int, tool_indices: list) -> None:
-    """将 tool_indices 位置的 tool 消息移动到 insert_at 位置，原地修改列表。
-
-    例如 messages=[A, B(assistant), C(tool)], insert_at=1, tool_indices=[2]
-    → [A, C(tool), B(assistant)]
-    """
-    # 从后往前提取，保持索引有效
-    extracted = []
-    for idx in reversed(tool_indices):
-        extracted.append(messages.pop(idx))
-    extracted.reverse()
-
-    # 按原顺序插入到目标位置
-    for tool_msg in extracted:
-        messages.insert(insert_at, tool_msg)
-        insert_at += 1
-
     async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         异步请求准备 — 在调用同步 prepare_request 之前，若本轮包含 tool_result
@@ -313,6 +314,7 @@ def _apply_reorder(messages: list, insert_at: int, tool_indices: list) -> None:
     async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """流式对话 — 在基类流的基础上累积 reasoning_content 与 tool_call_id，
         流结束时持久化思考内容。"""
+        print("this is called from deepseek provider")
         reasoning_parts: List[str] = []
         # tool_calls 在 delta 中按 index 分片增量到来，这里只关心最后出现的 id
         tool_ids_by_index: Dict[int, str] = {}

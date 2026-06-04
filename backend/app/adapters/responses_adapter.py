@@ -25,7 +25,7 @@ logger = logging.getLogger("gateway")
 
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
-from app.abstraction.messages import Message, MessageRole, ContentBlock
+from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -132,7 +132,13 @@ def _parse_content_blocks(blocks: list) -> list:
 # ── Input item handlers (used by _dispatch_input_item) ──────────────────
 
 def _handle_function_call_item(item: dict, messages: list):
-    """Convert a function_call input item → assistant Message with tool_call block."""
+    """Convert a function_call input item → assistant Message with tool_call block.
+
+    Consecutive function_call items are merged into a single assistant message
+    (they represent one model turn with multiple parallel tool calls), so that
+    downstream providers requiring tool-call / tool-result pairing (e.g.
+    DeepSeek, Bailian) can correctly match tool responses to their calls.
+    """
     args_str = item.get('arguments', '{}')
     try:
         args = json_loads(args_str) if isinstance(args_str, str) else args_str
@@ -140,6 +146,18 @@ def _handle_function_call_item(item: dict, messages: list):
         args = {}
     call_id = item.get('call_id') or item.get('id', '')
     block = ContentBlock.from_tool_call(call_id, item.get('name', ''), args)
+
+    # Merge into the previous assistant message if it contains *only* tool_call blocks
+    if messages:
+        last = messages[-1]
+        if (last.role == MessageRole.ASSISTANT
+                and isinstance(last.content, list)
+                and last.content
+                and all(isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                        for b in last.content)):
+            last.content.append(block)
+            return
+
     messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
 
 

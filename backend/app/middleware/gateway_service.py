@@ -162,7 +162,7 @@ class GatewayService:
         # Track raw DB values at cache time so we can detect real config changes.
         # Provider.__init__ may mutate config (e.g. set default base_url), so
         # we can't compare cached.config against db_provider directly.
-        self._provider_db_fingerprint: dict[int, tuple[str, str | None]] = {}
+        self._provider_db_fingerprint: dict[int, tuple[str, str | None, str]] = {}
         # Strong refs to in-flight aclose() tasks for evicted providers, so the
         # event loop doesn't GC them mid-close (which would leak the underlying
         # httpx.AsyncClient connection pool — the very thing we're trying to free).
@@ -602,12 +602,13 @@ class GatewayService:
         cache_key = db_provider.id
         raw_api_key = db_provider.api_key or ""
         raw_base_url = db_provider.base_url
+        raw_type = db_provider.type or ""
 
-        # Fast path: cache hit with unchanged credentials.
+        # Fast path: cache hit with unchanged credentials AND type.
         if cache_key in self._provider_cache:
             cached = self._provider_cache[cache_key]
-            prev_key, prev_url = self._provider_db_fingerprint.get(cache_key, ("", None))
-            if raw_api_key == prev_key and raw_base_url == prev_url:
+            prev_key, prev_url, prev_type = self._provider_db_fingerprint.get(cache_key, ("", None, ""))
+            if raw_api_key == prev_key and raw_base_url == prev_url and raw_type == prev_type:
                 return cached
 
         # Acquire (or create) the per-id build lock.
@@ -622,8 +623,8 @@ class GatewayService:
             # already constructed the instance while we were waiting.
             if cache_key in self._provider_cache:
                 cached = self._provider_cache[cache_key]
-                prev_key, prev_url = self._provider_db_fingerprint.get(cache_key, ("", None))
-                if raw_api_key != prev_key or raw_base_url != prev_url:
+                prev_key, prev_url, prev_type = self._provider_db_fingerprint.get(cache_key, ("", None, ""))
+                if raw_api_key != prev_key or raw_base_url != prev_url or raw_type != prev_type:
                     # DB values changed — invalidate cached instance so the next
                     # call recreates the provider with new config. Schedule an
                     # aclose() so the evicted provider's httpx.AsyncClient pool
@@ -653,7 +654,7 @@ class GatewayService:
             try:
                 instance = provider_class(config)
                 self._provider_cache[cache_key] = instance
-                self._provider_db_fingerprint[cache_key] = (raw_api_key, raw_base_url)
+                self._provider_db_fingerprint[cache_key] = (raw_api_key, raw_base_url, raw_type)
                 return instance
             except Exception as e:
                 return None
