@@ -138,6 +138,9 @@ def _handle_function_call_item(item: dict, messages: list):
     (they represent one model turn with multiple parallel tool calls), so that
     downstream providers requiring tool-call / tool-result pairing (e.g.
     DeepSeek, Bailian) can correctly match tool responses to their calls.
+
+    Also merges into a preceding reasoning-only assistant message, producing a
+    single assistant turn that carries both reasoning_content and tool_calls.
     """
     args_str = item.get('arguments', '{}')
     try:
@@ -147,16 +150,27 @@ def _handle_function_call_item(item: dict, messages: list):
     call_id = item.get('call_id') or item.get('id', '')
     block = ContentBlock.from_tool_call(call_id, item.get('name', ''), args)
 
-    # Merge into the previous assistant message if it contains *only* tool_call blocks
     if messages:
         last = messages[-1]
-        if (last.role == MessageRole.ASSISTANT
-                and isinstance(last.content, list)
-                and last.content
-                and all(isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
-                        for b in last.content)):
-            last.content.append(block)
-            return
+        if last.role == MessageRole.ASSISTANT:
+            # Case 1: previous assistant message contains *only* tool_call blocks
+            if (isinstance(last.content, list)
+                    and last.content
+                    and all(isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                            for b in last.content)):
+                last.content.append(block)
+                return
+            # Case 2: previous assistant message is reasoning-only (no content / empty)
+            # Merge tool_calls into the same turn so reasoning_content + tool_calls
+            # coexist in one assistant message.
+            if last.reasoning_content and (not last.content or (isinstance(last.content, list) and not last.content)):
+                if last.content is None:
+                    last.content = [block]
+                elif isinstance(last.content, list) and not last.content:
+                    last.content.append(block)
+                else:
+                    last.content = [block]
+                return
 
     messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
 
@@ -180,6 +194,55 @@ def _handle_function_call_output_item(item: dict, messages: list):
     call_id = item.get('call_id', '')
     block = ContentBlock.from_tool_result(call_id, str(item.get('output', '')))
     messages.append(Message(role=MessageRole.TOOL, content=[block], tool_call_id=call_id))
+
+
+def _handle_reasoning_item(item: dict, messages: list):
+    """Convert a reasoning input item → assistant Message with reasoning_content.
+
+    Priority for extracting reasoning text:
+      1. summary (array of summary_text blocks)
+      2. encrypted_content
+      3. content (reasoning_text block or plain string)
+    """
+    reasoning_content = ""
+
+    # Priority 1: summary array of summary_text blocks
+    for block in _safe_list(item.get('summary')):
+        if isinstance(block, dict) and block.get('type') == 'summary_text':
+            text = block.get('text', '')
+            if text:
+                if reasoning_content:
+                    reasoning_content += '\n' + text
+                else:
+                    reasoning_content = text
+
+    # Priority 2: encrypted_content
+    if not reasoning_content:
+        encrypted = item.get('encrypted_content', '')
+        if isinstance(encrypted, str) and encrypted:
+            reasoning_content = encrypted
+
+    # Priority 3: content dict or string
+    if not reasoning_content:
+        content = item.get('content', '')
+        if isinstance(content, dict) and content.get('type') == 'reasoning_text':
+            reasoning_content = content.get('text', '')
+        elif isinstance(content, str):
+            reasoning_content = content
+
+    if not reasoning_content:
+        return
+
+    if messages:
+        last = messages[-1]
+        if last.role == MessageRole.ASSISTANT and not last.reasoning_content:
+            # Merge into an assistant message that is either:
+            #   - reasoning-only / content-empty, or
+            #   - tool_call-only (consecutive function_call items)
+            last.reasoning_content = reasoning_content
+            return
+
+    messages.append(Message(role=MessageRole.ASSISTANT, reasoning_content=reasoning_content))
 
 
 def _handle_role_message_item(item: dict, messages: list):
@@ -542,6 +605,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         'video_erase_call':       (_handle_generation_call_item, True),
         '3d_generation_call':     (_handle_generation_call_item, True),
         'function_call_output':   (_handle_function_call_output_item, False),
+        'reasoning':              (_handle_reasoning_item, False),
     }
 
     # Set of item types that are dispatched via _INPUT_DISPATCH (not plain content blocks)
