@@ -1875,8 +1875,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         finish_chunk = chunk
                         return ''.join(parts)
 
-                    if chunk.usage and not chunk.finish_reason:
+                    if (chunk.usage and not chunk.finish_reason
+                            and not chunk.tool_calls
+                            and not chunk.delta_content
+                            and not chunk.delta_reasoning_content):
                         # Usage-only chunk (stream_options / incremental_output).
+                        # Guard against providers (e.g. Gemini) that include usage in
+                        # every SSE chunk — a chunk with content is not usage-only.
                         if finish_chunk is not None:
                             combined = copy.copy(finish_chunk)
                             combined.delta_content = full_text

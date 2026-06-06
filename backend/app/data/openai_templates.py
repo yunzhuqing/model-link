@@ -1,6 +1,20 @@
 """OpenAI model templates."""
 
 OPENAI_TEMPLATES = [
+    dict(label='GPT-5.5', provider='OpenAI', name='gpt-5.5', alias='gpt-5.5',
+         context_size=1050000, input_size=272000, output_size=128000,
+         pricing_tiers=[
+             dict(label='<=272k', context_size=1050000, input_size=272000, output_size=128000,
+                  input_price=5, output_price=30, cache_creation_price=0, cache_hit_price=0.5),
+             dict(label='272k~1M', context_size=1050000, input_size=1050000, output_size=128000,
+                  input_price=10, output_price=45, cache_creation_price=0, cache_hit_price=1),
+         ],
+         input_price=5, output_price=30, cache_creation_price=0, cache_hit_price=0.5,
+         currency='USD', discount=1, rpm=1000, tpm=1000000,
+         timeout=300,
+         support_kvcache=True, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=True,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
     dict(label='GPT-5.4', provider='OpenAI', name='gpt-5.4', alias='gpt-5.4',
          context_size=272000, input_size=272000, output_size=8192,
          pricing_tiers=[
@@ -54,7 +68,7 @@ OPENAI_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=False, support_video=False,
          support_file=False, support_web_search=False, support_tool_search=False,
-         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+         support_thinking=True, support_online_image=True, support_online_video=False, support_embedding=False),
     dict(label='GPT-5.2 Pro', provider='OpenAI', name='gpt-5.2-pro', alias='gpt-5.2-pro',
          context_size=272000, input_size=272000, output_size=8192, pricing_tiers=None,
          input_price=21, output_price=168, cache_creation_price=0, cache_hit_price=0,

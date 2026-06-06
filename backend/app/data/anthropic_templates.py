@@ -1,6 +1,13 @@
 """Anthropic model templates."""
 
 ANTHROPIC_TEMPLATES = [
+    dict(label='Claude Opus 4.8', provider='Anthropic', name='claude-opus-4-8', alias='claude-opus-4-8',
+         context_size=1000000, input_size=1000000, output_size=128000, pricing_tiers=None,
+         input_price=5, output_price=25, cache_creation_price=0, cache_5m_creation_price=6.25, cache_1h_creation_price=10, cache_hit_price=0.5,
+         timeout=300,
+         support_kvcache=True, support_image=True, support_audio=False, support_video=False,
+         support_file=True, support_web_search=False, support_tool_search=False,
+         support_thinking=True, support_online_image=True, support_online_video=False, support_embedding=False),
     dict(label='Claude Opus 4.7', provider='Anthropic', name='claude-opus-4-7', alias='claude-opus-4-7',
          context_size=1000000, input_size=1000000, output_size=128000, pricing_tiers=None,
          input_price=5, output_price=25, cache_creation_price=0, cache_5m_creation_price=6.25, cache_1h_creation_price=10, cache_hit_price=0.5,

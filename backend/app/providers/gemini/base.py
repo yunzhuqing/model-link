@@ -14,8 +14,11 @@ https://ai.google.dev/gemini-api/docs
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
+import logging
 import time
 import sys
+
+logger = logging.getLogger(__name__)
 
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
@@ -693,7 +696,16 @@ class GeminiProvider(BaseProvider):
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Gemini API error: {str(e)}")
+            parts = [type(e).__name__]
+            if str(e):
+                parts.append(str(e))
+            cause = e.__cause__
+            while cause is not None:
+                parts.append(f"[{type(cause).__name__}] {cause}")
+                cause = cause.__cause__
+            err_detail = ": ".join(parts)
+            logger.exception(f"Gemini API error ({url}): {err_detail}")
+            raise RuntimeError(f"Gemini API error: {err_detail}")
 
     async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """执行流式对话请求"""
@@ -783,7 +795,18 @@ class GeminiProvider(BaseProvider):
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"Gemini streaming API error: {str(e)}")
+            # httpx/httpcore exceptions (ConnectError, ReadError, etc.) often
+            # have an empty str(); walk the __cause__ chain to collect details.
+            parts = [type(e).__name__]
+            if str(e):
+                parts.append(str(e))
+            cause = e.__cause__
+            while cause is not None:
+                parts.append(f"[{type(cause).__name__}] {cause}")
+                cause = cause.__cause__
+            err_detail = ": ".join(parts)
+            logger.exception(f"Gemini streaming API error ({url}): {err_detail}")
+            raise RuntimeError(f"Gemini streaming API error: {err_detail}")
 
     def _parse_stream_chunk(self, data: Dict[str, Any], response_id: str, model: str) -> Optional[StreamChunk]:
         """解析 Gemini SSE 流式响应块"""
