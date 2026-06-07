@@ -1052,6 +1052,7 @@ class VertexAIProvider(BaseProvider):
             completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
             total_tokens=usage_metadata.get("totalTokenCount", 0),
             reasoning_tokens=usage_metadata.get("thoughtsTokenCount", 0),
+            cache_read_tokens=usage_metadata.get("cachedContentTokenCount", 0),
         )
 
         return ChatResponse(
@@ -1072,13 +1073,14 @@ class VertexAIProvider(BaseProvider):
                 ct = usage_metadata.get("candidatesTokenCount", 0)
                 tt = usage_metadata.get("totalTokenCount", 0)
                 rt = usage_metadata.get("thoughtsTokenCount", 0)
+                crt = usage_metadata.get("cachedContentTokenCount", 0)
                 # Skip intermediate acknowledgment chunks where all usage values are zero;
                 # these are empty ACK frames Vertex AI inserts between tool-call turns.
                 if pt == 0 and ct == 0 and tt == 0:
                     return None
                 return StreamChunk(
                     id=response_id, model=model,
-                    usage=UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt),
+                    usage=UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt, cache_read_tokens=crt),
                     event_type=StreamEventType.USAGE
                 )
             return None
@@ -1138,8 +1140,9 @@ class VertexAIProvider(BaseProvider):
             ct = usage_metadata.get("candidatesTokenCount", 0)
             tt = usage_metadata.get("totalTokenCount", 0)
             rt = usage_metadata.get("thoughtsTokenCount", 0)
+            crt = usage_metadata.get("cachedContentTokenCount", 0)
             if pt or ct or tt:
-                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt)
+                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt, cache_read_tokens=crt)
 
         # When there are no content parts and finish_reason is STOP, Vertex AI Gemini is
         # sending an end-of-stream marker.  Use "not delta_content" (falsy check) so that
