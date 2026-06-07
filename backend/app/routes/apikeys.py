@@ -133,6 +133,10 @@ async def create_group(current_user):
         except Exception as e:
             await session.rollback()
             return jsonify({'detail': str(e)}), 400
+
+        from app.user_service import invalidate_user_cache
+        await invalidate_user_cache(current_user.id)
+
         # Re-fetch with eager-loaded relationships so to_dict()
         # won't trigger async-incompatible lazy loads.
         group = await get_group_by_id(group.id, session=session)
@@ -171,13 +175,25 @@ async def update_group(current_user, group_id):
     if 'tags' in data:
         kwargs['tags'] = data['tags']
 
+    from app.models import UserGroup
     async with get_db_session() as session:
+        # Get all users in the group to invalidate their caches
+        user_ids_result = await session.execute(
+            select(UserGroup.user_id).where(UserGroup.group_id == group_id)
+        )
+        user_ids = [r[0] for r in user_ids_result.all()]
+
         group, err = await _svc_update_group(group_id, session=session, **kwargs)
         if err:
             return jsonify({'detail': err}), 404 if err == 'Group not found' else 400
 
         await session.commit()
         await session.refresh(group)
+
+        from app.user_service import invalidate_user_cache
+        for uid in user_ids:
+            await invalidate_user_cache(uid)
+
         return jsonify(group.to_dict())
 
 
@@ -186,12 +202,24 @@ async def update_group(current_user, group_id):
 @require_permission('group.manage')
 async def delete_group(current_user, group_id):
     """Delete a group. Root only (controlled by group.manage permission)."""
+    from app.models import UserGroup
     async with get_db_session() as session:
+        # Get users before deleting the group
+        user_ids_result = await session.execute(
+            select(UserGroup.user_id).where(UserGroup.group_id == group_id)
+        )
+        user_ids = [r[0] for r in user_ids_result.all()]
+
         ok, err = await _svc_delete_group(group_id, session=session)
         if err:
             return jsonify({'detail': err}), 404
 
         await session.commit()
+
+        from app.user_service import invalidate_user_cache
+        for uid in user_ids:
+            await invalidate_user_cache(uid)
+
         return '', 204
 
 
@@ -217,6 +245,9 @@ async def add_user_to_group(current_user, group_id, user_id):
         group.users.append(user)
         await session.commit()
         await session.refresh(group)
+
+        from app.user_service import invalidate_user_cache
+        await invalidate_user_cache(user_id)
 
         return jsonify(group.to_dict())
 
@@ -253,6 +284,9 @@ async def remove_user_from_group(current_user, group_id, user_id):
         group.users.remove(user)
         await session.commit()
         await session.refresh(group)
+
+        from app.user_service import invalidate_user_cache
+        await invalidate_user_cache(user_id)
 
         return jsonify(group.to_dict())
 
@@ -304,6 +338,9 @@ async def invite_member(current_user, group_id):
         await session.commit()
         await session.refresh(group)
 
+        from app.user_service import invalidate_user_cache
+        await invalidate_user_cache(user.id)
+
         return jsonify(group.to_dict())
 
 
@@ -350,6 +387,9 @@ async def update_member_role(current_user, group_id, user_id):
         user_group.role = new_role
         await session.commit()
         await session.refresh(group)
+
+        from app.user_service import invalidate_user_cache
+        await invalidate_user_cache(user_id)
 
         return jsonify(group.to_dict())
 
