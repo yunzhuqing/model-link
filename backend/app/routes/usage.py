@@ -6,7 +6,7 @@ Endpoints:
   GET /api/usage/summary  - Aggregated statistics (by time / group / model / api-key)
 """
 from quart import Blueprint, request, jsonify, current_app
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import os
 import logging
@@ -58,7 +58,10 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except ValueError:
         return None
 

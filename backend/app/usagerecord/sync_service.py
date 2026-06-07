@@ -130,7 +130,7 @@ def _do_sync(app, interval: float = 60) -> None:
             import hashlib
 
             cache = get_cache()
-            now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
             since = now - timedelta(seconds=interval)
 
             # ── Step 1: find active api_key_hashes within the lookback window ──

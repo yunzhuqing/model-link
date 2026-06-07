@@ -86,7 +86,7 @@ async def trigger_cleanup():
     if retention is None:
         return jsonify({"detail": f"Invalid retention format: '{retention_str}'. Use like '12h', '24h', '2d'"}), 400
 
-    cutoff = datetime.now(timezone.utc) - retention
+    cutoff = (datetime.now(timezone.utc) - retention).replace(tzinfo=None)
 
     async with get_db_session() as session:
         result = await session.execute(

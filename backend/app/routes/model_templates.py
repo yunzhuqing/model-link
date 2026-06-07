@@ -1,7 +1,7 @@
 """
 Model Template routes — CRUD + built-in seed data.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify
 from sqlalchemy import select
 
@@ -80,7 +80,10 @@ async def create_model_template(current_user):
     retirement_time = None
     if data.get('retirement_time'):
         try:
-            retirement_time = datetime.fromisoformat(data['retirement_time'].replace('Z', '+00:00'))
+            rt_dt = datetime.fromisoformat(data['retirement_time'].replace('Z', '+00:00'))
+            if rt_dt.tzinfo is not None:
+                rt_dt = rt_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            retirement_time = rt_dt
         except (ValueError, AttributeError):
             return jsonify({'detail': 'Invalid retirement_time format. Use ISO 8601 (e.g. 2025-01-01T00:00:00)'}), 400
 
@@ -156,7 +159,10 @@ async def update_model_template(current_user, template_id):
             rt = data['retirement_time']
             if rt:
                 try:
-                    tpl.retirement_time = datetime.fromisoformat(rt.replace('Z', '+00:00'))
+                    rt_dt = datetime.fromisoformat(rt.replace('Z', '+00:00'))
+                    if rt_dt.tzinfo is not None:
+                        rt_dt = rt_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    tpl.retirement_time = rt_dt
                 except (ValueError, AttributeError):
                     return jsonify({'detail': 'Invalid retirement_time format. Use ISO 8601 (e.g. 2025-01-01T00:00:00)'}), 400
             else:

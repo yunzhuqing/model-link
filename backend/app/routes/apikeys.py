@@ -7,7 +7,7 @@ Cache integration:
     (cache.invalidate_api_key_by_id) so stale data is never served.
 """
 from quart import Blueprint, request, jsonify, current_app
-from datetime import datetime
+from datetime import datetime, timezone
 import secrets
 
 from sqlalchemy import select, func, update
@@ -45,6 +45,25 @@ def _role_rank(role: str) -> int:
 def generate_api_key():
     """Generate a secure random API key with sk- prefix (OpenAI compatible)."""
     return f"sk-{secrets.token_hex(24)}"
+
+
+
+def _parse_expires_at(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except ValueError:
+        return None
 
 
 # ============== Group Management ==============
@@ -587,8 +606,7 @@ async def create_api_key(current_user):
 
         # Convert empty string to None for expires_at (empty string is not valid for timestamp)
         expires_at = data.get('expires_at')
-        if expires_at == '':
-            expires_at = None
+        expires_at = _parse_expires_at(expires_at)
 
         api_key = ApiKey(
             key=generate_api_key(),
@@ -672,7 +690,7 @@ async def update_api_key(current_user, api_key_id):
         if 'expires_at' in data:
             # Convert empty string to None for expires_at (empty string is not valid for timestamp)
             expires_at = data['expires_at']
-            api_key.expires_at = None if expires_at == '' else expires_at
+            api_key.expires_at = _parse_expires_at(expires_at)
         if 'tags' in data:
             api_key.tags = data['tags'] if data['tags'] else None
         if 'unlimited_budget' in data:
