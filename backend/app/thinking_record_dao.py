@@ -21,8 +21,14 @@ async def save_thinking(
     thinking_content: Optional[str],
     thinking_signature: Optional[str] = None,
 ) -> None:
-    """Upsert a thinking record keyed by thinking_id (= tool_call_id)."""
-    if not thinking_id or not thinking_content:
+    """Upsert a thinking record keyed by thinking_id (= tool_call_id).
+
+    At least one of thinking_content or thinking_signature must be provided.
+    When updating an existing row, only non-None fields are written, so a
+    call that provides only thinking_signature won't clobber a previously
+    stored thinking_content (and vice versa).
+    """
+    if not thinking_id or (not thinking_content and not thinking_signature):
         return
     try:
         from app import get_db_session
@@ -40,7 +46,8 @@ async def save_thinking(
                     thinking_content=thinking_content,
                 ))
             else:
-                row.thinking_content = thinking_content
+                if thinking_content is not None:
+                    row.thinking_content = thinking_content
                 if thinking_signature is not None:
                     row.thinking_signature = thinking_signature
             await session.commit()

@@ -39,9 +39,9 @@ from .video_generation import (
 _GATEWAY_INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
 
 # Per-async-task context for thoughtSignature plumbing between sync prep/parse
-# and the async cache. aprepare_request prefetches signatures into _sig_read_ctx,
-# the sync builder reads from it; sync parse appends new signatures to
-# _sig_write_ctx, the async wrapper drains them into the cache.
+# and the async DB. aprepare_request prefetches signatures from ml_thinking_records
+# into _sig_read_ctx, the sync builder reads from it; sync parse appends new
+# signatures to _sig_write_ctx, the async wrapper persists them via thinking_record_dao.
 import contextvars as _contextvars  # noqa: E402
 
 _sig_read_ctx: "_contextvars.ContextVar[Dict[str, str]]" = _contextvars.ContextVar("gemini_sig_read", default={})
@@ -291,15 +291,14 @@ class GeminiProvider(BaseProvider):
 
         return result
 
-    # ---- Async overrides: thoughtSignature cache wiring ----
+    # ---- Async overrides: thoughtSignature DB wiring ----
 
     async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """Prefetch thoughtSignatures for any tool_call ids in the request,
         then delegate to the sync builder which reads them from contextvar."""
         sigs: Dict[str, str] = {}
         try:
-            from app.cache import get_async_cache
-            cache = get_async_cache()
+            from app.thinking_record_dao import get_thinking
             tcids: List[str] = []
             for msg in (request.messages or []):
                 content = getattr(msg, "content", None)
@@ -309,9 +308,9 @@ class GeminiProvider(BaseProvider):
                         if tcid:
                             tcids.append(tcid)
             for tcid in set(tcids):
-                sig = await cache.get_thought_signature(tcid)
-                if sig:
-                    sigs[tcid] = sig
+                record = await get_thinking(tcid)
+                if record and record.get("thinking_signature"):
+                    sigs[tcid] = record["thinking_signature"]
         except Exception:
             pass
         token = _sig_read_ctx.set(sigs)
@@ -324,10 +323,9 @@ class GeminiProvider(BaseProvider):
         if not buf:
             return
         try:
-            from app.cache import get_async_cache
-            cache = get_async_cache()
+            from app.thinking_record_dao import save_thinking
             for tcid, sig in buf:
-                await cache.set_thought_signature(tcid, sig)
+                await save_thinking(tcid, thinking_content=None, thinking_signature=sig)
         except Exception:
             pass
 
@@ -570,6 +568,7 @@ class GeminiProvider(BaseProvider):
             prompt_tokens=usage_metadata.get("promptTokenCount", 0),
             completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
             total_tokens=usage_metadata.get("totalTokenCount", 0),
+            reasoning_tokens=usage_metadata.get("thoughtsTokenCount", 0),
         )
 
         # If the response contains inline images, return an image generation response
@@ -820,6 +819,7 @@ class GeminiProvider(BaseProvider):
                         prompt_tokens=usage_metadata.get("promptTokenCount", 0),
                         completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
                         total_tokens=usage_metadata.get("totalTokenCount", 0),
+                        reasoning_tokens=usage_metadata.get("thoughtsTokenCount", 0),
                     ),
                     event_type=StreamEventType.USAGE,
                 )
@@ -885,8 +885,9 @@ class GeminiProvider(BaseProvider):
             pt = usage_metadata.get("promptTokenCount", 0)
             ct = usage_metadata.get("candidatesTokenCount", 0)
             tt = usage_metadata.get("totalTokenCount", 0)
+            rt = usage_metadata.get("thoughtsTokenCount", 0)
             if pt or ct or tt:
-                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt)
+                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt)
 
         # When there are no content parts and finish_reason is STOP, Gemini is sending
         # an end-of-stream marker.  Use falsy check so empty-string text ("") is also

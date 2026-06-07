@@ -129,43 +129,10 @@ def _log_to_file(data: Any, prefix: str, publisher: str) -> str:
         return ""
 
 
-# In-memory cache for thoughtSignature mapping: tool_call_id -> thoughtSignature
-# This is needed because Vertex AI requires thoughtSignature to be passed back
-# with functionResponse. Bounded LRU so it can't grow without limit across a
-# long-lived process (tool_call_id is per-call and never reused).
-from collections import OrderedDict as _OrderedDict
-from threading import Lock as _Lock
-
-
-class _BoundedLRU:
-    def __init__(self, capacity: int = 4096):
-        self._capacity = capacity
-        self._data: "_OrderedDict[str, str]" = _OrderedDict()
-        self._lock = _Lock()
-
-    def __contains__(self, key: str) -> bool:
-        with self._lock:
-            return key in self._data
-
-    def __getitem__(self, key: str) -> str:
-        with self._lock:
-            value = self._data[key]
-            self._data.move_to_end(key)
-            return value
-
-    def __setitem__(self, key: str, value: str) -> None:
-        with self._lock:
-            if key in self._data:
-                self._data.move_to_end(key)
-            self._data[key] = value
-            while len(self._data) > self._capacity:
-                self._data.popitem(last=False)
-
-
 # Per-async-task context for thoughtSignature plumbing between sync prep/parse
-# and the async cache. aprepare_request prefetches signatures into _sig_read_ctx,
-# the sync builder reads from it; sync parse appends new signatures to
-# _sig_write_ctx, the async wrapper drains them into the cache.
+# and the async DB. aprepare_request prefetches signatures from ml_thinking_records
+# into _sig_read_ctx, the sync builder reads from it; sync parse appends new
+# signatures to _sig_write_ctx, the async wrapper persists them via thinking_record_dao.
 import contextvars as _contextvars  # noqa: E402
 
 _sig_read_ctx: "_contextvars.ContextVar[Dict[str, str]]" = _contextvars.ContextVar("vertex_sig_read", default={})
@@ -550,13 +517,12 @@ class VertexAIProvider(BaseProvider):
         else:
             return self._prepare_openai_request(request)
 
-    # ---- Async overrides: thoughtSignature cache wiring (Gemini path) ----
+    # ---- Async overrides: thoughtSignature DB wiring (Gemini path) ----
 
     async def aprepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         sigs: Dict[str, str] = {}
         try:
-            from app.cache import get_async_cache
-            cache = get_async_cache()
+            from app.thinking_record_dao import get_thinking
             tcids: List[str] = []
             for msg in (request.messages or []):
                 content = getattr(msg, "content", None)
@@ -566,9 +532,9 @@ class VertexAIProvider(BaseProvider):
                         if tcid:
                             tcids.append(tcid)
             for tcid in set(tcids):
-                sig = await cache.get_thought_signature(tcid)
-                if sig:
-                    sigs[tcid] = sig
+                record = await get_thinking(tcid)
+                if record and record.get("thinking_signature"):
+                    sigs[tcid] = record["thinking_signature"]
         except Exception:
             pass
         token = _sig_read_ctx.set(sigs)
@@ -581,10 +547,9 @@ class VertexAIProvider(BaseProvider):
         if not buf:
             return
         try:
-            from app.cache import get_async_cache
-            cache = get_async_cache()
+            from app.thinking_record_dao import save_thinking
             for tcid, sig in buf:
-                await cache.set_thought_signature(tcid, sig)
+                await save_thinking(tcid, thinking_content=None, thinking_signature=sig)
         except Exception:
             pass
 
@@ -879,6 +844,8 @@ class VertexAIProvider(BaseProvider):
                 mode_map = {"auto": "AUTO", "none": "NONE", "required": "ANY"}
                 mode = mode_map.get(request.tool_choice, "AUTO")
                 result["toolConfig"] = {"functionCallingConfig": {"mode": mode}}
+        
+        print(f"Prepared Gemini request: {json.dumps(result, indent=2)}")
 
         return result
 
@@ -1084,6 +1051,7 @@ class VertexAIProvider(BaseProvider):
             prompt_tokens=usage_metadata.get("promptTokenCount", 0),
             completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
             total_tokens=usage_metadata.get("totalTokenCount", 0),
+            reasoning_tokens=usage_metadata.get("thoughtsTokenCount", 0),
         )
 
         return ChatResponse(
@@ -1103,13 +1071,14 @@ class VertexAIProvider(BaseProvider):
                 pt = usage_metadata.get("promptTokenCount", 0)
                 ct = usage_metadata.get("candidatesTokenCount", 0)
                 tt = usage_metadata.get("totalTokenCount", 0)
+                rt = usage_metadata.get("thoughtsTokenCount", 0)
                 # Skip intermediate acknowledgment chunks where all usage values are zero;
                 # these are empty ACK frames Vertex AI inserts between tool-call turns.
                 if pt == 0 and ct == 0 and tt == 0:
                     return None
                 return StreamChunk(
                     id=response_id, model=model,
-                    usage=UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt),
+                    usage=UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt),
                     event_type=StreamEventType.USAGE
                 )
             return None
@@ -1168,8 +1137,9 @@ class VertexAIProvider(BaseProvider):
             pt = usage_metadata.get("promptTokenCount", 0)
             ct = usage_metadata.get("candidatesTokenCount", 0)
             tt = usage_metadata.get("totalTokenCount", 0)
+            rt = usage_metadata.get("thoughtsTokenCount", 0)
             if pt or ct or tt:
-                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt)
+                usage_info = UsageInfo(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt, reasoning_tokens=rt)
 
         # When there are no content parts and finish_reason is STOP, Vertex AI Gemini is
         # sending an end-of-stream marker.  Use "not delta_content" (falsy check) so that
@@ -1601,6 +1571,8 @@ class VertexAIProvider(BaseProvider):
                 async for line in response.aiter_lines():
                     if not line:
                         continue
+
+                    print(f"[VertexAI {publisher} Stream] Received line: {line}")  # Debug log for incoming SSE lines
 
                     if line.startswith("event:"):
                         continue
