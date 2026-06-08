@@ -7,6 +7,7 @@ MiniMax API 文档: https://platform.minimaxi.com/document/
 """
 from typing import Optional, List, Dict, Any
 import json
+import re
 import time
 import sys
 
@@ -68,16 +69,27 @@ class MiniMaxProvider(OpenAIProvider):
         准备请求数据
 
         复用 OpenAI 格式，添加 MiniMax 特有的参数处理。
+
+        M3+ 使用 thinking: {type: "adaptive" | "disabled"}
+        M2.x 使用 thinking: {type: "enabled" | "disabled"}
         """
         result = super().prepare_request(request)
 
-        # MiniMax 特有：根据模型是否支持思维和 reasoning_effort 设置 thinking 参数
+        # MiniMax 特有：根据模型版本和 reasoning_effort 设置 thinking 参数
+        # M3+ 支持关闭 thinking，M2.x 必须强制开启
         if request.metadata.get('support_thinking', False):
-            reasoning_effort = request.reasoning_effort or 'none'
-            if reasoning_effort != 'none':
-                result["thinking"] = {"type": "enabled"}
+            m = re.search(r'-m(\d+)', request.model.lower())
+            minimax_major = int(m.group(1)) if m else 0
+            if minimax_major >= 3:
+                # M3+: can disable thinking
+                reasoning_effort = request.reasoning_effort or 'none'
+                if reasoning_effort != 'none':
+                    result["thinking"] = {"type": "adaptive"}
+                else:
+                    result["thinking"] = {"type": "disabled"}
             else:
-                result["thinking"] = {"type": "disabled"}
+                # M2.x and older: thinking is mandatory
+                result["thinking"] = {"type": "enabled"}
 
         # 打印请求体到控制台（调试用）
         return result
