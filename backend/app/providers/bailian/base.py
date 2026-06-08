@@ -11,6 +11,7 @@
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
+import re
 import time
 import uuid
 import sys
@@ -249,8 +250,29 @@ class BailianProvider(OpenAIProvider):
         model_has_thinking = 'thinking' in request.model.lower()
         has_reasoning_effort = bool(request.reasoning_effort)
         is_minimax = 'minimax' in request.model.lower()
+        reasoning_effort_value = request.reasoning_effort or 'none'
 
-        if is_minimax or model_has_thinking or has_reasoning_effort:
+        if is_minimax:
+            # MiniMax M3+ supports disabling thinking via the "thinking" parameter:
+            #   {"type": "adaptive" | "disabled"}
+            # Older versions (M2.x) must keep thinking enabled via enable_thinking.
+            # Extract major version from model name (e.g. MiniMax-M3 → 3, MiniMax-M2.7 → 2)
+            m = re.search(r'-m(\d+)', request.model.lower())
+            minimax_major = int(m.group(1)) if m else 0
+            if minimax_major >= 3:
+                support_thinking = request.metadata.get('support_thinking', False)
+                if support_thinking and reasoning_effort_value != 'none':
+                    data["thinking"] = {"type": "adaptive"}
+                    if not has_reasoning_effort:
+                        data["reasoning_effort"] = "medium"
+                else:
+                    data["thinking"] = {"type": "disabled"}
+            else:
+                # M2.x and older: thinking is mandatory
+                data["enable_thinking"] = True
+                if not has_reasoning_effort:
+                    data["reasoning_effort"] = "medium"
+        elif model_has_thinking or has_reasoning_effort:
             data["enable_thinking"] = True
             if not has_reasoning_effort:
                 data["reasoning_effort"] = "medium"

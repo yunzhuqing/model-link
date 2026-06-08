@@ -349,6 +349,32 @@ class OpenAIProvider(BaseProvider):
             elif msg.role != MessageRole.SYSTEM:
                 conv_messages.append(msg)
 
+        # Merge consecutive assistant messages where the first carries tool_calls.
+        # Some providers (e.g. Moonshot, MiniMax) enforce strict adjacency
+        # between tool-call messages and tool-result messages, rejecting any
+        # intervening assistant message — even one with real text content.
+        merged_messages = []
+        for msg in conv_messages:
+            if (merged_messages
+                    and msg.role == MessageRole.ASSISTANT
+                    and merged_messages[-1].role == MessageRole.ASSISTANT):
+                last = merged_messages[-1]
+                if isinstance(last.content, list) and any(
+                        isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                        for b in last.content):
+                    # Merge this assistant's content into the tool_calls message
+                    if isinstance(msg.content, list):
+                        for block in msg.content:
+                            if isinstance(block, ContentBlock) and block.type != ContentType.TOOL_CALL:
+                                last.content.append(block)
+                    elif isinstance(msg.content, str) and msg.content:
+                        last.content.append(ContentBlock.from_text(msg.content))
+                    if msg.reasoning_content and not last.reasoning_content:
+                        last.reasoning_content = msg.reasoning_content
+                    continue
+            merged_messages.append(msg)
+        conv_messages = merged_messages
+
         expanded = self._expand_messages_to_openai(conv_messages)
         if system_text:
             expanded.insert(0, {"role": "system", "content": system_text})
@@ -386,7 +412,7 @@ class OpenAIProvider(BaseProvider):
         if request.response_format is not None:
             result["response_format"] = request.response_format
         return result
-    
+
     def _expand_messages_to_openai(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """
         将消息列表转换为 OpenAI 格式，处理 Anthropic 格式的 tool_result 内容块。

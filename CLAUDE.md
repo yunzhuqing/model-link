@@ -69,6 +69,31 @@ FLASK_APP=manage.py uv run flask db downgrade    # Roll back one revision
 - **Langfuse tracing**: Flushed on graceful shutdown via `after_serving` hook.
 - **Exchange rates**: Daily refresh scheduled at startup, runs on a background thread.
 
+### Responses API adapter (`adapters/responses_adapter.py`) — critical rules
+
+The `/v1/responses` endpoint converts OpenAI Responses-API format to internal `ChatRequest` and back. Several ordering constraints must be maintained:
+
+**Input → Message conversion (`_handle_*` functions):**
+- Consecutive `function_call` items MUST be merged into a single `Message(role=ASSISTANT, content=[TOOL_CALL, ...])`.
+- `function_call` items that follow an assistant message with text/reasoning MUST merge into it (Case 3 + Case A). Result: one assistant Message with `content + tool_calls + reasoning_content`.
+- `function_call_output` items each become a separate `Message(role=TOOL)`.
+- `_parse_content_blocks` MUST handle `output_text` type (not just `input_text`/`text`), since Responses API output is fed back as input in multi-turn.
+
+**Streaming SSE event order:**
+```
+response.created → response.in_progress
+→ [reasoning item: output_item.added → delta... → done]   (output_index=0)
+→ [message item:  output_item.added → content_part.added → output_text.delta → done]  (output_index=1)
+→ [function_call:  output_item.added → arguments.delta → done]  (output_index=2+)
+→ response.completed  (output array: reasoning, message, function_calls — in index order)
+```
+
+Key rules enforced in `_process_chunk()` and `format_stream_chunk()`:
+1. **Reasoning closes before tool_calls**: `chunk.tool_calls` + `reasoning_started` + not `reasoning_closed` → emit `_emit_reasoning_done()` first.
+2. **Text closes before tool_calls**: `chunk.tool_calls` + `_stream_text_started` + not `_stream_text_closed` → emit `_emit_text_close_events()` first.
+3. **`response.completed` output array**: message BEFORE function_calls (matches output_index: 0=reasoning, 1=message, 2+=function_call).
+4. **`_is_marker_chunk()` MUST check `delta_reasoning_content`**: chunks with reasoning content are NOT role-only markers. Providers like Bailian send reasoning without `delta_content` (incremental_output mode), so omitting this check drops reasoning chunks.
+
 ### Running tests
 
 ```

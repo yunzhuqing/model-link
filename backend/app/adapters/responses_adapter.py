@@ -97,14 +97,14 @@ def _parse_image_block(block: dict) -> ContentBlock:
 def _parse_content_blocks(blocks: list) -> list:
     """Parse a list of content block dicts → ContentBlock objects.
 
-    Handles: input_text, input_image, input_video, input_audio, input_file.
+    Handles: input_text, output_text, text, input_image, input_video, input_audio, input_file.
     Shared by both pure-content-block messages and content arrays inside
     role-based messages — this is the single source of truth for block parsing.
     """
     result = []
     for block in blocks:
         block_type = block.get('type', 'input_text')
-        if block_type in ('input_text', 'text'):
+        if block_type in ('input_text', 'output_text', 'text'):
             result.append(ContentBlock.from_text(block.get('text', '')))
         elif block_type in ('input_image', 'image'):
             result.append(_parse_image_block(block))
@@ -139,8 +139,8 @@ def _handle_function_call_item(item: dict, messages: list):
     downstream providers requiring tool-call / tool-result pairing (e.g.
     DeepSeek, Bailian) can correctly match tool responses to their calls.
 
-    Also merges into a preceding reasoning-only assistant message, producing a
-    single assistant turn that carries both reasoning_content and tool_calls.
+    Also merges into a preceding assistant message that carries text content
+    or reasoning, producing a single assistant turn with content + tool_calls.
     """
     args_str = item.get('arguments', '{}')
     try:
@@ -171,6 +171,25 @@ def _handle_function_call_item(item: dict, messages: list):
                 else:
                     last.content = [block]
                 return
+            # Case 3: previous assistant message has text content (string or list
+            # with non-tool-call blocks).  Merge tool_calls into the same turn so
+            # that content + tool_calls coexist in one message.  This handles
+            # /v1/responses input like:
+            #   [message(assistant, text), function_call, function_call_output]
+            if isinstance(last.content, str):
+                if last.content.strip():
+                    last.content = [ContentBlock.from_text(last.content), block]
+                else:
+                    last.content = [block]
+                return
+            if isinstance(last.content, list) and last.content:
+                has_non_tc = any(
+                    isinstance(b, ContentBlock) and b.type != ContentType.TOOL_CALL
+                    for b in last.content
+                )
+                if has_non_tc:
+                    last.content.append(block)
+                    return
 
     messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
 
@@ -246,13 +265,46 @@ def _handle_reasoning_item(item: dict, messages: list):
 
 
 def _handle_role_message_item(item: dict, messages: list):
-    """Convert a role-based message item → Message."""
+    """Convert a role-based message item → Message.
+
+    Merges into a preceding reasoning-only or tool_calls assistant message so
+    that content + reasoning + tool_calls coexist in a single assistant turn.
+    Providers like Moonshot and MiniMax require strict adjacency and reject
+    intervening assistant messages.
+    """
     role = MessageRole(item.get('role', 'user'))
     content = item.get('content', '')
 
     if isinstance(content, list):
         blocks = _parse_content_blocks(content)
         content = blocks if blocks else content
+
+    if role == MessageRole.ASSISTANT and messages:
+        last = messages[-1]
+        if last.role == MessageRole.ASSISTANT:
+            # Case A: preceding assistant is reasoning-only (no content / empty).
+            # Merge text content into the same turn.
+            if last.reasoning_content and (not last.content or (isinstance(last.content, list) and not last.content)):
+                last.content = content
+                return
+            # Case B: preceding assistant has tool_calls in its content list.
+            # Merge non-tool-call content blocks into the same turn.
+            if isinstance(last.content, list):
+                has_tool_calls = any(
+                    isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                    for b in last.content
+                )
+                if has_tool_calls:
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, ContentBlock) and block.type != ContentType.TOOL_CALL:
+                                last.content.append(block)
+                    elif isinstance(content, str) and content:
+                        last.content.append(ContentBlock.from_text(content))
+                    reasoning = item.get('reasoning_content')
+                    if reasoning and not last.reasoning_content:
+                        last.reasoning_content = reasoning
+                    return
 
     messages.append(Message(
         role=role,
@@ -1327,9 +1379,14 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
 
-            # Only emit text/content_part/message done events if there was actual text content
-            # (i.e. _stream_text_started is True). For function-call-only responses we skip these.
-            has_text = getattr(self, '_stream_text_started', False)
+            # Only emit text/content_part/message done events if there was actual
+            # text content AND it hasn't already been closed (e.g. by a tool_calls
+            # transition). For function-call-only responses we skip these.
+            has_text = (
+                getattr(self, '_stream_text_started', False)
+                and not getattr(self, '_stream_text_closed', False)
+            )
+            had_text = getattr(self, '_stream_text_started', False)
             has_tool_calls = bool(getattr(self, '_stream_tool_calls', []))
             text_output_index = getattr(self, '_stream_text_output_index', 0)
             if has_text:
@@ -1378,7 +1435,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             # to the end of the stream (in generate() loop) so that ALL tool call events
             # from all chunks are emitted before completed. This handles providers like
             # Gemini that may send multiple chunks each with separate function calls.
-            if has_tool_calls and not has_text:
+            if has_tool_calls and not had_text:
                 # Defer completed — it will be emitted at the end of generate()
                 # Store usage info for the deferred completed event
                 self._stream_deferred_usage = chunk.usage
@@ -1409,7 +1466,18 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             }]
                         })
 
-                    # Include function_calls in output if any were accumulated during the stream
+                    # Include message first (output_index=1), then function_calls
+                    # (output_index=2+), matching the streaming event order.
+                    if had_text:
+                        output_content = [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                        output_items.append({
+                            'type': 'message',
+                            'id': msg_id or _gen_id("msg"),
+                            'role': 'assistant',
+                            'status': 'completed',
+                            'content': output_content
+                        })
+
                     tool_calls_list = getattr(self, '_stream_tool_calls', [])
                     for fc_info in tool_calls_list:
                         output_items.append({
@@ -1419,17 +1487,6 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             'name': fc_info['name'],
                             'arguments': fc_info['arguments'],
                             'status': 'completed'
-                        })
-
-                    # Only include message in output if there was actual text content
-                    if has_text:
-                        output_content = [{'type': 'output_text', 'text': full_text, 'annotations': []}]
-                        output_items.append({
-                            'type': 'message',
-                            'id': msg_id or _gen_id("msg"),
-                            'role': 'assistant',
-                            'status': 'completed',
-                            'content': output_content
                         })
                     completed_resp = {
                         'id': resp_id,
@@ -1620,6 +1677,59 @@ class OpenAIResponsesAdapter(BaseAdapter):
         self._stream_text_started = True
         return ''.join(events)
 
+    def _emit_text_close_events(self, full_text: str) -> str:
+        """Emit response.output_text.done / content_part.done / output_item.done
+        events to close the text output item BEFORE function_call items begin.
+        Required by providers like Bailian that send text content before tool_calls
+        in the same stream."""
+        msg_id = getattr(self, '_stream_msg_id', None) or ''
+        text_output_index = getattr(self, '_stream_text_output_index', 0)
+        events = []
+        text_str = full_text or ''
+
+        # response.output_text.done
+        text_done: dict = {
+            'type': 'response.output_text.done',
+            'output_index': text_output_index,
+            'content_index': 0,
+            'text': text_str,
+        }
+        if msg_id:
+            text_done['item_id'] = msg_id
+        events.append(f"event: response.output_text.done\ndata: {json.dumps(text_done, ensure_ascii=False)}\n\n")
+
+        # response.content_part.done
+        part_done: dict = {
+            'type': 'response.content_part.done',
+            'output_index': text_output_index,
+            'content_index': 0,
+            'part': {
+                'type': 'output_text',
+                'text': text_str,
+                'annotations': [],
+            },
+        }
+        if msg_id:
+            part_done['item_id'] = msg_id
+        events.append(f"event: response.content_part.done\ndata: {json.dumps(part_done, ensure_ascii=False)}\n\n")
+
+        # response.output_item.done (message)
+        item_done: dict = {
+            'type': 'response.output_item.done',
+            'output_index': text_output_index,
+            'item': {
+                'type': 'message',
+                'id': msg_id,
+                'role': 'assistant',
+                'status': 'completed',
+                'content': [{'type': 'output_text', 'text': text_str, 'annotations': []}],
+            },
+        }
+        events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+
+        self._stream_text_closed = True
+        return ''.join(events)
+
     def create_stream_response(self, chunks, model_name: str):
         """
         Override base implementation to extract the real response ID from the
@@ -1649,6 +1759,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             return bool(
                 chunk.delta_role
                 and not chunk.delta_content
+                and not chunk.delta_reasoning_content
                 and not chunk.finish_reason
                 and not chunk.tool_calls
                 and not chunk.raw_sse_passthrough
@@ -1896,6 +2007,26 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     # Normal incremental delta (content / tool_calls / etc.)
                     if chunk.delta_content:
                         full_text += chunk.delta_content
+
+                    # When tool_calls arrive while reasoning is still open, close the
+                    # reasoning summary BEFORE emitting function_call events. Otherwise
+                    # function_call output items are nested inside the reasoning item.
+                    if (chunk.tool_calls
+                            and reasoning_started
+                            and not reasoning_closed):
+                        parts.append(_emit_reasoning_done())
+                        reasoning_closed = True
+
+                    # When tool_calls arrive while a text output item is still open,
+                    # close the text item first so that function_call events are not
+                    # nested inside the message item.  Providers like Bailian stream
+                    # text content before tool_calls, and some providers (Moonshot,
+                    # MiniMax) reject text content interleaved with function calls.
+                    if (chunk.tool_calls
+                            and getattr(self, '_stream_text_started', False)
+                            and not getattr(self, '_stream_text_closed', False)):
+                        parts.append(self._emit_text_close_events(full_text))
+
                     parts.append(self.format_stream_chunk(chunk))
                     return ''.join(parts)
 
@@ -1938,7 +2069,17 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             }]
                         })
 
-                    # Include function_calls
+                    # Include message first (output_index=1), then function_calls
+                    # (output_index=2+), matching the streaming event order.
+                    if full_text and getattr(self, '_stream_text_started', False):
+                        output_items.append({
+                            'type': 'message',
+                            'id': real_msg_id or _gen_id("msg"),
+                            'role': 'assistant',
+                            'status': 'completed',
+                            'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]
+                        })
+
                     tool_calls_list = getattr(self, '_stream_tool_calls', [])
                     for fc_info in tool_calls_list:
                         output_items.append({
@@ -1948,16 +2089,6 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             'name': fc_info['name'],
                             'arguments': fc_info['arguments'],
                             'status': 'completed'
-                        })
-
-                    # Include message if there was text content
-                    if full_text and getattr(self, '_stream_text_started', False):
-                        output_items.append({
-                            'type': 'message',
-                            'id': real_msg_id or _gen_id("msg"),
-                            'role': 'assistant',
-                            'status': 'completed',
-                            'content': [{'type': 'output_text', 'text': full_text, 'annotations': []}]
                         })
 
                     deferred_resp_id = getattr(self, '_stream_deferred_resp_id', _gen_id("resp"))
