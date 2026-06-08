@@ -15,8 +15,9 @@ MINIMAX_TEMPLATES = [
          support_kvcache=True, support_image=True, support_audio=False, support_video=True,
          support_file=False, support_web_search=False, support_tool_search=False,
          support_thinking=True, support_online_image=True, support_online_video=True, support_embedding=False),
-    dict(label='MiniMax M3 (Bailian)', provider='Bailian', name='MiniMax-M3', alias='MiniMax-M3',
+    dict(label='MiniMax M3 (Proxy)', provider='Bailian', name='MiniMax/MiniMax-M3', alias='MiniMax-M3',
          context_size=1000000, input_size=512000, output_size=65536,
+         rpm=500, tpm=20000000,
          pricing_tiers=[
              dict(label='<=512k', context_size=1000000, input_size=512000, output_size=65536,
                   input_price=4.2, output_price=16.8, cache_creation_price=0, cache_hit_price=0.84),
