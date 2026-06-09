@@ -845,8 +845,6 @@ class VertexAIProvider(BaseProvider):
                 mode = mode_map.get(request.tool_choice, "AUTO")
                 result["toolConfig"] = {"functionCallingConfig": {"mode": mode}}
         
-        print(f"Prepared Gemini request: {json.dumps(result, indent=2)}")
-
         return result
 
     def _message_to_gemini(self, message: Message, call_id_to_name: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
@@ -1574,8 +1572,6 @@ class VertexAIProvider(BaseProvider):
                 async for line in response.aiter_lines():
                     if not line:
                         continue
-
-                    print(f"[VertexAI {publisher} Stream] Received line: {line}")  # Debug log for incoming SSE lines
 
                     if line.startswith("event:"):
                         continue

@@ -314,7 +314,6 @@ class DeepSeekProvider(OpenAIProvider):
     async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """流式对话 — 在基类流的基础上累积 reasoning_content 与 tool_call_id，
         流结束时持久化思考内容。"""
-        print("this is called from deepseek provider")
         reasoning_parts: List[str] = []
         # tool_calls 在 delta 中按 index 分片增量到来，这里只关心最后出现的 id
         tool_ids_by_index: Dict[int, str] = {}
