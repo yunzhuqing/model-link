@@ -71,10 +71,10 @@ async def get_group_config(group_id: int, session=None) -> dict | None:
     Used by gateway routes to look up monitoring_config without hitting DB
     on every request.
     """
-    from app.cache import get_cache
-    cache = get_cache()
+    from app.cache import get_async_cache
+    cache = get_async_cache()
     key = _cache_key(group_id)
-    data = cache._backend.get(key)
+    data = await cache._backend.get(key)
     if data is not None:
         return data
 
@@ -96,7 +96,7 @@ async def get_group_config(group_id: int, session=None) -> dict | None:
         "monitoring_config": group.monitoring_config,
     }
     try:
-        cache._backend.set(key, data, _GROUP_CACHE_TTL)
+        await cache._backend.set(key, data, _GROUP_CACHE_TTL)
     except Exception as e:
         logger.warning(f"Failed to cache group {group_id}: {e}")
     return data
@@ -144,11 +144,11 @@ async def get_group_by_id(group_id: int, session=None) -> Group | None:
         return None
 
 
-def invalidate_group_cache(group_id: int) -> None:
+async def invalidate_group_cache(group_id: int) -> None:
     """Remove cached entry for a group."""
-    from app.cache import get_cache
+    from app.cache import get_async_cache
     try:
-        get_cache()._backend.delete(_cache_key(group_id))
+        await get_async_cache()._backend.delete(_cache_key(group_id))
     except Exception as e:
         logger.warning(f"Failed to invalidate group cache {group_id}: {e}")
 
@@ -233,7 +233,7 @@ async def update_group(group_id: int, session=None, **kwargs) -> tuple[Group | N
     if "workspace_id" in kwargs:
         group.workspace_id = kwargs["workspace_id"]
 
-    invalidate_group_cache(group_id)
+    await invalidate_group_cache(group_id)
     return group, None
 
 
@@ -245,5 +245,5 @@ async def delete_group(group_id: int, session=None) -> tuple[bool, str | None]:
         return False, "Group not found"
 
     await session.delete(group)
-    invalidate_group_cache(group_id)
+    await invalidate_group_cache(group_id)
     return True, None

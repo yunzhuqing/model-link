@@ -5,11 +5,13 @@ Endpoints:
   GET /api/usage/records  - Paginated list of raw usage records with filters
   GET /api/usage/summary  - Aggregated statistics (by time / group / model / api-key)
 """
-from quart import Blueprint, request, jsonify, current_app
-from datetime import datetime, timezone
-from typing import Optional
+import asyncio
 import os
 import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+from quart import Blueprint, request, jsonify, current_app
 
 from sqlalchemy import select, func
 from app import get_db_session
@@ -812,10 +814,10 @@ async def run_compress():
 
     try:
         if api_key_id is not None:
-            result = _compress_key_for_api_key(current_app, int(api_key_id))
+            result = await asyncio.to_thread(_compress_key_for_api_key, current_app, int(api_key_id))
             return jsonify({"status": "ok", **result})
         else:
-            deleted = _do_compress(current_app)
+            deleted = await asyncio.to_thread(_do_compress, current_app)
             return jsonify({"status": "ok", "total_compressed": deleted})
     except Exception as e:
         logger.error(f"[compress] Manual compress error: {e}", exc_info=True)

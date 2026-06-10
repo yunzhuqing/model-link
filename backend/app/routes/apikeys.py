@@ -582,9 +582,9 @@ async def list_api_keys_by_group(current_user, group_id):
 async def get_api_key(current_user, api_key_id):
     """Get a specific API key. Tries cache first for basic info."""
     # Try cache first for a quick response
-    from app.cache import get_cache
-    cache = get_cache()
-    cached = cache.get_api_key_info_by_id(api_key_id)
+    from app.cache import get_async_cache
+    cache = get_async_cache()
+    cached = await cache.get_api_key_info_by_id(api_key_id)
     async with get_db_session() as session:
         if cached is not None:
             # Still need to verify group membership from DB
@@ -594,7 +594,7 @@ async def get_api_key(current_user, api_key_id):
                 selectinload(ApiKey.user),
             ])
             if not api_key:
-                cache.invalidate_api_key_by_id(api_key_id)
+                await cache.invalidate_api_key_by_id(api_key_id)
                 return jsonify({'detail': 'API key not found'}), 404
             if current_user not in api_key.group.users:
                 return jsonify({'detail': 'You do not have access to this API key'}), 403
@@ -769,9 +769,9 @@ async def update_api_key(current_user, api_key_id):
 
         # Update cache with new values so budget/unlimited checks see them immediately
         try:
-            from app.cache import get_cache
-            cache = get_cache()
-            cached_info = cache.get_api_key_info(api_key.key)
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            cached_info = await cache.get_api_key_info(api_key.key)
             if cached_info is not None:
                 cached_info['budget'] = api_key.budget
                 cached_info['unlimited_budget'] = api_key.unlimited_budget
@@ -779,18 +779,18 @@ async def update_api_key(current_user, api_key_id):
                 cached_info['allowed_models'] = api_key.allowed_models or []
                 cached_info['rpm'] = api_key.rpm
                 cached_info['tpm'] = api_key.tpm
-                cache.set_api_key_info(api_key.key, cached_info)
+                await cache.set_api_key_info(api_key.key, cached_info)
             else:
-                cache.invalidate_api_key_by_id(api_key_id)
+                await cache.invalidate_api_key_by_id(api_key_id)
             # Update the dedicated budget remaining key so gateway budget checks
             # see the new value immediately.
-            from app.budget_manager import get_budget_manager
-            bm = get_budget_manager()
+            from app.budget_manager import get_async_budget_manager
+            bm = get_async_budget_manager()
             if not api_key.unlimited_budget and api_key.budget is not None:
-                bm.set_remaining(api_key.key, float(api_key.budget))
+                await bm.set_remaining(api_key.key, float(api_key.budget))
             elif api_key.unlimited_budget:
                 # Unlimited budget — remove the dedicated remaining key
-                bm.invalidate(api_key.key)
+                await bm.invalidate(api_key.key)
         except Exception:
             pass
 
@@ -883,7 +883,7 @@ async def get_api_key_detail(current_user, api_key_id):
     - By-model breakdown (from DB)
     """
     from app.models import UsageRecord, get_group_models_with_shares
-    from app.cache import get_cache
+    from app.cache import get_async_cache
     import hashlib
 
     async with get_db_session() as session:
@@ -902,10 +902,10 @@ async def get_api_key_detail(current_user, api_key_id):
             return jsonify({'detail': 'You do not have access to this API key'}), 403
 
         key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
-        cache = get_cache()
+        cache = get_async_cache()
 
         # ── Try reading usage stats from cache first ─────────────────────────
-        cached_info = cache.get_api_key_info(api_key.key)
+        cached_info = await cache.get_api_key_info(api_key.key)
         if cached_info is not None:
             # Use cached usage stats (updated in real-time by each request)
             usage_totals = {
@@ -1114,10 +1114,10 @@ async def delete_api_key(current_user, api_key_id):
 
         # Invalidate cache before deleting (need the raw key for cache lookup)
         try:
-            from app.cache import get_cache
-            from app.budget_manager import get_budget_manager
-            get_cache().invalidate_api_key(api_key.key)
-            get_budget_manager().invalidate(api_key.key)
+            from app.cache import get_async_cache
+            from app.budget_manager import get_async_budget_manager
+            await get_async_cache().invalidate_api_key(api_key.key)
+            await get_async_budget_manager().invalidate(api_key.key)
         except Exception:
             pass
 
@@ -1158,10 +1158,10 @@ async def regenerate_api_key(current_user, api_key_id):
         # Invalidate cache for the old key before regenerating
         old_key = api_key.key
         try:
-            from app.cache import get_cache
-            from app.budget_manager import get_budget_manager
-            get_cache().invalidate_api_key(old_key)
-            get_budget_manager().invalidate(old_key)
+            from app.cache import get_async_cache
+            from app.budget_manager import get_async_budget_manager
+            await get_async_cache().invalidate_api_key(old_key)
+            await get_async_budget_manager().invalidate(old_key)
         except Exception:
             pass
 
@@ -1247,20 +1247,20 @@ async def add_budget(current_user, api_key_id):
 
         # Update cache with new budget value so budget checks see it immediately
         try:
-            from app.cache import get_cache
-            cache = get_cache()
-            cached_info = cache.get_api_key_info(api_key.key)
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            cached_info = await cache.get_api_key_info(api_key.key)
             if cached_info is not None:
                 cached_info['budget'] = api_key.budget
-                cache.set_api_key_info(api_key.key, cached_info)
+                await cache.set_api_key_info(api_key.key, cached_info)
             else:
                 # Cache miss — populate from scratch
-                cache.invalidate_api_key_by_id(api_key_id)
+                await cache.invalidate_api_key_by_id(api_key_id)
             # Update the dedicated budget remaining key so gateway budget checks
             # see the new value immediately.
             if not api_key.unlimited_budget and api_key.budget is not None:
-                from app.budget_manager import get_budget_manager
-                get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
+                from app.budget_manager import get_async_budget_manager
+                await get_async_budget_manager().set_remaining(api_key.key, float(api_key.budget))
         except Exception:
             pass
 
@@ -1300,19 +1300,19 @@ async def delete_budget(current_user, api_key_id, budget_id):
 
         # Update cache with new budget value so budget checks see it immediately
         try:
-            from app.cache import get_cache
-            cache = get_cache()
-            cached_info = cache.get_api_key_info(api_key.key)
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            cached_info = await cache.get_api_key_info(api_key.key)
             if cached_info is not None:
                 cached_info['budget'] = api_key.budget
-                cache.set_api_key_info(api_key.key, cached_info)
+                await cache.set_api_key_info(api_key.key, cached_info)
             else:
-                cache.invalidate_api_key_by_id(api_key_id)
+                await cache.invalidate_api_key_by_id(api_key_id)
             # Update the dedicated budget remaining key so gateway budget checks
             # see the new value immediately.
             if not api_key.unlimited_budget and api_key.budget is not None:
-                from app.budget_manager import get_budget_manager
-                get_budget_manager().set_remaining(api_key.key, float(api_key.budget))
+                from app.budget_manager import get_async_budget_manager
+                await get_async_budget_manager().set_remaining(api_key.key, float(api_key.budget))
         except Exception:
             pass
 

@@ -21,6 +21,21 @@ _stop_event = threading.Event()
 _compress_thread = None
 _compress_lock = threading.Lock()
 
+# ── Lazy SyncRedisHelper singleton for background threads ─────────────────────
+
+_sync_redis = None
+
+
+def _get_sync_redis():
+    """Return a SyncRedisHelper singleton for use in daemon threads."""
+    global _sync_redis
+    if _sync_redis is None:
+        from app.cache import SyncRedisHelper
+        redis_url = os.getenv("CACHE_REDIS_URL", "redis://localhost:6379/0")
+        key_prefix = os.getenv("CACHE_KEY_PREFIX", "ml:")
+        _sync_redis = SyncRedisHelper(redis_url, key_prefix=key_prefix)
+    return _sync_redis
+
 
 def start_compress_service(app) -> None:
     global _compress_thread
@@ -176,7 +191,7 @@ def _compress_key_for_api_key(app, api_key_id: int) -> dict:
 def _compress_single_key(session, storage, ak, config: dict) -> dict:
     """Compress a single API key (ak is ORM object). Returns stats dict or None if skipped."""
     import hashlib
-    from app.cache import get_cache
+    from app.cache import SyncRedisHelper
 
     last_stat = ak.last_stat_id or 0
     last_compress = ak.last_compress_id or 0
@@ -188,7 +203,7 @@ def _compress_single_key(session, storage, ak, config: dict) -> dict:
     per_minute = int(config.get("per_minute", 1))
     per_hour = int(config.get("per_hour", 60))
 
-    with get_cache().key_lock(key_hash):
+    with _get_sync_redis().key_lock(key_hash):
         minute_deleted, minute_last_id = _compress_by_granularity(
             session, storage, key_hash, last_compress, last_stat, per_minute, "minute"
         )

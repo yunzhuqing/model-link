@@ -29,6 +29,21 @@ _stop_event = threading.Event()
 _sync_thread = None
 _sync_lock = threading.Lock()
 
+# ── Lazy SyncRedisHelper singleton for background threads ─────────────────────
+
+_sync_redis = None
+
+
+def _get_sync_redis():
+    """Return a SyncRedisHelper singleton for use in daemon threads."""
+    global _sync_redis
+    if _sync_redis is None:
+        from app.cache import SyncRedisHelper
+        redis_url = os.getenv("CACHE_REDIS_URL", "redis://localhost:6379/0")
+        key_prefix = os.getenv("CACHE_KEY_PREFIX", "ml:")
+        _sync_redis = SyncRedisHelper(redis_url, key_prefix=key_prefix)
+    return _sync_redis
+
 
 def start_usage_sync(app) -> None:
     """
@@ -120,7 +135,7 @@ def _do_sync(app, interval: float = 60) -> None:
     try:
         with Session(engine) as session:
             from app.models import ApiKey
-            from app.cache import get_cache
+            from app.cache import SyncRedisHelper
             from app.usagerecord.stat import (
                 get_active_key_hashes,
                 compute_delta,
@@ -129,7 +144,7 @@ def _do_sync(app, interval: float = 60) -> None:
             )
             import hashlib
 
-            cache = get_cache()
+            cache = _get_sync_redis()
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             since = now - timedelta(seconds=interval)
 
@@ -156,7 +171,7 @@ def _do_sync(app, interval: float = 60) -> None:
                 if last_stat >= current_max:
                     continue
 
-                with get_cache().key_lock(key_hash):
+                with cache.key_lock(key_hash):
                     # Re-read last_stat in case compress updated it while we waited
                     delta = compute_delta(session, key_hash, last_stat, current_max)
                     if delta is None:
