@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import client from '../api/client';
@@ -36,9 +36,20 @@ export default function GroupDetail() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<'statistics' | 'models' | 'apikeys' | 'members' | 'providers' | 'usage' | 'rateLimits' | 'monitoring'>('statistics');
+  const validTabs = ['statistics', 'models', 'apikeys', 'members', 'providers', 'usage', 'rateLimits', 'monitoring'] as const;
+  type TabKey = typeof validTabs[number];
+  const tabParam = searchParams.get('tab');
+  const activeTab: TabKey = validTabs.includes(tabParam as TabKey) ? (tabParam as TabKey) : 'statistics';
+  const setActiveTab = (tab: TabKey) => {
+    if (tab === 'statistics') {
+      setSearchParams({}, { replace: true });
+    } else {
+      setSearchParams({ tab }, { replace: true });
+    }
+  };
   const [showInviteMember, setShowInviteMember] = useState(false);
   const [inviteSearch, setInviteSearch] = useState('');
   const [searchResults, setSearchResults] = useState<Member[]>([]);

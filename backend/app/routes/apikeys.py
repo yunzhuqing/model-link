@@ -1391,3 +1391,224 @@ async def delete_policy(current_user, api_key_id, policy_type):
         await session.delete(policy)
         await session.commit()
         return '', 204
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API Key Management (workspace-scoped, admin-facing)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@apikeys_bp.route('/apikeys/manage', methods=['GET'])
+@token_required
+async def manage_api_keys(current_user):
+    """List all API keys in the current workspace with pagination and search.
+
+    Query params:
+        page     — page number (1-based, default 1)
+        per_page — items per page (default 20, max 100)
+        search   — filter by API key name or user name (case-insensitive)
+        group_id — filter by group ID (optional)
+
+    Requires: admin/root in at least one group, or apikey.manage permission.
+    """
+    from app.models import UserGroup, User
+
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    search = (request.args.get('search', '') or '').strip()
+    group_filter = request.args.get('group_id', None, type=int)
+
+    async with get_db_session() as session:
+        from sqlalchemy.orm import joinedload
+
+        # Find groups where the current user is admin/root so they can view all keys
+        manageable_group_ids = set()
+        for grp in current_user.groups:
+            ug_result = await session.execute(
+                select(UserGroup).where(
+                    UserGroup.group_id == grp.id,
+                    UserGroup.user_id == current_user.id,
+                )
+            )
+            ug = ug_result.scalars().first()
+            if ug and _role_rank(ug.role) >= _role_rank('admin'):
+                manageable_group_ids.add(grp.id)
+            elif ug and await check_permission(ug.role, 'apikey.manage', session=session):
+                manageable_group_ids.add(grp.id)
+
+        if not manageable_group_ids:
+            return jsonify({'data': [], 'total': 0, 'page': page, 'per_page': per_page}), 200
+
+        # Build search conditions
+        conditions = [ApiKey.group_id.in_(manageable_group_ids)]
+        if group_filter is not None:
+            if group_filter not in manageable_group_ids:
+                return jsonify({'detail': 'You do not have access to this group'}), 403
+            conditions.append(ApiKey.group_id == group_filter)
+
+        if search:
+            from sqlalchemy import or_
+            conditions.append(
+                or_(
+                    ApiKey.name.ilike(f'%{search}%'),
+                    ApiKey.key.ilike(f'%{search}%'),
+                    ApiKey.user.has(User.username.ilike(f'%{search}%')),
+                )
+            )
+
+        # Count total
+        count_q = select(func.count(ApiKey.id)).where(*conditions)
+        total_result = await session.execute(count_q)
+        total = total_result.scalar() or 0
+
+        # Fetch page
+        offset = (page - 1) * per_page
+        data_q = (
+            select(ApiKey)
+            .options(
+                joinedload(ApiKey.group),
+                joinedload(ApiKey.user),
+                joinedload(ApiKey.budgets),
+            )
+            .where(*conditions)
+            .order_by(ApiKey.created_at.desc())
+            .offset(offset)
+            .limit(per_page)
+        )
+
+        result = await session.execute(data_q)
+        api_keys = result.unique().scalars().all()
+
+        items = []
+        for k in api_keys:
+            d = k.to_dict()
+            d['group_name'] = k.group.name if k.group else None
+            d['user_name'] = k.user.username if k.user else None
+            if k.unlimited_budget:
+                d['remaining_budget'] = None  # unlimited
+            elif k.budgets:
+                remaining = sum(float(b.remaining or 0) for b in k.budgets)
+                d['remaining_budget'] = round(remaining, 4)
+            elif k.budget is not None:
+                d['remaining_budget'] = round(float(k.budget), 4)
+            else:
+                d['remaining_budget'] = 0.0
+            d['unlimited_budget'] = k.unlimited_budget
+            items.append(d)
+
+        return jsonify({
+            'data': items,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+        })
+
+
+@apikeys_bp.route('/apikeys/<int:api_key_id>/assign', methods=['PUT'])
+@token_required
+async def assign_api_key(current_user, api_key_id):
+    """Reassign an API key to a different user and/or group, or update RPM/TPM.
+
+    Request body:
+        user_id  — new user ID (optional)
+        group_id — new group ID (optional)
+        rpm      — requests per minute limit (optional, null to clear)
+        tpm      — tokens per minute limit (optional, null to clear)
+
+    Requires: admin/root in both the source and target groups.
+    """
+    from app.models import UserGroup, User
+
+    data = await request.get_json()
+    if not data:
+        return jsonify({'detail': 'Request body is required'}), 400
+
+    new_user_id = data.get('user_id')
+    new_group_id = data.get('group_id')
+    new_rpm = data.get('rpm')
+    new_tpm = data.get('tpm')
+
+    has_rpm = 'rpm' in data
+    has_tpm = 'tpm' in data
+
+    if new_user_id is None and new_group_id is None and not has_rpm and not has_tpm:
+        return jsonify({'detail': 'At least one of user_id, group_id, rpm, or tpm is required'}), 400
+
+    async with get_db_session() as session:
+        api_key = await session.get(ApiKey, api_key_id, options=[
+            selectinload(ApiKey.group).selectinload(Group.users),
+            selectinload(ApiKey.user),
+        ])
+        if not api_key:
+            return jsonify({'detail': 'API key not found'}), 404
+
+        source_group_id = api_key.group_id
+
+        # Check source group permission: must be admin/root
+        source_ug = (await session.execute(
+            select(UserGroup).where(
+                UserGroup.group_id == source_group_id,
+                UserGroup.user_id == current_user.id,
+            )
+        )).scalars().first()
+        if not source_ug or (_role_rank(source_ug.role) < _role_rank('admin') and not await check_permission(source_ug.role, 'apikey.manage', session=session)):
+            return jsonify({'detail': 'You do not have permission to manage API keys in the source group'}), 403
+
+        # If changing group, check target group permission
+        if new_group_id is not None and new_group_id != source_group_id:
+            target_ug = (await session.execute(
+                select(UserGroup).where(
+                    UserGroup.group_id == new_group_id,
+                    UserGroup.user_id == current_user.id,
+                )
+            )).scalars().first()
+            if not target_ug or _role_rank(target_ug.role) < _role_rank('admin'):
+                return jsonify({'detail': 'You do not have permission to assign API keys to the target group'}), 403
+
+            target_group = await session.get(Group, new_group_id)
+            if not target_group:
+                return jsonify({'detail': 'Target group not found'}), 404
+
+            api_key.group_id = new_group_id
+
+        # If changing user, verify user exists and is in the (new) group
+        if new_user_id is not None:
+            effective_group_id = new_group_id if new_group_id is not None else source_group_id
+            target_user = await session.get(User, new_user_id)
+            if not target_user:
+                return jsonify({'detail': 'User not found'}), 404
+
+            user_in_group = (await session.execute(
+                select(UserGroup).where(
+                    UserGroup.group_id == effective_group_id,
+                    UserGroup.user_id == new_user_id,
+                )
+            )).scalars().first()
+            if not user_in_group:
+                return jsonify({'detail': 'User is not a member of the target group'}), 400
+
+            api_key.user_id = new_user_id
+
+        # Update RPM/TPM if provided
+        if has_rpm:
+            val = data['rpm']
+            api_key.rpm = int(val) if val is not None and val != '' else None
+        if has_tpm:
+            val = data['tpm']
+            api_key.tpm = int(val) if val is not None and val != '' else None
+
+        await session.commit()
+        await session.refresh(api_key)
+
+        # Invalidate cache
+        try:
+            from app.cache import get_async_cache
+            cache = get_async_cache()
+            await cache.invalidate_api_key_by_id(api_key_id)
+        except Exception:
+            pass
+
+        result = api_key.to_dict()
+        result['group_name'] = api_key.group.name if api_key.group else None
+        result['user_name'] = api_key.user.username if api_key.user else None
+        result['rpm'] = api_key.rpm
+        result['tpm'] = api_key.tpm
+        return jsonify(result)

@@ -52,7 +52,9 @@
     "tagsDesc": "Manage system tag definitions",
     "logout": "Logout",
     "collapseSidebar": "Collapse sidebar",
-    "expandSidebar": "Expand sidebar"
+    "expandSidebar": "Expand sidebar",
+    "users": "User Management",
+    "usersDesc": "Manage system users"
   },
   "rateLimits": {
     "title": "Rate Limits",
@@ -679,5 +681,23 @@
     "rootOnly": "Root access required",
     "rootOnlyDesc": "Only root users can manage tag definitions. Please contact your system administrator.",
     "saving": "Saving..."
+  },
+  "userManagement": {
+    "title": "User Management",
+    "searchPlaceholder": "Search by username or email...",
+    "createUser": "Create User",
+    "editUser": "Edit User",
+    "username": "Username",
+    "email": "Email",
+    "password": "Password",
+    "newPassword": "New Password (leave empty to keep unchanged)",
+    "confirmDelete": "Are you sure you want to delete user \"{{name}}\"? This action cannot be undone.",
+    "noUsers": "No users found",
+    "creating": "Creating...",
+    "saving": "Saving...",
+    "deleting": "Deleting...",
+    "usernameRequired": "Username is required",
+    "passwordRequired": "Password is required",
+    "userCount": "{{count}} users"
   }
 }

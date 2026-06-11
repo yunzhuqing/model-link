@@ -8,7 +8,7 @@ import os
 import time
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app import get_db_session
 from app.models import User
 from app.user_service import get_user_by_id, invalidate_user_cache
@@ -156,6 +156,156 @@ async def delete_user(current_user, user_id):
     if user_id != current_user.id:
         return jsonify({'detail': 'Not authorized to delete this user'}), 403
 
+    async with get_db_session() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalars().first()
+        if not user:
+            return jsonify({'detail': 'User not found'}), 404
+
+        await session.delete(user)
+        await session.commit()
+
+    await invalidate_user_cache(user_id)
+
+    return '', 204
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+
+
+@users_bp.route('/api/users', methods=['GET'])
+@token_required
+async def list_users(current_user):
+    """List all users with pagination and optional search.
+
+    Query params:
+        page     — page number (1-based, default 1)
+        per_page — items per page (default 20, max 100)
+        search   — filter by username or email (case-insensitive)
+    """
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    search = request.args.get('search', '').strip()
+
+    async with get_db_session() as session:
+        conditions = []
+        if search:
+            pattern = f'%{search}%'
+            conditions.append(
+                (User.username.ilike(pattern)) | (User.email.ilike(pattern))
+            )
+
+        # Count total
+        count_q = select(func.count(User.id))
+        if conditions:
+            count_q = count_q.where(*conditions)
+        total_result = await session.execute(count_q)
+        total = total_result.scalar() or 0
+
+        # Fetch page
+        offset = (page - 1) * per_page
+        data_q = select(User).order_by(User.id).offset(offset).limit(per_page)
+        if conditions:
+            data_q = data_q.where(*conditions)
+
+        result = await session.execute(data_q)
+        users = result.scalars().all()
+
+        return jsonify({
+            'data': [u.to_dict() for u in users],
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+        })
+
+
+@users_bp.route('/api/users', methods=['POST'])
+@token_required
+async def create_user_admin(current_user):
+    """Admin endpoint to create a new user."""
+    data = await request.get_json()
+
+    try:
+        user_create = UserCreate(**data)
+    except Exception as e:
+        return jsonify({'detail': str(e)}), 400
+
+    async with get_db_session() as session:
+        # Check if username exists
+        result = await session.execute(select(User).where(User.username == user_create.username))
+        if result.scalars().first():
+            return jsonify({'detail': 'Username already registered'}), 400
+
+        # Check if email exists
+        if user_create.email:
+            result = await session.execute(select(User).where(User.email == user_create.email))
+            if result.scalars().first():
+                return jsonify({'detail': 'Email already registered'}), 400
+
+        hashed_password = get_password_hash(user_create.password)
+        user = User(
+            username=user_create.username,
+            email=user_create.email,
+            hashed_password=hashed_password,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        return jsonify(user.to_dict()), 201
+
+
+@users_bp.route('/api/users/<int:user_id>', methods=['PUT'])
+@token_required
+async def update_user(current_user, user_id):
+    """Update a user's username, email, or password."""
+    data = await request.get_json()
+
+    try:
+        user_update = UserUpdate(**data)
+    except Exception as e:
+        return jsonify({'detail': str(e)}), 400
+
+    async with get_db_session() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalars().first()
+        if not user:
+            return jsonify({'detail': 'User not found'}), 404
+
+        if user_update.username is not None and user_update.username != user.username:
+            existing = await session.execute(
+                select(User).where(User.username == user_update.username, User.id != user_id)
+            )
+            if existing.scalars().first():
+                return jsonify({'detail': 'Username already taken'}), 400
+            user.username = user_update.username
+
+        if user_update.email is not None and user_update.email != user.email:
+            existing = await session.execute(
+                select(User).where(User.email == user_update.email, User.id != user_id)
+            )
+            if existing.scalars().first():
+                return jsonify({'detail': 'Email already taken'}), 400
+            user.email = user_update.email
+
+        if user_update.password is not None:
+            user.hashed_password = get_password_hash(user_update.password)
+
+        await session.commit()
+        await session.refresh(user)
+
+    await invalidate_user_cache(user_id)
+
+    return jsonify(user.to_dict())
+
+
+@users_bp.route('/api/users/<int:user_id>', methods=['DELETE'])
+@token_required
+async def delete_user_admin(current_user, user_id):
+    """Delete a user (admin endpoint)."""
     async with get_db_session() as session:
         result = await session.execute(select(User).where(User.id == user_id))
         user = result.scalars().first()

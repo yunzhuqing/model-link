@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import LanguageSwitcher from './LanguageSwitcher';
 import { useWorkspace } from '../contexts/WorkspaceContext';
 import {
+  Key,
   LayoutDashboard,
   Database,
   LogOut,
@@ -21,6 +22,7 @@ import {
   Globe,
   Shield,
   Tag,
+  UserCog,
 } from 'lucide-react';
 
 interface SubNavItem {
@@ -38,12 +40,14 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { path: '/', labelKey: 'nav.dashboard', icon: LayoutDashboard, descKey: 'nav.dashboardDesc' },
+  { path: '/apikeys', labelKey: 'nav.apikeys', icon: Key, descKey: 'nav.apikeysDesc' },
   { path: '/groups', labelKey: 'nav.groups', icon: Users, descKey: 'nav.groupsDesc' },
   { path: '/model-templates', labelKey: 'nav.modelTemplates', icon: LayoutTemplate, descKey: 'nav.modelTemplatesDesc' },
   { path: '/usage', labelKey: 'nav.usage', icon: BarChart3, descKey: 'nav.usageDesc' },
   { path: '/rate-limits', labelKey: 'nav.rateLimits', icon: Gauge, descKey: 'nav.rateLimitsDesc' },
   { path: '/permissions', labelKey: 'nav.permissions', icon: Shield, descKey: 'nav.permissionsDesc' },
   { path: '/tags', labelKey: 'nav.tags', icon: Tag, descKey: 'nav.tagsDesc' },
+  { path: '/users', labelKey: 'nav.users', icon: UserCog, descKey: 'nav.usersDesc' },
   {
     path: '/help',
     labelKey: 'nav.help',

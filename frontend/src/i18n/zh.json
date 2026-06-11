@@ -26,6 +26,8 @@
   "nav": {
     "dashboard": "仪表盘",
     "dashboardDesc": "系统概览与统计",
+    "apikeys": "API Key 管理",
+    "apikeysDesc": "管理工作区内的所有 API Key",
     "groups": "分组管理",
     "groupsDesc": "管理分组、API Key 和供应商",
     "modelTemplates": "模型模板",
@@ -52,7 +54,9 @@
     "tagsDesc": "管理系统标签定义",
     "logout": "退出登录",
     "collapseSidebar": "收起侧栏",
-    "expandSidebar": "展开侧栏"
+    "expandSidebar": "展开侧栏",
+    "users": "用户管理",
+    "usersDesc": "管理系统用户"
   },
   "rateLimits": {
     "title": "速率限制",
@@ -679,5 +683,23 @@
     "rootOnly": "需要 Root 权限",
     "rootOnlyDesc": "只有 Root 用户才能管理标签定义。如需 Root 权限请联系系统管理员。",
     "saving": "保存中..."
+  },
+  "userManagement": {
+    "title": "用户管理",
+    "searchPlaceholder": "按用户名或邮箱搜索...",
+    "createUser": "创建用户",
+    "editUser": "编辑用户",
+    "username": "用户名",
+    "email": "邮箱",
+    "password": "密码",
+    "newPassword": "新密码（留空则不修改）",
+    "confirmDelete": "确定要删除用户「{{name}}」吗？此操作不可撤销。",
+    "noUsers": "没有找到用户",
+    "creating": "创建中...",
+    "saving": "保存中...",
+    "deleting": "删除中...",
+    "usernameRequired": "用户名不能为空",
+    "passwordRequired": "密码不能为空",
+    "userCount": "{{count}} 个用户"
   }
 }

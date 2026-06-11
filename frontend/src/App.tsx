@@ -22,9 +22,11 @@ import HelpThreed from './pages/HelpThreed';
 import HelpVideoErase from './pages/HelpVideoErase';
 import HelpModelRouting from './pages/HelpModelRouting';
 import ApiKeyDetail from './pages/ApiKeyDetail';
+import ApiKeyManage from './pages/ApiKeyManage';
 import RateLimits from './pages/RateLimits';
 import PermissionManager from './pages/PermissionManager';
 import TagManager from './pages/TagManager';
+import UserManagement from './pages/UserManagement';
 import Layout from './components/Layout';
 
 const queryClient = new QueryClient();
@@ -60,6 +62,7 @@ function App() {
             >
               <Route index element={<Dashboard />} />
               <Route path="apikeys/:id" element={<ApiKeyDetail />} />
+              <Route path="apikeys" element={<ApiKeyManage />} />
               <Route path="groups" element={<GroupList />} />
               <Route path="groups/:id" element={<GroupDetail />} />
               <Route path="model-templates" element={<ModelTemplates />} />
@@ -78,6 +81,7 @@ function App() {
               <Route path="rate-limits" element={<RateLimits />} />
               <Route path="permissions" element={<PermissionManager />} />
               <Route path="tags" element={<TagManager />} />
+              <Route path="users" element={<UserManagement />} />
             </Route>
           </Routes>
         </BrowserRouter>

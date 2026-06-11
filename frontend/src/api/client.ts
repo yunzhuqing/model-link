@@ -89,6 +89,45 @@ export interface ApiKeyModelsResponse {
   }>;
 }
 
+
+export interface ApiKeyManageItem {
+  id: number;
+  key: string;
+  name: string;
+  description: string | null;
+  group_id: number | null;
+  group_name?: string | null;
+  user_id?: number | null;
+  user_name?: string | null;
+  is_active: boolean;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  request_count: number;
+  token_count: number;
+  allowed_models: string[];
+  tags?: { name: string; value: string }[];
+  budget: number | null;
+  unlimited_budget: boolean;
+  remaining_budget: number | null;
+  rpm?: number | null;
+  tpm?: number | null;
+}
+
+export interface ApiKeyManageResponse {
+  data: ApiKeyManageItem[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface ApiKeyAssignRequest {
+  user_id?: number | null;
+  group_id?: number | null;
+  rpm?: number | null;
+  tpm?: number | null;
+}
+
 export interface MonitoringConfig {
   type: string;
   endpoint?: string;
@@ -207,6 +246,12 @@ export const apiKeysApi = {
   delete: (id: number) => client.delete(`/api/apikeys/${id}`),
   regenerate: (id: number) => client.post<ApiKey>(`/api/apikeys/${id}/regenerate`),
   getModels: (id: number) => client.get<ApiKeyModelsResponse>(`/api/apikeys/${id}/models`),
+  // Management endpoints (workspace-scoped)
+  manage: (params?: { page?: number; per_page?: number; search?: string; group_id?: number }) =>
+    client.get<ApiKeyManageResponse>('/api/apikeys/manage', { params }),
+  assign: (id: number, data: ApiKeyAssignRequest) =>
+    client.put<ApiKeyManageItem>(`/api/apikeys/${id}/assign`, data),
+
   // Policy endpoints
   listPolicies: (apiKeyId: number) => client.get(`/api/apikeys/${apiKeyId}/policies`),
   upsertPolicy: (apiKeyId: number, policyType: string, data: { enabled?: boolean; config?: Record<string, any> }) =>
@@ -362,6 +407,44 @@ export const rateLimitsApi = {
     client.delete(`/api/workspaces/${workspaceId}/rate-limits/${limitId}`),
   getWorkspaceStatus: (workspaceId: number, modelName: string) =>
     client.get<WorkspaceRateLimitStatus>(`/api/workspaces/${workspaceId}/rate-limits/status?model_name=${encodeURIComponent(modelName)}`),
+};
+
+
+// User management types and endpoints
+export interface UserInfo {
+  id: number;
+  username: string;
+  email: string | null;
+}
+
+export interface UserListResponse {
+  data: UserInfo[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface UserCreateRequest {
+  username: string;
+  email?: string;
+  password: string;
+}
+
+export interface UserUpdateRequest {
+  username?: string;
+  email?: string;
+  password?: string;
+}
+
+export const usersApi = {
+  list: (params?: { page?: number; per_page?: number; search?: string }) =>
+    client.get<UserListResponse>('/api/users', { params }),
+  create: (data: UserCreateRequest) =>
+    client.post<UserInfo>('/api/users', data),
+  update: (id: number, data: UserUpdateRequest) =>
+    client.put<UserInfo>(`/api/users/${id}`, data),
+  delete: (id: number) =>
+    client.delete(`/api/users/${id}`),
 };
 
 export default client;
