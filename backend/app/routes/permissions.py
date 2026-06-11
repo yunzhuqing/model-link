@@ -26,7 +26,7 @@ from app.models import (
     ApiKey,
     Provider,
 )
-from app.routes.users import token_required
+from app.auth import token_required
 
 permissions_bp = Blueprint("permissions", __name__)
 

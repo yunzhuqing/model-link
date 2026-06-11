@@ -700,6 +700,8 @@
     "deleting": "删除中...",
     "usernameRequired": "用户名不能为空",
     "passwordRequired": "密码不能为空",
-    "userCount": "{{count}} 个用户"
+    "userCount": "{{count}} 个用户",
+    "noPermission": "无权限",
+    "noPermissionDesc": "您没有用户管理权限，请联系管理员。"
   }
 }

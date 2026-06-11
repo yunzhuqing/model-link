@@ -698,6 +698,8 @@
     "deleting": "Deleting...",
     "usernameRequired": "Username is required",
     "passwordRequired": "Password is required",
-    "userCount": "{{count}} users"
+    "userCount": "{{count}} users",
+    "noPermission": "No Permission",
+    "noPermissionDesc": "You do not have permission to manage users. Please contact an administrator."
   }
 }

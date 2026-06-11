@@ -3,16 +3,15 @@ User authentication and management routes.
 """
 from quart import Blueprint, request, jsonify
 from datetime import timedelta
-from functools import wraps
 import os
-import time
 import logging
 
 from sqlalchemy import select, func
 from app import get_db_session
 from app.models import User
 from app.user_service import get_user_by_id, invalidate_user_cache
-from app.auth import verify_password, get_password_hash, create_access_token
+from app.auth import verify_password, get_password_hash, create_access_token, token_required
+from app.routes.permissions import require_global_permission
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
@@ -44,37 +43,6 @@ class UserResponse(BaseModel):
     username: str
     email: Optional[str] = None
     groups: List[dict] = []
-
-
-def token_required(f):
-    """Decorator to require JWT token for an endpoint."""
-    @wraps(f)
-    async def decorated(*args, **kwargs):
-        t0 = time.perf_counter()
-        token = None
-        auth_header = request.headers.get('Authorization')
-
-        if auth_header:
-            if auth_header.startswith('Bearer '):
-                token = auth_header.split(' ')[1]
-
-        if not token:
-            return jsonify({'detail': 'Not authenticated'}), 401
-
-        try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            user_id = payload.get('user_id')
-            if user_id is None:
-                return jsonify({'detail': 'Invalid token'}), 401
-        except JWTError:
-            return jsonify({'detail': 'Invalid token'}), 401
-        # Cache-first lookup; opens its own short-lived session on cache miss.
-        user = await get_user_by_id(user_id)
-        if user is None:
-            return jsonify({'detail': 'User not found'}), 401
-        return await f(current_user=user, *args, **kwargs)
-
-    return decorated
 
 
 @users_bp.route('/register', methods=['POST'])
@@ -178,6 +146,7 @@ class UserUpdate(BaseModel):
 
 @users_bp.route('/api/users', methods=['GET'])
 @token_required
+@require_global_permission('user.manage')
 async def list_users(current_user):
     """List all users with pagination and optional search.
 
@@ -224,6 +193,7 @@ async def list_users(current_user):
 
 @users_bp.route('/api/users', methods=['POST'])
 @token_required
+@require_global_permission('user.manage')
 async def create_user_admin(current_user):
     """Admin endpoint to create a new user."""
     data = await request.get_json()
@@ -260,6 +230,7 @@ async def create_user_admin(current_user):
 
 @users_bp.route('/api/users/<int:user_id>', methods=['PUT'])
 @token_required
+@require_global_permission('user.manage')
 async def update_user(current_user, user_id):
     """Update a user's username, email, or password."""
     data = await request.get_json()
@@ -304,6 +275,7 @@ async def update_user(current_user, user_id):
 
 @users_bp.route('/api/users/<int:user_id>', methods=['DELETE'])
 @token_required
+@require_global_permission('user.manage')
 async def delete_user_admin(current_user, user_id):
     """Delete a user (admin endpoint)."""
     async with get_db_session() as session:

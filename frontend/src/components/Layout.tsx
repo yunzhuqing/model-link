@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
+import { permissionsApi } from '../api/client';
 import LanguageSwitcher from './LanguageSwitcher';
 import { useWorkspace } from '../contexts/WorkspaceContext';
 import {
@@ -97,6 +99,22 @@ const Layout = () => {
   const location = useLocation();
   const { t } = useTranslation();
 
+  const { data: permData } = useQuery({
+    queryKey: ['my-permissions'],
+    queryFn: async () => {
+      const res = await permissionsApi.myPermissions();
+      return res.data;
+    },
+  });
+
+  const visibleNavItems = useMemo(() => {
+    const perms = permData?.permissions || {};
+    return navItems.filter((item) => {
+      if (item.path === '/users') return perms['user.manage'] === true;
+      return true;
+    });
+  }, [permData]);
+
   // Sidebar collapsed state (default: collapsed)
   const [collapsed, setCollapsed] = useState(true);
 
@@ -116,7 +134,7 @@ const Layout = () => {
     navigate('/login');
   };
 
-  const currentPage = navItems.find((item) =>
+  const currentPage = visibleNavItems.find((item) =>
     item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path)
   );
 
@@ -150,7 +168,7 @@ const Layout = () => {
 
         {/* Navigation */}
         <nav className={`flex-1 ${collapsed ? 'p-2' : 'p-4'} space-y-1 overflow-y-auto overflow-x-hidden`}>
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive = item.path === '/'
               ? location.pathname === '/'
               : location.pathname.startsWith(item.path);

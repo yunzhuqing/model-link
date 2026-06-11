@@ -915,6 +915,12 @@ DEFAULT_PERMISSIONS = [
         "description": "创建或编辑 API Key 时限制可用模型列表",
         "allowed_roles": ["root", "admin"],
     },
+    {
+        "key": "user.manage",
+        "label": "用户管理",
+        "description": "查看、创建、编辑和删除系统用户",
+        "allowed_roles": ["root"],
+    },
 ]
 
 

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app import get_db_session
 from app.models import ModelTemplate
-from app.routes.users import token_required
+from app.auth import token_required
 from app.routes.permissions import require_template_manage
 from app.data import BUILTIN_TEMPLATES
 

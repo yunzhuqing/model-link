@@ -43,3 +43,38 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def token_required(f):
+    """Decorator to require JWT token for an endpoint."""
+    from functools import wraps
+    from quart import request, jsonify
+    from app.user_service import get_user_by_id
+    import time
+
+    @wraps(f)
+    async def decorated(*args, **kwargs):
+        t0 = time.perf_counter()
+        token = None
+        auth_header = request.headers.get('Authorization')
+
+        if auth_header:
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+
+        if not token:
+            return jsonify({'detail': 'Not authenticated'}), 401
+
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            user_id = payload.get('user_id')
+            if user_id is None:
+                return jsonify({'detail': 'Invalid token'}), 401
+        except Exception:
+            return jsonify({'detail': 'Invalid token'}), 401
+        # Cache-first lookup; opens its own short-lived session on cache miss.
+        user = await get_user_by_id(user_id)
+        if user is None:
+            return jsonify({'detail': 'User not found'}), 401
+        return await f(current_user=user, *args, **kwargs)
+
+    return decorated

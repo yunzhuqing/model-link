@@ -14,7 +14,7 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from app import get_db_session
 from app.models import ApiKey, ApiKeyBudget, ApiKeyPolicy, Group
-from app.routes.users import token_required
+from app.auth import token_required
 from app.models import check_permission
 from app.routes.permissions import (
     _get_role,

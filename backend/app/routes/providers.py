@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from app import get_db_session
 from app.models import Provider, Model, Group
-from app.routes.users import token_required
+from app.auth import token_required
 from app.routes.permissions import (
     _get_role,
     _is_root,

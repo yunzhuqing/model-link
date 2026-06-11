@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { usersApi } from '../api/client';
+import { usersApi, permissionsApi } from '../api/client';
 import type { UserCreateRequest, UserUpdateRequest } from '../api/client';
-import { Plus, Edit2, Trash2, X, Search, AlertTriangle, User, Mail, Lock, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Edit2, Trash2, X, Search, AlertTriangle, User, Mail, Lock, ChevronLeft, ChevronRight, Shield } from 'lucide-react';
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -19,6 +19,15 @@ const PER_PAGE = 20;
 export default function UserManagement() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+
+  const { data: permData } = useQuery({
+    queryKey: ['my-permissions'],
+    queryFn: async () => {
+      const res = await permissionsApi.myPermissions();
+      return res.data;
+    },
+  });
+  const canManageUsers = permData?.permissions?.['user.manage'] === true;
   const [searchText, setSearchText] = useState('');
   const debouncedSearch = useDebounce(searchText.trim(), 300);
   const [page, setPage] = useState(1);
@@ -114,6 +123,26 @@ export default function UserManagement() {
       deleteMutation.mutate(user.id);
     }
   };
+
+  if (!permData) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+      </div>
+    );
+  }
+
+  if (!canManageUsers) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 text-center">
+        <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-4">
+          <Shield className="w-8 h-8 text-slate-400" />
+        </div>
+        <h2 className="text-lg font-semibold text-slate-700 mb-1">{t('userManagement.noPermission')}</h2>
+        <p className="text-sm text-slate-500">{t('userManagement.noPermissionDesc')}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
