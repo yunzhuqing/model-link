@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import client, { apiKeysApi, groupsApi } from '../api/client';
+import { apiKeysApi, groupsApi } from '../api/client';
 import type { ApiKeyManageItem } from '../api/client';
 import {
   Search,
@@ -46,7 +46,7 @@ interface CreateFormState {
 const PER_PAGE = 20;
 
 export default function ApiKeyManage() {
-  const { t } = useTranslation();
+  useTranslation();
   const queryClient = useQueryClient();
 
   const [page, setPage] = useState(1);
