@@ -8,10 +8,12 @@
    - Rapid 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitHunyuanTo3DRapidJob
    - Pro   模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitHunyuanTo3DProJob
    - Part  模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitHunyuan3DPartJob  (Model=1.5, File 输入)
+   - ReduceFace 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: SubmitReduceFaceJob  (File3D 输入)
 2. 轮询结果:
    - Rapid 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuanTo3DRapidJob
    - Pro   模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuanTo3DProJob
    - Part  模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuan3DPartJob
+   - ReduceFace 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryReduceFaceJob
    直到 Status == "DONE"
 
 认证方式：
@@ -83,6 +85,9 @@ _RAPID_MODELS = {"hunyuan-3d-rapid", "hy-3d-express"}
 # Part 模型标识 (3D 部件分割 / 拆分)
 _PART_MODELS = {"hunyuan-3d-1.5-part"}
 
+# ReduceFace 模型标识 (3D 减面)
+_REDUCE_FACE_MODELS = {"hunyuan-3d-reduce-face"}
+
 # Pro 模型与 API Model 参数的映射
 # key: 模型名前缀（小写），value: API 中 Model 字段的值（None 表示不传）
 _PRO_MODEL_MAP: Dict[str, Optional[str]] = {
@@ -113,6 +118,9 @@ _RAPID_PBR_CREDITS = 10            # EnablePBR
 # Part 版本: 基础积分
 _PART_BASE_CREDITS = 15            # 文件输入 (FBX)
 
+# ReduceFace 版本: 基础积分
+_REDUCE_FACE_BASE_CREDITS = 15   # 文件输入 (3D 减面)
+
 
 def _calculate_credits(
     model: str,
@@ -134,13 +142,19 @@ def _calculate_credits(
     """
     is_pro = _is_pro_model(model)
     is_part = _is_part_model(model)
-    model_type = "part" if is_part else ("pro" if is_pro else "rapid")
+    is_reduce_face = _is_reduce_face_model(model)
+    model_type = "reduce_face" if is_reduce_face else ("part" if is_part else ("pro" if is_pro else "rapid"))
     breakdown: Dict[str, Any] = {"model": model, "model_type": model_type}
     total = 0
 
     rules = credit_rules or {}
 
-    if is_part:
+    if is_reduce_face:
+        # ReduceFace: base credits for file input (3D face reduction)
+        base_credits = rules.get("base", _REDUCE_FACE_BASE_CREDITS)
+        breakdown["base"] = {"credits": base_credits}
+        total += base_credits
+    elif is_part:
         # Part: base credits for file input (FBX or other 3D format)
         base_credits = rules.get("base", _PART_BASE_CREDITS)
         breakdown["base"] = {"credits": base_credits}
@@ -208,6 +222,7 @@ def is_hunyuan3d_model(model: str) -> bool:
       Pro:   hunyuan-3d-pro, hunyuan-3d-3.0-pro, hunyuan-3d-3.1-pro,
              hy-3d-3.0, hy-3d-3.1
       Part:  hunyuan-3d-1.5-part
+      ReduceFace: hunyuan-3d-reduce-face
 
     Args:
         model: Model name (case-insensitive)
@@ -245,7 +260,7 @@ def _is_pro_model(model: str) -> bool:
     All new hy-3d-* models (except hy-3d-express) default to Pro.
     """
     lower = model.lower()
-    return lower not in _RAPID_MODELS and lower not in _PART_MODELS
+    return lower not in _RAPID_MODELS and lower not in _PART_MODELS and lower not in _REDUCE_FACE_MODELS
 
 
 def _is_part_model(model: str) -> bool:
@@ -255,6 +270,15 @@ def _is_part_model(model: str) -> bool:
     and take a 3D file (FBX) as input instead of images or text prompts.
     """
     return model.lower() in _PART_MODELS
+
+
+def _is_reduce_face_model(model: str) -> bool:
+    """Check whether the given model identifier is a ReduceFace variant (3D face reduction).
+
+    ReduceFace models use SubmitReduceFaceJob / QueryReduceFaceJob actions
+    and take a 3D file as input with PolygonType and FaceLevel parameters.
+    """
+    return model.lower() in _REDUCE_FACE_MODELS
 
 
 def _get_api_model_version(model: str) -> Optional[str]:
@@ -400,6 +424,8 @@ async def _submit_3d_job(
     # Part-only params
     file_url: Optional[str] = None,
     file_type: str = "FBX",
+    # ReduceFace-only params
+    face_level: Optional[str] = None,
     region: str = HUNYUAN3D_API_REGION,
     credit_rules: Optional[Dict[str, Any]] = None,
     tracer: Any = None,
@@ -411,6 +437,7 @@ async def _submit_3d_job(
     For Rapid models: SubmitHunyuanTo3DRapidJob
     For Pro models:   SubmitHunyuanTo3DProJob
     For Part models:  SubmitHunyuan3DPartJob
+    For ReduceFace models: SubmitReduceFaceJob
 
     Args:
         client:            httpx client
@@ -431,6 +458,7 @@ async def _submit_3d_job(
         polygon_type:      多边形类型（Pro+LowPoly 专用）: triangle|quadrilateral
         file_url:          输入 3D 文件 URL（Part 专用），如 FBX 文件地址
         file_type:         输入 3D 文件类型（Part 专用），默认 "FBX"
+        face_level:       面数级别（ReduceFace 专用）: high|medium|low
         region:            API 区域
 
     Returns:
@@ -441,8 +469,11 @@ async def _submit_3d_job(
     """
     is_pro = _is_pro_model(model)
     is_part = _is_part_model(model)
+    is_reduce_face = _is_reduce_face_model(model)
 
-    if is_part:
+    if is_reduce_face:
+        action = "SubmitReduceFaceJob"
+    elif is_part:
         action = "SubmitHunyuan3DPartJob"
     elif is_pro:
         action = "SubmitHunyuanTo3DProJob"
@@ -477,7 +508,17 @@ async def _submit_3d_job(
     # - Pro + multi_view_images: set MultiViewImages for angle views.
     #   Additionally, if a primary image (without view) is provided, set ImageUrl/ImageBase64.
     # - Otherwise: exactly one of ImageUrl, ImageBase64, or Prompt.
-    if is_part:
+    if is_reduce_face:
+        if file_url:
+            body["File3D"] = {
+                "Type": file_type,
+                "Url": file_url,
+            }
+        if polygon_type:
+            body["PolygonType"] = polygon_type
+        if face_level:
+            body["FaceLevel"] = face_level
+    elif is_part:
         if file_url:
             body["File"] = {
                 "Type": file_type,
@@ -513,11 +554,11 @@ async def _submit_3d_job(
         body["Prompt"] = prompt
 
     # Common optional params
-    if result_format and not is_part:
+    if result_format and not is_part and not is_reduce_face:
         body["ResultFormat"] = result_format
-    if enable_pbr and not is_part:
+    if enable_pbr and not is_part and not is_reduce_face:
         body["EnablePBR"] = True
-    if enable_geometry and not is_part:
+    if enable_geometry and not is_part and not is_reduce_face:
         body["EnableGeometry"] = True
 
     # Pro-only optional params
@@ -639,7 +680,9 @@ async def check_any_hunyuan3d_job_status(
     返回匹配到的 Response dict，匹配不到返回空 dict。
     """
     if model:
-        if _is_part_model(model):
+        if _is_reduce_face_model(model):
+            action = "QueryReduceFaceJob"
+        elif _is_part_model(model):
             action = "QueryHunyuan3DPartJob"
         elif _is_pro_model(model):
             action = "QueryHunyuanTo3DProJob"
@@ -649,7 +692,7 @@ async def check_any_hunyuan3d_job_status(
         if resp:
             return resp
 
-    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob", "QueryHunyuan3DPartJob"):
+    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob", "QueryHunyuan3DPartJob", "QueryReduceFaceJob"):
         resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
         if resp:
             return resp
@@ -676,6 +719,7 @@ async def _poll_3d_job(
     For Rapid models: QueryHunyuanTo3DRapidJob
     For Pro models:   QueryHunyuanTo3DProJob
     For Part models:  QueryHunyuan3DPartJob
+    For ReduceFace models: QueryReduceFaceJob
 
     Args:
         secret_id:        腾讯云 SecretId
@@ -695,8 +739,11 @@ async def _poll_3d_job(
     """
     is_pro = _is_pro_model(model)
     is_part = _is_part_model(model)
+    is_reduce_face = _is_reduce_face_model(model)
 
-    if is_part:
+    if is_reduce_face:
+        action = "QueryReduceFaceJob"
+    elif is_part:
         action = "QueryHunyuan3DPartJob"
     elif is_pro:
         action = "QueryHunyuanTo3DProJob"
@@ -902,7 +949,7 @@ async def execute_hunyuan3d_generation(
     API Version: 2025-05-13
 
     Extracts image URL / base64 / text prompt from the last user message
-    (or file URL / type for Part models),
+    (or file URL / type for Part / ReduceFace models),
     submits the 3D generation job, polls until done, and returns the result as a
     JSON-encoded list of 3d_generation_call content items in the message
     content — compatible with the Responses API adapter format.
@@ -923,6 +970,7 @@ async def execute_hunyuan3d_generation(
     """
     secret_id, secret_key = _parse_api_key(api_key)
     is_part = _is_part_model(model)
+    is_reduce_face = _is_reduce_face_model(model)
 
     # Extract generation parameters from metadata
     enable_pbr: bool = bool(metadata.get("enable_pbr", metadata.get("pbr", False)))
@@ -935,11 +983,30 @@ async def execute_hunyuan3d_generation(
     generate_type: Optional[str] = metadata.get("generate_type") or None
     polygon_type: Optional[str] = metadata.get("polygon_type") or None
 
+    # ReduceFace-only params
+    face_level: Optional[str] = metadata.get("face_level") or None
+
     # Geometry 不支持 OBJ 格式，默认改为 GLB
     if generate_type == "Geometry" and result_format.upper() == "OBJ":
         result_format = "GLB"
 
-    if is_part:
+    if is_reduce_face:
+        # ReduceFace models take a 3D file as input.  The file URL is
+        # extracted from FILE_URL content blocks in the last user message.
+        _, _, text_prompt, _, file_url = _extract_inputs(messages)
+
+        if not file_url:
+            raise RuntimeError(
+                "Hunyuan 3D ReduceFace: no file URL found in messages"
+            )
+
+        # Determine file_type from URL extension, defaulting to "OBJ"
+        file_type = _extract_file_type_from_url(file_url) or "OBJ"
+
+        image_url = None
+        image_base64 = None
+        multi_view_images = None
+    elif is_part:
         # Part models take a 3D file (e.g. FBX) as input.  The file URL is
         # extracted from FILE_URL content blocks in the last user message.
         _, _, text_prompt, _, file_url = _extract_inputs(messages)
@@ -1002,6 +1069,7 @@ async def execute_hunyuan3d_generation(
                 polygon_type=polygon_type,
                 file_url=file_url,
                 file_type=file_type,
+                face_level=face_level,
                 region=region,
                 credit_rules=_credit_rules,
                 tracer=_child_span,

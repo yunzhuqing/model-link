@@ -186,4 +186,28 @@ HUNYUAN_TEMPLATES = [
         support_file=False, support_web_search=False, support_tool_search=False,
         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
+    # ── Hunyuan 3D ReduceFace Models ────────────────────────────────────────
+    dict(
+        label='Hunyuan-3d-reduce-face (Hunyuan)',
+        provider='Hunyuan',
+        name='hunyuan-3d-reduce-face',
+        alias='hunyuan-3d-reduce-face',
+        context_size=0, input_size=0, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            '3d': {
+                'type': 'per_credit',
+                'price': 0.12,
+                'credits': {
+                    'base': 15,
+                },
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        timeout=1200,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
+        support_file=True, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
 ]
