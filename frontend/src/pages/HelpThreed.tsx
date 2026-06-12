@@ -718,6 +718,9 @@ export default function HelpThreed() {
               <p className="text-sm font-semibold text-slate-700 mb-2">多个输出项（hunyuan-3d-1.5-part 部件分割 / hunyuan-3d-reduce-face 减面等场景）</p>
               <p className="text-sm text-slate-500 mb-3">output 包含多个 3d_generation_call 项，每个 item 对应一个独立输出（如分割后的各个 3D 部件或减面后的不同格式文件），各自有独立的 content 数组。</p>
               <CodeBlock code={THREED_PART_RESPONSE} />
+              <p className="text-sm font-semibold text-slate-700 mb-2 mt-5">减面输出示例（hunyuan-3d-reduce-face）</p>
+              <p className="text-sm text-slate-500 mb-3">减面结果返回多个 output item，分别对应 OBJ、GLB 格式的模型文件和 IMAGE 预览图。</p>
+              <CodeBlock code={THREED_REDUCE_FACE_RESPONSE} />
             </div>
           </div>
         </div>
