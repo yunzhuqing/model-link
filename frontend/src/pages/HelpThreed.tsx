@@ -12,6 +12,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'multi-view', label: '　└ 多视角图生成', indent: true },
   { id: 'text-to-3d', label: '　└ 文本生成 3D', indent: true },
   { id: 'part', label: '　└ 3D 部件分割', indent: true },
+  { id: 'reduce-face', label: '　└ 3D 减面', indent: true },
   { id: 'seed3d', label: 'Doubao Seed3D' },
   { id: 'seed3d-usage', label: '　└ 请求示例', indent: true },
   { id: 'params', label: '工具参数' },
@@ -149,6 +150,78 @@ const THREED_PART = `{
       "type": "3d_generation"
     }
   ]
+}`;
+
+const THREED_REDUCE_FACE = `{
+  "model": "hunyuan-3d-reduce-face",
+  "background": true,
+  "input": [
+    {
+      "role": "user",
+      "type": "message",
+      "content": [
+        {
+          "type": "input_file",
+          "file_url": "https://example.com/model.glb"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "3d_generation"
+    }
+  ]
+}`;
+
+const THREED_REDUCE_FACE_RESPONSE = `{
+  "id": "resp_d83ac94428a533da6c9262ec0e29eaeade34eb290b90160b",
+  "object": "response",
+  "status": "completed",
+  "model": "hunyuan-3d-reduce-face",
+  "output": [
+    {
+      "type": "3d_generation_call",
+      "id": "1456843823107260416",
+      "status": "completed",
+      "content": [
+        {
+          "type": "OBJ",
+          "url": "https://...output.obj",
+          "preview_url": ""
+        }
+      ]
+    },
+    {
+      "type": "3d_generation_call",
+      "id": "1456843823107260416-1",
+      "status": "completed",
+      "content": [
+        {
+          "type": "GLB",
+          "url": "https://...output.glb",
+          "preview_url": ""
+        }
+      ]
+    },
+    {
+      "type": "3d_generation_call",
+      "id": "1456843823107260416-2",
+      "status": "completed",
+      "content": [
+        {
+          "type": "IMAGE",
+          "url": "https://...output.png",
+          "preview_url": ""
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 3,
+    "total_tokens": 3
+  }
 }`;
 
 const THREED_RESPONSE = `{
@@ -381,7 +454,7 @@ export default function HelpThreed() {
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800 mb-1">功能说明</h3>
             <p className="text-sm text-slate-500">
-              通过在 tools 中指定 3d_generation 类型，触发 3D 模型生成功能。支持混元 3D（单图、多视角、文本、3D 文件部件分割）和 Doubao Seed3D（单图）模型，生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
+              通过在 tools 中指定 3d_generation 类型，触发 3D 模型生成功能。支持混元 3D（单图、多视角、文本、3D 文件部件分割、3D 减面）和 Doubao Seed3D（单图）模型，生成 3D 模型文件（OBJ、GLB、STL、USDZ、FBX、MP4）。
             </p>
           </div>
           <div className="p-6 space-y-3">
@@ -399,7 +472,7 @@ export default function HelpThreed() {
         <SectionCard
           id="models"
           title="支持的模型"
-          description="支持混元 3D（Rapid / Pro 系列）和 Doubao Seed3D 模型。"
+          description="支持混元 3D（Rapid / Pro / Part / ReduceFace 系列）和 Doubao Seed3D 模型。"
         >
           <div className="overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">
@@ -419,6 +492,7 @@ export default function HelpThreed() {
                   { name: 'hunyuan-3d-3.0-pro',  vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 3.0 版本' },
                   { name: 'hunyuan-3d-3.1-pro',  vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 3.1 版本（推荐）' },
                   { name: 'hunyuan-3d-1.5-part', vendor: '混元', input: '3D 文件（FBX）', desc: 'Part 1.5 部件分割' },
+                  { name: 'hunyuan-3d-reduce-face', vendor: '混元', input: '3D 文件（GLB/OBJ）', desc: 'ReduceFace 减面模型' },
                   { name: 'hy-3d-3.0',           vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（别名映射差异）' },
                   { name: 'hy-3d-3.1',           vendor: '混元', input: '单图/多视角/文本', desc: 'Pro 系列（别名映射差异）' },
                   { name: 'doubao-seed3d-2.0',   vendor: 'Doubao', input: '单图（必填）', desc: 'Doubao Seed3D 2.0，仅支持图生 3D' },
@@ -446,7 +520,7 @@ export default function HelpThreed() {
               <h3 className="text-lg font-semibold text-slate-800">混元 3D 模型</h3>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">Hunyuan</span>
             </div>
-            <p className="text-sm text-slate-500">腾讯混元 3D 模型，支持单图、多视角图片、文本描述和 3D 文件四种输入方式生成 3D 模型。</p>
+            <p className="text-sm text-slate-500">腾讯混元 3D 模型，支持单图、多视角图片、文本描述和 3D 文件（部件分割、减面）等多种输入方式生成或处理 3D 模型。</p>
           </div>
           <div className="p-6 space-y-6">
             {/* Single image */}
@@ -509,6 +583,41 @@ export default function HelpThreed() {
           </div>
           <CurlSection body={THREED_PART} />
         </SectionCard>
+
+        {/* ReduceFace — 3D face reduction */}
+        <SectionCard
+          id="reduce-face"
+          title="3D 减面（hunyuan-3d-reduce-face）"
+          badge="input_file"
+          badgeColor="bg-green-100 text-green-700"
+          description="传入一个 3D 文件（GLB、OBJ 等），自动进行减面优化，输出简化后的模型文件。"
+        >
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>约束：</strong>
+            <ul className="list-disc list-inside mt-1.5 space-y-1">
+              <li>输入 <code>input_file</code> <strong>必填</strong>，<code>file_url</code> 指向 3D 文件地址</li>
+              <li>支持的文件格式：GLB、OBJ 等 3D 文件格式</li>
+              <li>返回减面后的模型文件（OBJ、GLB）和预览图（IMAGE）</li>
+              <li>需设置 <code>"background": true</code> 进行异步任务</li>
+            </ul>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700">
+            <strong>可选参数：</strong>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+              {[
+                { name: 'face_level', type: 'string', values: '"high" | "medium" | "low"', desc: '面数级别，控制减面后的面数' },
+                { name: 'polygon_type', type: 'string', values: '"triangle" | "quadrilateral"', desc: '多边形类型' },
+              ].map((p) => (
+                <div key={p.name} className="flex items-center gap-1.5">
+                  <code className="text-purple-600 font-semibold text-xs">{p.name}</code>
+                  <span className="text-slate-400 text-xs">{p.values}</span>
+                  <span className="text-slate-500 text-xs ml-1">{p.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <CurlSection body={THREED_REDUCE_FACE} />
+        </SectionCard>
           </div>
         </div>
 
@@ -558,7 +667,8 @@ export default function HelpThreed() {
                   { name: 'enable_geometry',  type: 'boolean', scope: '通用',     desc: '开启白模（无纹理几何）生成，开启后不支持 OBJ 格式；别名：geometry' },
                   { name: 'face_count',       type: 'number',  scope: 'Pro/Seed3D', desc: '生成面数（混元 Pro: 3000–1500000；Seed3D 也支持）' },
                   { name: 'generate_type',    type: 'string',  scope: 'Pro-only', desc: 'Normal | LowPoly | Geometry | Sketch' },
-                  { name: 'polygon_type',     type: 'string',  scope: 'Pro-only', desc: 'triangle | quadrilateral（仅 LowPoly 模式有效）' },
+                  { name: 'polygon_type',     type: 'string',  scope: 'Pro/ReduceFace', desc: 'triangle | quadrilateral（Pro LowPoly / ReduceFace）' },
+                  { name: 'face_level',       type: 'string',  scope: 'ReduceFace-only', desc: 'high | medium | low，控制减面后的面数' },
                 ].map((r) => (
                   <tr key={r.name} className="hover:bg-slate-50">
                     <td className="px-4 py-2.5"><code className="text-purple-600 font-semibold">{r.name}</code></td>
@@ -588,7 +698,7 @@ export default function HelpThreed() {
         <div id="response-format" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden scroll-mt-4">
           <div className="p-6 border-b border-slate-100">
             <h3 className="text-lg font-semibold text-slate-800">响应格式</h3>
-            <p className="text-sm text-slate-500 mt-1">3D 生成任务为异步执行，提交后需通过 GET 轮询获取结果。output 为 3d_generation_call 类型的输出项数组，单模型通常返回 1 项，部件分割等多结果场景返回多项。content 数组中每项含 type（文件格式）和 url（下载地址）。</p>
+            <p className="text-sm text-slate-500 mt-1">3D 生成任务为异步执行，提交后需通过 GET 轮询获取结果。output 为 3d_generation_call 类型的输出项数组，Rapid / Pro 模型通常返回 1 项，部件分割、减面等多结果场景返回多项。content 数组中每项含 type（文件格式）和 url（下载地址）。</p>
           </div>
           <div className="p-6 space-y-6">
             <div>
@@ -605,8 +715,8 @@ export default function HelpThreed() {
 
             {/* Multiple output items */}
             <div id="response-multi" className="scroll-mt-4">
-              <p className="text-sm font-semibold text-slate-700 mb-2">多个输出项（hunyuan-3d-1.5-part 部件分割等场景）</p>
-              <p className="text-sm text-slate-500 mb-3">output 包含多个 3d_generation_call 项，每个 item 对应一个独立输出（如分割后的各个 3D 部件），各自有独立的 content 数组。</p>
+              <p className="text-sm font-semibold text-slate-700 mb-2">多个输出项（hunyuan-3d-1.5-part 部件分割 / hunyuan-3d-reduce-face 减面等场景）</p>
+              <p className="text-sm text-slate-500 mb-3">output 包含多个 3d_generation_call 项，每个 item 对应一个独立输出（如分割后的各个 3D 部件或减面后的不同格式文件），各自有独立的 content 数组。</p>
               <CodeBlock code={THREED_PART_RESPONSE} />
             </div>
           </div>

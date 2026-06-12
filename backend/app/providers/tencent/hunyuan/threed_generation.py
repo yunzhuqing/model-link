@@ -13,7 +13,7 @@
    - Rapid 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuanTo3DRapidJob
    - Pro   模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuanTo3DProJob
    - Part  模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryHunyuan3DPartJob
-   - ReduceFace 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: QueryReduceFaceJob
+   - ReduceFace 模型: POST ai3d.tencentcloudapi.com  X-TC-Action: DescribeReduceFaceJob
    直到 Status == "DONE"
 
 认证方式：
@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 import json
+import logging
 import sys
 import time
 from datetime import datetime, timezone
@@ -47,6 +48,8 @@ import asyncio
 import httpx
 
 from app.http_client import shared_client
+
+logger = logging.getLogger(__name__)
 
 from app.abstraction.chat import (
     ChatChoice,
@@ -275,7 +278,7 @@ def _is_part_model(model: str) -> bool:
 def _is_reduce_face_model(model: str) -> bool:
     """Check whether the given model identifier is a ReduceFace variant (3D face reduction).
 
-    ReduceFace models use SubmitReduceFaceJob / QueryReduceFaceJob actions
+    ReduceFace models use SubmitReduceFaceJob / DescribeReduceFaceJob actions
     and take a 3D file as input with PolygonType and FaceLevel parameters.
     """
     return model.lower() in _REDUCE_FACE_MODELS
@@ -681,7 +684,7 @@ async def check_any_hunyuan3d_job_status(
     """
     if model:
         if _is_reduce_face_model(model):
-            action = "QueryReduceFaceJob"
+            action = "DescribeReduceFaceJob"
         elif _is_part_model(model):
             action = "QueryHunyuan3DPartJob"
         elif _is_pro_model(model):
@@ -692,7 +695,7 @@ async def check_any_hunyuan3d_job_status(
         if resp:
             return resp
 
-    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob", "QueryHunyuan3DPartJob", "QueryReduceFaceJob"):
+    for action in ("QueryHunyuanTo3DRapidJob", "QueryHunyuanTo3DProJob", "QueryHunyuan3DPartJob", "DescribeReduceFaceJob"):
         resp = await check_hunyuan3d_job_status(secret_id, secret_key, job_id, action, region=region)
         if resp:
             return resp
@@ -719,7 +722,7 @@ async def _poll_3d_job(
     For Rapid models: QueryHunyuanTo3DRapidJob
     For Pro models:   QueryHunyuanTo3DProJob
     For Part models:  QueryHunyuan3DPartJob
-    For ReduceFace models: QueryReduceFaceJob
+    For ReduceFace models: DescribeReduceFaceJob
 
     Args:
         secret_id:        腾讯云 SecretId
@@ -742,7 +745,7 @@ async def _poll_3d_job(
     is_reduce_face = _is_reduce_face_model(model)
 
     if is_reduce_face:
-        action = "QueryReduceFaceJob"
+        action = "DescribeReduceFaceJob"
     elif is_part:
         action = "QueryHunyuan3DPartJob"
     elif is_pro:
