@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import { Plus, Edit2, Trash2, ChevronDown, ChevronUp, X, Save, Database, Cpu, Link as LinkIcon, Check, Search } from 'lucide-react';
 import ProviderFormFields, { type ProviderFormData } from '../components/ProviderFormFields';
+import NumberInput, { fmtNumber } from '../components/NumberInput';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -590,10 +591,20 @@ const ModelForm = ({
               step={step}
               placeholder={placeholder}
               className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
-              value={model[key] ?? ''}
+              value={type === 'number' ? fmtNumber(model[key]) : (model[key] ?? '')}
+              onWheel={type === 'number' ? (e) => (e.currentTarget as HTMLInputElement).blur() : undefined}
               onChange={(e) => {
-                const val = type === 'number' ? (parseFloat(e.target.value) || 0) : (e.target.value || null);
-                setModel({ ...model, [key]: val });
+                if (type === 'number') {
+                  const raw = e.target.value;
+                  if (raw === '' || raw.trim() === '') {
+                    setModel({ ...model, [key]: 0 });
+                    return;
+                  }
+                  const num = parseFloat(raw);
+                  if (!isNaN(num)) setModel({ ...model, [key]: num });
+                } else {
+                  setModel({ ...model, [key]: e.target.value || null });
+                }
               }}
             />
           </div>
@@ -716,10 +727,19 @@ const ModelForm = ({
                         type="number"
                         step={type === 'float' ? '0.01' : '1'}
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                        value={(tier as any)[k]}
+                        value={fmtNumber((tier as any)[k])}
+                        onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                         onChange={(e) => {
+                          const raw = e.target.value;
                           const tiers = [...pricingTiers];
-                          tiers[idx] = { ...tiers[idx], [k]: type === 'float' ? parseFloat(e.target.value) || 0 : parseInt(e.target.value) || 0 };
+                          if (raw === '' || raw.trim() === '') {
+                            tiers[idx] = { ...tiers[idx], [k]: 0 };
+                          } else {
+                            const num = type === 'float' ? parseFloat(raw) : parseInt(raw);
+                            if (!isNaN(num)) {
+                              tiers[idx] = { ...tiers[idx], [k]: num };
+                            }
+                          }
                           setModel({ ...model, pricing_tiers: tiers });
                         }}
                       />
@@ -822,8 +842,17 @@ const ModelForm = ({
                         type="number"
                         step="0.0001"
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                        value={cat.price}
-                        onChange={(e) => updateCategory({ price: parseFloat(e.target.value) || 0 })}
+                        value={fmtNumber(cat.price)}
+                        onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === '' || raw.trim() === '') {
+                            updateCategory({ price: 0 });
+                          } else {
+                            const num = parseFloat(raw);
+                            if (!isNaN(num)) updateCategory({ price: num });
+                          }
+                        }}
                       />
                     </div>
                   </div>
@@ -928,10 +957,17 @@ const ModelForm = ({
                                   type="number"
                                   step="0.0001"
                                   className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                  value={tier.price}
+                                  value={fmtNumber(tier.price)}
+                                  onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                   onChange={(e) => {
+                                    const raw = e.target.value;
                                     const tiers = [...(cat.tiers ?? [])];
-                                    tiers[idx] = { ...tiers[idx], price: parseFloat(e.target.value) || 0 };
+                                    if (raw === '' || raw.trim() === '') {
+                                      tiers[idx] = { ...tiers[idx], price: 0 };
+                                    } else {
+                                      const num = parseFloat(raw);
+                                      if (!isNaN(num)) tiers[idx] = { ...tiers[idx], price: num };
+                                    }
                                     updateCategory({ tiers });
                                   }}
                                 />
@@ -1024,10 +1060,17 @@ const ModelForm = ({
                                         <input
                                           type="number"
                                           className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                          value={subVal}
+                                          value={fmtNumber(subVal)}
+                                          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                           onChange={(e) => {
                                             const inner = { ...(val as Record<string, number>) };
-                                            inner[subKey] = parseInt(e.target.value) || 0;
+                                            const raw = e.target.value;
+                                            if (raw === '' || raw.trim() === '') {
+                                              inner[subKey] = 0;
+                                            } else {
+                                              const num = parseInt(raw);
+                                              if (!isNaN(num)) inner[subKey] = num;
+                                            }
                                             const newCredits = { ...(cat.credits ?? {}) };
                                             newCredits[key] = inner;
                                             updateCategory({ credits: newCredits });
@@ -1071,10 +1114,17 @@ const ModelForm = ({
                                     <input
                                       type="number"
                                       className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                      value={val as number}
+                                      value={fmtNumber(val as number)}
+                                      onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                       onChange={(e) => {
                                         const newCredits = { ...(cat.credits ?? {}) };
-                                        newCredits[key] = parseInt(e.target.value) || 0;
+                                        const raw = e.target.value;
+                                        if (raw === '' || raw.trim() === '') {
+                                          newCredits[key] = 0;
+                                        } else {
+                                          const num = parseInt(raw);
+                                          if (!isNaN(num)) newCredits[key] = num;
+                                        }
                                         updateCategory({ credits: newCredits });
                                       }}
                                     />
@@ -1114,19 +1164,19 @@ const ModelForm = ({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">RPM <span className="text-slate-400 font-normal text-xs">(req/min, blank=∞)</span></label>
-          <input type="number" min="0" placeholder="unlimited" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.rpm ?? ''} onChange={(e) => setModel({ ...model, rpm: e.target.value ? parseInt(e.target.value) : null })} />
+          <NumberInput min={0} placeholder="unlimited" value={model.rpm} onChange={(v) => setModel({ ...model, rpm: v })} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">TPM <span className="text-slate-400 font-normal text-xs">(tok/min, blank=∞)</span></label>
-          <input type="number" min="0" placeholder="unlimited" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.tpm ?? ''} onChange={(e) => setModel({ ...model, tpm: e.target.value ? parseInt(e.target.value) : null })} />
+          <NumberInput min={0} placeholder="unlimited" value={model.tpm} onChange={(v) => setModel({ ...model, tpm: v })} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Discount <span className="text-slate-400 font-normal text-xs">(1.0=full)</span></label>
-          <input type="number" step="0.01" min="0" max="1" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.discount ?? 1.0} onChange={(e) => setModel({ ...model, discount: parseFloat(e.target.value) || 1.0 })} />
+          <NumberInput step="0.01" min={0} max={1} value={model.discount ?? 1.0} onChange={(v) => setModel({ ...model, discount: v ?? 1.0 })} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Timeout <span className="text-slate-400 font-normal text-xs">(sec, blank=300s)</span></label>
-          <input type="number" min="1" placeholder="300" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all" value={model.timeout ?? ''} onChange={(e) => setModel({ ...model, timeout: e.target.value ? parseInt(e.target.value) : null })} />
+          <NumberInput min={1} placeholder="300" value={model.timeout} onChange={(v) => setModel({ ...model, timeout: v })} />
         </div>
       </div>
 

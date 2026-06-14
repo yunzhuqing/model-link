@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import client from '../api/client';
 import { Plus, Edit2, Trash2, Save, LayoutTemplate, Search, X, RefreshCw } from 'lucide-react';
+import NumberInput, { fmtNumber } from '../components/NumberInput';
 
 interface PricingTier {
   label: string;
@@ -266,30 +267,15 @@ const TemplateForm = ({
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.contextSizeLabel')}</label>
-          <input
-            type="number"
-            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-            value={value.context_size}
-            onChange={(e) => set({ context_size: parseInt(e.target.value) || 0 })}
-          />
+          <NumberInput value={value.context_size} onChange={(v) => set({ context_size: v ?? 0 })} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.inputSizeLabel')}</label>
-          <input
-            type="number"
-            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-            value={value.input_size}
-            onChange={(e) => set({ input_size: parseInt(e.target.value) || 0 })}
-          />
+          <NumberInput value={value.input_size} onChange={(v) => set({ input_size: v ?? 0 })} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.outputSizeLabel')}</label>
-          <input
-            type="number"
-            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-            value={value.output_size ?? 4096}
-            onChange={(e) => set({ output_size: parseInt(e.target.value) || 0 })}
-          />
+          <NumberInput value={value.output_size ?? 4096} onChange={(v) => set({ output_size: v ?? 0 })} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">{t('modelTemplates.form.reasoningEffortLabel')}</label>
@@ -367,10 +353,17 @@ const TemplateForm = ({
                         type="number"
                         step={type === 'float' ? '0.01' : '1'}
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                        value={(tier as any)[k]}
+                        value={fmtNumber((tier as any)[k])}
+                        onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                         onChange={(e) => {
+                          const raw = e.target.value;
                           const tiers = [...value.pricing_tiers!];
-                          tiers[idx] = { ...tiers[idx], [k]: type === 'float' ? parseFloat(e.target.value) || 0 : parseInt(e.target.value) || 0 };
+                          if (raw === '' || raw.trim() === '') {
+                            tiers[idx] = { ...tiers[idx], [k]: 0 };
+                          } else {
+                            const num = type === 'float' ? parseFloat(raw) : parseInt(raw);
+                            if (!isNaN(num)) tiers[idx] = { ...tiers[idx], [k]: num };
+                          }
                           set({ pricing_tiers: tiers });
                         }}
                       />
@@ -417,8 +410,17 @@ const TemplateForm = ({
                 type="number"
                 step="0.01"
                 className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                value={(value as any)[key]}
-                onChange={(e) => set({ [key]: parseFloat(e.target.value) || 0 } as any)}
+                value={fmtNumber((value as any)[key])}
+                onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '' || raw.trim() === '') {
+                    set({ [key]: 0 } as any);
+                  } else {
+                    const num = parseFloat(raw);
+                    if (!isNaN(num)) set({ [key]: num } as any);
+                  }
+                }}
               />
             </div>
           ))}
@@ -434,43 +436,21 @@ const TemplateForm = ({
               {t('modelTemplates.form.rpmLabel')}
               <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.rpmHint')}</span>
             </label>
-            <input
-              type="number"
-              min="0"
-              placeholder={t('modelTemplates.form.rpmPlaceholder')}
-              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-              value={value.rpm ?? ''}
-              onChange={(e) => set({ rpm: e.target.value ? parseInt(e.target.value) : null })}
-            />
+            <NumberInput min={0} placeholder={t('modelTemplates.form.rpmPlaceholder')} value={value.rpm} onChange={(v) => set({ rpm: v })} />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               {t('modelTemplates.form.tpmLabel')}
               <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.tpmHint')}</span>
             </label>
-            <input
-              type="number"
-              min="0"
-              placeholder={t('modelTemplates.form.tpmPlaceholder')}
-              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-              value={value.tpm ?? ''}
-              onChange={(e) => set({ tpm: e.target.value ? parseInt(e.target.value) : null })}
-            />
+            <NumberInput min={0} placeholder={t('modelTemplates.form.tpmPlaceholder')} value={value.tpm} onChange={(v) => set({ tpm: v })} />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               {t('modelTemplates.form.discountLabel')}
               <span className="text-slate-400 font-normal ml-1 text-xs">{t('modelTemplates.form.discountHint')}</span>
             </label>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              max="1"
-              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-              value={value.discount ?? 1.0}
-              onChange={(e) => set({ discount: parseFloat(e.target.value) || 1.0 })}
-            />
+            <NumberInput step="0.01" min={0} max={1} value={value.discount ?? 1.0} onChange={(v) => set({ discount: v ?? 1.0 })} />
           </div>
         </div>
       </div>
@@ -599,8 +579,17 @@ const TemplateForm = ({
                         type="number"
                         step="0.0001"
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                        value={cat.price}
-                        onChange={(e) => updateCategory({ price: parseFloat(e.target.value) || 0 })}
+                        value={fmtNumber(cat.price)}
+                        onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === '' || raw.trim() === '') {
+                            updateCategory({ price: 0 });
+                          } else {
+                            const num = parseFloat(raw);
+                            if (!isNaN(num)) updateCategory({ price: num });
+                          }
+                        }}
                       />
                     </div>
                   </div>
@@ -704,10 +693,17 @@ const TemplateForm = ({
                                 type="number"
                                 step="0.0001"
                                 className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                value={tier.price}
+                                value={fmtNumber(tier.price)}
+                                onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                 onChange={(e) => {
+                                  const raw = e.target.value;
                                   const tiers = [...(cat.tiers ?? [])];
-                                  tiers[idx] = { ...tiers[idx], price: parseFloat(e.target.value) || 0 };
+                                  if (raw === '' || raw.trim() === '') {
+                                    tiers[idx] = { ...tiers[idx], price: 0 };
+                                  } else {
+                                    const num = parseFloat(raw);
+                                    if (!isNaN(num)) tiers[idx] = { ...tiers[idx], price: num };
+                                  }
                                   updateCategory({ tiers });
                                 }}
                               />
@@ -799,10 +795,17 @@ const TemplateForm = ({
                                         <input
                                           type="number"
                                           className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                          value={subVal}
+                                          value={fmtNumber(subVal)}
+                                          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                           onChange={(e) => {
                                             const inner = { ...(val as Record<string, number>) };
-                                            inner[subKey] = parseInt(e.target.value) || 0;
+                                            const raw = e.target.value;
+                                            if (raw === '' || raw.trim() === '') {
+                                              inner[subKey] = 0;
+                                            } else {
+                                              const num = parseInt(raw);
+                                              if (!isNaN(num)) inner[subKey] = num;
+                                            }
                                             const newCredits = { ...(cat.credits ?? {}) };
                                             newCredits[key] = inner;
                                             updateCategory({ credits: newCredits });
@@ -846,10 +849,17 @@ const TemplateForm = ({
                                     <input
                                       type="number"
                                       className="w-20 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                      value={val as number}
+                                      value={fmtNumber(val as number)}
+                                      onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                                       onChange={(e) => {
+                                        const raw = e.target.value;
                                         const newCredits = { ...(cat.credits ?? {}) };
-                                        newCredits[key] = parseInt(e.target.value) || 0;
+                                        if (raw === '' || raw.trim() === '') {
+                                          newCredits[key] = 0;
+                                        } else {
+                                          const num = parseInt(raw);
+                                          if (!isNaN(num)) newCredits[key] = num;
+                                        }
                                         updateCategory({ credits: newCredits });
                                       }}
                                     />
