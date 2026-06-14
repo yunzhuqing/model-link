@@ -619,30 +619,44 @@ async def get_api_key(current_user, api_key_id):
         return jsonify(api_key.to_dict_with_group())
 
 
-@apikeys_bp.route('/apikeys/', methods=['POST'])
+@apikeys_bp.route('/groups/<int:group_id>/apikeys', methods=['POST'])
 @token_required
-async def create_api_key(current_user):
-    """Create a new API key. Members can only create if member.apikey.create is enabled."""
+@require_permission('apikey.create')
+async def create_api_key(current_user, group_id):
+    """Create a new API key in the given group. Requires apikey.create permission."""
     data = await request.get_json()
 
     async with get_db_session() as session:
-        # Check if the group exists and user is a member
-        group = await get_group_by_id(data.get('group_id'), session=session)
+        # Load group for workspace_id
+        group = await get_group_by_id(group_id, session=session)
         if not group:
             return jsonify({'detail': 'Group not found'}), 404
 
-        if current_user not in group.users:
-            return jsonify({'detail': 'You are not a member of this group'}), 403
-
-        # Permission: non-root users need apikey.create permission
-        group_id = group.id
+        # Resolve role for additional permission checks
         user_role = await _get_role(group_id, current_user.id, session=session)
-        if user_role != 'root' and not await check_permission(user_role, 'apikey.create', session=session):
-            return jsonify({'detail': 'Creating API keys is disabled for your role'}), 403
 
         # Permission: non-root users need apikey.edit_models to restrict allowed_models
-        if data.get('allowed_models') and user_role != 'root' and not await check_permission(user_role, 'apikey.edit_models', session=session):
+        if data.get('allowed_models') and not await check_permission(user_role, 'apikey.edit_models', session=session):
             return jsonify({'detail': 'You do not have permission to restrict allowed models'}), 403
+
+        # Determine target user_id: admins can create keys for other group members
+        target_user_id = current_user.id
+        requested_user_id = data.get('user_id')
+        if requested_user_id is not None and requested_user_id != current_user.id:
+            # Only admin/root can create keys for other users
+            if _role_rank(user_role) < _role_rank('admin'):
+                return jsonify({'detail': 'Only admins can create API keys for other users'}), 403
+            # Verify the target user is a member of the group
+            from app.models import UserGroup
+            target_ug = (await session.execute(
+                select(UserGroup).where(
+                    UserGroup.group_id == group_id,
+                    UserGroup.user_id == requested_user_id,
+                )
+            )).scalars().first()
+            if not target_ug:
+                return jsonify({'detail': 'Target user is not a member of this group'}), 400
+            target_user_id = requested_user_id
 
         # Convert empty string to None for expires_at (empty string is not valid for timestamp)
         expires_at = data.get('expires_at')
@@ -652,8 +666,8 @@ async def create_api_key(current_user):
             key=generate_api_key(),
             name=data.get('name'),
             description=data.get('description'),
-            group_id=data.get('group_id'),
-            user_id=current_user.id,
+            group_id=group_id,
+            user_id=target_user_id,
             expires_at=expires_at,
             allowed_models=data.get('allowed_models') or None,
             tags=data.get('tags') or None,
@@ -681,10 +695,13 @@ async def create_api_key(current_user):
 
 @apikeys_bp.route('/apikeys/<int:api_key_id>', methods=['PUT'])
 @token_required
+@require_api_key_access
 async def update_api_key(current_user, api_key_id):
     """Update an API key. Invalidates cache after update.
     Members can only edit their own keys if member.apikey.edit_own is enabled.
     Admins/root can edit any key in the group."""
+    data = await request.get_json()
+
     async with get_db_session() as session:
         api_key = await session.get(ApiKey, api_key_id, options=[
                 selectinload(ApiKey.group).selectinload(Group.users),
@@ -694,29 +711,22 @@ async def update_api_key(current_user, api_key_id):
         if not api_key:
             return jsonify({'detail': 'API key not found'}), 404
 
-        if current_user not in api_key.group.users:
-            return jsonify({'detail': 'You do not have access to this API key'}), 403
-
-        # Permission: root can do anything; admin/member need apikey.manage for others, apikey.edit_own for own
+        # check_permission returns True for root, so no separate root guard needed
         group_id = api_key.group_id
         user_role = await _get_role(group_id, current_user.id, session=session)
         is_owner = api_key.user_id == current_user.id
-        if user_role != 'root':
-            if not is_owner and not await check_permission(user_role, 'apikey.manage', session=session):
-                return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
-            if is_owner and not await check_permission(user_role, 'apikey.edit_own', session=session):
-                return jsonify({'detail': 'Editing own API keys is disabled for your role'}), 403
+        if not is_owner and not await check_permission(user_role, 'apikey.manage', session=session):
+            return jsonify({'detail': 'You do not have permission to manage other users\' API keys'}), 403
+        if is_owner and not await check_permission(user_role, 'apikey.edit_own', session=session):
+            return jsonify({'detail': 'Editing own API keys is disabled for your role'}), 403
 
-        data = await request.get_json()
-
-        # Check field-specific permissions for budget operations
-        if user_role != 'root':
-            if 'unlimited_budget' in data and not await check_permission(user_role, 'apikey.unlimited_budget', session=session):
-                return jsonify({'detail': 'You do not have permission to toggle unlimited budget'}), 403
-            if 'budget' in data and not await check_permission(user_role, 'apikey.add_budget', session=session):
-                return jsonify({'detail': 'You do not have permission to add budget'}), 403
-            if 'allowed_models' in data and not await check_permission(user_role, 'apikey.edit_models', session=session):
-                return jsonify({'detail': 'You do not have permission to edit allowed models'}), 403
+        # Check field-specific permissions (check_permission handles root)
+        if 'unlimited_budget' in data and not await check_permission(user_role, 'apikey.unlimited_budget', session=session):
+            return jsonify({'detail': 'You do not have permission to toggle unlimited budget'}), 403
+        if 'budget' in data and not await check_permission(user_role, 'apikey.add_budget', session=session):
+            return jsonify({'detail': 'You do not have permission to add budget'}), 403
+        if 'allowed_models' in data and not await check_permission(user_role, 'apikey.edit_models', session=session):
+            return jsonify({'detail': 'You do not have permission to edit allowed models'}), 403
 
         if 'name' in data:
             api_key.name = data['name']
@@ -1505,13 +1515,14 @@ async def manage_api_keys(current_user):
 @apikeys_bp.route('/apikeys/<int:api_key_id>/assign', methods=['PUT'])
 @token_required
 async def assign_api_key(current_user, api_key_id):
-    """Reassign an API key to a different user and/or group, or update RPM/TPM.
+    """Reassign an API key to a different user and/or group, or update RPM/TPM/tags.
 
     Request body:
         user_id  — new user ID (optional)
         group_id — new group ID (optional)
         rpm      — requests per minute limit (optional, null to clear)
         tpm      — tokens per minute limit (optional, null to clear)
+        tags     — tag list (optional, null/empty to clear)
 
     Requires: admin/root in both the source and target groups.
     """
@@ -1528,9 +1539,10 @@ async def assign_api_key(current_user, api_key_id):
 
     has_rpm = 'rpm' in data
     has_tpm = 'tpm' in data
+    has_tags = 'tags' in data
 
-    if new_user_id is None and new_group_id is None and not has_rpm and not has_tpm:
-        return jsonify({'detail': 'At least one of user_id, group_id, rpm, or tpm is required'}), 400
+    if new_user_id is None and new_group_id is None and not has_rpm and not has_tpm and not has_tags:
+        return jsonify({'detail': 'At least one of user_id, group_id, rpm, tpm, or tags is required'}), 400
 
     async with get_db_session() as session:
         api_key = await session.get(ApiKey, api_key_id, options=[
@@ -1594,6 +1606,10 @@ async def assign_api_key(current_user, api_key_id):
         if has_tpm:
             val = data['tpm']
             api_key.tpm = int(val) if val is not None and val != '' else None
+
+        # Update tags if provided
+        if has_tags:
+            api_key.tags = data['tags'] if data['tags'] else None
 
         await session.commit()
         await session.refresh(api_key)

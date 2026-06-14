@@ -58,6 +58,7 @@ export interface ApiKeyCreate {
   name: string;
   description: string;
   group_id?: number;
+  user_id?: number | null;
   expires_at?: string;
   allowed_models?: string[];
   tags?: { name: string; value: string }[];
@@ -126,6 +127,7 @@ export interface ApiKeyAssignRequest {
   group_id?: number | null;
   rpm?: number | null;
   tpm?: number | null;
+  tags?: { name: string; value: string }[] | null;
 }
 
 export interface MonitoringConfig {
@@ -241,7 +243,7 @@ export interface ModelCreate {
 export const apiKeysApi = {
   list: () => client.get<ApiKey[]>('/api/apikeys/'),
   get: (id: number) => client.get<ApiKey>(`/api/apikeys/${id}`),
-  create: (data: ApiKeyCreate) => client.post<ApiKey>('/api/apikeys/', data),
+  create: (data: ApiKeyCreate) => client.post<ApiKey>(`/api/groups/${data.group_id}/apikeys`, data),
   update: (id: number, data: ApiKeyUpdate) => client.put<ApiKey>(`/api/apikeys/${id}`, data),
   delete: (id: number) => client.delete(`/api/apikeys/${id}`),
   regenerate: (id: number) => client.post<ApiKey>(`/api/apikeys/${id}/regenerate`),

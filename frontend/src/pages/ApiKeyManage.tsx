@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { apiKeysApi, groupsApi } from '../api/client';
@@ -17,7 +18,11 @@ import {
   X,
   Check,
   Filter,
+  Tag,
+  Copy,
+  ExternalLink,
 } from 'lucide-react';
+import TagSelector from '../components/TagSelector';
 
 interface GroupOption {
   id: number;
@@ -30,6 +35,7 @@ interface EditModalState {
   apiKey: ApiKeyManageItem | null;
   newUserId: number | null;
   newGroupId: number | null;
+  newTags: { name: string; value: string }[];
   newRpm: string;
   newTpm: string;
 }
@@ -39,6 +45,7 @@ interface CreateFormState {
   description: string;
   groupId: number | null;
   userId: number | null;
+  tags: { name: string; value: string }[];
   rpm: string;
   tpm: string;
 }
@@ -59,6 +66,7 @@ export default function ApiKeyManage() {
     apiKey: null,
     newUserId: null,
     newGroupId: null,
+    newTags: [],
     newRpm: '',
     newTpm: '',
   });
@@ -69,6 +77,7 @@ export default function ApiKeyManage() {
     description: '',
     groupId: null,
     userId: null,
+    tags: [],
     rpm: '',
     tpm: '',
   });
@@ -109,19 +118,19 @@ export default function ApiKeyManage() {
 
   // Create mutation
   const createMutation = useMutation({
-    mutationFn: (payload: { name: string; description: string; group_id: number; rpm?: number | null; tpm?: number | null }) =>
+    mutationFn: (payload: { name: string; description: string; group_id: number; user_id?: number | null; tags?: { name: string; value: string }[]; rpm?: number | null; tpm?: number | null }) =>
       apiKeysApi.create(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['api-keys-manage'] });
       setCreateModalOpen(false);
-      setCreateForm({ name: '', description: '', groupId: null, userId: null, rpm: '', tpm: '' });
+      setCreateForm({ name: '', description: '', groupId: null, userId: null, tags: [], rpm: '', tpm: '' });
     },
   });
 
   // Edit mutation
   const assignMutation = useMutation({
-    mutationFn: ({ id, userId, groupId, rpm, tpm }: { id: number; userId?: number | null; groupId?: number | null; rpm?: number | null; tpm?: number | null }) =>
-      apiKeysApi.assign(id, { user_id: userId, group_id: groupId, rpm, tpm }),
+    mutationFn: ({ id, userId, groupId, tags, rpm, tpm }: { id: number; userId?: number | null; groupId?: number | null; tags?: { name: string; value: string }[] | null; rpm?: number | null; tpm?: number | null }) =>
+      apiKeysApi.assign(id, { user_id: userId, group_id: groupId, tags, rpm, tpm }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['api-keys-manage'] });
       closeEditModal();
@@ -148,6 +157,8 @@ export default function ApiKeyManage() {
       name: createForm.name.trim(),
       description: createForm.description.trim(),
       group_id: createForm.groupId,
+      user_id: createForm.userId,
+      tags: createForm.tags.length > 0 ? createForm.tags : undefined,
       rpm: rpmVal,
       tpm: tpmVal,
     });
@@ -163,13 +174,14 @@ export default function ApiKeyManage() {
       apiKey,
       newUserId: apiKey.user_id ?? null,
       newGroupId: apiKey.group_id,
+      newTags: apiKey.tags || [],
       newRpm: apiKey.rpm != null ? String(apiKey.rpm) : '',
       newTpm: apiKey.tpm != null ? String(apiKey.tpm) : '',
     });
   };
 
   const closeEditModal = () => {
-    setEditModal({ open: false, apiKey: null, newUserId: null, newGroupId: null, newRpm: '', newTpm: '' });
+    setEditModal({ open: false, apiKey: null, newUserId: null, newGroupId: null, newTags: [], newRpm: '', newTpm: '' });
   };
 
   const selectedGroupUsers = groups?.find(g => g.id === editModal.newGroupId)?.users ?? [];
@@ -197,7 +209,9 @@ export default function ApiKeyManage() {
     const origTpm = editModal.apiKey.tpm;
     const hasRpmChange = rpmVal !== undefined ? rpmVal !== origRpm : origRpm != null;
     const hasTpmChange = tpmVal !== undefined ? tpmVal !== origTpm : origTpm != null;
-    if (!hasUserChange && !hasGroupChange && !hasRpmChange && !hasTpmChange) {
+    const origTags = editModal.apiKey.tags || [];
+    const hasTagsChange = JSON.stringify(editModal.newTags) !== JSON.stringify(origTags);
+    if (!hasUserChange && !hasGroupChange && !hasRpmChange && !hasTpmChange && !hasTagsChange) {
       closeEditModal();
       return;
     }
@@ -205,6 +219,7 @@ export default function ApiKeyManage() {
       id: editModal.apiKey.id,
       userId: hasUserChange ? editModal.newUserId : undefined,
       groupId: hasGroupChange ? editModal.newGroupId : undefined,
+      tags: hasTagsChange ? editModal.newTags : undefined,
       rpm: hasRpmChange ? (rpmVal ?? null) : undefined,
       tpm: hasTpmChange ? (tpmVal ?? null) : undefined,
     });
@@ -215,6 +230,15 @@ export default function ApiKeyManage() {
   const maskKey = (key: string) => {
     if (key.length <= 12) return key;
     return key.slice(0, 7) + '...' + key.slice(-4);
+  };
+
+  const [copiedKeyId, setCopiedKeyId] = useState<number | null>(null);
+
+  const handleCopyKey = (key: string, id: number) => {
+    navigator.clipboard.writeText(key).then(() => {
+      setCopiedKeyId(id);
+      setTimeout(() => setCopiedKeyId(null), 2000);
+    });
   };
 
   const formatBudget = (item: ApiKeyManageItem) => {
@@ -330,23 +354,47 @@ export default function ApiKeyManage() {
                   {data.data.map((item) => (
                     <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
+                        <Link
+                          to={`/apikeys/${item.id}`}
+                          className="flex items-center gap-2 group hover:opacity-80 transition-opacity"
+                        >
                           <Key className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                          <span className="text-sm font-medium text-slate-800 truncate max-w-[180px]" title={item.name}>
+                          <span className="text-sm font-medium text-blue-600 group-hover:text-blue-700 truncate max-w-[180px]" title={item.name}>
                             {item.name}
                           </span>
+                          <ExternalLink className="w-3 h-3 text-slate-300 group-hover:text-blue-400 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </Link>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-1.5">
+                          <code className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded font-mono">
+                            {maskKey(item.key)}
+                          </code>
+                          <button
+                            onClick={() => handleCopyKey(item.key, item.id)}
+                            className="p-1 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded transition-colors flex-shrink-0"
+                            title="复制 Key"
+                          >
+                            {copiedKeyId === item.id ? (
+                              <Check className="w-3.5 h-3.5 text-green-500" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <code className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded font-mono">
-                          {maskKey(item.key)}
-                        </code>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="inline-flex items-center gap-1.5 text-sm text-slate-600">
-                          <Users className="w-3.5 h-3.5 text-indigo-400" />
-                          {item.group_name || `ID: ${item.group_id}`}
-                        </span>
+                        {item.group_id ? (
+                          <Link
+                            to={`/groups/${item.group_id}`}
+                            className="inline-flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-700 hover:underline transition-colors"
+                          >
+                            <Users className="w-3.5 h-3.5 text-indigo-400" />
+                            {item.group_name || `ID: ${item.group_id}`}
+                          </Link>
+                        ) : (
+                          <span className="text-sm text-slate-400">-</span>
+                        )}
                       </td>
                       <td className="px-6 py-4">
                         <span className="text-sm text-slate-600">
@@ -505,6 +553,12 @@ export default function ApiKeyManage() {
                   />
                 </div>
               </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  <Tag className="w-3.5 h-3.5 inline mr-1" />标签
+                </label>
+                <TagSelector value={editModal.newTags} onChange={(tags) => setEditModal(prev => ({ ...prev, newTags: tags }))} />
+              </div>
               <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-500 space-y-1">
                 <p>当前分组: <span className="font-medium text-slate-700">{editModal.apiKey.group_name || `ID: ${editModal.apiKey.group_id}`}</span></p>
                 <p>当前用户: <span className="font-medium text-slate-700">{editModal.apiKey.user_name || '未分配'}</span></p>
@@ -568,6 +622,12 @@ export default function ApiKeyManage() {
                   rows={2}
                   className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all resize-none"
                 />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  <Tag className="w-3.5 h-3.5 inline mr-1" />标签
+                </label>
+                <TagSelector value={createForm.tags} onChange={(tags) => setCreateForm(prev => ({ ...prev, tags }))} />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
