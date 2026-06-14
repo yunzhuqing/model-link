@@ -13,14 +13,19 @@ Mulerun 图像生成模块 (Mulerun Image Generation)
 │ gemini-3.1-flash-image-preview  │ /vendors/google/v1/nano-banana-2        │
 └─────────────────────────────────┴──────────────────────────────────────────┘
 
-流程：
+流程（纯文本生图 /generation）：
 1. 提交任务:  POST https://api.mulerun.com{path}/generation
    请求体:  {"prompt": "..."}
-   响应:    {"task_info": {"id": "...", "status": "pending", ...}}
-
 2. 轮询结果: GET https://api.mulerun.com{path}/generation/{task_id}
-   响应:    {"task_info": {"id": "...", "status": "completed", ...},
-             "images": ["https://..."]}
+
+流程（图生图/编辑 /edit）：
+1. 提交任务:  POST https://api.mulerun.com{path}/edit
+   请求体:  {"prompt": "...", "images": ["https://..."]}
+2. 轮询结果: GET https://api.mulerun.com{path}/edit/{task_id}
+
+响应（二者相同）:
+   {"task_info": {"id": "...", "status": "completed", ...},
+    "images": ["https://..."]}
 
 API 文档参考: https://api.mulerun.com
 """
@@ -144,10 +149,16 @@ async def execute_mulerun_image_generation(
     Execute image generation via the Mulerun image generation API.
 
     Uses an async polling pattern:
-    1. Look up the model's API path from ``MULERUN_IMAGE_GENERATION_PATHS``
-    2. POST https://api.mulerun.com{path}/generation → get task_info.id
-    3. Poll GET https://api.mulerun.com{path}/generation/{task_id}
-    4. When status == "completed", extract images
+
+    - Text-only (no reference images):
+      1. POST https://api.mulerun.com{path}/generation → get task_info.id
+      2. Poll GET https://api.mulerun.com{path}/generation/{task_id}
+
+    - With reference images (image-to-image editing):
+      1. POST https://api.mulerun.com{path}/edit → get task_info.id
+      2. Poll GET https://api.mulerun.com{path}/edit/{task_id}
+
+    3. When status == "completed", extract images
 
     Args:
         api_key: Mulerun API key
@@ -177,6 +188,24 @@ async def execute_mulerun_image_generation(
     if not prompt:
         raise ValueError("Mulerun image generation requires a text prompt")
 
+    # Collect reference images from messages (image-to-image / editing)
+    reference_images: List[str] = []
+    for msg in messages:
+        if msg.role != MessageRole.USER:
+            continue
+        if isinstance(msg.content, list):
+            from app.abstraction.messages import ContentBlock, ContentType
+            for block in msg.content:
+                if isinstance(block, ContentBlock):
+                    if block.type == ContentType.IMAGE_URL and block.url:
+                        reference_images.append(block.url)
+                    elif block.type == ContentType.IMAGE_BASE64 and block.data:
+                        mime = block.media_type or "image/jpeg"
+                        reference_images.append(f"data:{mime};base64,{block.data}")
+
+    # Determine action: "edit" when reference images are provided, "generation" otherwise
+    action = "edit" if reference_images else "generation"
+
     # Build submission request
     request_body: Dict[str, Any] = {
         "prompt": prompt,
@@ -205,21 +234,6 @@ async def execute_mulerun_image_generation(
     if resolution:
         request_body["resolution"] = resolution
 
-    # Optional: include reference images from messages (image-to-image)
-    reference_images: List[str] = []
-    for msg in messages:
-        if msg.role != MessageRole.USER:
-            continue
-        if isinstance(msg.content, list):
-            from app.abstraction.messages import ContentBlock, ContentType
-            for block in msg.content:
-                if isinstance(block, ContentBlock):
-                    if block.type == ContentType.IMAGE_URL and block.url:
-                        reference_images.append(block.url)
-                    elif block.type == ContentType.IMAGE_BASE64 and block.data:
-                        mime = block.media_type or "image/jpeg"
-                        reference_images.append(f"data:{mime};base64,{block.data}")
-
     if reference_images:
         request_body["images"] = reference_images
 
@@ -230,7 +244,7 @@ async def execute_mulerun_image_generation(
 
     # Build the full API URL: extract host from base_url + model-specific path
     api_root = _get_mulerun_api_root(base_url)
-    submit_url = f"{api_root}{api_path}/generation"
+    submit_url = f"{api_root}{api_path}/{action}"
 
     _child_span = None
     if tracer:
@@ -242,9 +256,9 @@ async def execute_mulerun_image_generation(
     try:
         timeout = int(metadata.get("timeout", _POLL_MAX_WAIT_S) or _POLL_MAX_WAIT_S)
         async with shared_client() as client:
-            # Step 1: Submit the generation task
-            logger.info("Mulerun image generation: submitting task to %s, prompt=%s...",
-                        submit_url, prompt[:80])
+            # Step 1: Submit the generation/edit task
+            logger.info("Mulerun image %s: submitting task to %s, prompt=%s...",
+                        action, submit_url, prompt[:80])
 
             response = await client.post(
                 submit_url,
@@ -277,7 +291,7 @@ async def execute_mulerun_image_generation(
             logger.info("Mulerun image generation: task submitted, task_id=%s", task_id)
 
             # Step 2: Poll for results
-            poll_url = f"{api_root}{api_path}/generation/{task_id}"
+            poll_url = f"{api_root}{api_path}/{action}/{task_id}"
             start_time = time.monotonic()
             result_data: Optional[Dict[str, Any]] = None
 
