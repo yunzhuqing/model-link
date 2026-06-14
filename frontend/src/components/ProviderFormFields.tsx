@@ -104,6 +104,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
             <option value="tencentvod">Tencent VOD</option>
             <option value="hunyuan">Hunyuan 3D (Tencent)</option>
             <option value="vllm">vLLM (self-hosted)</option>
+            <option value="mulerun">Mulerun</option>
             <option value="openai_chatcompletions_compt">OpenAI ChatCompletions Compatible</option>
             <option value="openai_responses_compt">OpenAI Responses API Compatible</option>
           </select>
@@ -120,6 +121,8 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
                 ? 'https://your-resource.openai.azure.com'
                 : data.type === 'vllm'
                 ? 'http://localhost:8000/v1'
+                : data.type === 'mulerun'
+                ? 'https://api.mulerun.com/vendors/openai/v1'
                 : 'https://api.example.com'
             }
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
@@ -149,6 +152,11 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
           {data.type === 'vllm' && (
             <p className="text-xs text-slate-400 mt-1">
               Default: http://localhost:8000/v1 — set to your vLLM server address.
+            </p>
+          )}
+          {data.type === 'mulerun' && (
+            <p className="text-xs text-slate-400 mt-1">
+              Default: https://api.mulerun.com/vendors/openai/v1 — leave blank to use default.
             </p>
           )}
         </div>

@@ -1,7 +1,7 @@
 """GLM (Zhipu AI) model templates."""
 
 GLM_TEMPLATES = [
-    dict(label='ZHIPU/GLM-5.1', provider='Bailian', name='ZHIPU/GLM-5.1', alias='glm-5.1',
+    dict(label='GLM-5.1', provider='Bailian', name='ZHIPU/GLM-5.1', alias='glm-5.1',
          context_size=202000, input_size=202000, output_size=128000,
          pricing_tiers=None,
          input_price=8, output_price=28, cache_creation_price=0, cache_hit_price=2,
