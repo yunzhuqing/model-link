@@ -51,6 +51,7 @@ from app.abstraction.chat import (
 )
 from app.abstraction.messages import Message, MessageRole
 from app.abstraction.streaming import StreamChunk, StreamEventType
+from app.providers.image_size_utils import resolve_image_size
 from app.utils import gen_id, json_loads
 
 logger = logging.getLogger("model_link.mulerun")
@@ -217,6 +218,25 @@ async def execute_mulerun_image_generation(
         request_body["quality"] = quality
 
     size = metadata.get("size")
+    aspect_ratio = metadata.get("aspect_ratio")
+    resolution = metadata.get("resolution")
+
+    # Gemini models don't support ``size`` — they use ``aspect_ratio`` + ``resolution``.
+    # Map ``size`` to Gemini-compatible parameters via the shared resolution table.
+    # ``resolve_image_size`` respects priority: explicit aspect_ratio/resolution > size.
+    is_gemini = model_lower.startswith("gemini-")
+    if is_gemini:
+        if size or aspect_ratio or resolution:
+            mapped_ar, mapped_res = resolve_image_size(
+                size=size or "",
+                aspect_ratio=aspect_ratio or "",
+                resolution=resolution or "",
+            )
+            aspect_ratio = mapped_ar or aspect_ratio
+            resolution = mapped_res or resolution
+        # Gemini does not accept ``size``
+        size = None
+
     if size:
         request_body["size"] = size
 
@@ -225,12 +245,9 @@ async def execute_mulerun_image_generation(
     if output_format:
         request_body["format"] = output_format
 
-    # Gemini image model parameters
-    aspect_ratio = metadata.get("aspect_ratio")
     if aspect_ratio:
         request_body["aspect_ratio"] = aspect_ratio
 
-    resolution = metadata.get("resolution")
     if resolution:
         request_body["resolution"] = resolution
 
