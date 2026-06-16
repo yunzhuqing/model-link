@@ -217,7 +217,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
                     result.append({
                         "type": "function_call_output",
                         "call_id": block.tool_call_id or message.tool_call_id or "",
-                        "output": block.tool_result or "",
+                        "output": self._tool_result_to_responses_output(block.tool_result),
                     })
             if not result:
                 # fallback：直接用消息级的 tool_call_id
@@ -276,7 +276,7 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
                 tool_result_items.append({
                     "type": "function_call_output",
                     "call_id": block.tool_call_id or "",
-                    "output": block.tool_result or "",
+                    "output": self._tool_result_to_responses_output(block.tool_result),
                 })
             elif block.type == ContentType.TEXT:
                 content_parts.append({"type": "input_text", "text": block.text or ""})

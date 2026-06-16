@@ -271,7 +271,7 @@ class VolcengineProvider(BaseProvider):
                     items.append({
                         "type": "function_call_output",
                         "call_id": block.tool_call_id or "",
-                        "output": block.tool_result or ""
+                        "output": block.get_tool_result_text()
                     })
                 # Also include non-tool-result content as a regular message
                 other_blocks = [

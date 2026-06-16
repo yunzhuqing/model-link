@@ -60,7 +60,9 @@ class ContentBlock:
     tool_call_id: Optional[str] = None
     tool_name: Optional[str] = None
     tool_arguments: Optional[Dict[str, Any]] = None
-    tool_result: Optional[str] = None
+    # 工具结果：可以是纯文本字符串，也可以是多模态内容块列表（文本 + 图片）。
+    # Anthropic 的 tool_result.content 原生支持内容块数组，例如工具返回图片。
+    tool_result: Optional[Union[str, List["ContentBlock"]]] = None
     is_error: bool = False
     cache_control: Optional[Dict[str, Any]] = None  # Anthropic prompt caching: e.g. {"type": "ephemeral"}
     video_fps: Optional[str] = None  # FPS for video_url inputs (doubao, etc.)
@@ -123,8 +125,8 @@ class ContentBlock:
         )
     
     @classmethod
-    def from_tool_result(cls, tool_call_id: str, result: str, is_error: bool = False) -> 'ContentBlock':
-        """从工具结果创建内容块"""
+    def from_tool_result(cls, tool_call_id: str, result: Union[str, List["ContentBlock"]], is_error: bool = False) -> 'ContentBlock':
+        """从工具结果创建内容块（result 可为字符串或多模态内容块列表）"""
         return cls(
             type=ContentType.TOOL_RESULT,
             tool_call_id=tool_call_id,
@@ -132,10 +134,63 @@ class ContentBlock:
             is_error=is_error
         )
 
+    def get_tool_result_text(self) -> str:
+        """将 tool_result（字符串或内容块列表）扁平化为纯文本。
+
+        供仅支持文本工具结果的供应商使用（Gemini、Vertex、Volcengine、Azure、
+        Responses 等）。当 tool_result 为内容块列表时，仅提取其中的文本块，
+        丢弃图片等非文本内容。
+        """
+        tr = self.tool_result
+        if isinstance(tr, str):
+            return tr
+        if isinstance(tr, list):
+            return " ".join(
+                b.text or ""
+                for b in tr
+                if isinstance(b, ContentBlock) and b.type == ContentType.TEXT
+            )
+        return ""
+
     @classmethod
     def from_thinking(cls, thinking: str, signature: Optional[str] = None) -> 'ContentBlock':
         """从 Anthropic thinking 块创建内容块（thinking 文本存于 text，签名存于 signature）"""
         return cls(type=ContentType.THINKING, text=thinking, signature=signature)
+
+    @classmethod
+    def from_anthropic_content_item(cls, item: Any) -> Optional['ContentBlock']:
+        """从 Anthropic 内容项（text / image）创建内容块。
+
+        用于解析 tool_result.content 数组中的子内容块，例如工具返回图片：
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+        无法识别的类型返回 None。
+        """
+        if isinstance(item, str):
+            return cls.from_text(item)
+        if not isinstance(item, dict):
+            return None
+        itype = item.get('type', 'text')
+        if itype == 'text':
+            return cls.from_text(item.get('text', ''))
+        if itype == 'image':
+            source = item.get('source', {})
+            source_type = source.get('type', 'url')
+            if source_type == 'url':
+                return cls.from_image_url(source.get('url', ''))
+            if source_type == 'base64':
+                raw_data = source.get('data', '')
+                media_type = source.get('media_type', 'image/jpeg')
+                # Strip data URI prefix if accidentally included
+                if isinstance(raw_data, str) and raw_data.startswith('data:'):
+                    parts = raw_data.split(',', 1)
+                    if len(parts) > 1:
+                        prefix = parts[0]  # "data:image/png;base64"
+                        extracted_type = prefix.replace('data:', '').replace(';base64', '')
+                        if extracted_type:
+                            media_type = extracted_type
+                        raw_data = parts[1]
+                return cls.from_image_base64(raw_data, media_type)
+        return None
 
 
 @dataclass
@@ -228,14 +283,22 @@ class Message:
                 if isinstance(raw_content, str):
                     tool_result_val = raw_content
                 elif isinstance(raw_content, list):
-                    # content can be a list of content blocks (e.g. [{"type": "text", "text": "..."}])
-                    text_parts = []
+                    # content can be a list of content blocks, including images:
+                    #   [{"type": "text", "text": "..."},
+                    #    {"type": "image", "source": {...}}]
+                    parsed_blocks = []
                     for part in raw_content:
-                        if isinstance(part, dict) and part.get('type') == 'text':
-                            text_parts.append(part.get('text', ''))
-                        elif isinstance(part, str):
-                            text_parts.append(part)
-                    tool_result_val = '\n'.join(text_parts) if text_parts else None
+                        blk = ContentBlock.from_anthropic_content_item(part)
+                        if blk is not None:
+                            parsed_blocks.append(blk)
+                    if any(b.type != ContentType.TEXT for b in parsed_blocks):
+                        # 含图片等非文本内容 → 保留为内容块列表
+                        tool_result_val = parsed_blocks
+                    elif parsed_blocks:
+                        # 纯文本 → 扁平化为字符串（向后兼容）
+                        tool_result_val = '\n'.join(b.text or '' for b in parsed_blocks)
+                    else:
+                        tool_result_val = None
 
             return ContentBlock(
                 type=content_type,

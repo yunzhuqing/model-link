@@ -146,9 +146,19 @@ class AnthropicMessagesAdapter(BaseAdapter):
                     elif item_type == 'tool_result':
                         result_content = item.get('content', '')
                         if isinstance(result_content, list):
-                            # Extract text from content blocks
-                            texts = [c.get('text', '') for c in result_content if c.get('type') == 'text']
-                            result_content = ' '.join(texts)
+                            # content 数组可能包含图片等多模态内容，逐项解析为内容块
+                            #   [{"type":"text",...}, {"type":"image","source":{...}}]
+                            parsed = []
+                            for c in result_content:
+                                blk = ContentBlock.from_anthropic_content_item(c)
+                                if blk is not None:
+                                    parsed.append(blk)
+                            if any(b.type != ContentType.TEXT for b in parsed):
+                                # 含图片 → 保留为内容块列表
+                                result_content = parsed
+                            else:
+                                # 纯文本 → 扁平化为字符串（向后兼容）
+                                result_content = ' '.join(b.text or '' for b in parsed)
                         # 将 tool_result 作为 ContentBlock 添加到 blocks 列表中
                         # 这样可以保持与原始 Anthropic 格式一致，tool_result 和 text 在同一消息中
                         block = ContentBlock(

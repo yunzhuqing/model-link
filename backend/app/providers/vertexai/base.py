@@ -875,7 +875,7 @@ class VertexAIProvider(BaseProvider):
                         # response must be an object with "result" key
                         fr: Dict[str, Any] = {
                             "name": name,
-                            "response": {"result": block.tool_result or ""}
+                            "response": {"result": block.get_tool_result_text()}
                         }
                         parts.append({"functionResponse": fr})
                     elif block.type == ContentType.TEXT:
@@ -949,7 +949,7 @@ class VertexAIProvider(BaseProvider):
             name = block.tool_name or call_id_to_name.get(bid, "")
             # Note: Vertex AI does not accept "id" in functionResponse
             # response must be an object with "result" key
-            fr: Dict[str, Any] = {"name": name, "response": {"result": block.tool_result or ""}}
+            fr: Dict[str, Any] = {"name": name, "response": {"result": block.get_tool_result_text()}}
             return {"functionResponse": fr}
         else:
             return {"text": block.text or ""}

@@ -265,29 +265,37 @@ class AzureProvider(OpenAIProvider):
             # Responses API uses {"type": "function_call_output", "call_id": ..., "output": ...}
             if msg.role == MessageRole.TOOL:
                 call_id = msg.tool_call_id or ""
-                # Extract text content from the message
+                # Extract output from the message. A tool_result block may carry
+                # multimodal content (text + image); preserve it as an input_*
+                # array via _tool_result_to_responses_output.
                 if isinstance(msg.content, str):
-                    output_text = msg.content
+                    output_value = msg.content
                 elif isinstance(msg.content, list):
-                    # Content may be text blocks or tool_result blocks
-                    text_parts = []
-                    for b in msg.content:
-                        if hasattr(b, 'type'):
-                            if b.type == ContentType.TOOL_RESULT and b.tool_result:
-                                text_parts.append(b.tool_result)
-                            elif b.type == ContentType.TEXT and b.text:
-                                text_parts.append(b.text)
-                        elif isinstance(b, dict):
-                            # Handle raw dict blocks (e.g. from input_text format)
-                            text_parts.append(b.get("text", ""))
-                    output_text = " ".join(text_parts)
+                    tr_block = next(
+                        (b for b in msg.content
+                         if getattr(b, 'type', None) == ContentType.TOOL_RESULT),
+                        None,
+                    )
+                    if tr_block is not None:
+                        output_value = self._tool_result_to_responses_output(tr_block.tool_result)
+                        call_id = tr_block.tool_call_id or call_id
+                    else:
+                        text_parts = []
+                        for b in msg.content:
+                            if hasattr(b, 'type'):
+                                if b.type == ContentType.TEXT and b.text:
+                                    text_parts.append(b.text)
+                            elif isinstance(b, dict):
+                                # Handle raw dict blocks (e.g. from input_text format)
+                                text_parts.append(b.get("text", ""))
+                        output_value = " ".join(text_parts)
                 else:
-                    output_text = str(msg.content) if msg.content else ""
+                    output_value = str(msg.content) if msg.content else ""
 
                 input_items.append({
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": output_text,
+                    "output": output_value,
                 })
                 continue
 
@@ -317,7 +325,7 @@ class AzureProvider(OpenAIProvider):
                         input_items.append({
                             "type": "function_call_output",
                             "call_id": block.tool_call_id or "",
-                            "output": block.tool_result or ""
+                            "output": self._tool_result_to_responses_output(block.tool_result)
                         })
                     # Also include non-tool-result content (e.g. text) as a regular message
                     other_blocks = [

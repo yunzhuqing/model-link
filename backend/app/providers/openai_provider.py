@@ -448,10 +448,16 @@ class OpenAIProvider(BaseProvider):
 
             # Emit each tool_result as a separate "tool" role message
             for block in tool_result_blocks:
+                tr = block.tool_result
+                if isinstance(tr, list) and any(b.type != ContentType.TEXT for b in tr):
+                    # 含图片等多模态内容 → 使用内容块数组（视觉模型支持 tool 消息中的 image_url）
+                    content_value = [self._content_block_to_openai(b) for b in tr]
+                else:
+                    content_value = block.get_tool_result_text()
                 result.append({
                     "role": "tool",
                     "tool_call_id": block.tool_call_id or "",
-                    "content": block.tool_result or "",
+                    "content": content_value,
                 })
 
             # If there are other content blocks (e.g. text), emit them as a separate user message
@@ -591,6 +597,51 @@ class OpenAIProvider(BaseProvider):
         else:
             return {"type": block.type.value, "url": block.url, "data": block.data}
     
+    def _tool_result_to_responses_output(self, tool_result):
+        """将 tool_result 转换为 Responses API function_call_output.output。
+
+        纯文本返回字符串；含图片/文件等多模态内容时返回 input_* 内容块数组
+        （input_text / input_image / input_file），从而保留工具返回的图片。
+
+        Responses API function_call_output.output 支持：
+            string | [{"type":"input_text","text":...},
+                      {"type":"input_image","image_url": "url|dataURI"},
+                      {"type":"input_file","file_data": dataURI, "file_url":..., "filename":...}]
+        """
+        from app.abstraction.messages import ContentType
+
+        if not isinstance(tool_result, list):
+            return tool_result or ""
+
+        # 纯文本 → 扁平化为字符串（向后兼容）
+        if all(b.type == ContentType.TEXT for b in tool_result):
+            return " ".join(b.text or "" for b in tool_result)
+
+        parts: List[Dict[str, Any]] = []
+        for b in tool_result:
+            if b.type == ContentType.TEXT:
+                parts.append({"type": "input_text", "text": b.text or ""})
+            elif b.type == ContentType.IMAGE_URL:
+                parts.append({"type": "input_image", "image_url": b.url or ""})
+            elif b.type == ContentType.IMAGE_BASE64:
+                media = b.media_type or "image/jpeg"
+                parts.append({
+                    "type": "input_image",
+                    "image_url": f"data:{media};base64,{b.data or ''}",
+                })
+            elif b.type == ContentType.FILE_URL:
+                parts.append({"type": "input_file", "file_url": b.url or ""})
+            elif b.type == ContentType.FILE_BASE64:
+                media = b.media_type or "application/octet-stream"
+                part: Dict[str, Any] = {
+                    "type": "input_file",
+                    "file_data": f"data:{media};base64,{b.data or ''}",
+                }
+                if b.filename:
+                    part["filename"] = b.filename
+                parts.append(part)
+        return parts if parts else ""
+
     def _tool_to_openai(self, tool: ToolDefinition) -> Dict[str, Any]:
         """将 ToolDefinition 转换为 OpenAI 格式"""
         return {

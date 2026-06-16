@@ -208,10 +208,88 @@ def _handle_generation_call_item(item: dict, messages: list, item_type: str):
     messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
 
 
+def _image_block_from_ref(ref: str) -> Optional[ContentBlock]:
+    """从 image_url / file_id 字符串构造图片内容块（支持 data URI base64）。"""
+    if not isinstance(ref, str) or not ref:
+        return None
+    if ref.startswith('data:'):
+        # data:image/png;base64,xxxx
+        head, _, b64 = ref.partition(',')
+        media_type = head.replace('data:', '').replace(';base64', '') or 'image/jpeg'
+        return ContentBlock.from_image_base64(b64, media_type)
+    return ContentBlock.from_image_url(ref)
+
+
+def _file_block_from_item(it: dict) -> Optional[ContentBlock]:
+    """从 input_file 项构造文件内容块。"""
+    file_data = it.get('file_data')
+    file_url = it.get('file_url')
+    filename = it.get('filename')
+    if isinstance(file_data, str) and file_data:
+        if file_data.startswith('data:'):
+            head, _, b64 = file_data.partition(',')
+            media_type = head.replace('data:', '').replace(';base64', '') or 'application/octet-stream'
+        else:
+            b64 = file_data
+            media_type = 'application/octet-stream'
+        return ContentBlock.from_file_base64(b64, media_type, filename)
+    ref = file_url or it.get('file_id')
+    if isinstance(ref, str) and ref:
+        block = ContentBlock.from_file_url(ref)
+        if filename:
+            block.filename = filename
+        return block
+    return None
+
+
+def _parse_function_call_output(output):
+    """解析 function_call_output.output（字符串或 input_* 数组）为 tool_result 值。
+
+    Responses API 支持工具结果包含图片/文件：
+        output: string | [{"type":"input_text",...},
+                          {"type":"input_image","image_url": "url|dataURI", "file_id":...},
+                          {"type":"input_file","file_data": dataURI, "file_url":..., "filename":...}]
+    含图片/文件时返回 ContentBlock 列表，纯文本返回字符串（向后兼容）。
+    """
+    if isinstance(output, str):
+        return output
+    if not isinstance(output, list):
+        return str(output) if output is not None else ''
+
+    blocks: list = []
+    for it in output:
+        if isinstance(it, str):
+            blocks.append(ContentBlock.from_text(it))
+            continue
+        if not isinstance(it, dict):
+            continue
+        itype = it.get('type', 'input_text')
+        if itype in ('input_text', 'text', 'output_text'):
+            blocks.append(ContentBlock.from_text(it.get('text', '')))
+        elif itype in ('input_image', 'image'):
+            ref = it.get('image_url') or it.get('url') or it.get('file_id') or ''
+            blk = _image_block_from_ref(ref)
+            if blk is not None:
+                blocks.append(blk)
+        elif itype in ('input_file', 'file'):
+            blk = _file_block_from_item(it)
+            if blk is not None:
+                blocks.append(blk)
+
+    if any(b.type != ContentType.TEXT for b in blocks):
+        # 含图片/文件 → 保留为内容块列表
+        return blocks
+    if blocks:
+        # 纯文本 → 扁平化为字符串
+        return ' '.join(b.text or '' for b in blocks)
+    return ''
+
+
 def _handle_function_call_output_item(item: dict, messages: list):
     """Convert a function_call_output item → tool Message."""
     call_id = item.get('call_id', '')
-    block = ContentBlock.from_tool_result(call_id, str(item.get('output', '')))
+    result_value = _parse_function_call_output(item.get('output', ''))
+    block = ContentBlock.from_tool_result(call_id, result_value)
     messages.append(Message(role=MessageRole.TOOL, content=[block], tool_call_id=call_id))
 
 

@@ -12,7 +12,7 @@ Anthropic API 特点：
 
 API 文档: https://docs.anthropic.com/en/api/messages
 """
-from typing import Optional, List, Dict, Any, AsyncGenerator
+from typing import Optional, List, Dict, Any, AsyncGenerator, Union
 import json
 import time
 import uuid
@@ -271,19 +271,29 @@ class AnthropicProvider(BaseProvider):
         """将 Message 转换为 Anthropic 格式"""
         # Tool result messages → Anthropic user message with tool_result content
         if message.role == MessageRole.TOOL:
-            content_text = ""
+            tool_use_id = message.tool_call_id or ""
+            tool_result_value: Union[str, List[ContentBlock]] = ""
             if isinstance(message.content, str):
-                content_text = message.content
+                tool_result_value = message.content
             elif isinstance(message.content, list):
-                texts = [b.text or "" for b in message.content if b.type == ContentType.TEXT]
-                content_text = " ".join(texts)
+                # 优先使用 TOOL_RESULT 块自身携带的多模态内容（含图片）
+                tr_block = next(
+                    (b for b in message.content if b.type == ContentType.TOOL_RESULT),
+                    None,
+                )
+                if tr_block is not None:
+                    tool_result_value = tr_block.tool_result or ""
+                    tool_use_id = tr_block.tool_call_id or tool_use_id
+                else:
+                    texts = [b.text or "" for b in message.content if b.type == ContentType.TEXT]
+                    tool_result_value = " ".join(texts)
 
             return {
                 "role": "user",
                 "content": [{
                     "type": "tool_result",
-                    "tool_use_id": message.tool_call_id or "",
-                    "content": content_text,
+                    "tool_use_id": tool_use_id,
+                    "content": self._tool_result_to_anthropic_content(tool_result_value),
                 }]
             }
 
@@ -302,6 +312,23 @@ class AnthropicProvider(BaseProvider):
             result["content"] = ""
 
         return result
+
+    def _tool_result_to_anthropic_content(
+        self, tool_result: Union[str, List[ContentBlock], None]
+    ) -> Union[str, List[Dict[str, Any]]]:
+        """将 tool_result（字符串或内容块列表）转换为 Anthropic tool_result.content。
+
+        纯文本返回字符串；含图片等多模态内容时返回 Anthropic 内容块数组
+        （text / image），从而完整保留工具返回的图片。
+        """
+        if isinstance(tool_result, list):
+            blocks = []
+            for b in tool_result:
+                anthropic_block = self._content_block_to_anthropic(b)
+                if anthropic_block:
+                    blocks.append(anthropic_block)
+            return blocks if blocks else ""
+        return tool_result or ""
 
     def _content_block_to_anthropic(self, block: ContentBlock) -> Optional[Dict[str, Any]]:
         """将 ContentBlock 转换为 Anthropic 格式，保留 cache_control"""
@@ -339,7 +366,7 @@ class AnthropicProvider(BaseProvider):
             result = {
                 "type": "tool_result",
                 "tool_use_id": block.tool_call_id or "",
-                "content": block.tool_result or "",
+                "content": self._tool_result_to_anthropic_content(block.tool_result),
                 "is_error": getattr(block, 'is_error', False),
             }
         elif block.type in (ContentType.FILE_URL, ContentType.FILE_BASE64):

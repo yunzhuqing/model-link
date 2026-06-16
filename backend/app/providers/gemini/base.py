@@ -374,7 +374,7 @@ class GeminiProvider(BaseProvider):
                         name = block.tool_name or message.name or call_id_to_name.get(bid, "")
                         fr: Dict[str, Any] = {
                             "name": name,
-                            "response": {"output": block.tool_result or ""}
+                            "response": {"output": block.get_tool_result_text()}
                         }
                         if bid:
                             fr["id"] = bid
@@ -454,7 +454,7 @@ class GeminiProvider(BaseProvider):
         elif block.type == ContentType.TOOL_RESULT:
             bid = block.tool_call_id or ""
             name = block.tool_name or call_id_to_name.get(bid, "")
-            fr: Dict[str, Any] = {"name": name, "response": {"output": block.tool_result or ""}}
+            fr: Dict[str, Any] = {"name": name, "response": {"output": block.get_tool_result_text()}}
             if bid:
                 fr["id"] = bid
             return {"functionResponse": fr}
