@@ -382,6 +382,89 @@ class GatewayService:
             # All traffic_ratios are 0 — fall back to uniform random
             return random.choice(candidates)
 
+
+    @staticmethod
+    async def _resolve_file_ids(request, session) -> None:
+        """
+        Scan all messages in the request for file_id references (file-xxx format)
+        and replace them with the real object_key from ml_uploaded_files.
+
+        This handles both:
+        - Text content containing file-xxx references
+        - Image/video URL blocks that reference file IDs
+
+        Args:
+            request: ChatRequest whose messages to scan
+            session: Open async DB session
+        """
+        import re
+        from sqlalchemy import select as sa_select
+        from app.models import UploadedFile
+
+        file_id_pattern = re.compile(r'\bfile-[a-f0-9]{24}\b')
+
+        # Collect all file_ids from message content
+        all_file_ids = set()
+        for msg in request.messages:
+            if msg.content:
+                if isinstance(msg.content, str):
+                    all_file_ids.update(file_id_pattern.findall(msg.content))
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if hasattr(block, 'text') and block.text:
+                            all_file_ids.update(file_id_pattern.findall(block.text))
+                        if hasattr(block, 'image_url') and block.image_url:
+                            url = block.image_url.get('url', '') if isinstance(block.image_url, dict) else str(block.image_url)
+                            all_file_ids.update(file_id_pattern.findall(url))
+                        if hasattr(block, 'video_url') and block.video_url:
+                            url = block.video_url.get('url', '') if isinstance(block.video_url, dict) else str(block.video_url)
+                            all_file_ids.update(file_id_pattern.findall(url))
+                        if hasattr(block, 'file_id') and block.file_id:
+                            all_file_ids.add(block.file_id)
+
+        if not all_file_ids:
+            return
+
+        # Look up mappings from the database
+        result = await session.execute(
+            sa_select(UploadedFile).where(UploadedFile.file_id.in_(list(all_file_ids)))
+        )
+        mappings = {uf.file_id: uf.object_key for uf in result.scalars().all()}
+
+        if not mappings:
+            return
+
+        # Replace in messages
+        for msg in request.messages:
+            if msg.content:
+                if isinstance(msg.content, str):
+                    for fid, okey in mappings.items():
+                        msg.content = msg.content.replace(fid, okey)
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if hasattr(block, 'text') and block.text:
+                            for fid, okey in mappings.items():
+                                block.text = block.text.replace(fid, okey)
+                        if hasattr(block, 'image_url') and block.image_url:
+                            if isinstance(block.image_url, dict):
+                                url = block.image_url.get('url', '')
+                                for fid, okey in mappings.items():
+                                    url = url.replace(fid, okey)
+                                block.image_url['url'] = url
+                            else:
+                                url = str(block.image_url)
+                                for fid, okey in mappings.items():
+                                    url = url.replace(fid, okey)
+                                block.image_url = url
+                        if hasattr(block, 'video_url') and block.video_url:
+                            if isinstance(block.video_url, dict):
+                                url = block.video_url.get('url', '')
+                                for fid, okey in mappings.items():
+                                    url = url.replace(fid, okey)
+                                block.video_url['url'] = url
+                        if hasattr(block, 'file_id') and block.file_id and block.file_id in mappings:
+                            block.file_id = mappings[block.file_id]
+
     async def chat(
         self, resolved: ResolvedModelData, request: ChatRequest, tracer: Any = None,
     ) -> ChatResponse:
@@ -423,6 +506,17 @@ class GatewayService:
             await self._convert_image_urls_to_base64(request)
         if not resolved.support_online_video:
             await self._convert_video_urls_to_base64(request)
+
+        # 3.5 Resolve file_id → object_key references from uploaded files
+        from app import get_db_session
+        try:
+            async with get_db_session() as session:
+                await self._resolve_file_ids(request, session)
+        except Exception as e:
+            import logging
+            logging.getLogger("gateway").warning(
+                "gateway_service: failed to resolve file_ids: %s", e
+            )
 
         # 4. 调用供应商 API
         resolved.provider_instance.tracer = tracer
@@ -505,6 +599,17 @@ class GatewayService:
             await self._convert_image_urls_to_base64(request)
         if not resolved.support_online_video:
             await self._convert_video_urls_to_base64(request)
+
+        # Resolve file_id → object_key references from uploaded files
+        from app import get_db_session
+        try:
+            async with get_db_session() as session:
+                await self._resolve_file_ids(request, session)
+        except Exception as e:
+            import logging
+            logging.getLogger("gateway").warning(
+                "gateway_service: failed to resolve file_ids in stream_chat: %s", e
+            )
 
         # 4. Determine reasoning flag
         include_reasoning = self._should_include_reasoning(request)

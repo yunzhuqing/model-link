@@ -621,6 +621,18 @@
     "appIdPlaceholder": "VOD 子应用 ID",
     "appIdHelp": "留空则使用主应用。",
     "regionOptional": "（可选）",
+    "volcengineArkConfig": "火山引擎 ARK 素材库配置",
+    "volcengineArkDesc": "用于素材库访问（Seedance 视频生成等场景），需要 ARK Access Key + Secret Key。与大模型 API Key 不同。",
+    "arkAccessKeyLabel": "ARK Access Key ID",
+    "arkAccessKeyPlaceholder": "AKLTxxxxxxxxxxxxxxxx",
+    "arkSecretKeyLabel": "ARK Secret Key",
+    "arkSecretKeyPlaceholder": "您的火山引擎 ARK Secret Key",
+    "arkRegionLabel": "ARK 区域",
+    "arkRegionHelp": "默认：cn-beijing",
+    "arkGroupIdLabel": "素材组 ID",
+    "arkGroupIdPlaceholder": "group-2026xxxxxxxx-xxxx",
+    "arkGroupIdHelp": "素材上传的目标 Group ID",
+
     "defaultApGuangzhou": "默认：ap-guangzhou"
   },
   "lang": {

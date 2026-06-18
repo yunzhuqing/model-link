@@ -1216,6 +1216,43 @@ class ThinkingRecord(db.Model):
     created = db.Column(db.DateTime, default=datetime.utcnow)
     updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class UploadedFile(db.Model):
+    """Tracks files uploaded via the /v1/files endpoint.
+
+    Maps OpenAI-compatible file_id (file-xxx) to the real object_key
+    returned by the backend storage (Volcengine asset ID, S3 key, etc.).
+    Used during chat request construction to resolve file references.
+    """
+    __tablename__ = "ml_uploaded_files"
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    file_id = db.Column(db.String(200), unique=True, nullable=False, index=True)
+    object_key = db.Column(db.String(500), nullable=False)
+    purpose = db.Column(db.String(100), nullable=True)
+    group_id = db.Column(db.Integer, nullable=True, index=True)
+    api_key = db.Column(db.String(100), nullable=True)
+    user_id = db.Column(db.Integer, nullable=True)
+    client_user_id = db.Column(db.String(100), nullable=True)
+    type = db.Column(db.String(50), nullable=False, default="volcengine")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "file_id": self.file_id,
+            "object_key": self.object_key,
+            "purpose": self.purpose,
+            "group_id": self.group_id,
+            "api_key": self.api_key,
+            "user_id": self.user_id,
+            "client_user_id": self.client_user_id,
+            "type": self.type,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 
 async def get_group_models_with_shares(group_id, session=None):
     """

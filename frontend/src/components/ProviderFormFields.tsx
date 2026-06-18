@@ -406,6 +406,67 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
         </div>
       )}
 
+
+      {/* Volcengine ARK Asset-specific fields */}
+      {data.type === 'volcengine' && (
+        <div className="mt-4 space-y-4">
+          <div className="p-4 bg-purple-50 border border-purple-200 rounded-xl">
+            <h3 className="text-sm font-semibold text-purple-800 mb-1">{t('provider.volcengineArkConfig')}</h3>
+            <p className="text-xs text-purple-600 mb-3">{t('provider.volcengineArkDesc')}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.arkAccessKeyLabel')} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  placeholder={t('provider.arkAccessKeyPlaceholder')}
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                  value={data.extra_config?.ark_access_key || ''}
+                  onChange={(e) => setExtra({ ark_access_key: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.arkSecretKeyLabel')} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  placeholder={t('provider.arkSecretKeyPlaceholder')}
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                  value={data.extra_config?.ark_secret_key || ''}
+                  onChange={(e) => setExtra({ ark_secret_key: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.arkRegionLabel')}
+                  <span className="text-slate-400 font-normal ml-1 text-xs">{t('provider.regionOptional')}</span>
+                </label>
+                <input
+                  placeholder="cn-beijing"
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                  value={data.extra_config?.ark_region || ''}
+                  onChange={(e) => setExtra({ ark_region: e.target.value })}
+                />
+                <p className="text-xs text-slate-400 mt-1">{t('provider.arkRegionHelp')}</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.arkGroupIdLabel')}
+                </label>
+                <input
+                  placeholder={t('provider.arkGroupIdPlaceholder')}
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                  value={data.extra_config?.ark_group_id || ''}
+                  onChange={(e) => setExtra({ ark_group_id: e.target.value })}
+                />
+                <p className="text-xs text-slate-400 mt-1">{t('provider.arkGroupIdHelp')}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TencentVOD-specific fields */}
       {data.type === 'tencentvod' && (
         <div className="mt-4 space-y-4">

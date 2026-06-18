@@ -619,6 +619,18 @@
     "appIdPlaceholder": "VOD sub-application ID",
     "appIdHelp": "Leave blank to use the main application.",
     "regionOptional": "(optional)",
+    "volcengineArkConfig": "Volcengine ARK Asset Config",
+    "volcengineArkDesc": "Used for asset library access (e.g. Seedance video generation). Requires ARK Access Key + Secret Key, separate from the LLM API Key.",
+    "arkAccessKeyLabel": "ARK Access Key ID",
+    "arkAccessKeyPlaceholder": "AKLTxxxxxxxxxxxxxxxx",
+    "arkSecretKeyLabel": "ARK Secret Key",
+    "arkSecretKeyPlaceholder": "Your Volcengine ARK Secret Key",
+    "arkRegionLabel": "ARK Region",
+    "arkRegionHelp": "Default: cn-beijing",
+    "arkGroupIdLabel": "Asset Group ID",
+    "arkGroupIdPlaceholder": "group-2026xxxxxxxx-xxxx",
+    "arkGroupIdHelp": "Target asset group for uploaded assets",
+
     "defaultApGuangzhou": "Default: ap-guangzhou"
   },
   "lang": {

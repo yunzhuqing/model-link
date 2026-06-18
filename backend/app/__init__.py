@@ -487,6 +487,7 @@ def create_app(config=None):
     from app.routes.usage import usage_bp
     from app.routes.permissions import permissions_bp
     from app.routes.admin import admin_bp
+    from app.routes.files import files_bp
 
     app.register_blueprint(users_bp)
     app.register_blueprint(providers_bp, url_prefix='/api')
@@ -500,6 +501,7 @@ def create_app(config=None):
     app.register_blueprint(usage_bp)
     app.register_blueprint(permissions_bp, url_prefix='/api')
     app.register_blueprint(admin_bp)
+    app.register_blueprint(files_bp)
     # Import and register tags blueprint
     from app.routes.tags import tags_bp
     app.register_blueprint(tags_bp, url_prefix='/api')
