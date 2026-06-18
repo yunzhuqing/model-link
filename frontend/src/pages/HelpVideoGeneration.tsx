@@ -16,6 +16,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'seedance', label: 'Seedance 模型' },
   { id: 'seedance-t2v', label: '　├ 文生视频', indent: true },
   { id: 'seedance-multimodal', label: '　├ 多模态引用', indent: true },
+  { id: 'seedance-role', label: '　├ 图片角色', indent: true },
   { id: 'seedance-models', label: '　├ 参数说明', indent: true },
   { id: 'seedance-pricing', label: '　└ 收费标准', indent: true },
   { id: 'kling', label: 'Kling 模型' },

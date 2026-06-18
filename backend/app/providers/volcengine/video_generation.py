@@ -322,7 +322,11 @@ def _build_content(
     content: List[Dict[str, Any]] = []
     seen_urls: set = set()
     prompt_text = ""
-    has_var_refs = False  # Track whether raw text contained {{...}} before substitution
+    # Whether the user explicitly assigned a role to any image. When True, the
+    # user is taking control of frame roles and we must respect their input
+    # verbatim (even if every image is "reference_image") instead of
+    # auto-assigning first_frame / last_frame.
+    has_explicit_image_role = False
 
     # 从用户消息中提取内容
     for msg in messages:
@@ -332,8 +336,6 @@ def _build_content(
 
         if isinstance(msg.content, str):
             if msg.content.strip():
-                if "{{" in msg.content:
-                    has_var_refs = True
                 text = _apply_file_id_substitution(msg.content, file_id_sub_map)
                 content.append({"type": "text", "text": text})
                 prompt_text = text
@@ -343,8 +345,6 @@ def _build_content(
                     continue
 
                 if block.type == ContentType.TEXT and block.text:
-                    if "{{" in block.text:
-                        has_var_refs = True
                     text = _apply_file_id_substitution(block.text, file_id_sub_map)
                     content.append({"type": "text", "text": text})
                     prompt_text = text
@@ -353,10 +353,19 @@ def _build_content(
                     url = block.url
                     if url not in seen_urls:
                         seen_urls.add(url)
+                        # Respect the user-specified role (e.g. first_frame /
+                        # last_frame / reference_image); default to
+                        # reference_image when none was given.
+                        block_role = getattr(block, "role", None)
+                        if block_role:
+                            has_explicit_image_role = True
+                            img_role = _SEEDANCE_ROLE_MAP.get(block_role, block_role)
+                        else:
+                            img_role = "reference_image"
                         content.append({
                             "type": "image_url",
                             "image_url": {"url": url},
-                            "role": "reference_image",
+                            "role": img_role,
                         })
 
                 elif block.type == ContentType.VIDEO_URL and block.url:
@@ -420,14 +429,16 @@ def _build_content(
             })
 
     # 自动帧角色分配：
-    # 若提示词中不含 {{...}} 变量引用，且用户未显式指定 first_frame/last_frame，
-    # 则将 content 中的所有 reference_image 图片按位置重新分配角色：
+    # 仅当用户完全没有为图片显式指定 role 时才介入——即没有 special_frames（来自
+    # file_id_media_map 中显式的 first_frame/last_frame）且消息内容块中也没有任何
+    # 带 role 的图片。此时按位置自动分配首尾帧：
     #   第一张 → first_frame
     #   最后一张 → last_frame
     #   中间张 → reference_image（保持不变）
+    # 只要用户给任何一张图显式设置了 role（哪怕全是 reference_image），就视为用户要
+    # 自行控制角色，原样下发、不做任何修改。
     has_explicit_special_frames = bool(special_frames)
-    # has_var_refs was already set above by checking raw text before substitution
-    if not has_var_refs and not has_explicit_special_frames:
+    if not has_explicit_special_frames and not has_explicit_image_role:
         # 找出所有 reference_image 类型的图片项（保留 index）
         img_indices = [
             i for i, item in enumerate(content)

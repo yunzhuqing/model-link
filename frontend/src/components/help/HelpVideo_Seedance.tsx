@@ -20,7 +20,8 @@ export const VIDEO_GENERATION = `{
   "tools": [
     {
       "type": "video_generation",
-      "size": "496x864"
+      "aspect_ratio": "9:16",
+      "resolution": "480p"
     }
   ]
 }`;
@@ -63,7 +64,59 @@ export const VIDEO_GENERATION_REF = `{
   "tools": [
     {
       "type": "video_generation",
-      "size": "496x864"
+      "aspect_ratio": "9:16",
+      "resolution": "480p"
+    }
+  ]
+}`;
+
+export const VIDEO_GENERATION_ROLE = `{
+  "model": "doubao-seedance-2.0",
+  "background": true,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Luxury Modern Barrel Side Table product showcase. Keep the background environment (room, window, floor, door) strictly consistent across all scenes. Only the product's material and texture should change across the five storyboard images."
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/storyboard_1.jpg",
+          "role": "reference_image"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/storyboard_2.jpg",
+          "role": "reference_image"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/storyboard_3.jpg",
+          "role": "reference_image"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/storyboard_4.jpg",
+          "role": "reference_image"
+        },
+        {
+          "type": "input_image",
+          "image_url": "https://example.com/storyboard_5.jpg",
+          "role": "reference_image"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "video_generation",
+      "seconds": 6,
+      "resolution": "720p",
+      "generate_audio": true,
+      "aspect_ratio": "16:9"
     }
   ]
 }`;
@@ -132,6 +185,20 @@ export function SeedanceSection() {
             <strong>多模态引用：</strong>通过 <code>file_id</code> 给素材命名，在文本 prompt 中用 <code>{`{{file_id}}`}</code> 格式引用，支持 <code>input_image</code>、<code>input_video</code>、<code>input_audio</code>。
           </div>
           <CurlSection body={VIDEO_GENERATION_REF} />
+        </div>
+
+        {/* Image role control */}
+        <div id="seedance-role" className="scroll-mt-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">图片角色（role）控制</p>
+          <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-sm text-emerald-800 mb-3">
+            <strong>图片角色：</strong>给 <code>input_image</code> 设置 <code>role</code> 字段可显式控制每张图片的用途，取值：<code>first_frame</code>（首帧）、<code>last_frame</code>（尾帧）、<code>reference_image</code>（参考图）。
+            <ul className="list-disc list-inside mt-2 space-y-1">
+              <li>所有图片均未指定 <code>role</code> 时，系统自动按位置分配：<strong>第一张 → 首帧、最后一张 → 尾帧、中间 → 参考图</strong></li>
+              <li>只要任意一张图片显式指定了 <code>role</code>，系统将<strong>原样保留用户输入</strong>，不再自动改写（即使全部为 <code>reference_image</code>）</li>
+              <li>适用于多张参考图分镜场景：将所有分镜图设为 <code>reference_image</code>，由文本 prompt 描述分镜顺序，避免被误当作首/尾帧</li>
+            </ul>
+          </div>
+          <CurlSection body={VIDEO_GENERATION_ROLE} />
         </div>
 
         {/* Model parameter specs */}

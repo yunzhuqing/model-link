@@ -112,8 +112,12 @@ def _configure_logging() -> None:
     # that calls ``logging.getLogger("some-name")`` will see output.
     root_logger = logging.getLogger()
     root_logger.setLevel(numeric_level)
-    root_logger.addFilter(RequestIdFilter())
+    # Attach the filter to each handler (not the root logger) so it runs
+    # for records propagated from child loggers too — logger-level filters
+    # are only checked by Logger.handle() on the originating logger.
+    _req_id_filter = RequestIdFilter()
     for h in handlers:
+        h.addFilter(_req_id_filter)
         root_logger.addHandler(h)
 
     # Suppress overly verbose third-party loggers
