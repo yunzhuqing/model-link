@@ -21,6 +21,7 @@ from app.utils import REASONING_EFFORT_HIGH, REASONING_EFFORT_MEDIUM, REASONING_
 
 
 class AnthropicMessagesAdapter(BaseAdapter):
+    API_TYPE = "messages"  # Maps to model.api_type for access control
     """
     Anthropic Messages API 适配器
 

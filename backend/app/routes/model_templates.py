@@ -122,6 +122,7 @@ async def create_model_template(current_user):
         support_online_video=data.get('support_online_video', False),
         support_embedding=data.get('support_embedding', False),
         timeout=data.get('timeout') or None,
+        api_type=data.get('api_type') or None,
     )
     async with get_db_session() as session:
         session.add(tpl)
@@ -150,6 +151,7 @@ async def update_model_template(current_user, template_id):
             'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
             'support_online_image', 'support_online_video', 'support_embedding',
             'output_size', 'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
+            'api_type',
         ]:
             if field in data:
                 setattr(tpl, field, data[field])

@@ -308,6 +308,7 @@ class GatewayService:
             support_video=bool(getattr(db_model, 'support_video', False)),
             support_embedding=bool(getattr(db_model, 'support_embedding', False)),
             timeout=getattr(db_model, 'timeout', None),
+            api_type=getattr(db_model, 'api_type', None),
             provider_instance=provider_instance,
         )
 

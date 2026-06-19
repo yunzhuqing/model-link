@@ -336,3 +336,22 @@ async def _populate_api_key_cache(session, api_key: ApiKey, cache) -> None:
     if not api_key.unlimited_budget and api_key.budget is not None:
         from app.budget_manager import get_async_budget_manager
         await get_async_budget_manager().set_remaining(api_key.key, float(api_key.budget))
+
+def _check_api_type(resolved, required_api_type: str):
+    """Check if the resolved model supports the required API type.
+    
+    If model.api_type is NULL or empty, all API types are allowed (backward compatible).
+    Otherwise, the required_api_type must be in the comma-separated list.
+    
+    Returns (error_dict, status_code) if not supported, or (None, None) if OK.
+    """
+    api_type = getattr(resolved, 'api_type', None)
+    if not api_type:
+        return None, None  # No restriction, allow all
+    supported = set(t.strip() for t in api_type.split(',') if t.strip())
+    if required_api_type not in supported:
+        return {
+            'detail': f'Model "{resolved.model_alias or resolved.model_real_name}" does not support the {required_api_type} API. Supported types: {api_type}'
+        }, 403
+    return None, None
+

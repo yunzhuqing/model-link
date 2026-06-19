@@ -326,7 +326,8 @@ async def create_model(current_user):
             support_online_image=data.get('support_online_image', True),
             support_online_video=data.get('support_online_video', True),
             support_embedding=data.get('support_embedding', False),
-            is_active=data.get('is_active', True)
+            is_active=data.get('is_active', True),
+            api_type=data.get('api_type') or None
         )
         session.add(model)
         await session.commit()
@@ -371,7 +372,7 @@ async def update_model(current_user, model_id):
                       'support_kvcache', 'support_image', 'support_audio', 'support_video',
                       'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                       'support_online_image', 'support_online_video', 'support_embedding',
-                      'is_active', 'priority', 'traffic_ratio', 'retirement_time'}
+                      'is_active', 'priority', 'traffic_ratio', 'retirement_time', 'api_type'}
 
         is_root = await _is_root(group_id, current_user.id, session=session)
         is_admin = await _is_admin_or_above_inner(group_id, current_user.id, session=session)
@@ -402,7 +403,7 @@ async def update_model(current_user, model_id):
         for field in allowed_fields:
             if field in data:
                 # Handle alias/nullable strings - convert empty string to None
-                if field in ('alias', 'reasoning_effort', 'supported_image_formats') and data[field] == '':
+                if field in ('alias', 'reasoning_effort', 'supported_image_formats', 'api_type') and data[field] == '':
                     setattr(model, field, None)
                 else:
                     setattr(model, field, data[field])

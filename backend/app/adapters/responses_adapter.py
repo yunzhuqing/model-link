@@ -736,6 +736,7 @@ def _extract_3d_gen_metadata(tool_data: dict) -> dict:
 
 
 class OpenAIResponsesAdapter(BaseAdapter):
+    API_TYPE = "responses"  # Maps to model.api_type for access control
     """
     OpenAI Responses API 适配器
 

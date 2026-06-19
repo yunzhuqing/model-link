@@ -168,6 +168,9 @@ async def _run_background_response(
                 )
             # ← session closed; DB connection returned to pool
 
+            # Pass the model's configured API type to the provider for upstream routing
+            resolved.provider_instance._model_api_type = resolved.api_type
+
             # Persist provider_id immediately so resync can find this row
             try:
                 await _bg_dao.update_task_metadata_async(
@@ -529,6 +532,9 @@ async def openai_responses():
             except GatewayServiceError as e:
                 _log_error("responses", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
                 return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
+
+            # Pass the model's configured API type to the provider for upstream routing
+            resolved.provider_instance._model_api_type = resolved.api_type
 
             if group_id:
                 try:

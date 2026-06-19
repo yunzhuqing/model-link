@@ -495,6 +495,10 @@ class ModelTemplate(db.Model):
     support_online_video = db.Column(db.Boolean, default=False)
     support_embedding = db.Column(db.Boolean, default=False)
 
+    # Supported API access types, comma-separated: chat_completions,responses,messages
+    # NULL or empty means all types are supported (backward compatible)
+    api_type = db.Column(db.String(100), nullable=True, default=None)
+
     @property
     def is_retired(self):
         """Returns True if the template has passed its retirement time."""
@@ -540,6 +544,7 @@ class ModelTemplate(db.Model):
             'support_online_image': self.support_online_image,
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding,
+            'api_type': self.api_type,
         }
 
 
@@ -622,6 +627,10 @@ class Model(db.Model):
     support_embedding = db.Column(db.Boolean, default=False)  # Whether this is an embedding model
     is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this model is enabled
 
+    # Supported API access types, comma-separated: chat_completions,responses,messages
+    # NULL or empty means all types are supported (backward compatible)
+    api_type = db.Column(db.String(100), nullable=True, default=None)
+
     provider = db.relationship("Provider", back_populates="models")
     shares = db.relationship("ModelShare", back_populates="model", cascade="all, delete-orphan")
 
@@ -671,7 +680,8 @@ class Model(db.Model):
             'support_online_image': self.support_online_image,
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding,
-            'is_active': self.is_active
+            'is_active': self.is_active,
+            'api_type': self.api_type
         }
 
 

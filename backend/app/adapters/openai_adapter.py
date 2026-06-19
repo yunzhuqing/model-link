@@ -17,6 +17,7 @@ _format_openai_usage = StreamChunk._format_openai_usage
 
 
 class OpenAIChatAdapter(BaseAdapter):
+    API_TYPE = "chat_completions"  # Maps to model.api_type for access control
     """
     OpenAI Chat Completions API 适配器
 

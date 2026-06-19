@@ -80,6 +80,7 @@ interface Model {
   support_online_video: boolean;
   support_embedding: boolean;
   is_active: boolean;
+  api_type: string | null;
 }
 
 interface Provider {
@@ -219,6 +220,7 @@ const defaultModelState = {
   support_online_image: false,
   support_online_video: false,
   support_embedding: false,
+  api_type: '',
 };
 
 // ── ModelCard ─────────────────────────────────────────────────────────────────
@@ -474,6 +476,7 @@ const ModelForm = ({
       support_online_image: tpl.support_online_image,
       support_online_video: tpl.support_online_video,
       support_embedding: tpl.support_embedding,
+      api_type: (tpl as any).api_type || '',
       retirement_time: tpl.retirement_time,
       rpm: tpl.rpm,
       tpm: tpl.tpm,
@@ -1207,6 +1210,40 @@ const ModelForm = ({
             </label>
           ))}
         </div>
+      </div>
+
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-slate-700 mb-2">API Access Types</label>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {[
+            { key: 'chat_completions', label: 'Chat Completions (/v1/chat/completions)' },
+            { key: 'responses', label: 'Responses API (/v1/responses)' },
+            { key: 'messages', label: 'Messages (/v1/messages, Anthropic)' },
+          ].map((apiType) => {
+            const selected = (model.api_type || '').split(',').map((s: string) => s.trim()).includes(apiType.key);
+            return (
+              <label key={apiType.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={(e) => {
+                    const current = (model.api_type || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                    if (e.target.checked) {
+                      current.push(apiType.key);
+                    } else {
+                      const idx = current.indexOf(apiType.key);
+                      if (idx !== -1) current.splice(idx, 1);
+                    }
+                    setModel({ ...model, api_type: current.join(',') });
+                  }}
+                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-slate-600">{apiType.label}</span>
+              </label>
+            );
+          })}
+        </div>
+        <p className="mt-1.5 text-xs text-slate-400">Empty = all API types allowed. Select specific types to restrict model access.</p>
       </div>
 
       <div className="flex space-x-3">

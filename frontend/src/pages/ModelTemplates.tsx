@@ -76,6 +76,7 @@ interface ModelTemplate {
   support_online_image: boolean;
   support_online_video: boolean;
   support_embedding: boolean;
+  api_type: string | null;
 }
 
 const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
@@ -113,6 +114,7 @@ const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
   support_online_image: false,
   support_online_video: false,
   support_embedding: false,
+  api_type: '',
 });
 
 const FEATURES_KEYS = [
@@ -489,6 +491,40 @@ const TemplateForm = ({
               <span className="text-sm text-slate-600">{t(`modelTemplates.features.${FEATURE_I18N_MAP[key]}`)}</span>
             </label>
           ))}
+        </div>
+      </div>
+
+      {/* API Access Types */}
+      <div>
+        <h3 className="text-sm font-semibold text-slate-700 mb-2">API Access Types <span className="text-slate-400 font-normal text-xs">(empty = all allowed)</span></h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {[
+            { key: 'chat_completions', label: 'Chat Completions (/v1/chat/completions)' },
+            { key: 'responses', label: 'Responses API (/v1/responses)' },
+            { key: 'messages', label: 'Messages (/v1/messages, Anthropic)' },
+          ].map((apiType) => {
+            const selected = (value.api_type || '').split(',').map((s: string) => s.trim()).includes(apiType.key);
+            return (
+              <label key={apiType.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={(e) => {
+                    const current = (value.api_type || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                    if (e.target.checked) {
+                      current.push(apiType.key);
+                    } else {
+                      const idx = current.indexOf(apiType.key);
+                      if (idx !== -1) current.splice(idx, 1);
+                    }
+                    set({ api_type: current.join(',') || '' } as any);
+                  }}
+                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-slate-600">{apiType.label}</span>
+              </label>
+            );
+          })}
         </div>
       </div>
 

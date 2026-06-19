@@ -192,6 +192,9 @@ async def _handle_request(adapter):
                 _log_error("handle_request", e.status_code, e.message, _build_error_context(auth_ctx, model_name), exc_info=True)
                 return jsonify(adapter.format_error_response(e.message, e.status_code)), e.status_code
 
+            # Pass the model's configured API type to the provider for upstream routing
+            resolved.provider_instance._model_api_type = resolved.api_type
+
             # Rate-limit pre-check
             try:
                 from app.rate_limiter import get_async_rate_limiter, estimate_input_tokens

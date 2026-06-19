@@ -19,6 +19,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=False, support_video=False,
          support_file=False, support_web_search=False, support_tool_search=True,
+         api_type="chat_completions,responses,messages",
          support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
     # GPT-5.4 Pro — tiered by context size
     dict(label='GPT-5.4 Pro (TencentVOD)', provider='TencentVOD', name='gpt-5.4-pro', alias='gpt-5.4-pro',
@@ -34,6 +35,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=False, support_video=False,
          support_file=False, support_web_search=False, support_tool_search=True,
+         api_type="chat_completions,responses,messages",
          support_thinking=True, support_online_image=True, support_online_video=False, support_embedding=False),
     # GPT-5.2 — flat pricing
     dict(label='GPT-5.2 (TencentVOD)', provider='TencentVOD', name='gpt-5.2', alias='gpt-5.2',
@@ -43,6 +45,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=False, support_video=False,
          support_file=False, support_web_search=False, support_tool_search=False,
+         api_type="chat_completions,responses,messages",
          support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
     # GPT-5.1 — flat pricing
     dict(label='GPT-5.1 (TencentVOD)', provider='TencentVOD', name='gpt-5.1', alias='gpt-5.1',
@@ -52,6 +55,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=False, support_video=False,
          support_file=False, support_web_search=False, support_tool_search=False,
+         api_type="chat_completions,responses,messages",
          support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
     # Gemini 3.1 Pro Preview — tiered by context size
     dict(label='Gemini 3.1 Pro Preview (TencentVOD)', provider='TencentVOD', name='gemini-3.1-pro-preview', alias='gemini-3.1-pro-preview',
@@ -67,6 +71,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=True, support_video=True,
          support_file=True, support_web_search=True, support_tool_search=False,
+         api_type="chat_completions,responses,messages",
          support_thinking=True, support_online_image=True, support_online_video=True, support_embedding=False),
     # Gemini 3 Flash Preview — tiered by audio input
     dict(label='Gemini 3 Flash Preview (TencentVOD)', provider='TencentVOD', name='gemini-3-flash-preview', alias='gemini-3-flash-preview',
@@ -82,6 +87,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=True, support_video=True,
          support_file=True, support_web_search=True, support_tool_search=False,
+         api_type="chat_completions,responses,messages",
          support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False),
     # Gemini 2.5 Pro — tiered by context size
     dict(label='Gemini 2.5 Pro (TencentVOD)', provider='TencentVOD', name='gemini-2.5-pro-preview-03-25', alias='gemini-2.5-pro',
@@ -97,6 +103,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=True, support_video=True,
          support_file=True, support_web_search=True, support_tool_search=False,
+         api_type="chat_completions,responses,messages",
          support_thinking=True, support_online_image=True, support_online_video=True, support_embedding=False),
     # Gemini 2.5 Flash — tiered by audio input
     dict(label='Gemini 2.5 Flash (TencentVOD)', provider='TencentVOD', name='gemini-2.5-flash-preview-05-20', alias='gemini-2.5-flash',
@@ -112,6 +119,7 @@ TENCENTVOD_TEMPLATES = [
          timeout=300,
          support_kvcache=True, support_image=True, support_audio=True, support_video=True,
          support_file=True, support_web_search=True, support_tool_search=False,
+         api_type="chat_completions,responses,messages",
          support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False),
 
     # ── TencentVOD Gemini Image Models ──────────────────────────────────────
@@ -144,6 +152,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=600,
         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
     ),
     # GG 3.0 — three tiers: 1K / 2K / 4K
@@ -183,6 +192,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=600,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # GG 3.1 — four tiers: 512 / 1K / 2K / 4K (14 aspect ratios)
@@ -226,6 +236,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=600,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # ── TencentVOD GPT Image 2 (OG) ─────────────────────────────────────────
@@ -279,6 +290,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=600,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # ── TencentVOD Kling Video Models ───────────────────────────────────────
@@ -325,6 +337,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=900,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # ── TencentVOD Vidu Video Models ────────────────────────────────────────
@@ -353,6 +366,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=43200, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # Vidu Q3 — 480p/720p/1080p/2K/4K.
@@ -381,6 +395,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=43200, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # Vidu Q3 Pro — 480p/720p/1080p/2K/4K.
@@ -409,6 +424,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=43200, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # Vidu Q3 Turbo — 480p/720p/1080p/2K/4K.
@@ -437,6 +453,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=43200, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # ── TencentVOD Pixverse Video Models ──────────────────────────────────
@@ -473,6 +490,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=900, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # Pixverse C1 — text-to-video, image-to-video, reference object editing.
@@ -508,6 +526,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=900, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
     ),
     # ── TencentVOD Hunyuan 3D Models ──────────────────────────────────────
@@ -530,6 +549,7 @@ TENCENTVOD_TEMPLATES = [
         timeout=43200, rpm=15,
         support_kvcache=False, support_image=False, support_audio=False, support_video=False,
         support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
 ]

@@ -37,6 +37,7 @@ interface ModelItem {
   support_web_search: boolean;
   support_thinking: boolean;
   support_embedding: boolean;
+  api_type: string | null;
   rpm: number | null;
   tpm: number | null;
   priority: number;
@@ -72,6 +73,7 @@ interface ModelShareEntry {
   support_web_search: boolean;
   support_thinking: boolean;
   support_embedding: boolean;
+  api_type: string | null;
   rpm: number | null;
   tpm: number | null;
 }
@@ -258,6 +260,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
         support_web_search: share.support_web_search,
         support_thinking: share.support_thinking,
         support_embedding: share.support_embedding,
+        api_type: share.api_type || null,
         rpm: share.rpm,
         tpm: share.tpm,
         priority: 0,
@@ -418,6 +421,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                               <FeatureBadge active={m.support_thinking} icon={Brain} label={t('group.groupDetail.featureThinking')} />
                               <FeatureBadge active={m.support_embedding} icon={Layers} label={t('group.groupDetail.featureEmbedding')} />
                             </div>
+                            {m.api_type && <div className="mt-1">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-600 font-mono" title="API access types">{m.api_type}</span>
+                            </div>}
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
@@ -509,6 +515,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                               <FeatureBadge active={m.support_thinking} icon={Brain} label={t('group.groupDetail.featureThinking')} />
                               <FeatureBadge active={m.support_embedding} icon={Layers} label={t('group.groupDetail.featureEmbedding')} />
                             </div>
+                            {m.api_type && <div className="mt-1">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-600 font-mono" title="API access types">{m.api_type}</span>
+                            </div>}
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
