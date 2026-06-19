@@ -9,6 +9,7 @@ import uuid
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider, parse_openai_request
+from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
 from app.utils import json_loads
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
@@ -166,38 +167,6 @@ class AzureProvider(OpenAIProvider):
         return b64_data, content_type, filename
 
     @staticmethod
-    def _response_format_to_responses_api(response_format: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Convert Chat Completions response_format to Responses API text.format.
-
-        Chat Completions format:
-            {"type": "json_object"}
-            {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}
-
-        Responses API format:
-            {"format": {"type": "json_object"}}
-            {"format": {"type": "json_schema", "name": "...", "schema": {...}, "strict": true}}
-        """
-        fmt_type = response_format.get("type")
-        if fmt_type == "json_schema":
-            json_schema = response_format.get("json_schema", {})
-            format_def: Dict[str, Any] = {
-                "type": "json_schema",
-                "name": json_schema.get("name", "response"),
-                "schema": json_schema.get("schema", {}),
-            }
-            if json_schema.get("strict") is not None:
-                format_def["strict"] = json_schema["strict"]
-            else:
-                format_def["strict"] = True
-            return {"format": format_def}
-        elif fmt_type == "json_object":
-            return {"format": {"type": "json_object"}}
-        else:
-            # Unknown format, pass through verbatim under format
-            return {"format": response_format}
-
-    @staticmethod
     def _normalize_tool_choice_for_responses(tool_choice):
         """Convert tool_choice to Responses API format.
 
@@ -229,331 +198,35 @@ class AzureProvider(OpenAIProvider):
     async def _prepare_responses_api_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         Convert a ChatRequest to the OpenAI Responses API request body format.
-
-        Responses API differences from Chat Completions:
-        - Uses `input` instead of `messages`
-        - Uses `instructions` instead of system message
-        - Uses `max_output_tokens` instead of `max_tokens`
+    
+        委托给共享的 Responses API 请求构建器，前置 Azure 特有的文件下载预处理。
         """
-        messages = request.messages
-
-        # System instructions: Azure Responses API only accepts string
-        if request.system is None:
-            instructions = None
-        elif isinstance(request.system, list):
-            instructions = " ".join(
-                b.get("text", "") for b in request.system
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        else:
-            instructions = request.system
-
-        # Build `input` array
-        input_items = []
-        for msg in messages:
-            # Developer messages → {"role": "developer"} items in input
-            if msg.role == MessageRole.DEVELOPER:
-                content = msg.get_text_content() or ''
-                if content:
-                    input_items.append({"role": "developer", "content": content})
-                continue
-            # System messages are already in the instructions field (safety skip)
-            if msg.role == MessageRole.SYSTEM:
-                continue
-            # Handle tool role messages → function_call_output
-            # OpenAI Chat Completions uses role=tool with tool_call_id;
-            # Responses API uses {"type": "function_call_output", "call_id": ..., "output": ...}
-            if msg.role == MessageRole.TOOL:
-                call_id = msg.tool_call_id or ""
-                # Extract output from the message. A tool_result block may carry
-                # multimodal content (text + image); preserve it as an input_*
-                # array via _tool_result_to_responses_output.
-                if isinstance(msg.content, str):
-                    output_value = msg.content
-                elif isinstance(msg.content, list):
-                    tr_block = next(
-                        (b for b in msg.content
-                         if getattr(b, 'type', None) == ContentType.TOOL_RESULT),
-                        None,
-                    )
-                    if tr_block is not None:
-                        output_value = self._tool_result_to_responses_output(tr_block.tool_result)
-                        call_id = tr_block.tool_call_id or call_id
-                    else:
-                        text_parts = []
-                        for b in msg.content:
-                            if hasattr(b, 'type'):
-                                if b.type == ContentType.TEXT and b.text:
-                                    text_parts.append(b.text)
-                            elif isinstance(b, dict):
-                                # Handle raw dict blocks (e.g. from input_text format)
-                                text_parts.append(b.get("text", ""))
-                        output_value = " ".join(text_parts)
-                else:
-                    output_value = str(msg.content) if msg.content else ""
-
-                input_items.append({
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output_value,
-                })
-                continue
-
-            if isinstance(msg.content, list):
-                # Check for tool_call blocks → becomes function_call top-level item
-                tool_call_blocks = [b for b in msg.content if b.type == ContentType.TOOL_CALL]
-                # Check for tool_result blocks → becomes function_call_output top-level item
-                tool_result_blocks = [b for b in msg.content if b.type == ContentType.TOOL_RESULT]
-
-                if tool_call_blocks:
-                    # Emit each tool call as a separate function_call input item
-                    for block in tool_call_blocks:
-                        args = block.tool_arguments or {}
-                        args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
-                        input_items.append({
-                            "type": "function_call",
-                            "call_id": block.tool_call_id or "",
-                            "name": block.tool_name or "",
-                            "arguments": args_str,
-                            "status": "completed"
-                        })
-                    continue
-
-                if tool_result_blocks:
-                    # Emit each tool result as a function_call_output input item
-                    for block in tool_result_blocks:
-                        input_items.append({
-                            "type": "function_call_output",
-                            "call_id": block.tool_call_id or "",
-                            "output": self._tool_result_to_responses_output(block.tool_result)
-                        })
-                    # Also include non-tool-result content (e.g. text) as a regular message
-                    other_blocks = [
-                        b for b in msg.content
-                        if b.type != ContentType.TOOL_RESULT
-                    ]
-                    if other_blocks:
-                        text_type = "output_text" if msg.role == MessageRole.ASSISTANT else "input_text"
-                        content_parts = []
-                        for block in other_blocks:
-                            if block.type == ContentType.TEXT:
-                                content_parts.append({"type": text_type, "text": block.text or ""})
-                            elif block.type == ContentType.IMAGE_URL:
-                                content_parts.append({
-                                    "type": "input_image",
-                                    "image_url": block.url
-                                })
-                            elif block.type == ContentType.IMAGE_BASE64:
-                                media_type = block.media_type or "image/jpeg"
-                                content_parts.append({
-                                    "type": "input_image",
-                                    "image_url": f"data:{media_type};base64,{block.data or ''}"
-                                })
-                            elif block.type == ContentType.FILE_BASE64:
-                                media_type = block.media_type or "application/octet-stream"
-                                content_parts.append({
-                                    "type": "input_file",
-                                    "filename": block.filename or "document",
-                                    "file_data": f"data:{media_type};base64,{block.data or ''}"
-                                })
-                            elif block.type == ContentType.FILE_URL:
-                                b64_data, content_type, filename = await self._download_file_to_base64(block.url)
-                                content_parts.append({
-                                    "type": "input_file",
-                                    "filename": block.filename or filename,
-                                    "file_data": f"data:{content_type};base64,{b64_data}"
-                                })
-                        if content_parts:
-                            remaining_item: Dict[str, Any] = {
-                                "role": msg.role.value,
-                                "content": content_parts,
-                            }
-                            if msg.role == MessageRole.ASSISTANT:
-                                remaining_item["type"] = "message"
-                                remaining_item["status"] = "completed"
-                            input_items.append(remaining_item)
-                    continue
-
-            # Regular message item
-            item: Dict[str, Any] = {"role": msg.role.value}
-
-            # Use "output_text" for assistant messages, "input_text" for others
-            text_type = "output_text" if msg.role == MessageRole.ASSISTANT else "input_text"
-
-            if msg.role == MessageRole.ASSISTANT:
-                item["type"] = "message"
-                item["status"] = "completed"
-
-            if isinstance(msg.content, str):
-                item["content"] = [{"type": text_type, "text": msg.content}]
-            elif isinstance(msg.content, list):
-                content_parts = []
-                for block in msg.content:
-                    if block.type == ContentType.TEXT:
-                        content_parts.append({"type": text_type, "text": block.text or ""})
-                    elif block.type == ContentType.IMAGE_URL:
-                        # Azure Responses API uses image_url as a plain string
-                        content_parts.append({
-                            "type": "input_image",
-                            "image_url": block.url
-                        })
-                    elif block.type == ContentType.IMAGE_BASE64:
-                        media_type = block.media_type or "image/jpeg"
-                        content_parts.append({
-                            "type": "input_image",
-                            "image_url": f"data:{media_type};base64,{block.data or ''}"
-                        })
-                    elif block.type == ContentType.FILE_BASE64:
-                        media_type = block.media_type or "application/octet-stream"
-                        content_parts.append({
-                            "type": "input_file",
-                            "filename": block.filename or "document",
-                            "file_data": f"data:{media_type};base64,{block.data or ''}"
-                        })
-                    elif block.type == ContentType.FILE_URL:
+        # 预处理：下载 FILE_URL 内容块为 base64（Azure 不支持 file_url）
+        for msg in request.messages:
+            content = getattr(msg, 'content', None)
+            if isinstance(content, list):
+                for block in content:
+                    if hasattr(block, 'type') and block.type == ContentType.FILE_URL:
                         b64_data, content_type, filename = await self._download_file_to_base64(block.url)
-                        content_parts.append({
-                            "type": "input_file",
-                            "filename": block.filename or filename,
-                            "file_data": f"data:{content_type};base64,{b64_data}"
-                        })
-                if content_parts:
-                    item["content"] = content_parts
-            else:
-                item["content"] = []
-
-            # Handle tool call results (tool role)
-            if msg.tool_call_id:
-                item["call_id"] = msg.tool_call_id
-
-            input_items.append(item)
-
-        result: Dict[str, Any] = {
-            "model": request.model,
-            "input": input_items,
-            "stream": request.stream,
-        }
-
-        if instructions:
-            result["instructions"] = instructions
-
-        if request.temperature is not None:
-            result["temperature"] = request.temperature
-        if request.top_p is not None:
-            result["top_p"] = request.top_p
-        if request.max_tokens is not None:
-            result["max_output_tokens"] = request.max_tokens
+                        block.type = ContentType.FILE_BASE64
+                        block.data = b64_data
+                        block.media_type = content_type
+                        block.filename = filename
+    
+        # 委托给共享实现构建基础请求体
+        result = OpenAIResponsesCompatProvider.prepare_request(self, request)
+    
+        # Azure 特有：覆盖 tools 为 Responses API flat 格式
         if request.tools:
             result["tools"] = [self._tool_to_responses_api(t) for t in request.tools]
         if request.tool_choice:
             result["tool_choice"] = self._normalize_tool_choice_for_responses(request.tool_choice)
-        if request.stop:
-            result["stop"] = request.stop
-        if request.presence_penalty is not None:
-            result["presence_penalty"] = request.presence_penalty
-        if request.frequency_penalty is not None:
-            result["frequency_penalty"] = request.frequency_penalty
-        if request.user:
-            result["user"] = request.user
-        if request.response_format is not None:
-            result["text"] = self._response_format_to_responses_api(request.response_format)
-
-        # Add reasoning parameter for models that support it.
-        # Always include "summary": "auto" so Azure emits reasoning_summary streaming events
-        # (response.reasoning_summary_part.added / text.delta / text.done / part.done).
-        # The caller can override this by providing a full reasoning dict in metadata.
-        if request.reasoning_effort:
-            # Use full reasoning config from metadata if available (includes summary field)
-            reasoning_config = request.metadata.get('reasoning') if request.metadata else None
-            if reasoning_config and isinstance(reasoning_config, dict):
-                # Ensure summary is present; default to "auto" if not specified
-                if 'summary' not in reasoning_config:
-                    reasoning_config = dict(reasoning_config, summary="auto")
-                result["reasoning"] = reasoning_config
-            else:
-                result["reasoning"] = {
-                    "effort": request.reasoning_effort,
-                    "summary": "auto",
-                }
-        
+    
         return result
 
     def _parse_responses_api_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
-        """
-        Parse an OpenAI Responses API response body into a ChatResponse.
-        """
-        text_parts = []
-        tool_calls = []
-        reasoning_summary_parts = []
-
-
-        for item in response_data.get("output", []):
-            item_type = item.get("type")
-            if item_type == "reasoning":
-                # Extract summary_text from reasoning output item
-                for summary_item in item.get("summary", []):
-                    if summary_item.get("type") == "summary_text":
-                        reasoning_summary_parts.append(summary_item.get("text", ""))
-            elif item_type == "message":
-                for part in item.get("content", []):
-                    if part.get("type") == "output_text":
-                        text_parts.append(part.get("text", ""))
-            elif item_type == "function_call":
-                from app.abstraction.tools import ToolCall as TC
-                args_str = item.get("arguments", "{}")
-                try:
-                    args = json_loads(args_str) if isinstance(args_str, str) else args_str
-                except json.JSONDecodeError:
-                    args = {}
-                tool_calls.append(ToolCall(
-                    id=item.get("call_id") or item.get("id", ""),
-                    name=item.get("name", ""),
-                    arguments=args,
-                    call_type="function"
-                ))
-
-        full_text = "".join(text_parts)
-        message = Message(role=MessageRole.ASSISTANT, content=full_text)
-
-        finish_reason = FinishReason.STOP
-        status = response_data.get("status", "completed")
-        if status == "incomplete":
-            finish_reason = FinishReason.LENGTH
-        elif tool_calls:
-            finish_reason = FinishReason.TOOL_CALLS
-
-        reasoning_content = "\n".join(reasoning_summary_parts) if reasoning_summary_parts else None
-
-        choice = ChatChoice(
-            index=0,
-            message=message,
-            finish_reason=finish_reason,
-            tool_calls=tool_calls,
-            reasoning_content=reasoning_content
-        )
-
-        usage_data = response_data.get("usage", {})
-        input_token_details = usage_data.get("input_tokens_details", {})
-        output_token_details = usage_data.get("output_tokens_details", {})
-        usage = UsageInfo(
-            prompt_tokens=usage_data.get("input_tokens", 0),
-            completion_tokens=usage_data.get("output_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0),
-            cached_tokens=input_token_details.get("cached_tokens", 0),
-            reasoning_tokens=output_token_details.get("reasoning_tokens", 0),
-        )
-
-        # Keep Azure's original resp_ ID as-is so the caller receives the exact same ID
-        resp_id = response_data.get("id", f"resp_{uuid.uuid4().hex[:12]}")
-
-        return ChatResponse(
-            id=resp_id,
-            model=model,
-            choices=[choice],
-            usage=usage,
-            created=response_data.get("created_at", int(time.time())),
-            provider=self.PROVIDER_TYPE
-        )
+        """委托给共享的 Responses API 响应解析器。"""
+        return OpenAIResponsesCompatProvider.parse_response(self, response_data, model)
 
     async def _parse_responses_api_stream(
         self, response, response_id: str, model: str

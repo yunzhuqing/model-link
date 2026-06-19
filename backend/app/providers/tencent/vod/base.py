@@ -488,11 +488,6 @@ class TencentVODProvider(OpenAIProvider):
     # ==================== Responses API 路径 ====================
 
     # 网关内部元数据键，不向上游透传
-    _RESPONSES_INTERNAL_KEYS = frozenset({
-        'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
-        '_raw_tools', 'timeout', 'output_pricing', '_on_task_created', '_on_model_resolved',
-    })
-
     def _prepare_responses_request(self, request: ChatRequest) -> dict:
         """委托给共享的 Responses API 请求构建器。"""
         return OpenAIResponsesCompatProvider.prepare_request(self, request)

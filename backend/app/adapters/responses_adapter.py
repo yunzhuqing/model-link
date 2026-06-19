@@ -859,10 +859,6 @@ class OpenAIResponsesAdapter(BaseAdapter):
         if erase_meta:
             metadata.update(erase_meta)
 
-        raw_tools = data.get('tools', [])
-        if raw_tools:
-            metadata['_raw_tools'] = raw_tools
-
         return metadata
 
     # ───────────────────────────────────────────────────────────────────

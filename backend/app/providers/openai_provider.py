@@ -596,7 +596,187 @@ class OpenAIProvider(BaseProvider):
             }
         else:
             return {"type": block.type.value, "url": block.url, "data": block.data}
-    
+
+    def _messages_to_responses_input(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        """
+        将内部 Message 列表转换为 OpenAI Responses API 的 ``input`` 数组。
+
+        Responses API input 格式规则
+        ----------------------------
+        - user 消息    → ``{"role": "user", "content": [{type: input_text/input_image/input_audio/input_file, ...}]}``
+        - assistant 消息（含工具调用）→ 每个 tool_call 单独作为顶层 ``{"type": "function_call", ...}`` 条目，
+          文本内容作为 ``{"role": "assistant", "content": [{type: output_text, ...}]}``
+        - tool 消息（工具结果）→ 顶层 ``{"type": "function_call_output", "call_id": "...", "output": "..."}``
+        """
+        result: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            items = self._message_to_responses_items(msg)
+            result.extend(items)
+
+        return result
+
+    def _message_to_responses_items(self, message: Message) -> List[Dict[str, Any]]:
+        """
+        将单条 Message 转换为一个或多个 Responses API input 条目。
+
+        Returns:
+            Responses API input 条目列表（通常为 1 条，tool 调用时可能多条）
+        """
+        blocks = message.get_content_blocks()
+        role = message.role
+
+        # ── TOOL 角色：工具结果消息 ────────────────────────────────
+        if role == MessageRole.TOOL:
+            # 每个内容块或 tool_call_id 映射为 function_call_output
+            result: List[Dict[str, Any]] = []
+            for block in blocks:
+                if block.type == ContentType.TOOL_RESULT:
+                    result.append({
+                        "type": "function_call_output",
+                        "call_id": block.tool_call_id or message.tool_call_id or "",
+                        "output": self._tool_result_to_responses_output(block.tool_result),
+                    })
+            if not result:
+                # fallback：直接用消息级的 tool_call_id
+                text = " ".join(b.text or "" for b in blocks if b.type == ContentType.TEXT)
+                result.append({
+                    "type": "function_call_output",
+                    "call_id": message.tool_call_id or "",
+                    "output": text,
+                })
+            return result
+
+        # ── ASSISTANT 角色 ─────────────────────────────────────────
+        if role == MessageRole.ASSISTANT:
+            result = []
+
+            # tool_call 块 → 顶层 function_call 条目
+            for block in blocks:
+                if block.type == ContentType.TOOL_CALL:
+                    args = block.tool_arguments or {}
+                    result.append({
+                        "type": "function_call",
+                        "call_id": block.tool_call_id or "",
+                        "name": block.tool_name or "",
+                        "arguments": (
+                            args if isinstance(args, str)
+                            else json.dumps(args, ensure_ascii=False)
+                        ),
+                    })
+
+            # 文本块 → assistant content 消息
+            text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
+            if text_blocks:
+                content_parts = [
+                    {"type": "output_text", "text": b.text or ""}
+                    for b in text_blocks
+                ]
+                result.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": content_parts,
+                })
+
+            # 如果 assistant 消息完全没有内容，至少保留一个空文本
+            if not result:
+                result.append({"type": "message", "role": "assistant", "content": []})
+
+            return result
+
+        # ── USER 角色（默认）──────────────────────────────────────
+        # 包含 tool_result 块时，也处理为 function_call_output（Anthropic 风格兼容）
+        tool_result_items: List[Dict[str, Any]] = []
+        content_parts: List[Dict[str, Any]] = []
+
+        for block in blocks:
+            if block.type == ContentType.TOOL_RESULT:
+                tool_result_items.append({
+                    "type": "function_call_output",
+                    "call_id": block.tool_call_id or "",
+                    "output": self._tool_result_to_responses_output(block.tool_result),
+                })
+            elif block.type == ContentType.TEXT:
+                content_parts.append({"type": "input_text", "text": block.text or ""})
+            elif block.type in (ContentType.IMAGE_URL,):
+                content_parts.append({"type": "input_image", "image_url": block.url or ""})
+            elif block.type == ContentType.IMAGE_BASE64:
+                media = block.media_type or "image/jpeg"
+                content_parts.append({
+                    "type": "input_image",
+                    "image_url": f"data:{media};base64,{block.data or ''}",
+                })
+            elif block.type in (ContentType.AUDIO_URL,):
+                content_parts.append({"type": "input_audio", "audio_url": block.url or ""})
+            elif block.type == ContentType.AUDIO_BASE64:
+                media = block.media_type or "audio/mp3"
+                content_parts.append({
+                    "type": "input_audio",
+                    "data": block.data or "",
+                    "format": media.split("/")[-1] if "/" in (media or "") else "mp3",
+                })
+            elif block.type in (ContentType.FILE_URL,):
+                content_parts.append({"type": "input_file", "file_url": block.url or ""})
+            elif block.type == ContentType.FILE_BASE64:
+                media = block.media_type or "application/octet-stream"
+                filename = getattr(block, 'filename', None) or "document"
+                content_parts.append({
+                    "type": "input_file",
+                    "file_data": f"data:{media};base64,{block.data or ''}",
+                    "filename": filename,
+                })
+            # TOOL_CALL 在 user 消息中不应出现，忽略
+
+        result = []
+        # function_call_output 作为顶层条目（Anthropic tool_result 兼容）
+        result.extend(tool_result_items)
+        if content_parts:
+            result.append({"type": "message", "role": "user", "content": content_parts})
+        elif not tool_result_items:
+            # 空 user 消息，保留最小结构
+            result.append({"type": "message", "role": "user", "content": []})
+
+        return result
+
+    @staticmethod
+    def _response_format_to_responses_api(response_format: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert Chat Completions response_format to Responses API text.format.
+
+        Chat Completions format:
+            {"type": "json_object"}
+            {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}
+
+        Responses API format:
+            {"format": {"type": "json_object"}}
+            {"format": {"type": "json_schema", "name": "...", "schema": {...}, "strict": true}}
+        """
+        fmt_type = response_format.get("type")
+        if fmt_type == "json_schema":
+            json_schema = response_format.get("json_schema", {})
+            schema = json_schema.get("schema", {})
+            if isinstance(schema, dict):
+                # Ensure additionalProperties is false when not specified (required by upstream)
+                if "additionalProperties" not in schema:
+                    schema = {**schema, "additionalProperties": False}
+                # Ensure required lists all property keys when not specified
+                if "required" not in schema and "properties" in schema:
+                    schema = {**schema, "required": list(schema["properties"].keys())}
+            format_def: Dict[str, Any] = {
+                "type": "json_schema",
+                "name": json_schema.get("name", "response"),
+                "schema": schema,
+            }
+            if json_schema.get("strict") is not None:
+                format_def["strict"] = json_schema["strict"]
+            else:
+                format_def["strict"] = True
+            return {"format": format_def}
+        elif fmt_type == "json_object":
+            return {"format": {"type": "json_object"}}
+        else:
+            return {"format": response_format}
+
     def _tool_result_to_responses_output(self, tool_result):
         """将 tool_result 转换为 Responses API function_call_output.output。
 

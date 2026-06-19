@@ -84,7 +84,7 @@ class VLLMProvider(OpenAIProvider):
 
     # Internal metadata keys that must NOT be forwarded to the upstream vLLM API.
     _INTERNAL_METADATA_KEYS = frozenset({
-        '_raw_tools', '_user_metadata', '_video_generation',
+        '_user_metadata', '_video_generation',
         'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
     })
 

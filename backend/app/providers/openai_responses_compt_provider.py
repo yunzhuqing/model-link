@@ -47,7 +47,8 @@ from app.abstraction.tools import ToolCall
 # 网关内部元数据键，不向上游透传
 _GATEWAY_INTERNAL_KEYS = frozenset({
     'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
-    '_raw_tools',  # raw tools array preserved by responses_adapter; handled separately
+    'output_pricing', 'timeout', '_image_generation', '_video_generation',
+    '_3d_generation', '_on_task_created', '_on_model_resolved',
 })
 
 
@@ -135,7 +136,15 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         }
 
         if request.system is not None:
-            result["instructions"] = request.system
+            if isinstance(request.system, list):
+                instructions = " ".join(
+                    b.get("text", "") for b in request.system
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+                if instructions:
+                    result["instructions"] = instructions
+            else:
+                result["instructions"] = request.system
 
         if request.temperature is not None:
             result["temperature"] = request.temperature
@@ -144,16 +153,13 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         if request.max_tokens is not None:
             result["max_output_tokens"] = request.max_tokens
 
-        # Prefer the raw tools array preserved by responses_adapter (includes
-        # non-function tools like image_generation / video_generation verbatim).
-        # Fall back to rebuilding from ToolDefinition objects for other adapters.
-        raw_tools = request.metadata.get('_raw_tools')
-        if raw_tools:
-            result["tools"] = raw_tools
-        elif request.tools:
+        if request.tools:
             result["tools"] = [self._tool_to_openai(t) for t in request.tools]
         if request.tool_choice:
             result["tool_choice"] = request.tool_choice
+
+        if request.response_format is not None:
+            result["text"] = self._response_format_to_responses_api(request.response_format)
 
         if request.stop:
             result["stop"] = request.stop
@@ -164,9 +170,12 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
         if request.user:
             result["user"] = request.user
 
-        # reasoning_effort → reasoning.effort
+        # reasoning_effort → reasoning.effort (with summary for streaming events)
         if request.reasoning_effort and request.reasoning_effort != 'none':
-            result["reasoning"] = {"effort": request.reasoning_effort}
+            result["reasoning"] = {
+                "effort": request.reasoning_effort,
+                "summary": "auto",
+            }
 
         # 透传额外 metadata（过滤网关内部键）
         for key, value in request.metadata.items():
@@ -178,146 +187,6 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
     # ------------------------------------------------------------------
     # 消息转换：内部格式 → Responses API input 格式
     # ------------------------------------------------------------------
-
-    def _messages_to_responses_input(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """
-        将内部 Message 列表转换为 OpenAI Responses API 的 ``input`` 数组。
-
-        Responses API input 格式规则
-        ----------------------------
-        - user 消息    → ``{"role": "user", "content": [{type: input_text/input_image/input_audio/input_file, ...}]}``
-        - assistant 消息（含工具调用）→ 每个 tool_call 单独作为顶层 ``{"type": "function_call", ...}`` 条目，
-          文本内容作为 ``{"role": "assistant", "content": [{type: output_text, ...}]}``
-        - tool 消息（工具结果）→ 顶层 ``{"type": "function_call_output", "call_id": "...", "output": "..."}``
-        """
-        result: List[Dict[str, Any]] = []
-
-        for msg in messages:
-            items = self._message_to_responses_items(msg)
-            result.extend(items)
-
-        return result
-
-    def _message_to_responses_items(self, message: Message) -> List[Dict[str, Any]]:
-        """
-        将单条 Message 转换为一个或多个 Responses API input 条目。
-
-        Returns:
-            Responses API input 条目列表（通常为 1 条，tool 调用时可能多条）
-        """
-        blocks = message.get_content_blocks()
-        role = message.role
-
-        # ── TOOL 角色：工具结果消息 ────────────────────────────────
-        if role == MessageRole.TOOL:
-            # 每个内容块或 tool_call_id 映射为 function_call_output
-            result: List[Dict[str, Any]] = []
-            for block in blocks:
-                if block.type == ContentType.TOOL_RESULT:
-                    result.append({
-                        "type": "function_call_output",
-                        "call_id": block.tool_call_id or message.tool_call_id or "",
-                        "output": self._tool_result_to_responses_output(block.tool_result),
-                    })
-            if not result:
-                # fallback：直接用消息级的 tool_call_id
-                text = " ".join(b.text or "" for b in blocks if b.type == ContentType.TEXT)
-                result.append({
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id or "",
-                    "output": text,
-                })
-            return result
-
-        # ── ASSISTANT 角色 ─────────────────────────────────────────
-        if role == MessageRole.ASSISTANT:
-            result = []
-
-            # tool_call 块 → 顶层 function_call 条目
-            for block in blocks:
-                if block.type == ContentType.TOOL_CALL:
-                    args = block.tool_arguments or {}
-                    result.append({
-                        "type": "function_call",
-                        "call_id": block.tool_call_id or "",
-                        "name": block.tool_name or "",
-                        "arguments": (
-                            args if isinstance(args, str)
-                            else json.dumps(args, ensure_ascii=False)
-                        ),
-                    })
-
-            # 文本块 → assistant content 消息
-            text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
-            if text_blocks:
-                content_parts = [
-                    {"type": "output_text", "text": b.text or ""}
-                    for b in text_blocks
-                ]
-                result.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": content_parts,
-                })
-
-            # 如果 assistant 消息完全没有内容，至少保留一个空文本
-            if not result:
-                result.append({"type": "message", "role": "assistant", "content": []})
-
-            return result
-
-        # ── USER 角色（默认）──────────────────────────────────────
-        # 包含 tool_result 块时，也处理为 function_call_output（Anthropic 风格兼容）
-        tool_result_items: List[Dict[str, Any]] = []
-        content_parts: List[Dict[str, Any]] = []
-
-        for block in blocks:
-            if block.type == ContentType.TOOL_RESULT:
-                tool_result_items.append({
-                    "type": "function_call_output",
-                    "call_id": block.tool_call_id or "",
-                    "output": self._tool_result_to_responses_output(block.tool_result),
-                })
-            elif block.type == ContentType.TEXT:
-                content_parts.append({"type": "input_text", "text": block.text or ""})
-            elif block.type in (ContentType.IMAGE_URL,):
-                content_parts.append({"type": "input_image", "image_url": block.url or ""})
-            elif block.type == ContentType.IMAGE_BASE64:
-                media = block.media_type or "image/jpeg"
-                content_parts.append({
-                    "type": "input_image",
-                    "image_url": f"data:{media};base64,{block.data or ''}",
-                })
-            elif block.type in (ContentType.AUDIO_URL,):
-                content_parts.append({"type": "input_audio", "audio_url": block.url or ""})
-            elif block.type == ContentType.AUDIO_BASE64:
-                media = block.media_type or "audio/mp3"
-                content_parts.append({
-                    "type": "input_audio",
-                    "data": block.data or "",
-                    "format": media.split("/")[-1] if "/" in (media or "") else "mp3",
-                })
-            elif block.type in (ContentType.FILE_URL,):
-                content_parts.append({"type": "input_file", "file_url": block.url or ""})
-            elif block.type == ContentType.FILE_BASE64:
-                media = block.media_type or "application/octet-stream"
-                content_parts.append({
-                    "type": "input_file",
-                    "data": block.data or "",
-                    "media_type": media,
-                })
-            # TOOL_CALL 在 user 消息中不应出现，忽略
-
-        result = []
-        # function_call_output 作为顶层条目（Anthropic tool_result 兼容）
-        result.extend(tool_result_items)
-        if content_parts:
-            result.append({"type": "message", "role": "user", "content": content_parts})
-        elif not tool_result_items:
-            # 空 user 消息，保留最小结构
-            result.append({"type": "message", "role": "user", "content": []})
-
-        return result
 
     # ------------------------------------------------------------------
     # 非流式请求
