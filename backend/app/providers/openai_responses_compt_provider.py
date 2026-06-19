@@ -32,6 +32,7 @@ OpenAI Responses API 兼容供应商 (OpenAI Responses API Compatible Provider)
   API Key : 填写对应的 API 密钥，留空时省略 Authorization 头
 """
 import json
+import re
 import time
 import uuid
 from typing import Dict, Any, List, Optional, AsyncGenerator
@@ -51,6 +52,14 @@ _GATEWAY_INTERNAL_KEYS = frozenset({
     '_3d_generation', '_on_task_created', '_on_model_resolved',
 })
 
+
+
+def _is_gpt5_or_newer(model: str) -> bool:
+    """Check if model is GPT-5 or newer (these models don't support temperature)."""
+    m = re.match(r'^gpt-(\d+)', model.lower())
+    if m:
+        return int(m.group(1)) >= 5
+    return False
 
 class OpenAIResponsesCompatProvider(OpenAIProvider):
     """
@@ -147,7 +156,8 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
                 result["instructions"] = request.system
 
         if request.temperature is not None:
-            result["temperature"] = request.temperature
+            if not _is_gpt5_or_newer(request.model):
+                result["temperature"] = request.temperature
         if request.top_p is not None:
             result["top_p"] = request.top_p
         if request.max_tokens is not None:

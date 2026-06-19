@@ -16,6 +16,7 @@ import HelpRerank from './pages/HelpRerank';
 import HelpResponses from './pages/HelpResponses';
 import HelpChat from './pages/HelpChat';
 import HelpMessages from './pages/HelpMessages';
+import HelpFiles from './pages/HelpFiles';
 import HelpImageGeneration from './pages/HelpImageGeneration';
 import HelpVideoGeneration from './pages/HelpVideoGeneration';
 import HelpThreed from './pages/HelpThreed';
@@ -73,6 +74,7 @@ function App() {
               <Route path="help/responses" element={<HelpResponses />} />
               <Route path="help/chat" element={<HelpChat />} />
               <Route path="help/messages" element={<HelpMessages />} />
+              <Route path="help/files" element={<HelpFiles />} />
               <Route path="help/image-generation" element={<HelpImageGeneration />} />
               <Route path="help/video-generation" element={<HelpVideoGeneration />} />
               <Route path="help/3d-generation" element={<HelpThreed />} />

@@ -14,6 +14,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'streaming', label: '流式响应' },
   { id: 'with-tools', label: '工具调用' },
   { id: 'vision', label: '图片理解' },
+  { id: 'document-understanding', label: 'PDF 解析' },
   { id: 'video-understanding', label: '视频理解' },
   { id: 'generation-tools', label: '生成功能工具' },
   { id: 'background', label: '后台异步请求' },
@@ -95,6 +96,27 @@ const VISION_REQUEST = `{
     "effort": "low",
     "summary": "detailed"
   }
+}`;
+
+const DOCUMENT_UNDERSTANDING_REQUEST = `{
+  "model": "gemini-3.1-pro-preview",
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "解析一下pdf?"
+        },
+        {
+          "type": "input_file",
+          "file_data": "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf",
+          "filename": "NIJ75G5MDTO2QAABAAAAADA8.pdf"
+        }
+      ]
+    }
+  ]
 }`;
 
 const VIDEO_UNDERSTANDING_REQUEST = `{
@@ -449,6 +471,19 @@ export default function HelpResponses() {
           <CurlSection body={VISION_REQUEST} />
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
             <strong>注意：</strong>图片理解需要使用支持视觉的模型，如 <code>qwen3.6-plus</code> 等。<code>reasoning</code> 字段可控制模型的推理 effort 和总结详细程度。
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          id="document-understanding"
+          title="PDF 解析（Document Understanding）"
+          badge="PDF"
+          badgeColor="bg-orange-100 text-orange-700"
+          description="content 支持数组格式，可同时传入文本和文件（input_file）。其中 file_data 参数既支持 URL，也支持 base64 / Data URI，适用于 PDF、Word 等文档理解场景。"
+        >
+          <CurlSection body={DOCUMENT_UNDERSTANDING_REQUEST} />
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>说明：</strong><code>input_file.file_data</code> 支持两种传法：直接传公网文件 URL，或传 base64 / Data URI 内容。若传 URL，请确保文件地址可被服务端访问；若传 base64，建议带上正确的 MIME 前缀，例如 <code>data:application/pdf;base64,...</code>。
           </div>
         </SectionCard>
 

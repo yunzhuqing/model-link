@@ -39,6 +39,7 @@
     "helpChat": "Chat 补全",
     "helpMessages": "Messages API",
     "helpResponses": "Responses API",
+    "helpFiles": "Files API",
     "helpEmbedding": "Embedding API",
     "helpRerank": "Rerank API",
     "helpImageGeneration": "图片生成",

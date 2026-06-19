@@ -1,4 +1,4 @@
-import { CurlSection } from './HelpShared';
+import { CodeBlock, CurlSection } from './HelpShared';
 
 // ---------- code samples ----------
 
@@ -68,6 +68,71 @@ export const VIDEO_GENERATION_REF = `{
       "resolution": "480p"
     }
   ]
+}`;
+
+export const VIDEO_GENERATION_FILE_ID_REF = `{
+  "model": "doubao-seedance-2.0",
+  "input": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "全程使用{{file-61bf8e8c48f748f994293eb4}}的第一视角构图，全程使用{{file-5db4cb574195466cb8487ead}}作为背景音乐。第一人称视角果茶宣传广告，seedance牌「苹苹安安」苹果果茶限定款；首帧为{{file-90bb0080330f457a8c2c9aae}}，你的手摘下一颗带晨露的阿克苏红苹果，轻脆的苹果碰撞声；2-4 秒：快速切镜，你的手将苹果块投入雪克杯，加入冰块与茶底，用力摇晃，冰块碰撞声与摇晃声卡点轻快鼓点，背景音：「鲜切现摇」；4-6 秒：第一人称成品特写，分层果茶倒入透明杯，你的手轻挤奶盖在顶部铺展，在杯身贴上粉红包标，镜头拉近看奶盖与果茶的分层纹理；6-8 秒：第一人称手持举杯，你将{{file-effcaee85d8141489340e399}}中的果茶举到镜头前（模拟递到观众面前的视角），杯身标签清晰可见，背景音「来一口鲜爽」，尾帧定格为{{file-effcaee85d8141489340e399}}。背景声音统一为女生音色。"
+        },
+        {
+          "type": "input_image",
+          "file_id": "file-90bb0080330f457a8c2c9aae"
+        },
+        {
+          "type": "input_image",
+          "file_id": "file-effcaee85d8141489340e399"
+        },
+        {
+          "type": "input_video",
+          "file_id": "file-5db4cb574195466cb8487ead"
+        },
+        {
+          "type": "input_audio",
+          "file_id": "file-61bf8e8c48f748f994293eb4"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "tools": [
+    {
+      "type": "video_generation",
+      "aspect_ratio": "16:9",
+      "resolution": "720p"
+    }
+  ],
+  "background": true
+}`;
+
+export const FILES_UPLOAD_CURL = `curl --location --request POST 'http://localhost:8000/v1/files' \\
+--header 'Authorization: Bearer <YOUR_API_KEY>' \\
+--form 'file=@"/path/to/cat_01.png"' \\
+--form 'purpose="seedance-ref"'`;
+
+export const FILES_UPLOAD_RESPONSE = `{
+  "bytes": 2381457,
+  "created_at": 1781840390,
+  "filename": "cat_01.png",
+  "id": "file-d7bbfec7f7e545eba907ce54",
+  "object": "file",
+  "purpose": "seedance-ref"
+}`;
+
+export const VIDEO_GENERATION_FILE_ID_RESPONSE = `{
+  "background": true,
+  "created_at": 1781837397,
+  "id": "resp_9e5166789007421eed1fa0614e77dc26036716a5d1474ff7",
+  "metadata": null,
+  "model": "doubao-seedance-2.0",
+  "object": "response",
+  "parallel_tool_calls": false,
+  "status": "in_progress"
 }`;
 
 export const VIDEO_GENERATION_ROLE = `{
@@ -184,7 +249,38 @@ export function SeedanceSection() {
           <div className="bg-violet-50 border border-violet-100 rounded-lg p-3 text-sm text-violet-800 mb-3">
             <strong>多模态引用：</strong>通过 <code>file_id</code> 给素材命名，在文本 prompt 中用 <code>{`{{file_id}}`}</code> 格式引用，支持 <code>input_image</code>、<code>input_video</code>、<code>input_audio</code>。
           </div>
-          <CurlSection body={VIDEO_GENERATION_REF} />
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+            <div id="seedance-multimodal-url" className="scroll-mt-4">
+              <p className="text-sm font-semibold text-slate-800 mb-2">1. file_id 引用 URL</p>
+              <p className="text-sm text-slate-600 mb-3">直接在 <code>input_image</code>、<code>input_video</code>、<code>input_audio</code> 中传入素材 URL，同时附带自定义 <code>file_id</code>，再在文本里通过 <code>{`{{file_id}}`}</code> 引用。</p>
+              <CurlSection body={VIDEO_GENERATION_REF} />
+            </div>
+          </div>
+
+          <div id="seedance-multimodal-file" className="bg-slate-50 border border-slate-200 rounded-xl p-4 mt-4 space-y-4 scroll-mt-4">
+            <p className="text-sm font-semibold text-slate-800">2. file_id 引用 file 对象</p>
+            <p className="text-sm text-slate-600">先通过 <code>/v1/files</code> 创建文件，拿到返回的 <code>file-xxx</code>，再在视频生成请求里把它作为 <code>file_id</code> 使用。</p>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+              <strong>备注：</strong>这种方式更适合 Seedance 素材库场景，尤其是真人素材和虚拟素材的复用与统一管理。
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">1. 先创建文件</span>
+              <CodeBlock code={FILES_UPLOAD_CURL} lang="bash" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">上传返回值</span>
+              <CodeBlock code={FILES_UPLOAD_RESPONSE} />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">2. 在视频生成请求中使用 file_id</span>
+              <CurlSection body={VIDEO_GENERATION_FILE_ID_REF} />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">任务提交返回值</span>
+              <CodeBlock code={VIDEO_GENERATION_FILE_ID_RESPONSE} />
+            </div>
+          </div>
         </div>
 
         {/* Image role control */}

@@ -143,9 +143,9 @@ def _parse_content_blocks(blocks: list) -> list:
                 # file_id-only reference — preserve as URL for later resolution
                 result.append(ContentBlock.from_audio_url(block['file_id']))
         elif block_type == 'input_file':
-            file_url = block.get('file_url', '')
-            if file_url:
-                result.append(ContentBlock.from_file_url(file_url))
+            file_block = _file_block_from_item(block)
+            if file_block is not None:
+                result.append(file_block)
     return result
 
 
@@ -246,6 +246,11 @@ def _file_block_from_item(it: dict) -> Optional[ContentBlock]:
     file_url = it.get('file_url')
     filename = it.get('filename')
     if isinstance(file_data, str) and file_data:
+        if file_data.startswith(('http://', 'https://')):
+            block = ContentBlock.from_file_url(file_data)
+            if filename:
+                block.filename = filename
+            return block
         if file_data.startswith('data:'):
             head, _, b64 = file_data.partition(',')
             media_type = head.replace('data:', '').replace(';base64', '') or 'application/octet-stream'

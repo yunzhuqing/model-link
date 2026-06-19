@@ -4,6 +4,7 @@ OpenAI 供应商实现 (OpenAI Provider)
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
+import re
 import logging
 import time
 import uuid
@@ -223,6 +224,14 @@ def parse_openai_request(data: dict) -> ChatRequest:
     )
 
 
+
+def _is_gpt5_or_newer(model: str) -> bool:
+    """Check if model is GPT-5 or newer (these models don't support temperature)."""
+    m = re.match(r'^gpt-(\d+)', model.lower())
+    if m:
+        return int(m.group(1)) >= 5
+    return False
+
 class OpenAIProvider(BaseProvider):
     """
     OpenAI 供应商实现
@@ -386,7 +395,8 @@ class OpenAIProvider(BaseProvider):
         }
         
         if request.temperature is not None:
-            result["temperature"] = request.temperature
+            if not _is_gpt5_or_newer(request.model):
+                result["temperature"] = request.temperature
         if request.top_p is not None:
             result["top_p"] = request.top_p
         if request.max_tokens is not None:

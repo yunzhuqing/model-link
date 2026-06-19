@@ -13,6 +13,7 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'streaming', label: '流式响应' },
   { id: 'with-tools', label: '工具调用' },
   { id: 'vision', label: '图片理解' },
+  { id: 'document-understanding', label: 'PDF 解析' },
   { id: 'video-understanding', label: '视频理解' },
   { id: 'response-format', label: '响应格式' },
 ];
@@ -104,6 +105,29 @@ const VISION_REQUEST = `{
   ],
   "stream": true,
   "temperature": 0.7
+}`;
+
+const DOCUMENT_UNDERSTANDING_REQUEST = `{
+  "model": "gemini-3.1-pro-preview",
+  "stream": true,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "文档里的内容是啥?"
+        },
+        {
+          "type": "file",
+          "file": {
+            "file_data": "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf",
+            "filename": "NIJ75G5MDTO2QAABAAAAADA8.pdf"
+          }
+        }
+      ]
+    }
+  ]
 }`;
 
 const VIDEO_UNDERSTANDING_REQUEST = `{
@@ -379,6 +403,14 @@ export default function HelpChat() {
           <CurlSection body={VISION_REQUEST} />
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
             <strong>注意：</strong>图片理解需要使用支持视觉的模型，如 <code>qwen-vl-max</code>、<code>qwen-vl-plus</code> 等，请确保模型配置中已勾选 <code>support_image</code>。
+          </div>
+        </SectionCard>
+
+        <SectionCard id="document-understanding" title="PDF 解析（Document Understanding）" badge="PDF" badgeColor="bg-orange-100 text-orange-700"
+          description="content 支持数组格式，可同时传入文本和文件。适用于 PDF、Word 等文档理解场景，可让模型概括文档内容、提取要点或回答文档问题。">
+          <CurlSection body={DOCUMENT_UNDERSTANDING_REQUEST} />
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+            <strong>注意：</strong><code>type: "file"</code> 的 <code>file.file_data</code> 支持传入公网文件 URL、Data URI 或 base64 内容。请使用支持文档理解的模型，并确保文件地址可被服务端访问。
           </div>
         </SectionCard>
 

@@ -59,6 +59,7 @@ const navItems: NavItem[] = [
       { path: '/help/chat', labelKey: 'nav.helpChat' },
       { path: '/help/messages', labelKey: 'nav.helpMessages' },
       { path: '/help/responses', labelKey: 'nav.helpResponses' },
+      { path: '/help/files', labelKey: 'nav.helpFiles' },
       { path: '/help/embedding', labelKey: 'nav.helpEmbedding' },
       { path: '/help/rerank', labelKey: 'nav.helpRerank' },
       { path: '/help/image-generation', labelKey: 'nav.helpImageGeneration' },

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser } from 'lucide-react';
+import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser, FileText } from 'lucide-react';
 
 interface HelpItem {
   path: string;
@@ -45,6 +45,18 @@ const helpItems: HelpItem[] = [
       { label: '流式 SSE', color: 'bg-blue-100 text-blue-700' },
       { label: '工具调用', color: 'bg-violet-100 text-violet-700' },
       { label: 'POST /v1/responses', color: 'bg-slate-100 text-slate-600' },
+    ],
+  },
+  {
+    path: '/help/files',
+    icon: <FileText className="w-6 h-6 text-white" />,
+    iconBg: 'from-rose-500 to-orange-600',
+    title: 'Files API',
+    description: '文件上传与素材登记接口，支持 multipart/form-data 上传本地文件，以及 JSON 模式批量提交 input_image URL，当前用于 Seedance 参考素材。',
+    tags: [
+      { label: 'multipart', color: 'bg-rose-100 text-rose-700' },
+      { label: 'JSON 批量', color: 'bg-emerald-100 text-emerald-700' },
+      { label: 'POST /v1/files', color: 'bg-slate-100 text-slate-600' },
     ],
   },
   {

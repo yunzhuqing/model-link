@@ -37,6 +37,7 @@
     "helpChat": "Chat Completions",
     "helpMessages": "Messages API",
     "helpResponses": "Responses API",
+    "helpFiles": "Files API",
     "helpEmbedding": "Embedding API",
     "helpRerank": "Rerank API",
     "helpImageGeneration": "Image Generation",

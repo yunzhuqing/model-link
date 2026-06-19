@@ -8,6 +8,7 @@ to the Anthropic and OpenAI provider formats (instead of being silently dropped)
 Run: cd backend && uv run pytest test_tool_result_image.py -q
 """
 from app.adapters.anthropic_adapter import AnthropicMessagesAdapter
+from app.adapters.responses_adapter import OpenAIResponsesAdapter
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.openai_provider import OpenAIProvider
 from app.abstraction.messages import ContentType
@@ -180,3 +181,57 @@ def test_responses_adapter_parses_input_file():
     assert f.type == ContentType.FILE_BASE64
     assert f.filename == "doc.pdf"
     assert f.media_type == "application/pdf"
+
+
+def test_responses_adapter_preserves_input_file_url_in_role_message():
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gemini-3.1-pro-preview",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "文档里的内容是啥?"},
+                    {
+                        "type": "input_file",
+                        "file_data": "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf",
+                        "filename": "NIJ75G5MDTO2QAABAAAAADA8.pdf",
+                    },
+                ],
+            }
+        ],
+    })
+
+    user_msg = req.messages[0]
+    assert isinstance(user_msg.content, list)
+    file_block = next(b for b in user_msg.content if b.type == ContentType.FILE_URL)
+    assert file_block.url == "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf"
+    assert file_block.filename == "NIJ75G5MDTO2QAABAAAAADA8.pdf"
+
+
+def test_tencentvod_provider_serializes_file_url_block_to_chat_file_payload():
+    from app.providers.tencent.vod.base import TencentVODProvider
+
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gemini-3.1-pro-preview",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "文档里的内容是啥?"},
+                    {
+                        "type": "input_file",
+                        "file_data": "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf",
+                        "filename": "NIJ75G5MDTO2QAABAAAAADA8.pdf",
+                    },
+                ],
+            }
+        ],
+    })
+    provider = TencentVODProvider.__new__(TencentVODProvider)
+
+    expanded = provider._expand_messages_to_openai(req.messages)
+    content = expanded[0]["content"]
+
+    assert isinstance(content, list)
+    file_part = next(p for p in content if p.get("type") == "file")
+    assert file_part["file_url"] == "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf"
