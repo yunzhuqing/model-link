@@ -30,6 +30,7 @@ import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from ...openai_provider import OpenAIProvider
+from ...openai_responses_compt_provider import OpenAIResponsesCompatProvider
 from ...base import ProviderConfig, ProviderCapability
 from app.utils import REASONING_EFFORT_LOW, json_loads
 from app.abstraction.chat import ChatRequest, ChatResponse
@@ -493,164 +494,12 @@ class TencentVODProvider(OpenAIProvider):
     })
 
     def _prepare_responses_request(self, request: ChatRequest) -> dict:
-        """将 ChatRequest 转换为 OpenAI Responses API 请求格式。"""
-        input_array = self._messages_to_responses_input(request.messages)
-
-        result = {
-            "model": request.model,
-            "input": input_array,
-            "stream": request.stream,
-        }
-
-        if request.system is not None:
-            result["instructions"] = request.system
-
-        if request.temperature is not None:
-            result["temperature"] = request.temperature
-        if request.top_p is not None:
-            result["top_p"] = request.top_p
-        if request.max_tokens is not None:
-            result["max_output_tokens"] = request.max_tokens
-
-        raw_tools = request.metadata.get('_raw_tools')
-        if raw_tools:
-            result["tools"] = raw_tools
-        elif request.tools:
-            result["tools"] = [self._tool_to_openai(t) for t in request.tools]
-        if request.tool_choice:
-            result["tool_choice"] = request.tool_choice
-
-        if request.reasoning_effort and request.reasoning_effort != 'none':
-            result["reasoning"] = {"effort": request.reasoning_effort}
-
-        # 透传额外 metadata（过滤网关内部键）
-        for key, value in request.metadata.items():
-            if key not in self._RESPONSES_INTERNAL_KEYS:
-                result[key] = value
-
-        return result
-
-    def _messages_to_responses_input(self, messages) -> list:
-        """将内部 Message 列表转换为 Responses API input 数组。"""
-        result = []
-        for msg in messages:
-            if msg.role == MessageRole.SYSTEM:
-                continue  # system handled separately as instructions
-            items = self._message_to_responses_items(msg)
-            result.extend(items)
-        return result
-
-    def _message_to_responses_items(self, msg) -> list:
-        """将单条 Message 转换为 Responses API input 条目列表。"""
-        from app.abstraction.messages import Message
-        if msg.role == MessageRole.USER:
-            content_list = []
-            for block in msg.content:
-                content_list.append(self._content_block_to_responses_input(block))
-            if content_list:
-                return [{"role": "user", "content": content_list}]
-            return [{"role": "user", "content": msg.get_text_content() or ""}]
-
-        if msg.role == MessageRole.ASSISTANT:
-            items = []
-            # tool calls as separate function_call items
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    try:
-                        args = json_loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                    except Exception:
-                        args = {}
-                    items.append({
-                        "type": "function_call",
-                        "call_id": tc.id,
-                        "name": tc.name,
-                        "arguments": json.dumps(args, ensure_ascii=False),
-                    })
-            # text content
-            text = msg.get_text_content()
-            if text:
-                items.append({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
-            elif not msg.tool_calls:
-                items.append({"role": "assistant", "content": ""})
-            return items
-
-        if msg.role == MessageRole.TOOL:
-            text = msg.get_text_content() or ""
-            return [{
-                "type": "function_call_output",
-                "call_id": msg.tool_call_id or "",
-                "output": text,
-            }]
-
-        return []
-
-    def _content_block_to_responses_input(self, block) -> dict:
-        """将 ContentBlock 转换为 Responses API input 格式。"""
-        if block.type == ContentType.TEXT:
-            return {"type": "input_text", "text": block.text or ""}
-        if block.type == ContentType.IMAGE:
-            if block.image_url:
-                return {"type": "input_image", "image_url": block.image_url}
-            if block.data:
-                return {"type": "input_image", "image_url": f"data:{block.mime_type or 'image/png'};base64,{block.data}"}
-        if block.type == ContentType.AUDIO:
-            if block.data:
-                return {"type": "input_audio", "data": block.data, "format": block.format or "wav"}
-        if block.type == ContentType.FILE:
-            if block.file_url:
-                return {"type": "input_file", "file_url": block.file_url}
-            if block.data:
-                return {"type": "input_file", "data": block.data, "filename": block.filename or "file"}
-        return {"type": "input_text", "text": ""}
+        """委托给共享的 Responses API 请求构建器。"""
+        return OpenAIResponsesCompatProvider.prepare_request(self, request)
 
     def _parse_responses_response(self, response_data: dict, model: str) -> ChatResponse:
-        """将 Responses API 响应解析为 ChatResponse。"""
-        from app.abstraction.chat import ChatResponse, ChatChoice, UsageInfo, FinishReason
-        from app.abstraction.messages import Message, ContentBlock
-
-        output = response_data.get("output", [])
-        # Collect text/refusal from message items
-        texts = []
-        tool_calls = []
-        for item in output:
-            if item.get("type") == "message":
-                for content_item in item.get("content", []):
-                    if content_item.get("type") == "output_text":
-                        texts.append(content_item.get("text", ""))
-        if item.get("type") == "function_call":
-            tool_calls.append(item)
-
-        content_blocks = []
-        if texts:
-            content_blocks.append(ContentBlock(type=ContentType.TEXT, text="".join(texts)))
-
-        finish_reason = FinishReason.STOP
-        if response_data.get("status") == "incomplete":
-            finish_reason = FinishReason.LENGTH
-
-        message = Message(role=MessageRole.ASSISTANT, content=content_blocks)
-        if tool_calls:
-            from app.abstraction.tools import ToolCall
-            message.tool_calls = [
-                ToolCall(id=tc.get("call_id", ""), name=tc.get("name", ""),
-                         arguments=json.dumps(tc.get("arguments", {}), ensure_ascii=False))
-                for tc in tool_calls
-            ]
-
-        usage_raw = response_data.get("usage", {})
-        usage = UsageInfo(
-            prompt_tokens=usage_raw.get("input_tokens", 0),
-            completion_tokens=usage_raw.get("output_tokens", 0),
-            total_tokens=usage_raw.get("total_tokens", 0),
-        )
-
-        return ChatResponse(
-            id=response_data.get("id", ""),
-            model=model,
-            choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason)],
-            usage=usage,
-        )
-
+        """委托给共享的 Responses API 响应解析器。"""
+        return OpenAIResponsesCompatProvider.parse_response(self, response_data, model)
     async def _chat_responses(self, request: ChatRequest) -> ChatResponse:
         """向 /v1/responses 发送非流式请求。"""
         request_data = self._prepare_responses_request(request)
@@ -743,9 +592,6 @@ class TencentVODProvider(OpenAIProvider):
 
                         except Exception:
                             pass
-
-    # ==================== 模型信息 ====================
-
     def supports_model(self, model: str) -> bool:
         """检查是否支持某个模型（始终返回 True 以支持新模型）"""
         return True
