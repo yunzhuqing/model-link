@@ -646,7 +646,6 @@ class TencentVODProvider(OpenAIProvider):
 
         return ChatResponse(
             id=response_data.get("id", ""),
-            object="response",
             model=model,
             choices=[ChatChoice(index=0, message=message, finish_reason=finish_reason)],
             usage=usage,
