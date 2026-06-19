@@ -46,24 +46,26 @@ def _safe_list(val) -> list:
 
 
 def _register_fid_media(file_map: dict, block: dict):
-    """Register a file_id → media mapping from a content block."""
+    """Register a file_id → media mapping from a content block.
+
+    When a block has a file_id but no concrete URL (e.g. input_image with only
+    file_id, no image_url), the file_id itself is stored as a placeholder URL.
+    The gateway's _resolve_file_ids will later resolve it to asset://asset-xxx.
+    """
     fid = block.get('file_id', '')
     if not fid:
         return
     blk_type = block.get('type', '')
     role = block.get('role', '')
     if blk_type in ('input_image', 'image'):
-        url = _extract_str(block, 'image_url')
-        if url:
-            file_map[fid] = {'type': 'image', 'url': url, 'role': role}
+        url = _extract_str(block, 'image_url') or fid
+        file_map[fid] = {'type': 'image', 'url': url, 'role': role}
     elif blk_type in ('input_video', 'video'):
-        url = _extract_str(block, 'video_url')
-        if url:
-            file_map[fid] = {'type': 'video', 'url': url, 'role': role}
+        url = _extract_str(block, 'video_url') or fid
+        file_map[fid] = {'type': 'video', 'url': url, 'role': role}
     elif blk_type in ('input_audio', 'audio'):
-        url = _extract_str(block, 'audio_url') or _extract_str(block, 'url')
-        if url:
-            file_map[fid] = {'type': 'audio', 'url': url, 'role': role}
+        url = _extract_str(block, 'audio_url') or _extract_str(block, 'url') or fid
+        file_map[fid] = {'type': 'audio', 'url': url, 'role': role}
 
 
 def _parse_image_block(block: dict) -> ContentBlock:
@@ -87,6 +89,9 @@ def _parse_image_block(block: dict) -> ContentBlock:
             )
         else:
             cb = ContentBlock.from_image_url(source.get('url', ''))
+    elif block.get('file_id'):
+        # file_id-only reference (no image_url) — preserve as URL for later resolution
+        cb = ContentBlock.from_image_url(block['file_id'])
     else:
         cb = ContentBlock.from_text('')
     cb.role = image_role or cb.role
@@ -115,6 +120,11 @@ def _parse_content_blocks(blocks: list) -> list:
                 cb = ContentBlock.from_video_url(url, fps=str(fps) if fps is not None else None)
                 cb.role = block.get('role') or cb.role
                 result.append(cb)
+            elif block.get('file_id'):
+                # file_id-only reference — preserve as URL for later resolution
+                cb = ContentBlock.from_video_url(block['file_id'])
+                cb.role = block.get('role') or cb.role
+                result.append(cb)
         elif block_type == 'input_audio':
             if 'input_audio' in block:
                 a = block['input_audio']
@@ -122,6 +132,16 @@ def _parse_content_blocks(blocks: list) -> list:
                     a.get('data', ''),
                     f"audio/{a.get('format', 'wav')}"
                 ))
+            elif block.get('audio_url'):
+                url = block['audio_url']
+                if isinstance(url, dict):
+                    url = url.get('url', '')
+                cb = ContentBlock.from_audio_url(url)
+                cb.role = block.get('role') or cb.role
+                result.append(cb)
+            elif block.get('file_id'):
+                # file_id-only reference — preserve as URL for later resolution
+                result.append(ContentBlock.from_audio_url(block['file_id']))
         elif block_type == 'input_file':
             file_url = block.get('file_url', '')
             if file_url:

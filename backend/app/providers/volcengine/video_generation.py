@@ -235,10 +235,14 @@ def _build_seedance_file_id_aliases(
         if not url:
             continue
 
-        # Special frame roles (first_frame / last_frame): write directly to content
+        # Special frame roles (first_frame / last_frame): write directly to content.
+        # Also add to sub_map so {{file-xxx}} → asset-xxx in text (bare id, no asset:// prefix).
         if role in ("first_frame", "last_frame"):
             seedance_role = _SEEDANCE_ROLE_MAP.get(role, role)
             special_frames.append({"url": url, "seedance_role": seedance_role, "media_type": media_type})
+            # Strip asset:// prefix for template substitution: {{file-xxx}} → {{asset-xxx}}
+            obj_key = url.replace("asset://", "") if url.startswith("asset://") else url
+            sub_map[fid] = obj_key
             continue
 
         # Regular reference media: assign numbered alias
@@ -437,8 +441,16 @@ def _build_content(
     #   中间张 → reference_image（保持不变）
     # 只要用户给任何一张图显式设置了 role（哪怕全是 reference_image），就视为用户要
     # 自行控制角色，原样下发、不做任何修改。
+    #
+    # 注意：当 content 中同时包含 reference_video 或 reference_audio 时，跳过自动
+    # 帧分配。Seedance API 不允许 first_frame / last_frame 与 reference_video /
+    # reference_audio 混用（会报 InvalidParameter: cannot be mixed）。
     has_explicit_special_frames = bool(special_frames)
-    if not has_explicit_special_frames and not has_explicit_image_role:
+    has_ref_video_or_audio = any(
+        item.get("type") in ("video_url", "audio_url")
+        for item in content
+    )
+    if not has_explicit_special_frames and not has_explicit_image_role and not has_ref_video_or_audio:
         # 找出所有 reference_image 类型的图片项（保留 index）
         img_indices = [
             i for i, item in enumerate(content)

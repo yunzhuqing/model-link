@@ -257,12 +257,48 @@ async def create_asset(
         raise RuntimeError(f"Volcengine ARK CreateAsset error: {str(e)}")
 
 
+
+# =============================================================================
+# 类型检测
+# =============================================================================
+
+_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tiff", ".tif"})
+_VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".webm", ".mkv", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg"})
+_AUDIO_EXTS = frozenset({".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus", ".aiff"})
+
+
+def _detect_asset_type(url: str) -> str:
+    """
+    Detect Volcengine ARK asset type from a URL's file extension.
+
+    Returns one of "Image", "Video", or "Audio".
+    Falls back to "Image" when the extension is unrecognized.
+    """
+    path = url.split("?")[0].lower()
+    # Find the last '.' and extract extension
+    dot = path.rfind(".")
+    if dot == -1:
+        return "Image"
+
+    ext = path[dot:]
+
+    if ext in _IMAGE_EXTS:
+        return "Image"
+    elif ext in _VIDEO_EXTS:
+        return "Video"
+    elif ext in _AUDIO_EXTS:
+        return "Audio"
+
+    # Fallback: check MIME-like patterns in URL path
+    return "Image"
+
+
 async def upload_and_create_asset(
     *,
     group_id: str,
     image_url: str,
     name: Optional[str] = None,
-    asset_type: str = "Image",
+    asset_type: Optional[str] = None,
     project_name: str = "default",
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
@@ -270,15 +306,18 @@ async def upload_and_create_asset(
     region: str = ARK_API_REGION,
 ) -> Dict[str, Any]:
     """
-    上传图片到火山引擎素材库的便捷方法。
+    上传文件到火山引擎素材库的便捷方法。
 
-    从已有的公开 URL 创建素材资产。如果 name 未提供，从 URL 末尾提取文件名。
+    从已有的公开 URL 创建素材资产。
+    AssetType 会根据 URL 文件扩展名自动检测（Image / Video / Audio），
+    也可通过 asset_type 参数显式指定。
+    如果 name 未提供，从 URL 末尾提取文件名。
 
     Args:
         group_id:     素材组 ID
-        image_url:    图片的公开 URL (http/https)
+        image_url:    文件的公开 URL (http/https)
         name:         资产名称 (可选，默认从 URL 提取)
-        asset_type:   资产类型
+        asset_type:   资产类型 ("Image"/"Video"/"Audio"，None 则自动检测)
         project_name: 项目名称
         access_key:   ARK Access Key ID
         secret_key:   ARK Secret Access Key
@@ -294,11 +333,13 @@ async def upload_and_create_asset(
         if "." in name:
             name = name.rsplit(".", 1)[0]
 
+    final_asset_type = asset_type or _detect_asset_type(image_url)
+
     return await create_asset(
         group_id=group_id,
         url=image_url,
         name=name,
-        asset_type=asset_type,
+        asset_type=final_asset_type,
         project_name=project_name,
         access_key=access_key,
         secret_key=secret_key,

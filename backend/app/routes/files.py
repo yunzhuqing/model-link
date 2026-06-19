@@ -73,9 +73,9 @@ def _mime_to_ext(content_type: str) -> str:
     return guess or ".bin"
 
 
-async def _get_volcengine_credentials(session, provider_id: Optional[int] = None):
+async def _get_volcengine_credentials(session, group_id: int, provider_id: Optional[int] = None):
     """
-    Look up Volcengine provider credentials from the database.
+    Look up the Volcengine provider belonging to the API key's group.
 
     Returns a dict with:
         api_key:        Bearer token / API key
@@ -88,6 +88,7 @@ async def _get_volcengine_credentials(session, provider_id: Optional[int] = None
 
     query = sa_select(Provider).where(
         Provider.type == "volcengine",
+        Provider.group_id == group_id,
         Provider.is_active == True,
     )
     if provider_id:
@@ -228,7 +229,7 @@ async def upload_file():
     provider_id = auth_ctx.provider_id_override if auth_ctx else None
     try:
         async with get_db_session() as session:
-            creds = await _get_volcengine_credentials(session, provider_id)
+            creds = await _get_volcengine_credentials(session, auth_ctx.api_key_group_id, provider_id)
     except RuntimeError as e:
         _log_error("files_upload", 500, str(e), _build_error_context(auth_ctx))
         return _error_response(str(e), code="provider_error", status_code=500)
@@ -250,6 +251,11 @@ async def upload_file():
             return _error_response("No file provided. Use 'file' field for multipart upload.", code="invalid_request", param="file", status_code=400)
 
         purpose = form.get("purpose", "seedance-ref")
+        if purpose != "seedance-ref":
+            _log_error("files_upload", 400, f"Unsupported purpose: {purpose}", _build_error_context(auth_ctx))
+            return _error_response(
+                f"Unsupported purpose '{purpose}'. Only 'seedance-ref' is currently supported.",
+                code="invalid_request", param="purpose", status_code=400)
         group_id = form.get("group_id") or creds.get("ark_group_id", "")
 
         file_data = file_obj.read()
@@ -340,9 +346,6 @@ async def upload_file():
             "created_at": int(time.time()),
             "filename": filename,
             "purpose": purpose,
-            "asset_group_id": group_id,
-            "ark_request_id": request_id,
-            "object_key": asset_id,
         })
 
     elif "application/json" in content_type:
@@ -368,6 +371,11 @@ async def upload_file():
                 code="invalid_request", param="input_image", status_code=400)
 
         purpose = data.get("purpose", "seedance-ref")
+        if purpose != "seedance-ref":
+            _log_error("files_upload", 400, f"Unsupported purpose: {purpose}", _build_error_context(auth_ctx))
+            return _error_response(
+                f"Unsupported purpose '{purpose}'. Only 'seedance-ref' is currently supported.",
+                code="invalid_request", param="purpose", status_code=400)
         group_id = data.get("group_id") or creds.get("ark_group_id", "")
         filename = data.get("filename")
 
@@ -452,7 +460,6 @@ async def upload_file():
                         "object": "file",
                         "bytes": 0,
                         "created_at": int(time.time()),
-                        "object_key": asset_id,
                     })
         except Exception as e:
             logger.warning("files: failed to persist upload record: %s", e)
@@ -465,14 +472,12 @@ async def upload_file():
                         "object": "file",
                         "bytes": 0,
                         "created_at": int(time.time()),
-                        "object_key": asset_id,
                     })
 
         response = {
             "object": "list",
             "data": uploaded_files,
             "purpose": purpose,
-            "asset_group_id": group_id,
         }
         if errors:
             response["errors"] = errors
@@ -530,7 +535,7 @@ async def delete_file(file_id: str):
         # ── Phase 3: Delete from upstream if seedance-ref ──
         if purpose == "seedance-ref" and file_type == "volcengine" and object_key.startswith("Asset-"):
             try:
-                creds = await _get_volcengine_credentials(session, auth_ctx.provider_id_override if auth_ctx else None)
+                creds = await _get_volcengine_credentials(session, auth_ctx.api_key_group_id, auth_ctx.provider_id_override if auth_ctx else None)
                 # Resolve project_name from group's dept tag
                 project_name = "default"
                 if auth_ctx and auth_ctx.api_key_group_id:

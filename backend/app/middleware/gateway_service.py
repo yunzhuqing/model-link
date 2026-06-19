@@ -386,41 +386,44 @@ class GatewayService:
     @staticmethod
     async def _resolve_file_ids(request, session) -> None:
         """
-        Scan all messages in the request for file_id references (file-xxx format)
-        and replace them with the real object_key from ml_uploaded_files.
+        Scan all messages and metadata in the request for file_id references
+        (file-xxx format) and replace them with the real object_key from
+        ml_uploaded_files, prefixed with ``asset://`` for ARK asset references.
 
-        This handles both:
-        - Text content containing file-xxx references
-        - Image/video URL blocks that reference file IDs
-
-        Args:
-            request: ChatRequest whose messages to scan
-            session: Open async DB session
+        Handles:
+        - Text content: ``{{file-xxx}}`` → ``{{asset-xxx}}``
+        - ContentBlock.url for IMAGE_URL / VIDEO_URL / AUDIO_URL / FILE_URL types
+        - Metadata file_id_media_map: resolves URLs keyed by file_id
         """
         import re
         from sqlalchemy import select as sa_select
         from app.models import UploadedFile
 
-        file_id_pattern = re.compile(r'\bfile-[a-f0-9]{24}\b')
+        fid_pattern = re.compile(r'\bfile-[a-f0-9]{24}\b')
+        template_pattern = re.compile(r'\{\{file-[a-f0-9]{24}\}\}')
 
-        # Collect all file_ids from message content
+        # Collect all file_ids from message content (text + block urls)
         all_file_ids = set()
+
+        def _collect(text: str) -> None:
+            if text:
+                all_file_ids.update(fid_pattern.findall(text))
+
         for msg in request.messages:
             if msg.content:
                 if isinstance(msg.content, str):
-                    all_file_ids.update(file_id_pattern.findall(msg.content))
+                    _collect(msg.content)
                 elif isinstance(msg.content, list):
                     for block in msg.content:
                         if hasattr(block, 'text') and block.text:
-                            all_file_ids.update(file_id_pattern.findall(block.text))
-                        if hasattr(block, 'image_url') and block.image_url:
-                            url = block.image_url.get('url', '') if isinstance(block.image_url, dict) else str(block.image_url)
-                            all_file_ids.update(file_id_pattern.findall(url))
-                        if hasattr(block, 'video_url') and block.video_url:
-                            url = block.video_url.get('url', '') if isinstance(block.video_url, dict) else str(block.video_url)
-                            all_file_ids.update(file_id_pattern.findall(url))
-                        if hasattr(block, 'file_id') and block.file_id:
-                            all_file_ids.add(block.file_id)
+                            _collect(block.text)
+                        if hasattr(block, 'url') and block.url:
+                            _collect(block.url)
+
+        # Also collect from metadata file_id_media_map keys
+        fid_map = request.metadata.get('file_id_media_map', {})
+        if isinstance(fid_map, dict):
+            all_file_ids.update(fid_map.keys())
 
         if not all_file_ids:
             return
@@ -434,36 +437,34 @@ class GatewayService:
         if not mappings:
             return
 
-        # Replace in messages
+        # 1. Replace in message content
         for msg in request.messages:
             if msg.content:
                 if isinstance(msg.content, str):
-                    for fid, okey in mappings.items():
-                        msg.content = msg.content.replace(fid, okey)
+                    # Template patterns ({{file-xxx}}) are left as-is —
+                    # the video_generation module handles them with its own
+                    # numbering scheme (图片1, 视频1, etc.).
+                    pass
                 elif isinstance(msg.content, list):
                     for block in msg.content:
-                        if hasattr(block, 'text') and block.text:
+                        # Template patterns ({{file-xxx}}) in block.text
+                        # are left as-is for the video_generation module.
+                        # Replace in block.url (IMAGE_URL / VIDEO_URL / AUDIO_URL / FILE_URL)
+                        if hasattr(block, 'url') and block.url:
                             for fid, okey in mappings.items():
-                                block.text = block.text.replace(fid, okey)
-                        if hasattr(block, 'image_url') and block.image_url:
-                            if isinstance(block.image_url, dict):
-                                url = block.image_url.get('url', '')
-                                for fid, okey in mappings.items():
-                                    url = url.replace(fid, okey)
-                                block.image_url['url'] = url
-                            else:
-                                url = str(block.image_url)
-                                for fid, okey in mappings.items():
-                                    url = url.replace(fid, okey)
-                                block.image_url = url
-                        if hasattr(block, 'video_url') and block.video_url:
-                            if isinstance(block.video_url, dict):
-                                url = block.video_url.get('url', '')
-                                for fid, okey in mappings.items():
-                                    url = url.replace(fid, okey)
-                                block.video_url['url'] = url
-                        if hasattr(block, 'file_id') and block.file_id and block.file_id in mappings:
-                            block.file_id = mappings[block.file_id]
+                                if block.url == fid or block.url.startswith(fid):
+                                    block.url = f"asset://{okey}"
+
+        # 2. Resolve file_id_media_map in metadata
+        if isinstance(fid_map, dict):
+            for fid, info in list(fid_map.items()):
+                if fid in mappings:
+                    okey = mappings[fid]
+                    # Update the URL if it's empty or matches the file_id
+                    url = info.get('url', '')
+                    if not url or url == fid or fid_pattern.match(url):
+                        info['url'] = f"asset://{okey}"
+
 
     async def chat(
         self, resolved: ResolvedModelData, request: ChatRequest, tracer: Any = None,
