@@ -412,6 +412,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                         </td>
                         <td className="px-4 py-3">
                           {isShared ? <span className="text-xs text-slate-400">-</span> : (
+                            <>
                             <div className="flex items-center justify-center gap-1 flex-wrap">
                               <FeatureBadge active={m.support_image} icon={Image} label={t('group.groupDetail.featureImage')} />
                               <FeatureBadge active={m.support_video} icon={Video} label={t('group.groupDetail.featureVideo')} />
@@ -424,6 +425,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                             {m.api_type && <div className="mt-1">
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-600 font-mono" title="API access types">{m.api_type}</span>
                             </div>}
+                          </>
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
@@ -476,12 +478,12 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                             <Database className="w-3 h-3 text-slate-400" />
                             {inst.providerName}
                             {isShared && (
-                              <>
+                                <>
                                 <Share2 className="w-3 h-3 text-indigo-400 ml-1" />
                                 <span className="text-xs text-indigo-500 ml-1">
                                   ({t('group.groupDetail.sharedBadge', { group: inst.sharedFromGroup })})
                                 </span>
-                              </>
+                            </>
                             )}
                           </span>
                         </td>
@@ -506,6 +508,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                         </td>
                         <td className="px-4 py-3">
                           {isShared ? <span className="text-xs text-slate-400">-</span> : (
+                            <>
                             <div className="flex items-center justify-center gap-1 flex-wrap">
                               <FeatureBadge active={m.support_image} icon={Image} label={t('group.groupDetail.featureImage')} />
                               <FeatureBadge active={m.support_video} icon={Video} label={t('group.groupDetail.featureVideo')} />
@@ -518,6 +521,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                             {m.api_type && <div className="mt-1">
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-600 font-mono" title="API access types">{m.api_type}</span>
                             </div>}
+                          </>
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
