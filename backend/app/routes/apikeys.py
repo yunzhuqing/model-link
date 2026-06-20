@@ -7,7 +7,8 @@ Cache integration:
     (cache.invalidate_api_key_by_id) so stale data is never served.
 """
 from quart import Blueprint, request, jsonify, current_app
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import logging
 import secrets
 
 from sqlalchemy import select, func, update
@@ -33,6 +34,8 @@ from app.group_service import (
 )
 
 apikeys_bp = Blueprint('apikeys', __name__)
+
+logger = logging.getLogger("apikeys")
 
 ROLE_RANK = {'root': 3, 'admin': 2, 'member': 1}
 
@@ -1327,6 +1330,278 @@ async def delete_budget(current_user, api_key_id, budget_id):
             pass
 
         return '', 204
+
+
+# ── Auto-refill (bulk budget top-up for tagged keys) ─────────────────────────
+
+def _parse_refill_tags(raw):
+    """Normalize the ``tags`` request parameter into a list of {name, value} dicts.
+
+    Accepts either a list of objects (``[{"name": "dept", "value": "a"}]``) or a
+    list of ``"name:value"`` strings. Returns ``[]`` when nothing usable is given.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    parsed = []
+    for item in raw:
+        if isinstance(item, dict):
+            name = (item.get("name") or "").strip()
+            value = (item.get("value") or "").strip()
+            if name:
+                parsed.append({"name": name, "value": value})
+        elif isinstance(item, str):
+            # Allow "name:value" shorthand.
+            if ":" in item:
+                name, value = item.split(":", 1)
+                name, value = name.strip(), value.strip()
+            else:
+                name, value = item.strip(), ""
+            if name:
+                parsed.append({"name": name, "value": value})
+    return parsed
+
+
+def _tags_match(key_tags, required_tags, mode: str = "all") -> bool:
+    """Return True if an API key's tags satisfy the required tag filter.
+
+    A required tag pair matches when the key has a tag with the same ``name``
+    and ``value``. With ``mode='all'`` (default) the key must contain *every*
+    required pair; with ``mode='any'`` at least one is enough.
+    """
+    if not required_tags:
+        return True
+    if not key_tags:
+        return False
+
+    key_pairs = {
+        (t.get("name"), t.get("value"))
+        for t in key_tags
+        if isinstance(t, dict) and t.get("name")
+    }
+
+    def _hit(req):
+        return (req["name"], req["value"]) in key_pairs
+
+    if mode == "any":
+        return any(_hit(r) for r in required_tags)
+    return all(_hit(r) for r in required_tags)
+
+
+@apikeys_bp.route('/apikeys/auto-refill', methods=['POST'])
+async def auto_refill_api_keys():
+    """Bulk top-up budget for recently-used, tagged API keys.
+
+    Scans API keys that were used within the lookback window (default 30 days),
+    keeps only those carrying the requested tags, and — for every key whose
+    real-time remaining budget is below ``threshold`` — adds a budget entry so
+    its remaining is restored to exactly ``target``.
+
+    Request body (JSON):
+        tags       — list of {"name","value"} pairs (or "name:value" strings)
+                     a key must match to be eligible. Required.
+        threshold  — float (USD). Keys with remaining < threshold are refilled.
+        target     — float (USD). Remaining is set to this value. Must be > 0.
+        days       — int, optional. Lookback window in days (default 30).
+        tags_match — "all" (default) or "any". How ``tags`` is combined.
+        dry_run    — bool, optional. When true, preview without writing.
+
+    Response:
+        summary of scanned / matched / eligible / refilled counts, plus a
+        per-key breakdown.
+    """
+    data = await request.get_json() or {}
+
+    required_tags = _parse_refill_tags(data.get("tags"))
+    if not required_tags:
+        logger.warning("auto-refill: rejected, no usable tags provided")
+        return jsonify({'detail': 'tags is required (non-empty list of name/value pairs)'}), 400
+
+    threshold = data.get("threshold")
+    target = data.get("target")
+    if threshold is None or target is None:
+        logger.warning("auto-refill: rejected, missing threshold/target")
+        return jsonify({'detail': 'threshold and target are required'}), 400
+    try:
+        threshold = float(threshold)
+        target = float(target)
+    except (TypeError, ValueError):
+        logger.warning("auto-refill: rejected, non-numeric threshold/target")
+        return jsonify({'detail': 'threshold and target must be numbers'}), 400
+    if threshold < 0 or target <= 0:
+        logger.warning("auto-refill: rejected, threshold=%s target=%s out of range", threshold, target)
+        return jsonify({'detail': 'threshold must be >= 0 and target must be > 0'}), 400
+
+    days = data.get("days", 30)
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return jsonify({'detail': 'days must be an integer'}), 400
+    if days <= 0:
+        return jsonify({'detail': 'days must be positive'}), 400
+
+    tags_match_mode = (data.get("tags_match") or "all").strip().lower()
+    if tags_match_mode not in ("all", "any"):
+        return jsonify({'detail': "tags_match must be 'all' or 'any'"}), 400
+
+    dry_run = bool(data.get("dry_run", False))
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    logger.info(
+        "auto-refill: starting (tags=%s match=%s threshold=%s target=%s days=%s cutoff=%s dry_run=%s)",
+        required_tags, tags_match_mode, threshold, target, days, cutoff.isoformat(), dry_run,
+    )
+
+    from app.budget_manager import get_async_budget_manager
+    bm = get_async_budget_manager()
+
+    scanned = 0
+    matched = 0
+    eligible = 0
+    refilled = []
+    skipped = []
+
+    async with get_db_session() as session:
+        # 1. Keys used within the lookback window.
+        result = await session.execute(
+            select(ApiKey).where(
+                ApiKey.last_used_at.isnot(None),
+                ApiKey.last_used_at >= cutoff,
+            ).options(selectinload(ApiKey.budgets))
+        )
+        keys = result.scalars().all()
+        logger.info("auto-refill: scanned %d key(s) used since cutoff", len(keys))
+
+        for ak in keys:
+            scanned += 1
+
+            # 2. Tag filter.
+            if not _tags_match(ak.tags or [], required_tags, mode=tags_match_mode):
+                continue
+            matched += 1
+
+            # Unlimited-budget keys have no spendable quota to refill.
+            if ak.unlimited_budget:
+                logger.debug("auto-refill: skip key id=%d name=%s (unlimited_budget)", ak.id, ak.name)
+                skipped.append({
+                    "api_key_id": ak.id,
+                    "name": ak.name,
+                    "key": ak.key,
+                    "reason": "unlimited_budget",
+                })
+                continue
+
+            # 3. Real-time remaining (cache-first, DB fallback). None == unknown.
+            remaining = await bm.get_remaining(ak.key, db_session=session)
+            if remaining is None:
+                remaining = 0.0 if ak.budget is None else float(ak.budget)
+
+            if remaining >= threshold:
+                logger.debug(
+                    "auto-refill: skip key id=%d name=%s (remaining=%.6f >= threshold=%.6f)",
+                    ak.id, ak.name, remaining, threshold,
+                )
+                skipped.append({
+                    "api_key_id": ak.id,
+                    "name": ak.name,
+                    "key": ak.key,
+                    "remaining": round(remaining, 6),
+                    "reason": "above_threshold",
+                })
+                continue
+
+            # 4. Top up to target.
+            top_up = target - remaining
+            if top_up <= 0:
+                # target not higher than current remaining — nothing to add.
+                logger.debug(
+                    "auto-refill: skip key id=%d name=%s (target=%.6f not higher than remaining=%.6f)",
+                    ak.id, ak.name, target, remaining,
+                )
+                skipped.append({
+                    "api_key_id": ak.id,
+                    "name": ak.name,
+                    "key": ak.key,
+                    "remaining": round(remaining, 6),
+                    "reason": "target_not_higher",
+                })
+                continue
+
+            eligible += 1
+            entry = {
+                "api_key_id": ak.id,
+                "name": ak.name,
+                "key": ak.key,
+                "before": round(remaining, 6),
+                "after": round(target, 6),
+                "top_up": round(top_up, 6),
+            }
+
+            if dry_run:
+                logger.info(
+                    "auto-refill: [dry-run] would top up key id=%d name=%s before=%.6f after=%.6f top_up=%.6f",
+                    ak.id, ak.name, remaining, target, top_up,
+                )
+                refilled.append({**entry, "dry_run": True})
+                continue
+
+            # Append a budget record (same pattern as add_budget) and update
+            # the ApiKey.budget summary to the new remaining total.
+            budget_entry = ApiKeyBudget(
+                api_key_id=ak.id,
+                amount=top_up,
+                remaining=top_up,
+            )
+            session.add(budget_entry)
+            ak.budget = target
+
+            # Push the new remaining into the budget cache immediately so the
+            # gateway's real-time budget checks observe it without a cache miss.
+            try:
+                await bm.set_remaining(ak.key, float(target))
+            except Exception as exc:
+                logger.warning(
+                    "auto-refill: failed to update budget cache for key id=%d: %s",
+                    ak.id, exc, exc_info=True,
+                )
+
+            logger.info(
+                "auto-refill: topped up key id=%d name=%s before=%.6f after=%.6f top_up=%.6f",
+                ak.id, ak.name, remaining, target, top_up,
+            )
+            refilled.append(entry)
+
+        if not dry_run and refilled:
+            await session.commit()
+            logger.info("auto-refill: committed %d budget record(s)", len(refilled))
+
+    logger.info(
+        "auto-refill: done scanned=%d matched=%d eligible=%d refilled=%d skipped=%d (dry_run=%s)",
+        scanned, matched, eligible, len(refilled), len(skipped), dry_run,
+    )
+
+    return jsonify({
+        "dry_run": dry_run,
+        "days": days,
+        "tags": required_tags,
+        "tags_match": tags_match_mode,
+        "threshold": threshold,
+        "target": target,
+        "summary": {
+            "scanned": scanned,
+            "matched": matched,
+            "eligible": eligible,
+            "refilled": len(refilled),
+            "skipped": len(skipped),
+        },
+        "refilled": refilled,
+        "skipped": skipped,
+    }), 200
 
 
 # ── API Key Policy CRUD ──────────────────────────────────────────────────────
