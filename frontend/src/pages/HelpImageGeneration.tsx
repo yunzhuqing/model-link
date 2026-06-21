@@ -852,21 +852,21 @@ export default function HelpImageGeneration() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {[
-                      { ratio: '1:1',  k1: '—', k2: '2048x2048', k3: '3072x3072', k4: '—' },
-                      { ratio: '3:4',  k1: '—', k2: '1728x2304', k3: '2592x3456', k4: '—' },
-                      { ratio: '4:3',  k1: '—', k2: '2304x1728', k3: '3456x2592', k4: '—' },
-                      { ratio: '16:9', k1: '—', k2: '2848x1600', k3: '4096x2304', k4: '—' },
-                      { ratio: '9:16', k1: '—', k2: '1600x2848', k3: '2304x4096', k4: '—' },
-                      { ratio: '3:2',  k1: '—', k2: '2496x1664', k3: '2496x3744', k4: '—' },
-                      { ratio: '2:3',  k1: '—', k2: '1664x2496', k3: '3744x2496', k4: '—' },
-                      { ratio: '21:9', k1: '—', k2: '3136x1344', k3: '4704x2016', k4: '—' },
+                      { ratio: '1:1',  k1: '—', k2: '2048x2048', k3: '3072x3072', k4: '4096x4096' },
+                      { ratio: '3:4',  k1: '—', k2: '1728x2304', k3: '2592x3456', k4: '3520x4704' },
+                      { ratio: '4:3',  k1: '—', k2: '2304x1728', k3: '3456x2592', k4: '4704x3520' },
+                      { ratio: '16:9', k1: '—', k2: '2848x1600', k3: '4096x2304', k4: '5504x3040' },
+                      { ratio: '9:16', k1: '—', k2: '1600x2848', k3: '2304x4096', k4: '3040x5504' },
+                      { ratio: '3:2',  k1: '—', k2: '2496x1664', k3: '2496x3744', k4: '3328x4992' },
+                      { ratio: '2:3',  k1: '—', k2: '1664x2496', k3: '3744x2496', k4: '4992x3328' },
+                      { ratio: '21:9', k1: '—', k2: '3136x1344', k3: '4704x2016', k4: '6240x2656' },
                     ].map((r) => (
                       <tr key={r.ratio} className="hover:bg-slate-50">
                         <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
                         <td className="px-3 py-1.5 text-slate-400">{r.k1}</td>
                         <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
                         <td className="px-3 py-1.5 font-mono text-slate-600">{r.k3}</td>
-                        <td className="px-3 py-1.5 text-slate-400">{r.k4}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k4}</td>
                       </tr>
                     ))}
                   </tbody>
