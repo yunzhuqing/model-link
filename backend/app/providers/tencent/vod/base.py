@@ -545,34 +545,85 @@ class TencentVODProvider(OpenAIProvider):
                         f"{json.dumps(error_data, ensure_ascii=False) if error_data else ''}"
                     )
 
+                response_id = ""
+                event_name: Optional[str] = None
+
                 async for line in response.aiter_lines():
                     if not line:
+                        event_name = None
                         continue
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
+
+                    if line.startswith("event:"):
+                        event_name = line[6:].strip()
+                        continue
+
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if not data_str or data_str == "[DONE]":
                             break
                         try:
                             event = json_loads(data_str)
-                            event_type = event.get("type", "")
+                        except Exception:
+                            continue
 
-                            if event_type == "response.output_text.delta":
-                                delta_text = event.get("delta", "")
+                        etype = event_name or event.get("type", "")
+
+                        if etype == "response.created":
+                            resp = event.get("response", {})
+                            if resp.get("id"):
+                                response_id = resp["id"]
+
+                        elif etype == "response.output_text.delta":
+                            delta_text = event.get("delta", "")
+                            if delta_text:
                                 yield StreamChunk(
-                                    id=event.get("response_id", ""),
+                                    id=response_id,
                                     model=event.get("model", request.model),
                                     event_type=StreamEventType.CONTENT_DELTA,
                                     delta_content=delta_text,
                                 )
 
-                            elif event_type == "response.completed":
-                                resp = event.get("response", {})
-                                usage_raw = resp.get("usage", {})
+                        elif etype == "response.output_item.added":
+                            item = event.get("item", {})
+                            if item.get("type") == "function_call":
+                                call_id = item.get("call_id", "")
+                                name = item.get("name", "")
+                                if call_id:
+                                    yield StreamChunk(
+                                        id=response_id,
+                                        model=event.get("model", request.model),
+                                        tool_calls=[{
+                                            "index": 0,
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {"name": name, "arguments": ""}
+                                        }],
+                                    )
+
+                        elif etype == "response.function_call_arguments.delta":
+                            delta_args = event.get("delta", "")
+                            if delta_args:
+                                yield StreamChunk(
+                                    id=response_id,
+                                    model=event.get("model", request.model),
+                                    tool_calls=[{
+                                        "index": 0,
+                                        "type": "function",
+                                        "function": {"arguments": delta_args}
+                                    }],
+                                )
+
+                        elif etype == "response.completed":
+                            resp = event.get("response", {})
+                            if resp.get("id"):
+                                response_id = resp["id"]
+                            usage_raw = resp.get("usage", {})
+                            if usage_raw:
                                 from app.abstraction.chat import UsageInfo
                                 yield StreamChunk(
-                                    id=resp.get("id", ""),
+                                    id=response_id,
                                     model=resp.get("model", request.model),
-                                    event_type=StreamEventType.DONE,
+                                    event_type=StreamEventType.USAGE,
                                     usage=UsageInfo(
                                         prompt_tokens=usage_raw.get("input_tokens", 0),
                                         completion_tokens=usage_raw.get("output_tokens", 0),
@@ -580,13 +631,10 @@ class TencentVODProvider(OpenAIProvider):
                                     ),
                                 )
 
-                            elif event_type == "error":
-                                raise RuntimeError(
-                                    f"TencentVOD Responses API stream error: {event.get('message', 'unknown')}"
-                                )
-
-                        except Exception:
-                            pass
+                        elif etype == "error":
+                            raise RuntimeError(
+                                f"TencentVOD Responses API stream error: {event.get('message', 'unknown')}"
+                            )
 
     def supports_model(self, model: str) -> bool:
         """检查是否支持某个模型（始终返回 True 以支持新模型）"""

@@ -26,6 +26,7 @@ logger = logging.getLogger("gateway")
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.utils import json_loads
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -146,6 +147,24 @@ def _parse_content_blocks(blocks: list) -> list:
             file_block = _file_block_from_item(block)
             if file_block is not None:
                 result.append(file_block)
+        elif block_type == 'function_call':
+            call_id = block.get('call_id', block.get('id', ''))
+            name = block.get('name', '')
+            args = block.get('arguments', '{}')
+            if isinstance(args, str):
+                try:
+                    args = json_loads(args)
+                except Exception:
+                    args = {}
+            result.append(ContentBlock.from_tool_call(call_id, name, args))
+        elif block_type == 'function_call_output':
+            call_id = block.get('call_id', '')
+            output = block.get('output', '')
+            # Parse nested content blocks in output (e.g. input_image)
+            if isinstance(output, list):
+                parsed_output = _parse_content_blocks(output)
+                output = parsed_output if parsed_output else output
+            result.append(ContentBlock.from_tool_result(call_id, output))
     return result
 
 
@@ -370,8 +389,13 @@ def _handle_reasoning_item(item: dict, messages: list):
 def _handle_role_message_item(item: dict, messages: list):
     """Convert a role-based message item → Message.
 
-    Merges into a preceding reasoning-only or tool_calls assistant message so
-    that content + reasoning + tool_calls coexist in a single assistant turn.
+    When the content array contains function_call / function_call_output blocks
+    mixed with regular content blocks (non-standard but common client bug),
+    split them into separate messages: assistant (tool_calls) + tool (results).
+    The remaining regular content stays in the original role.
+
+    Also merges into a preceding reasoning-only or tool_calls assistant message
+    so that content + reasoning + tool_calls coexist in a single assistant turn.
     Providers like Moonshot and MiniMax require strict adjacency and reject
     intervening assistant messages.
     """
@@ -380,8 +404,43 @@ def _handle_role_message_item(item: dict, messages: list):
 
     if isinstance(content, list):
         blocks = _parse_content_blocks(content)
-        content = blocks if blocks else content
+        if blocks:
+            # ── Split mixed content: tool_calls → assistant, tool_results → tool ──
+            regular_blocks = []
+            tool_call_blocks = []
+            tool_result_blocks = []
+            for b in blocks:
+                if isinstance(b, ContentBlock):
+                    if b.type == ContentType.TOOL_CALL:
+                        tool_call_blocks.append(b)
+                    elif b.type == ContentType.TOOL_RESULT:
+                        tool_result_blocks.append(b)
+                    else:
+                        regular_blocks.append(b)
+                else:
+                    regular_blocks.append(b)
 
+            # Emit in conversation order: user text → assistant (tool_calls) → tool (results)
+            if regular_blocks:
+                messages.append(Message(
+                    role=role,
+                    content=regular_blocks,
+                    name=item.get('name'),
+                ))
+            if tool_call_blocks:
+                messages.append(Message(
+                    role=MessageRole.ASSISTANT,
+                    content=tool_call_blocks,
+                ))
+            for b in tool_result_blocks:
+                messages.append(Message(
+                    role=MessageRole.TOOL,
+                    content=[b] if not isinstance(b, list) else b,
+                    tool_call_id=b.tool_call_id,
+                ))
+            return
+
+    # ── Merge with preceding assistant message ──
     if role == MessageRole.ASSISTANT and messages:
         last = messages[-1]
         if last.role == MessageRole.ASSISTANT:
