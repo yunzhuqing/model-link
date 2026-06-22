@@ -390,13 +390,17 @@ class AzureProvider(OpenAIProvider):
                     # Pass full_text in delta_content so the adapter can emit the three
                     # "done" events (output_text.done, content_part.done, output_item.done)
                     # before the response.completed event.
+                    # Set _skip_content_on_finish_reason=True so that to_openai_format
+                    # skips the duplicate full text in the final Chat Completions chunk
+                    # (it was already sent incrementally via response.output_text.delta events).
                     yield StreamChunk(
                         id=current_id,
                         model=model,
                         delta_content=full_text if full_text else None,
                         finish_reason=finish,
                         usage=usage,
-                        created=int(time.time())
+                        created=int(time.time()),
+                        _skip_content_on_finish_reason=True,
                     )
                     break
 

@@ -97,6 +97,11 @@ class StreamChunk:
     # Used by providers (e.g. Azure) to forward Responses API events that have no
     # equivalent in the StreamChunk data model (e.g. reasoning_summary events).
     raw_sse_passthrough: List[str] = field(default_factory=list)
+    # When True, delta_content is skipped in to_openai_format when finish_reason is set.
+    # Azure Responses API sends the full assembled text in the completed event,
+    # which would duplicate incremental content already sent; other providers
+    # (e.g. MiniMax) send the only content in the final chunk and must keep it.
+    _skip_content_on_finish_reason: bool = False
 
     def __post_init__(self):
         """Convert dict usage to UsageInfo for backward compatibility."""
@@ -122,9 +127,12 @@ class StreamChunk:
         # When finish_reason is set, delta_content may contain the FULL assembled text
         # (Azure Responses API convention: the completed event carries the whole text so
         # the Responses adapter can emit response.output_text.done).
-        # This is NOT a new incremental delta, so we skip it here to avoid re-sending
+        # Azure providers set _skip_content_on_finish_reason=True to avoid re-sending
         # all content in the final Chat Completions chunk.
-        if self.delta_content and not self.finish_reason:
+        # Other providers (e.g. MiniMax) may send content only in the final chunk,
+        # so they keep the default False to emit content normally.
+        skip = self._skip_content_on_finish_reason and self.finish_reason
+        if self.delta_content and not skip:
             delta["content"] = self.delta_content
 
         if self.delta_reasoning_content:

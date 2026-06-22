@@ -252,16 +252,33 @@ class BailianProvider(OpenAIProvider):
         is_minimax = 'minimax' in request.model.lower()
         reasoning_effort_value = request.reasoning_effort or 'none'
 
+        # Detect AI coding tools from system message
+        system_text = request.get_system_message()
+        is_coding_tool = bool(
+            system_text and any(
+                kw in system_text for kw in (
+                    "Claude Code", "OpenCode", "Codex", "Cline",
+                    "Cursor", "Windsurf", "Aider", "CodeBuddy",
+                )
+            )
+        )
+
+        # kimi-k2.7-code and kimi-k2.7-code-highspeed must always enable thinking
+        is_kimi_code_model = request.model.lower() in (
+            'kimi-k2.7-code-highspeed', 'kimi-k2.7-code',
+            'kimi/kimi-k2.7-code-highspeed', 'kimi/kimi-k2.7-code',
+        )
+
+        enable_thinking = model_has_thinking or has_reasoning_effort or is_coding_tool or is_kimi_code_model
+
         if is_minimax:
-            # MiniMax M3+ supports disabling thinking via the "thinking" parameter:
-            #   {"type": "adaptive" | "disabled"}
-            # Older versions (M2.x) must keep thinking enabled via enable_thinking.
-            # Extract major version from model name (e.g. MiniMax-M3 → 3, MiniMax-M2.7 → 2)
             m = re.search(r'-m(\d+)', request.model.lower())
             minimax_major = int(m.group(1)) if m else 0
             if minimax_major >= 3:
-                support_thinking = request.metadata.get('support_thinking', False)
-                if support_thinking and reasoning_effort_value != 'none':
+                # MiniMax M3+: thinking can be disabled
+                # Enable thinking when: user explicitly requests it, or coding tool detected,
+                # or reasoning_effort is set (and not 'none')
+                if enable_thinking:
                     data["thinking"] = {"type": "adaptive"}
                     if not has_reasoning_effort:
                         data["reasoning_effort"] = "medium"
@@ -272,18 +289,10 @@ class BailianProvider(OpenAIProvider):
                 data["enable_thinking"] = True
                 if not has_reasoning_effort:
                     data["reasoning_effort"] = "medium"
-        elif model_has_thinking or has_reasoning_effort:
+        elif enable_thinking:
             data["enable_thinking"] = True
             if not has_reasoning_effort:
                 data["reasoning_effort"] = "medium"
-
-            # When an AI coding agent uses a DeepSeek V4 model, always max effort
-            if request.model.startswith(('deepseek-v4-pro', 'deepseek-v4-flash')):
-                system_text = request.get_system_message()
-                if system_text and any(
-                    kw in system_text for kw in ("Claude Code", "OpenCode", "Codex", "Cline")
-                ):
-                    data["reasoning_effort"] = "max"
         else:
             data["enable_thinking"] = False
 
