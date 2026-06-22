@@ -18,7 +18,7 @@ import sys
 import base64
 import logging
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
-from .._responses_format import build_responses_request
+from .._responses_format import build_responses_request, _tool_result_to_responses_output
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -172,9 +172,17 @@ class VolcengineProvider(BaseProvider):
         """Convert a Message to Responses API input item(s)."""
         role = message.role.value
 
-        # Handle tool result messages
+        # Handle tool result messages (preserve multi-modal output: text, images, files)
         if message.role == MessageRole.TOOL:
             tool_call_id = message.tool_call_id or ""
+            blocks = message.get_content_blocks()
+            for block in blocks:
+                if block.type == ContentType.TOOL_RESULT:
+                    return {
+                        "type": "function_call_output",
+                        "call_id": block.tool_call_id or tool_call_id,
+                        "output": _tool_result_to_responses_output(block.tool_result)
+                    }
             output_text = message.get_text_content() if message.content else ""
             return {
                 "type": "function_call_output",
@@ -195,7 +203,7 @@ class VolcengineProvider(BaseProvider):
                     items.append({
                         "type": "function_call_output",
                         "call_id": block.tool_call_id or "",
-                        "output": block.get_tool_result_text()
+                        "output": _tool_result_to_responses_output(block.tool_result)
                     })
                 # Also include non-tool-result content as a regular message
                 other_blocks = [
