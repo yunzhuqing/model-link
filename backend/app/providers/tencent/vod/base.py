@@ -30,7 +30,7 @@ import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from ...openai_provider import OpenAIProvider
-from ...openai_responses_compt_provider import OpenAIResponsesCompatProvider
+from ..._responses_format import build_responses_request, parse_responses_response
 from ...base import ProviderConfig, ProviderCapability
 from app.utils import REASONING_EFFORT_LOW, json_loads
 from app.abstraction.chat import ChatRequest, ChatResponse
@@ -490,11 +490,12 @@ class TencentVODProvider(OpenAIProvider):
     # 网关内部元数据键，不向上游透传
     def _prepare_responses_request(self, request: ChatRequest) -> dict:
         """委托给共享的 Responses API 请求构建器。"""
-        return OpenAIResponsesCompatProvider.prepare_request(self, request)
+        return build_responses_request(request)
 
     def _parse_responses_response(self, response_data: dict, model: str) -> ChatResponse:
         """委托给共享的 Responses API 响应解析器。"""
-        return OpenAIResponsesCompatProvider.parse_response(self, response_data, model)
+        return parse_responses_response(response_data, model)
+
     async def _chat_responses(self, request: ChatRequest) -> ChatResponse:
         """向 /v1/responses 发送非流式请求。"""
         request_data = self._prepare_responses_request(request)
@@ -544,7 +545,6 @@ class TencentVODProvider(OpenAIProvider):
                         f"{json.dumps(error_data, ensure_ascii=False) if error_data else ''}"
                     )
 
-                buffer = ""
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -587,6 +587,7 @@ class TencentVODProvider(OpenAIProvider):
 
                         except Exception:
                             pass
+
     def supports_model(self, model: str) -> bool:
         """检查是否支持某个模型（始终返回 True 以支持新模型）"""
         return True

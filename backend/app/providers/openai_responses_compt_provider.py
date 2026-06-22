@@ -32,46 +32,31 @@ OpenAI Responses API 兼容供应商 (OpenAI Responses API Compatible Provider)
   API Key : 填写对应的 API 密钥，留空时省略 Authorization 头
 """
 import json
-import re
 import time
 import uuid
 from typing import Dict, Any, List, Optional, AsyncGenerator
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
-from .openai_provider import OpenAIProvider
-from app.utils import json_loads
-from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
-from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.abstraction.tools import ToolCall
-
-# 网关内部元数据键，不向上游透传
-_GATEWAY_INTERNAL_KEYS = frozenset({
-    'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
-    'output_pricing', 'timeout', '_image_generation', '_video_generation',
-    '_3d_generation', '_on_task_created', '_on_model_resolved',
-})
+from ._responses_format import (
+    build_responses_request,
+    parse_responses_response,
+)
+from app.abstraction.chat import ChatRequest, ChatResponse
+from app.abstraction.streaming import StreamChunk, StreamEventType, FinishReason
 
 
-
-def _is_gpt5_or_newer(model: str) -> bool:
-    """Check if model is GPT-5 or newer (these models don't support temperature)."""
-    m = re.match(r'^gpt-(\d+)', model.lower())
-    if m:
-        return int(m.group(1)) >= 5
-    return False
-
-class OpenAIResponsesCompatProvider(OpenAIProvider):
+class OpenAIResponsesCompatProvider(BaseProvider):
     """
     OpenAI Responses API 兼容供应商。
 
-    继承 OpenAIProvider 以复用消息格式转换逻辑（_message_to_openai、
-    _content_block_to_openai 等），并覆盖：
+    直接继承 BaseProvider，通过 _responses_format 共享模块
+    获取请求构建和响应解析能力。
 
-    - ``prepare_request``  → 转换为 Responses API 请求格式
+    覆盖：
+    - ``prepare_request``  → 委托给 build_responses_request()
     - ``chat``             → POST 到 /v1/responses
     - ``stream_chat``      → 解析 Responses API SSE 事件
-    - ``parse_response``   → 解析 Responses API 响应体
+    - ``parse_response``   → 委托给 parse_responses_response()
     """
 
     PROVIDER_TYPE: str = "openai_responses_compt"
@@ -86,11 +71,6 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
 
     # 无默认 Base URL，由用户配置
     DEFAULT_BASE_URL: str = ""
-
-    def __init__(self, config: ProviderConfig):
-        # 绕过 OpenAIProvider.__init__ 中 DEFAULT_BASE_URL 强制赋值
-        from .base import BaseProvider as _Base
-        _Base.__init__(self, config)
 
     # ------------------------------------------------------------------
     # 请求头
@@ -113,90 +93,8 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
     # ------------------------------------------------------------------
 
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
-        """
-        将 ChatRequest 转换为 OpenAI Responses API 请求格式。
-
-        规则：
-          - 第一条 system 消息提取为 ``instructions``
-          - 其余消息转换为 ``input`` 数组（OpenAI messages 格式）
-          - max_tokens → max_output_tokens
-          - reasoning_effort → reasoning.effort
-        """
-        # System instructions pass through as-is
-        # Separate developer messages from regular messages for different handling
-        other_messages = []
-        developer_items = []
-        for msg in request.messages:
-            if msg.role == MessageRole.DEVELOPER:
-                content = msg.get_text_content() or ''
-                if content:
-                    developer_items.append({"role": "developer", "content": content})
-            elif msg.role != MessageRole.SYSTEM:
-                other_messages.append(msg)
-
-        # Build input array, developer messages first
-        input_array = developer_items + self._messages_to_responses_input(other_messages)
-
-        # 构建基础请求体
-        result: Dict[str, Any] = {
-            "model": request.model,
-            "input": input_array,
-            "stream": request.stream,
-        }
-
-        if request.system is not None:
-            if isinstance(request.system, list):
-                instructions = " ".join(
-                    b.get("text", "") for b in request.system
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-                if instructions:
-                    result["instructions"] = instructions
-            else:
-                result["instructions"] = request.system
-
-        if request.temperature is not None:
-            if not _is_gpt5_or_newer(request.model):
-                result["temperature"] = request.temperature
-        if request.top_p is not None:
-            result["top_p"] = request.top_p
-        if request.max_tokens is not None:
-            result["max_output_tokens"] = request.max_tokens
-
-        if request.tools:
-            result["tools"] = [self._tool_to_openai(t) for t in request.tools]
-        if request.tool_choice:
-            result["tool_choice"] = request.tool_choice
-
-        if request.response_format is not None:
-            result["text"] = self._response_format_to_responses_api(request.response_format)
-
-        if request.stop:
-            result["stop"] = request.stop
-        if request.presence_penalty is not None:
-            result["presence_penalty"] = request.presence_penalty
-        if request.frequency_penalty is not None:
-            result["frequency_penalty"] = request.frequency_penalty
-        if request.user:
-            result["user"] = request.user
-
-        # reasoning_effort → reasoning.effort (with summary for streaming events)
-        if request.reasoning_effort and request.reasoning_effort != 'none':
-            result["reasoning"] = {
-                "effort": request.reasoning_effort,
-                "summary": "auto",
-            }
-
-        # 透传额外 metadata（过滤网关内部键）
-        for key, value in request.metadata.items():
-            if key not in _GATEWAY_INTERNAL_KEYS:
-                result[key] = value
-
-        return result
-
-    # ------------------------------------------------------------------
-    # 消息转换：内部格式 → Responses API input 格式
-    # ------------------------------------------------------------------
+        """委托给共享模块构建 Responses API 请求体。"""
+        return build_responses_request(request)
 
     # ------------------------------------------------------------------
     # 非流式请求
@@ -245,226 +143,8 @@ class OpenAIResponsesCompatProvider(OpenAIProvider):
     # ------------------------------------------------------------------
 
     def parse_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
-        """
-        将 OpenAI Responses API 响应体解析为 ChatResponse。
-
-        响应结构：
-        {
-          "id": "resp_xxx",
-          "object": "response",
-          "created_at": ...,
-          "model": "...",
-          "status": "completed",
-          "output": [
-            {
-              "type": "reasoning",
-              "summary": [{"type": "summary_text", "text": "..."}]
-            },
-            {
-              "type": "message",
-              "role": "assistant",
-              "content": [{"type": "output_text", "text": "..."}]
-            },
-            {
-              "type": "function_call",
-              "call_id": "...", "name": "...", "arguments": "..."
-            }
-          ],
-          "usage": {
-            "input_tokens": ..., "output_tokens": ..., "total_tokens": ...
-          }
-        }
-        """
-        output_items = response_data.get("output", [])
-        status = response_data.get("status", "completed")
-
-        # ── 检测特殊生成调用类型 ──────────────────────────────────────
-        # 上游 Responses API 可能直接返回 image_generation_call /
-        # video_generation_call / 3d_generation_call 输出项。
-        # 将它们整理成 JSON 列表存入消息文本，并为响应 ID 加上适当前缀，
-        # 以便 format_response 走正确的图片/视频/3D 代码路径。
-        _GEN_TYPE_MAP = {
-            "image_generation_call": "img",
-            "video_generation_call": "vid",
-            "3d_generation_call": "3d",
-        }
-        gen_type: Optional[str] = None   # 'img' | 'vid' | '3d'
-        gen_items: List[Dict[str, Any]] = []
-
-        for item in output_items:
-            item_type = item.get("type", "")
-            if item_type in _GEN_TYPE_MAP:
-                gen_type = gen_type or _GEN_TYPE_MAP[item_type]
-                if item_type == "image_generation_call":
-                    gen_items.append({
-                        "type": "image_generation_call",
-                        "id": item.get("id", ""),
-                        "status": item.get("status", "completed"),
-                        "result": item.get("result", ""),
-                    })
-                elif item_type == "video_generation_call":
-                    gen_items.append({
-                        "type": "video_generation_call",
-                        "id": item.get("id", ""),
-                        "status": item.get("status", "completed"),
-                        "result": item.get("result", ""),
-                    })
-                elif item_type == "3d_generation_call":
-                    gen_items.append({
-                        "type": "3d_generation_call",
-                        "id": item.get("id", ""),
-                        "status": item.get("status", "completed"),
-                        "content": item.get("content", []),
-                    })
-
-        if gen_type and gen_items:
-            # 以 JSON 字符串形式存入消息内容，与 execute_image_generation() 保持一致
-            gen_json = json.dumps(gen_items, ensure_ascii=False)
-            message = Message(
-                role=MessageRole.ASSISTANT,
-                content=gen_json,
-            )
-            choice = ChatChoice(
-                index=0,
-                message=message,
-                finish_reason=FinishReason.STOP,
-                tool_calls=[],
-            )
-            usage_data = response_data.get("usage", {})
-            usage = UsageInfo(
-                prompt_tokens=usage_data.get("input_tokens", 0),
-                completion_tokens=usage_data.get("output_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0),
-            )
-            raw_id = response_data.get("id", f"{gen_type}_{uuid.uuid4().hex[:8]}")
-            created = response_data.get("created_at", int(time.time()))
-            # Ensure ID carries the correct prefix so format_response detects it
-            resp_id = raw_id if raw_id.startswith(f"{gen_type}_") or raw_id.startswith(f"{gen_type}-") else f"{gen_type}_{raw_id}"
-            usage.extra['_upstream_status'] = status
-            upstream_error = response_data.get("error")
-            if upstream_error:
-                usage.extra['_upstream_error'] = upstream_error
-            return ChatResponse(
-                id=resp_id,
-                model=response_data.get("model", model),
-                choices=[choice],
-                usage=usage,
-                created=created,
-                provider=self.PROVIDER_TYPE
-            )
-
-        # ── 收集 reasoning content ────────────────────────────────────
-        reasoning_text: Optional[str] = None
-        for item in output_items:
-            if item.get("type") == "reasoning":
-                summaries = item.get("summary", [])
-                parts = [s.get("text", "") for s in summaries if s.get("type") == "summary_text"]
-                if parts:
-                    reasoning_text = "\n".join(parts)
-                break
-
-        # 收集文本内容和工具调用
-        text_parts: List[str] = []
-        tool_calls: List[ToolCall] = []
-        tool_call_blocks: List[ContentBlock] = []
-
-        for item in output_items:
-            item_type = item.get("type", "")
-
-            if item_type == "message":
-                for content_block in item.get("content", []):
-                    block_type = content_block.get("type", "")
-                    if block_type == "output_text":
-                        text = content_block.get("text", "")
-                        if text:
-                            text_parts.append(text)
-
-            elif item_type == "function_call":
-                call_id = item.get("call_id") or item.get("id", "")
-                name = item.get("name", "")
-                args_str = item.get("arguments", "{}")
-                try:
-                    args = json_loads(args_str) if isinstance(args_str, str) else args_str
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
-
-                tool_calls.append(ToolCall(
-                    id=call_id,
-                    name=name,
-                    arguments=args,
-                    call_type="function"
-                ))
-                tool_call_blocks.append(ContentBlock.from_tool_call(call_id, name, args))
-
-        # 组建消息内容
-        full_text = "\n".join(text_parts) if text_parts else None
-        content_blocks: List[ContentBlock] = []
-        if full_text:
-            content_blocks.append(ContentBlock.from_text(full_text))
-        content_blocks.extend(tool_call_blocks)
-
-        message = Message(
-            role=MessageRole.ASSISTANT,
-            content=content_blocks if content_blocks else (full_text or ""),
-            reasoning_content=reasoning_text
-        )
-
-        # 映射 status → finish_reason
-        status_to_finish: Dict[str, FinishReason] = {
-            "completed": FinishReason.STOP,
-            "incomplete": FinishReason.LENGTH,
-            "failed": FinishReason.STOP,
-        }
-        if tool_calls:
-            finish_reason = FinishReason.TOOL_CALLS
-        else:
-            finish_reason = status_to_finish.get(status, FinishReason.STOP)
-
-        choice = ChatChoice(
-            index=0,
-            message=message,
-            finish_reason=finish_reason,
-            tool_calls=tool_calls,
-            reasoning_content=reasoning_text
-        )
-
-        # usage
-        usage_data = response_data.get("usage", {})
-        usage = UsageInfo(
-            prompt_tokens=usage_data.get("input_tokens", 0),
-            completion_tokens=usage_data.get("output_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0)
-        )
-        # 详细 token 信息
-        input_details = usage_data.get("input_tokens_details", {})
-        output_details = usage_data.get("output_tokens_details", {})
-        if input_details.get("cached_tokens"):
-            usage.cached_tokens = input_details["cached_tokens"]
-        if output_details.get("reasoning_tokens"):
-            usage.reasoning_tokens = output_details["reasoning_tokens"]
-
-        resp_id = response_data.get("id", f"resp_{uuid.uuid4().hex[:8]}")
-        created = response_data.get("created_at", int(time.time()))
-
-        # Store the raw upstream status so callers (e.g. background worker) can
-        # detect when the upstream itself returned an async (in_progress) response
-        # and need to poll before saving the final result.
-        usage.extra['_upstream_status'] = status
-
-        # Preserve the upstream error object so callers can surface the real
-        # error message to the end user when status == "failed".
-        upstream_error = response_data.get("error")
-        if upstream_error:
-            usage.extra['_upstream_error'] = upstream_error
-
-        return ChatResponse(
-            id=resp_id,
-            model=response_data.get("model", model),
-            choices=[choice],
-            usage=usage,
-            created=created,
-            provider=self.PROVIDER_TYPE
-        )
+        """委托给共享模块解析 Responses API 响应。"""
+        return parse_responses_response(response_data, model)
 
     # ------------------------------------------------------------------
     # 流式请求

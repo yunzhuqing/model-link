@@ -18,6 +18,7 @@ import sys
 import base64
 import logging
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
+from .._responses_format import build_responses_request
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -94,37 +95,6 @@ class VolcengineProvider(BaseProvider):
     # Helpers
     # ----------------------------------------------------------------
 
-    @staticmethod
-    def _response_format_to_responses_api(response_format: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Convert Chat Completions response_format to Responses API text.format.
-
-        Chat Completions format:
-            {"type": "json_object"}
-            {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}
-
-        Responses API format:
-            {"format": {"type": "json_object"}}
-            {"format": {"type": "json_schema", "name": "...", "schema": {...}, "strict": true}}
-        """
-        fmt_type = response_format.get("type")
-        if fmt_type == "json_schema":
-            json_schema = response_format.get("json_schema", {})
-            format_def: Dict[str, Any] = {
-                "type": "json_schema",
-                "name": json_schema.get("name", "response"),
-                "schema": json_schema.get("schema", {}),
-            }
-            if json_schema.get("strict") is not None:
-                format_def["strict"] = json_schema["strict"]
-            else:
-                format_def["strict"] = True
-            return {"format": format_def}
-        elif fmt_type == "json_object":
-            return {"format": {"type": "json_object"}}
-        else:
-            return {"format": response_format}
-
     # ----------------------------------------------------------------
     # Request preparation
     # ----------------------------------------------------------------
@@ -133,37 +103,23 @@ class VolcengineProvider(BaseProvider):
         """
         Convert ChatRequest into Volcengine Responses API format.
 
-        Responses API uses:
-        - `input` instead of `messages`
-        - `instructions` for system message
-        - `max_output_tokens` instead of `max_tokens`
-        - `reasoning` for thinking control
+        Builds on the shared ``build_responses_request``, then applies
+        Volcengine-specific customizations:
+        - input conversion via ``_message_to_input_item`` (partial, empty fallback)
+        - reasoning without ``summary`` (Volcengine doesn't support it)
         """
-        result: Dict[str, Any] = {"model": request.model}
+        result = build_responses_request(request)
 
-        # System instructions: Volcengine Responses API only accepts string
-        if request.system is not None:
-            if isinstance(request.system, list):
-                result["instructions"] = " ".join(
-                    b.get("text", "") for b in request.system
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-            else:
-                result["instructions"] = request.system
-
-        # Convert messages to input array
+        # ── Override input: use Volcengine-specific message conversion ──
         input_items = []
         for msg in request.messages:
-            # Developer messages → {"role": "developer"} items in input
             if msg.role == MessageRole.DEVELOPER:
                 content = msg.get_text_content() or ''
                 if content:
                     input_items.append({"role": "developer", "content": content})
                 continue
-            # System messages are already in instructions (safety skip)
             if msg.role == MessageRole.SYSTEM:
                 continue
-
             item = self._message_to_input_item(msg)
             if item is not None:
                 if isinstance(item, list):
@@ -171,12 +127,9 @@ class VolcengineProvider(BaseProvider):
                 else:
                     input_items.append(item)
 
-        # If the last input item is an assistant message, set partial=true
-        # so the Volcengine Responses API continues from that prefix.
-        # However, skip empty assistant messages (e.g. from Anthropic's {"role": "assistant", "content": []})
+        # Partial assistant continuation (Volcengine-specific)
         if input_items and isinstance(input_items[-1], dict) and input_items[-1].get("role") == "assistant":
             last_content = input_items[-1].get("content")
-            # Check if content is empty or only contains empty text
             has_meaningful_content = False
             if isinstance(last_content, str) and last_content.strip():
                 has_meaningful_content = True
@@ -187,59 +140,30 @@ class VolcengineProvider(BaseProvider):
                         if text and text.strip():
                             has_meaningful_content = True
                             break
-                        # Non-text content (images, etc.) is always meaningful
                         if part.get("type", "") not in ("input_text", "output_text"):
                             has_meaningful_content = True
                             break
-
             if has_meaningful_content:
                 input_items[-1]["partial"] = True
             else:
-                # Remove empty assistant message — Volcengine doesn't accept it
                 input_items.pop()
 
         result["input"] = input_items
 
-        # Stream
-        result["stream"] = request.stream
-
-        # Optional parameters
-        if request.temperature is not None:
-            result["temperature"] = request.temperature
-        if request.top_p is not None:
-            result["top_p"] = request.top_p
-        if request.max_tokens is not None:
-            result["max_output_tokens"] = request.max_tokens
-        if request.stop:
-            result["stop"] = request.stop
-        if request.response_format is not None:
-            result["text"] = self._response_format_to_responses_api(request.response_format)
-
-        # Tools
-        if request.tools:
-            result["tools"] = [self._tool_to_responses(t) for t in request.tools]
-        if request.tool_choice:
-            result["tool_choice"] = request.tool_choice
-
-        # Reasoning
-        # NOTE: Volcengine Responses API does NOT support the "summary" parameter.
-        # Only "effort" is supported, so we strip "summary" from any reasoning config.
+        # ── Override reasoning: Volcengine does NOT support "summary" ──
+        result.pop("reasoning", None)
         reasoning_config = request.metadata.get('reasoning')
         support_thinking = request.metadata.get('support_thinking', False)
 
         if reasoning_config and isinstance(reasoning_config, dict):
-            # Use reasoning config from the Responses API request, but strip unsupported keys
-            volcengine_reasoning = {"effort": reasoning_config.get("effort", "medium")}
-            result["reasoning"] = volcengine_reasoning
+            result["reasoning"] = {"effort": reasoning_config.get("effort", "medium")}
         elif support_thinking:
-            # Model supports thinking; build reasoning config
             effort = request.reasoning_effort
             if not effort or effort == 'none':
-                result["reasoning"] = {"effort": effort or REASONING_EFFORT_MINIMAL}
+                result["reasoning"] = {"effort": REASONING_EFFORT_MINIMAL}
             else:
                 result["reasoning"] = {"effort": effort or "medium"}
         elif request.reasoning_effort and request.reasoning_effort != 'none':
-            # User explicitly requested reasoning
             result["reasoning"] = {"effort": request.reasoning_effort}
 
         return result
@@ -381,24 +305,6 @@ class VolcengineProvider(BaseProvider):
         if message.role == MessageRole.ASSISTANT:
             return [{"type": "output_text", "text": "(empty)"}]
         return "(empty)"
-
-    def _tool_to_responses(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """Convert ToolDefinition to Responses API format.
-
-        Responses API uses a flat structure (not nested under 'function'):
-        {
-            "type": "function",
-            "name": "...",
-            "description": "...",
-            "parameters": {...}
-        }
-        """
-        return {
-            "type": "function",
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.get_parameters_schema(),
-        }
 
     # ----------------------------------------------------------------
     # Non-streaming

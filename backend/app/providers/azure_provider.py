@@ -9,7 +9,7 @@ import uuid
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from .openai_provider import OpenAIProvider, parse_openai_request
-from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
+from ._responses_format import build_responses_request, parse_responses_response, tool_to_responses_api
 from app.utils import json_loads
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
@@ -113,28 +113,6 @@ class AzureProvider(OpenAIProvider):
     def _uses_responses_api(self, model: str) -> bool:
         """Check if the given model requires the Responses API."""
         return model in self.RESPONSES_API_MODELS
-
-    def _tool_to_responses_api(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """
-        Convert a ToolDefinition to the Responses API flat tool format.
-
-        Responses API format (flat, no 'function' wrapper):
-        {
-            "type": "function",
-            "name": "...",
-            "description": "...",
-            "parameters": {...}
-        }
-
-        This differs from Chat Completions format which wraps in a 'function' key.
-        """
-        return {
-            "type": "function",
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.get_parameters_schema()
-        }
-
     def get_chat_url(self, deployment_name: str) -> str:
         """
         获取聊天 API URL
@@ -214,11 +192,11 @@ class AzureProvider(OpenAIProvider):
                         block.filename = filename
     
         # 委托给共享实现构建基础请求体
-        result = OpenAIResponsesCompatProvider.prepare_request(self, request)
+        result = build_responses_request(request)
     
         # Azure 特有：覆盖 tools 为 Responses API flat 格式
         if request.tools:
-            result["tools"] = [self._tool_to_responses_api(t) for t in request.tools]
+            result["tools"] = [tool_to_responses_api(t) for t in request.tools]
         if request.tool_choice:
             result["tool_choice"] = self._normalize_tool_choice_for_responses(request.tool_choice)
     
@@ -226,7 +204,7 @@ class AzureProvider(OpenAIProvider):
 
     def _parse_responses_api_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """委托给共享的 Responses API 响应解析器。"""
-        return OpenAIResponsesCompatProvider.parse_response(self, response_data, model)
+        return parse_responses_response(response_data, model)
 
     async def _parse_responses_api_stream(
         self, response, response_id: str, model: str
