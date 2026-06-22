@@ -1,3 +1,6 @@
+import { Link } from 'react-router-dom';
+import { ArrowUpRight } from 'lucide-react';
+
 import { CodeBlock, CurlSection } from './HelpShared';
 
 // ---------- code samples ----------
@@ -121,6 +124,50 @@ export const FILES_UPLOAD_RESPONSE = `{
   "filename": "cat_01.png",
   "id": "file-d7bbfec7f7e545eba907ce54",
   "object": "file",
+  "purpose": "seedance-ref"
+}`;
+
+export const FILES_UPLOAD_JSON_CURL = `curl --location --request POST 'http://localhost:8000/v1/files' \\
+--header 'Content-Type: application/json' \\
+--header 'Authorization: Bearer <YOUR_API_KEY>' \\
+--data-raw '{
+  "input_image": [
+    "https://ark-project.tos-cn-beijing.volces.com/doc_image/r2v_tea_pic1.jpg",
+    "https://ark-project.tos-cn-beijing.volces.com/doc_image/r2v_tea_pic2.jpg",
+    "https://ark-project.tos-cn-beijing.volces.com/doc_video/r2v_tea_video1.mp4",
+    "https://ark-project.tos-cn-beijing.volces.com/doc_audio/r2v_tea_audio1.mp3"
+  ],
+  "purpose": "seedance-ref"
+}'`;
+
+export const FILES_UPLOAD_JSON_RESPONSE = `{
+  "data": [
+    {
+      "bytes": 0,
+      "created_at": 1782095303,
+      "id": "file-dac19c2bb3ce4b83be889982",
+      "object": "file"
+    },
+    {
+      "bytes": 0,
+      "created_at": 1782095303,
+      "id": "file-733edbeaa00c47cc88ff68f7",
+      "object": "file"
+    },
+    {
+      "bytes": 0,
+      "created_at": 1782095303,
+      "id": "file-611f98fec2494f51a510aec1",
+      "object": "file"
+    },
+    {
+      "bytes": 0,
+      "created_at": 1782095303,
+      "id": "file-b89dd3ef0c7c450e83b52ce3",
+      "object": "file"
+    }
+  ],
+  "object": "list",
   "purpose": "seedance-ref"
 }`;
 
@@ -264,13 +311,29 @@ export function SeedanceSection() {
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
               <strong>备注：</strong>这种方式更适合 Seedance 素材库场景，尤其是真人素材和虚拟素材的复用与统一管理。
             </div>
+            <Link
+              to="/help/files"
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors"
+            >
+              查看 Files API 完整文档
+              <ArrowUpRight className="w-4 h-4" />
+            </Link>
             <div>
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">1. 先创建文件</span>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">1a. 创建文件（multipart 本地上传）</span>
               <CodeBlock code={FILES_UPLOAD_CURL} lang="bash" />
             </div>
             <div>
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">上传返回值</span>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">multipart 返回值</span>
               <CodeBlock code={FILES_UPLOAD_RESPONSE} />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">1b. 创建文件（JSON 引用素材 URL，无需本地上传）</span>
+              <p className="text-sm text-slate-600 mb-2">通过 <code>input_image</code> 传入公网素材 URL，数组中可混合图片、视频（.mp4）、音频（.mp3），一次性批量创建 file 对象。</p>
+              <CodeBlock code={FILES_UPLOAD_JSON_CURL} lang="bash" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">JSON 返回值</span>
+              <CodeBlock code={FILES_UPLOAD_JSON_RESPONSE} />
             </div>
             <div>
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">2. 在视频生成请求中使用 file_id</span>

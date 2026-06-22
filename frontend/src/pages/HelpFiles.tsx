@@ -34,7 +34,9 @@ const JSON_SINGLE_REQUEST = `{
 const JSON_BATCH_REQUEST = `{
   "input_image": [
     "https://ark-project.tos-cn-beijing.volces.com/doc_image/r2v_tea_pic1.jpg",
-    "https://ark-project.tos-cn-beijing.volces.com/doc_image/r2v_tea_pic2.jpg"
+    "https://ark-project.tos-cn-beijing.volces.com/doc_image/r2v_tea_pic2.jpg",
+    "https://ark-project.tos-cn-beijing.volces.com/doc_video/r2v_tea_video1.mp4",
+    "https://ark-project.tos-cn-beijing.volces.com/doc_audio/r2v_tea_audio1.mp3"
   ],
   "purpose": "seedance-ref"
 }`;
@@ -56,14 +58,26 @@ const JSON_BATCH_RESPONSE = `{
   "data": [
     {
       "bytes": 0,
-      "created_at": 1781840270,
-      "id": "file-bb33273741f5458f8ee4c256",
+      "created_at": 1782095303,
+      "id": "file-dac19c2bb3ce4b83be889982",
       "object": "file"
     },
     {
       "bytes": 0,
-      "created_at": 1781840271,
-      "id": "file-bdf994f8f0e24961b9c4369a",
+      "created_at": 1782095303,
+      "id": "file-733edbeaa00c47cc88ff68f7",
+      "object": "file"
+    },
+    {
+      "bytes": 0,
+      "created_at": 1782095303,
+      "id": "file-611f98fec2494f51a510aec1",
+      "object": "file"
+    },
+    {
+      "bytes": 0,
+      "created_at": 1782095303,
+      "id": "file-b89dd3ef0c7c450e83b52ce3",
       "object": "file"
     }
   ],
@@ -193,7 +207,7 @@ export default function HelpFiles() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {[
-                  { name: 'input_image', required: true, type: 'string', desc: '公网图片 URL' },
+                  { name: 'input_image', required: true, type: 'string', desc: '公网素材 URL（图片 / 视频 / 音频）' },
                   { name: 'purpose', required: true, type: 'string', desc: '当前仅支持 seedance-ref' },
                   { name: 'filename', required: false, type: 'string', desc: '可选，作为素材名称使用' },
                   { name: 'group_id', required: false, type: 'string', desc: '可选；若未传则尝试使用 provider 的 extra_config.ark_group_id' },
@@ -227,7 +241,7 @@ export default function HelpFiles() {
           title="JSON 批量提交图片 URL"
           badge="batch"
           badgeColor="bg-cyan-100 text-cyan-700"
-          description="input_image 也可以是字符串数组，一次批量提交多张图片 URL。返回值中的 data 数组会按上传结果逐项返回 file 对象。"
+          description="input_image 也可以是字符串数组，一次批量提交多个素材 URL；数组中可混合图片、视频（.mp4）、音频（.mp3）等参考素材，无需先在本地上传。返回值中的 data 数组会按上传顺序逐项返回 file 对象。"
         >
           <div>
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-2">请求体</span>
@@ -269,7 +283,7 @@ export default function HelpFiles() {
         >
           <ul className="list-disc list-inside space-y-2 text-sm text-slate-700">
             <li><code>purpose</code> 目前仅支持 <code>seedance-ref</code>。</li>
-            <li>JSON 模式目前使用 <code>input_image</code> 字段，只支持单个 URL 字符串或 URL 字符串数组。</li>
+            <li>JSON 模式使用 <code>input_image</code> 字段，支持单个 URL 字符串或 URL 字符串数组，数组中可混合图片、视频、音频等素材 URL。</li>
             <li>若请求里未传 <code>group_id</code>，则需要 provider 侧已配置 <code>extra_config.ark_group_id</code>。</li>
             <li>multipart 上传的本地文件会先保存，再注册到上游素材库；JSON 模式会直接使用传入的图片 URL 建立素材。</li>
           </ul>
