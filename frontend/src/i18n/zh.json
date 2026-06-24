@@ -386,6 +386,7 @@
     "tiers": "{{count}} 个阶梯",
     "retired": "已退役",
     "retires": "{{date}} 退役",
+    "discountBadge": "{{percent}}折",
     "loading": "加载中…",
     "deleteConfirm": "删除模板 \"{{label}}\"？",
     "form": {

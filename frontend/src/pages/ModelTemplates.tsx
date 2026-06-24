@@ -5,6 +5,14 @@ import client from '../api/client';
 import { Plus, Edit2, Trash2, Save, LayoutTemplate, Search, X, RefreshCw } from 'lucide-react';
 import NumberInput, { fmtNumber } from '../components/NumberInput';
 
+function currencySymbol(currency: string): string {
+  if (currency === 'CNY') return '¥';
+  if (currency === 'EUR') return '€';
+  if (currency === 'GBP') return '£';
+  if (currency === 'JPY') return '¥';
+  return '$';
+}
+
 interface PricingTier {
   label: string;
   context_size: number;
@@ -961,7 +969,8 @@ const TemplateCard = ({
   onEdit: () => void;
   onDelete: () => void;
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isZh = i18n.language?.startsWith('zh');
 
   return (
     <div
@@ -1000,6 +1009,13 @@ const TemplateCard = ({
                 {t('modelTemplates.retires', { date: new Date(tpl.retirement_time).toLocaleDateString() })}
               </span>
             )}
+            {tpl.discount != null && tpl.discount < 1 && (
+              <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs font-medium">
+                {t('modelTemplates.discountBadge', {
+                  percent: isZh ? parseFloat((tpl.discount * 10).toFixed(1)) : Math.round((1 - tpl.discount) * 100),
+                })}
+              </span>
+            )}
           </div>
 
           {/* Pricing row */}
@@ -1009,9 +1025,9 @@ const TemplateCard = ({
                 <div key={i} className="flex flex-wrap gap-3 text-sm text-slate-600">
                   <span className="text-slate-500 text-xs font-medium w-20">{tier.label}</span>
                   <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.ctx')}</span>{tier.context_size.toLocaleString()}</span>
-                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.in')}</span>${tier.input_price}/M</span>
-                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.out')}</span>${tier.output_price}/M</span>
-                  {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheDown')}</span>${tier.cache_hit_price}/M</span>}
+                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.in')}</span>{currencySymbol(tpl.currency)}{tier.input_price}/M</span>
+                  <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.out')}</span>{currencySymbol(tpl.currency)}{tier.output_price}/M</span>
+                  {tier.cache_hit_price > 0 && <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheDown')}</span>{currencySymbol(tpl.currency)}{tier.cache_hit_price}/M</span>}
                 </div>
               ))}
             </div>
@@ -1023,34 +1039,34 @@ const TemplateCard = ({
               </span>
               <span>
                 <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.in')}</span>
-                ${tpl.input_price}/M
+                {currencySymbol(tpl.currency)}{tpl.input_price}/M
               </span>
               <span>
                 <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.out')}</span>
-                ${tpl.output_price}/M
+                {currencySymbol(tpl.currency)}{tpl.output_price}/M
               </span>
               {tpl.cache_creation_price > 0 && (
                 <span>
                   <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp')}</span>
-                  ${tpl.cache_creation_price}/M
+                  {currencySymbol(tpl.currency)}{tpl.cache_creation_price}/M
                 </span>
               )}
               {tpl.cache_5m_creation_price > 0 && (
                 <span>
                   <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp5m')}</span>
-                  ${tpl.cache_5m_creation_price}/M
+                  {currencySymbol(tpl.currency)}{tpl.cache_5m_creation_price}/M
                 </span>
               )}
               {tpl.cache_1h_creation_price > 0 && (
                 <span>
                   <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheUp1h')}</span>
-                  ${tpl.cache_1h_creation_price}/M
+                  {currencySymbol(tpl.currency)}{tpl.cache_1h_creation_price}/M
                 </span>
               )}
               {tpl.cache_hit_price > 0 && (
                 <span>
                   <span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheDown')}</span>
-                  ${tpl.cache_hit_price}/M
+                  {currencySymbol(tpl.currency)}{tpl.cache_hit_price}/M
                 </span>
               )}
             </div>
@@ -1078,12 +1094,12 @@ const TemplateCard = ({
                           <div key={i} className="flex items-center gap-2 text-xs text-slate-600">
                             <span className="text-slate-500 min-w-[40px]">{tier.resolution}</span>
                             {tier.quality && <span className="text-purple-500">{tier.quality}</span>}
-                            <span>${tier.price}{typeLabel}</span>
+                            <span>{currencySymbol(tpl.currency)}{tier.price}{typeLabel}</span>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <span className="text-xs text-slate-600">${catConfig.price}{typeLabel}</span>
+                      <span className="text-xs text-slate-600">{currencySymbol(tpl.currency)}{catConfig.price}{typeLabel}</span>
                     )}
                     {cat === '3d' && catConfig.credits && (
                       <div className="mt-1.5 pt-1.5 border-t border-blue-200">

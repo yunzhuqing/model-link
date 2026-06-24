@@ -384,6 +384,7 @@
     "tiers": "{{count}} tiers",
     "retired": "Retired",
     "retires": "Retires {{date}}",
+    "discountBadge": "{{percent}}% off",
     "loading": "Loading…",
     "deleteConfirm": "Delete template \"{{label}}\"?",
     "form": {

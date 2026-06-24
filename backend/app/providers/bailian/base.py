@@ -152,6 +152,21 @@ class BailianProvider(OpenAIProvider):
             "context_size": 0,
             "supports_vision": True,
         },
+        "happyhorse-1.1-t2v": {
+            "description": "文生视频模型 (1.1)，根据文本描述生成视频",
+            "context_size": 0,
+            "supports_vision": False,
+        },
+        "happyhorse-1.1-i2v": {
+            "description": "图生视频模型 (1.1)，根据首帧图片和文本描述生成视频",
+            "context_size": 0,
+            "supports_vision": True,
+        },
+        "happyhorse-1.1-r2v": {
+            "description": "参考对象生视频模型 (1.1)，根据参考图片和文本描述生成视频",
+            "context_size": 0,
+            "supports_vision": True,
+        },
         # DeepSeek 系列
         "deepseek-v3": {
             "description": "DeepSeek V3 模型",

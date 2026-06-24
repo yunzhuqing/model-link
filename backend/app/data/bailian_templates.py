@@ -347,7 +347,7 @@ BAILIAN_TEMPLATES = [
                 'price': 0.9,
                 'tiers': [
                     {'resolution': '720P', 'price': 0.9},
-                    {'resolution': '1080P', 'price': 1.6},
+                    {'resolution': '1080P', 'price': 1.2},
                 ],
             },
         },
@@ -371,7 +371,7 @@ BAILIAN_TEMPLATES = [
                 'price': 0.9,
                 'tiers': [
                     {'resolution': '720P', 'price': 0.9},
-                    {'resolution': '1080P', 'price': 1.6},
+                    {'resolution': '1080P', 'price': 1.2},
                 ],
             },
         },
@@ -395,7 +395,7 @@ BAILIAN_TEMPLATES = [
                 'price': 0.9,
                 'tiers': [
                     {'resolution': '720P', 'price': 0.9},
-                    {'resolution': '1080P', 'price': 1.6},
+                    {'resolution': '1080P', 'price': 1.2},
                 ],
             },
         },
@@ -419,7 +419,80 @@ BAILIAN_TEMPLATES = [
                 'price': 0.9,
                 'tiers': [
                     {'resolution': '720P', 'price': 0.9},
-                    {'resolution': '1080P', 'price': 1.6},
+                    {'resolution': '1080P', 'price': 1.2},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        timeout=900,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    # ── Happyhorse 1.1 视频生成 ──────────────────────────────────────────
+    dict(
+        label='Happyhorse 1.1 T2V',
+        provider='Bailian',
+        name='happyhorse-1.1-t2v',
+        alias='happyhorse-1.1-t2v',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'video': {
+                'type': 'per_second',
+                'price': 0.9,
+                'tiers': [
+                    {'resolution': '720P', 'price': 0.9},
+                    {'resolution': '1080P', 'price': 1.2},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        timeout=900,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Happyhorse 1.1 I2V',
+        provider='Bailian',
+        name='happyhorse-1.1-i2v',
+        alias='happyhorse-1.1-i2v',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'video': {
+                'type': 'per_second',
+                'price': 0.9,
+                'tiers': [
+                    {'resolution': '720P', 'price': 0.9},
+                    {'resolution': '1080P', 'price': 1.2},
+                ],
+            },
+        },
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        timeout=900,
+        support_kvcache=False, support_image=False, support_audio=False, support_video=False,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        support_thinking=False, support_online_image=False, support_online_video=False, support_embedding=False,
+    ),
+    dict(
+        label='Happyhorse 1.1 R2V',
+        provider='Bailian',
+        name='happyhorse-1.1-r2v',
+        alias='happyhorse-1.1-r2v',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        output_pricing={
+            'video': {
+                'type': 'per_second',
+                'price': 0.9,
+                'tiers': [
+                    {'resolution': '720P', 'price': 0.9},
+                    {'resolution': '1080P', 'price': 1.2},
                 ],
             },
         },

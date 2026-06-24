@@ -4,9 +4,9 @@
 通过 Dashscope 异步视频生成 API 生成视频，兼容 /v1/responses video_generation 工具。
 
 支持的模型：
-- happyhorse-1.0-t2v: 文生视频 (Text-to-Video)
-- happyhorse-1.0-i2v: 图生视频 (Image-to-Video, first_frame)
-- happyhorse-1.0-r2v: 参考对象生视频 (Reference-to-Video)
+- happyhorse-1.0-t2v / happyhorse-1.1-t2v: 文生视频 (Text-to-Video)
+- happyhorse-1.0-i2v / happyhorse-1.1-i2v: 图生视频 (Image-to-Video, first_frame)
+- happyhorse-1.0-r2v / happyhorse-1.1-r2v: 参考对象生视频 (Reference-to-Video)
 - happyhorse-1.0-video-edit: 视频编辑 (Video Edit)
 
 流程：
@@ -286,12 +286,12 @@ def _build_media_list(
     (``reference_images``, ``reference_videos``, ``first_frame_url``, ``file_id_media_map``),
     then builds the Dashscope ``media`` array with the correct ``type`` per model.
 
-    Dashscope media type mapping per model
+    Dashscope media type mapping per model (matched by task suffix, version-agnostic)
     ---------------------------------------
-    - happyhorse-1.0-t2v:     no media
-    - happyhorse-1.0-i2v:     first image → "first_frame"
-    - happyhorse-1.0-r2v:     all images → "reference_image" (max 9)
-    - happyhorse-1.0-video-edit: video → "video", images → "reference_image"
+    - *-t2v:        no media
+    - *-i2v:        first image → "first_frame"
+    - *-r2v:        all images → "reference_image" (max 9)
+    - *-video-edit: video → "video", images → "reference_image"
 
     Media already present in the list (by URL) is not duplicated.
 
@@ -317,15 +317,16 @@ def _build_media_list(
     # blocks inside a user message, they become ContentBlock objects with
     # type=ContentType.VIDEO_URL / IMAGE_URL on the Message content list.
     #
-    # Model → Dashscope type mapping
+    # Model → Dashscope type mapping (version-agnostic: matches the task suffix,
+    # so happyhorse-1.0-i2v, happyhorse-1.1-i2v, … all resolve the same way).
     model_lower = model.lower()
-    if model_lower.startswith("happyhorse-1.0-i2v"):
+    if model_lower.endswith("-i2v"):
         _image_ds_type = "first_frame"
         _video_ds_type = "first_frame"  # Should not happen, but handle cleanly
-    elif model_lower.startswith("happyhorse-1.0-r2v"):
+    elif model_lower.endswith("-r2v"):
         _image_ds_type = "reference_image"
         _video_ds_type = "reference_image"  # Should not happen
-    elif model_lower.startswith("happyhorse-1.0-video-edit"):
+    elif model_lower.endswith("-video-edit"):
         _image_ds_type = "reference_image"
         _video_ds_type = "video"
     else:
