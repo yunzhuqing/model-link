@@ -555,6 +555,7 @@ const ApiKeyDetail = () => {
                     </th>
                     <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输入价格</th>
                     <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">输出价格</th>
+                    <th className="text-right py-2.5 px-3 font-medium text-slate-500 text-xs uppercase">折扣</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -582,6 +583,15 @@ const ApiKeyDetail = () => {
                       </td>
                       <td className="py-2.5 px-3 text-right text-slate-600">
                         ${m.output_price}/{m.currency === 'CNY' ? '¥' : ''}1M
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        {m.discount < 1 ? (
+                          <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">
+                            {(m.discount * 10).toFixed(1)}折
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}

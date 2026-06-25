@@ -1035,6 +1035,7 @@ async def get_api_key_detail(current_user, api_key_id):
                 'input_price': m.input_price,
                 'output_price': m.output_price,
                 'currency': m.currency or 'USD',
+                'discount': float(m.discount) if m.discount is not None else 1.0,
             })
 
         # ── Budget info (separate from usage stats) ───────────────────────────

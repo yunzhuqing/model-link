@@ -564,6 +564,7 @@ async def _create_aigc_image_task(
     session_id: str = "",
     enhance_prompt: str = "",
     scene_type: str = "",
+    output_image_count: int = 1,
     tracer: Any = None,
 ) -> str:
     """
@@ -630,6 +631,8 @@ async def _create_aigc_image_task(
         output_config["AspectRatio"] = aspect_ratio
     if resolution:
         output_config["Resolution"] = resolution
+    if output_image_count and output_image_count > 0:
+        output_config["OutputImageCount"] = output_image_count
     body["OutputConfig"] = output_config
 
     payload_str = json.dumps(body, ensure_ascii=False)
@@ -991,6 +994,7 @@ async def execute_tencentvod_image_generation(
     # Session id
     session_id = metadata.get("session_id", "")
     enhance_prompt = metadata.get("enhance_prompt", "")
+    output_image_count = int(metadata.get('number') or 1)
 
     # Determine SceneType for 3D models
     scene_type = ""
@@ -1025,6 +1029,7 @@ async def execute_tencentvod_image_generation(
                 session_id=session_id,
                 enhance_prompt=enhance_prompt,
                 scene_type=scene_type,
+                output_image_count=output_image_count,
                 tracer=_child_span,
             )
 

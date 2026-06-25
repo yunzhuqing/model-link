@@ -262,9 +262,8 @@ async def _run_background_response(
                     elapsed += wait
                     poll_idx += 1
 
-                    # provider_instance.get_response is sync (uses requests); offload.
-                    response = await asyncio.to_thread(
-                        provider_instance.get_response, upstream_response_id, upstream_model
+                    response = await provider_instance.get_response(
+                        upstream_response_id, upstream_model
                     )
                     upstream_status = response.usage.extra.get('_upstream_status', 'completed')
 

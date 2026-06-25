@@ -10,6 +10,7 @@ Vertex AI 图像生成模块 (Vertex AI Image Generation)
 
 API 文档: https://cloud.google.com/vertex-ai/generative-ai/docs/image/generate-images
 """
+import logging
 from typing import Optional, Dict, Any, List, AsyncGenerator
 
 from app.abstraction.chat import ChatRequest, ChatResponse, UsageInfo, FinishReason
@@ -22,6 +23,7 @@ from app.providers.gemini.image_generation import (
     stream_image_generation,
 )
 
+logger = logging.getLogger('vertexai')
 
 # =============================================================================
 # 模型检测
@@ -116,6 +118,7 @@ def handle_image_generation_response(
         finish_reason = finish_map.get(gemini_finish, FinishReason.STOP)
 
     usage_metadata = response_data.get("usageMetadata", {})
+    logger.debug(f"[VertexAI ImageGen] usage_metadata: {usage_metadata}")
     image_count = len(inline_images) if inline_images else 0
     usage = UsageInfo(
         prompt_tokens=usage_metadata.get("promptTokenCount", 0),

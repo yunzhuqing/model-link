@@ -7,6 +7,7 @@ export interface AvailableModel {
   input_price: number;
   output_price: number;
   currency: string;
+  discount: number;
 }
 
 export interface ModelUsage {
