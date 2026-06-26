@@ -36,6 +36,30 @@ _GATEWAY_INTERNAL_KEYS = frozenset({
     'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
     'output_pricing', 'timeout', '_image_generation', '_video_generation',
     '_3d_generation', '_on_task_created', '_on_model_resolved',
+    'verbosity',
+})
+
+# ── OpenAI Responses API 允许的元数据透传键 ──────────────────────
+# build_responses_request 中，只有这些 OpenAI Responses API 规范字段才允许
+# 通过 request.metadata 透传到上游请求体。其他字段由函数体显式构建。
+_RESPONSES_API_METADATA_PASSTHROUGH = frozenset({
+    'background',
+    'context_management',
+    'conversation',
+    'include',
+    'max_tool_calls',
+    'metadata',           # OpenAI Responses API 顶层 metadata 字段
+    'moderation',
+    'parallel_tool_calls',
+    'previous_response_id',
+    'prompt',
+    'prompt_cache_retention',
+    'safety_identifier',
+    'service_tier',
+    'store',
+    'stream_options',
+    'top_logprobs',
+    'truncation',
 })
 
 
@@ -345,13 +369,14 @@ def build_responses_request(request: ChatRequest) -> Dict[str, Any]:
 
     if request.response_format is not None:
         result["text"] = response_format_to_responses_api(request.response_format)
+    
+    # verbosity 在 Responses API 中应嵌套在 text 下，而非顶层参数
+    verbosity = request.metadata.get("verbosity")
+    if verbosity is not None:
+        if "text" not in result:
+            result["text"] = {}
+        result["text"]["verbosity"] = verbosity
 
-    if request.stop:
-        result["stop"] = request.stop
-    if request.presence_penalty is not None:
-        result["presence_penalty"] = request.presence_penalty
-    if request.frequency_penalty is not None:
-        result["frequency_penalty"] = request.frequency_penalty
     if request.user:
         result["user"] = request.user
 
@@ -362,7 +387,7 @@ def build_responses_request(request: ChatRequest) -> Dict[str, Any]:
         }
 
     for key, value in request.metadata.items():
-        if key not in _GATEWAY_INTERNAL_KEYS:
+        if key in _RESPONSES_API_METADATA_PASSTHROUGH and key not in _GATEWAY_INTERNAL_KEYS:
             result[key] = value
 
     return result

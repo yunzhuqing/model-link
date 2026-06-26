@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -23,6 +23,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import TagSelector from '../components/TagSelector';
+import SearchableSelect from '../components/SearchableSelect';
 
 interface GroupOption {
   id: number;
@@ -100,6 +101,11 @@ export default function ApiKeyManage() {
     },
   });
 
+  const sortedGroupOptions = useMemo(() =>
+    [...(groups ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+    [groups]
+  );
+
   // Fetch API keys
   const { data, isLoading, error } = useQuery({
     queryKey: ['api-keys-manage', debouncedSearch, page, groupFilter],
@@ -139,7 +145,8 @@ export default function ApiKeyManage() {
 
   // ── Create handlers ──
 
-  const handleCreateGroupChange = (groupId: number) => {
+  const handleCreateGroupChange = (groupId: number | null) => {
+    if (groupId == null) return;
     const newGroup = groups?.find(g => g.id === groupId);
     const usersInGroup = newGroup?.users ?? [];
     setCreateForm(prev => ({
@@ -186,7 +193,8 @@ export default function ApiKeyManage() {
 
   const selectedGroupUsers = groups?.find(g => g.id === editModal.newGroupId)?.users ?? [];
 
-  const handleGroupChange = (groupId: number) => {
+  const handleGroupChange = (groupId: number | null) => {
+    if (groupId == null) return;
     const newGroup = groups?.find(g => g.id === groupId);
     setEditModal(prev => {
       const usersInGroup = newGroup?.users ?? [];
@@ -502,29 +510,29 @@ export default function ApiKeyManage() {
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">所属分组</label>
-                <select
-                  value={editModal.newGroupId ?? ''}
-                  onChange={(e) => handleGroupChange(Number(e.target.value))}
-                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
-                >
-                  <option value="" disabled>选择分组</option>
-                  {groups?.map(g => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  options={sortedGroupOptions.map(g => ({ id: g.id, label: g.name }))}
+                  value={editModal.newGroupId}
+                  onChange={handleGroupChange}
+                  placeholder="选择分组"
+                  searchPlaceholder="搜索分组..."
+                  noResultsText="无匹配分组"
+                />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">所属用户</label>
-                <select
-                  value={editModal.newUserId ?? ''}
-                  onChange={(e) => setEditModal(prev => ({ ...prev, newUserId: e.target.value ? Number(e.target.value) : null }))}
-                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
-                >
-                  <option value="">未分配</option>
-                  {selectedGroupUsers.map(u => (
-                    <option key={u.id} value={u.id}>{u.username}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  options={selectedGroupUsers
+                    .sort((a, b) => a.username.localeCompare(b.username))
+                    .map(u => ({ id: u.id, label: u.username }))}
+                  value={editModal.newUserId}
+                  onChange={(id) => setEditModal(prev => ({ ...prev, newUserId: id }))}
+                  placeholder="选择用户"
+                  searchPlaceholder="搜索用户..."
+                  allowEmpty
+                  emptyLabel="未分配"
+                  noResultsText="无匹配用户"
+                />
                 {selectedGroupUsers.length === 0 && editModal.newGroupId && (
                   <p className="text-xs text-amber-600 mt-1">该分组下暂无成员</p>
                 )}
@@ -633,29 +641,29 @@ export default function ApiKeyManage() {
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
                   所属分组 <span className="text-red-400">*</span>
                 </label>
-                <select
-                  value={createForm.groupId ?? ''}
-                  onChange={(e) => handleCreateGroupChange(Number(e.target.value))}
-                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
-                >
-                  <option value="" disabled>选择分组</option>
-                  {groups?.map(g => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  options={sortedGroupOptions.map(g => ({ id: g.id, label: g.name }))}
+                  value={createForm.groupId}
+                  onChange={handleCreateGroupChange}
+                  placeholder="选择分组"
+                  searchPlaceholder="搜索分组..."
+                  noResultsText="无匹配分组"
+                />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">所属用户</label>
-                <select
-                  value={createForm.userId ?? ''}
-                  onChange={(e) => setCreateForm(prev => ({ ...prev, userId: e.target.value ? Number(e.target.value) : null }))}
-                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
-                >
-                  <option value="">未分配</option>
-                  {createGroupUsers.map(u => (
-                    <option key={u.id} value={u.id}>{u.username}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  options={createGroupUsers
+                    .sort((a, b) => a.username.localeCompare(b.username))
+                    .map(u => ({ id: u.id, label: u.username }))}
+                  value={createForm.userId}
+                  onChange={(id) => setCreateForm(prev => ({ ...prev, userId: id }))}
+                  placeholder="选择用户"
+                  searchPlaceholder="搜索用户..."
+                  allowEmpty
+                  emptyLabel="未分配"
+                  noResultsText="无匹配用户"
+                />
                 {createForm.groupId && createGroupUsers.length === 0 && (
                   <p className="text-xs text-amber-600 mt-1">该分组下暂无成员</p>
                 )}

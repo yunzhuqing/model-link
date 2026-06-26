@@ -194,6 +194,12 @@ class VolcengineProvider(BaseProvider):
         
         # ── 过滤掉 Volcengine Responses API 不支持的额外字段 ──
         result = {k: v for k, v in result.items() if k in _VOLCENGINE_RESPONSES_ALLOWED_KEYS}
+        
+        # Volcengine 不支持 text.verbosity，仅支持 text.format
+        if isinstance(result.get("text"), dict):
+            result["text"].pop("verbosity", None)
+            if not result["text"]:
+                result.pop("text", None)
 
         return result
 

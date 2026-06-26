@@ -195,6 +195,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
     
     known_keys = {
         'model', 'messages', 'temperature', 'top_p', 'max_tokens',
+        'max_completion_tokens',
         'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
         'frequency_penalty', 'user', 'session_id', 'reasoning_effort',
         'n', 'seed', 'response_format',
@@ -207,7 +208,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         system='\n\n'.join(system_parts) if system_parts else None,
         temperature=data.get('temperature'),
         top_p=data.get('top_p'),
-        max_tokens=data.get('max_tokens'),
+        max_tokens=data.get('max_completion_tokens') or data.get('max_tokens'),
         stream=data.get('stream', False),
         tools=tools,
         tool_choice=data.get('tool_choice'),
