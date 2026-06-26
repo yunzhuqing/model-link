@@ -298,6 +298,7 @@
       "context": "Context",
       "inputPrice": "Input Price",
       "outputPrice": "Output Price",
+      "discount": "Discount",
       "rpm": "RPM",
       "tpm": "TPM",
       "priority": "Priority",
@@ -632,7 +633,6 @@
     "arkGroupIdLabel": "Asset Group ID",
     "arkGroupIdPlaceholder": "group-2026xxxxxxxx-xxxx",
     "arkGroupIdHelp": "Target asset group for uploaded assets",
-
     "defaultApGuangzhou": "Default: ap-guangzhou"
   },
   "lang": {

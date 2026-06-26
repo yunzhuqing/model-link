@@ -27,6 +27,14 @@ function fuzzyMatchModel(query: string, model: { name: string; alias?: string | 
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
+function currencySymbol(currency: string): string {
+  if (currency === 'CNY') return '¥';
+  if (currency === 'EUR') return '€';
+  if (currency === 'GBP') return '£';
+  if (currency === 'JPY') return '¥';
+  return '$';
+}
+
 const ApiKeyDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -579,10 +587,10 @@ const ApiKeyDetail = () => {
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-right text-slate-600">
-                        ${m.input_price}/{m.currency === 'CNY' ? '¥' : ''}1M
+                        {currencySymbol(m.currency)}{m.input_price}/1M
                       </td>
                       <td className="py-2.5 px-3 text-right text-slate-600">
-                        ${m.output_price}/{m.currency === 'CNY' ? '¥' : ''}1M
+                        {currencySymbol(m.currency)}{m.output_price}/1M
                       </td>
                       <td className="py-2.5 px-3 text-right">
                         {m.discount < 1 ? (

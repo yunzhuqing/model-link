@@ -300,6 +300,7 @@
       "context": "上下文",
       "inputPrice": "输入价格",
       "outputPrice": "输出价格",
+      "discount": "折扣",
       "rpm": "RPM",
       "tpm": "TPM",
       "priority": "优先级",
@@ -634,7 +635,6 @@
     "arkGroupIdLabel": "素材组 ID",
     "arkGroupIdPlaceholder": "group-2026xxxxxxxx-xxxx",
     "arkGroupIdHelp": "素材上传的目标 Group ID",
-
     "defaultApGuangzhou": "默认：ap-guangzhou"
   },
   "lang": {

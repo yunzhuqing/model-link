@@ -109,6 +109,11 @@ function fmtPrice(n: number | string | null | undefined, currency: string): stri
   return `${sym}${v.toFixed(2)}`;
 }
 
+function fmtDiscount(d: number): string {
+  if (d >= 1 || d == null) return '-';
+  return (d * 10).toFixed(1).replace(/\.0$/, '') + '折';
+}
+
 const FeatureBadge = ({ active, icon: Icon, label }: { active: boolean; icon: React.ElementType; label: string }) => {
   if (!active) return null;
   return (
@@ -348,6 +353,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.context')}</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500">{t('group.groupDetail.inputPrice')}</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500">{t('group.groupDetail.outputPrice')}</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.discount')}</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.rpm')}</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.tpm')}</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">{t('group.groupDetail.priority')}</th>
@@ -397,6 +403,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                         </td>
                         <td className="px-4 py-3 text-right text-xs text-slate-600 font-mono">
                           {isShared ? '-' : fmtPrice(m.output_price, m.currency) + '/M'}
+                        </td>
+                        <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">
+                          {isShared ? '-' : fmtDiscount(m.discount)}
                         </td>
                         <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">{isShared ? '-' : (m.rpm != null ? m.rpm : '-')}</td>
                         <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">{isShared ? '-' : (m.tpm != null ? m.tpm : '-')}</td>
@@ -493,6 +502,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                         </td>
                         <td className="px-4 py-3 text-right text-xs text-slate-600 font-mono">
                           {isShared ? '-' : fmtPrice(m.output_price, m.currency) + '/M'}
+                        </td>
+                        <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">
+                          {isShared ? '-' : fmtDiscount(m.discount)}
                         </td>
                         <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">{isShared ? '-' : (m.rpm != null ? m.rpm : '-')}</td>
                         <td className="px-4 py-3 text-center text-xs text-slate-600 font-mono">{isShared ? '-' : (m.tpm != null ? m.tpm : '-')}</td>

@@ -19,6 +19,32 @@ import base64
 import logging
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
 from .._responses_format import build_responses_request, _tool_result_to_responses_output
+
+# Volcengine Responses API 仅接受白名单内的字段，不允许传入额外字段。
+# 参考: https://www.volcengine.com/docs/82379/1263482
+_VOLCENGINE_RESPONSES_ALLOWED_KEYS = frozenset({
+    "model",
+    "input",
+    "instructions",
+    "previous_response_id",
+    "expire_at",
+    "max_output_tokens",
+    "thinking",
+    "reasoning",
+    "include",
+    "caching",
+    "store",
+    "stream",
+    "temperature",
+    "top_p",
+    "text",
+    "tools",
+    "tool_choice",
+    "max_tool_calls",
+    "context_management",
+    "service_tier",
+})
+
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
@@ -165,6 +191,9 @@ class VolcengineProvider(BaseProvider):
                 result["reasoning"] = {"effort": effort or "medium"}
         elif request.reasoning_effort and request.reasoning_effort != 'none':
             result["reasoning"] = {"effort": request.reasoning_effort}
+        
+        # ── 过滤掉 Volcengine Responses API 不支持的额外字段 ──
+        result = {k: v for k, v in result.items() if k in _VOLCENGINE_RESPONSES_ALLOWED_KEYS}
 
         return result
 
