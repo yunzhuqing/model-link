@@ -1125,24 +1125,33 @@ class GatewayService:
                 )
                 return block
 
-        # Collect (message_index, block_index, block) for every IMAGE_URL block,
-        # then download them all in parallel.
-        targets: List[tuple[int, int, ContentBlock]] = []
-        for mi, message in enumerate(request.messages):
-            if not isinstance(message.content, list):
-                continue
-            for bi, block in enumerate(message.content):
-                if (isinstance(block, ContentBlock)
-                        and block.type == ContentType.IMAGE_URL
-                        and block.url):
-                    targets.append((mi, bi, block))
+        # Collect every IMAGE_URL block (including those nested inside
+        # tool_result content), then download them all in parallel.
+        # Each target is (parent_list, index, block) — the parent list is
+        # either a message.content list or a ContentBlock.tool_result list.
+        targets: List[tuple[list, int, ContentBlock]] = []
+
+        def _collect(container: list) -> None:
+            for i, block in enumerate(container):
+                if not isinstance(block, ContentBlock):
+                    continue
+                if block.type == ContentType.IMAGE_URL and block.url:
+                    targets.append((container, i, block))
+                elif block.type == ContentType.TOOL_RESULT:
+                    tr = block.tool_result
+                    if isinstance(tr, list):
+                        _collect(tr)
+
+        for message in request.messages:
+            if isinstance(message.content, list):
+                _collect(message.content)
 
         if not targets:
             return
 
         results = await asyncio.gather(*(_download_and_encode(b) for _, _, b in targets))
-        for (mi, bi, _), new_block in zip(targets, results):
-            request.messages[mi].content[bi] = new_block
+        for (parent_list, idx, _), new_block in zip(targets, results):
+            parent_list[idx] = new_block
 
     @staticmethod
     async def _convert_video_urls_to_base64(request: ChatRequest) -> None:
@@ -1205,22 +1214,29 @@ class GatewayService:
                 )
                 return block
 
-        targets: List[tuple[int, int, ContentBlock]] = []
-        for mi, message in enumerate(request.messages):
-            if not isinstance(message.content, list):
-                continue
-            for bi, block in enumerate(message.content):
-                if (isinstance(block, ContentBlock)
-                        and block.type == ContentType.VIDEO_URL
-                        and block.url):
-                    targets.append((mi, bi, block))
+        targets: List[tuple[list, int, ContentBlock]] = []
+
+        def _collect(container: list) -> None:
+            for i, block in enumerate(container):
+                if not isinstance(block, ContentBlock):
+                    continue
+                if block.type == ContentType.VIDEO_URL and block.url:
+                    targets.append((container, i, block))
+                elif block.type == ContentType.TOOL_RESULT:
+                    tr = block.tool_result
+                    if isinstance(tr, list):
+                        _collect(tr)
+
+        for message in request.messages:
+            if isinstance(message.content, list):
+                _collect(message.content)
 
         if not targets:
             return
 
         results = await asyncio.gather(*(_download_and_encode(b) for _, _, b in targets))
-        for (mi, bi, _), new_block in zip(targets, results):
-            request.messages[mi].content[bi] = new_block
+        for (parent_list, idx, _), new_block in zip(targets, results):
+            parent_list[idx] = new_block
 
     async def rerank(self, resolved: ResolvedModelData, request: RerankRequest) -> RerankResponse:
         """

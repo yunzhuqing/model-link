@@ -235,3 +235,153 @@ def test_tencentvod_provider_serializes_file_url_block_to_chat_file_payload():
     assert isinstance(content, list)
     file_part = next(p for p in content if p.get("type") == "file")
     assert file_part["file_url"] == "https://cdn.coohom.com/coohom/ai-home/2026/05/25/NIJ75G5MDTO2QAABAAAAADA8.pdf"
+
+# ── Gateway _convert_image_urls_to_base64: tool_result nesting ─────────
+
+from unittest.mock import AsyncMock, MagicMock, patch
+import base64
+import pytest
+
+SAMPLE_IMAGE_DATA = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+
+
+def _build_chat_request_with_nested_images():
+    """Build a ChatRequest with IMAGE_URL blocks in top-level and tool_result content."""
+    from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+    from app.abstraction.chat import ChatRequest
+
+    return ChatRequest(
+        model="claude-opus-4-7",
+        messages=[
+            Message(
+                role=MessageRole.USER,
+                content=[
+                    ContentBlock.from_text("describe this image"),
+                    ContentBlock.from_image_url("https://example.com/photo.jpg"),
+                ],
+            ),
+            Message(
+                role=MessageRole.USER,
+                content=[
+                    ContentBlock(
+                        type=ContentType.TOOL_RESULT,
+                        tool_call_id="toolu_1",
+                        tool_result=[
+                            ContentBlock.from_text("here is a screenshot"),
+                            ContentBlock.from_image_url("https://example.com/screen.png"),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_converts_nested_tool_result_images():
+    """Gateway _convert_image_urls_to_base64 should traverse tool_result content."""
+    from app.middleware.gateway_service import GatewayService, _get_media_fetch_client
+    from app.abstraction.messages import ContentType
+
+    request = _build_chat_request_with_nested_images()
+
+    # Mock the media fetch client
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.headers = {"content-type": "image/png"}
+    mock_resp.content = SAMPLE_IMAGE_DATA
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("app.middleware.gateway_service._get_media_fetch_client", return_value=mock_client):
+        await GatewayService._convert_image_urls_to_base64(request)
+
+    # Top-level image block should be converted
+    top_block = request.messages[0].content[1]
+    assert top_block.type == ContentType.IMAGE_BASE64
+    assert top_block.data == base64.b64encode(SAMPLE_IMAGE_DATA).decode("ascii")
+    assert top_block.media_type == "image/png"
+
+    # Nested tool_result image block should also be converted
+    tr_block = request.messages[1].content[0]
+    nested_img = tr_block.tool_result[1]
+    assert nested_img.type == ContentType.IMAGE_BASE64
+    assert nested_img.data == base64.b64encode(SAMPLE_IMAGE_DATA).decode("ascii")
+    assert nested_img.media_type == "image/png"
+
+    # Text blocks should be untouched
+    assert request.messages[0].content[0].type == ContentType.TEXT
+    assert tr_block.tool_result[0].type == ContentType.TEXT
+    assert tr_block.tool_result[0].text == "here is a screenshot"
+
+
+@pytest.mark.asyncio
+async def test_gateway_preserves_base64_in_tool_result():
+    """Already-base64 images in tool_result should not be touched."""
+    from app.middleware.gateway_service import GatewayService, _get_media_fetch_client
+    from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+    from app.abstraction.chat import ChatRequest
+
+    request = ChatRequest(
+        model="claude-opus-4-7",
+        messages=[
+            Message(
+                role=MessageRole.USER,
+                content=[
+                    ContentBlock(
+                        type=ContentType.TOOL_RESULT,
+                        tool_call_id="toolu_1",
+                        tool_result=[
+                            ContentBlock.from_image_base64("abc123", "image/jpeg"),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+    mock_client = AsyncMock()
+    with patch("app.middleware.gateway_service._get_media_fetch_client", return_value=mock_client):
+        await GatewayService._convert_image_urls_to_base64(request)
+
+    nested_img = request.messages[0].content[0].tool_result[0]
+    assert nested_img.type == ContentType.IMAGE_BASE64
+    assert nested_img.data == "abc123"
+    mock_client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_handles_download_failure_in_tool_result():
+    """When a nested image URL fails, keep the original URL block."""
+    from app.middleware.gateway_service import GatewayService, _get_media_fetch_client
+    from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+    from app.abstraction.chat import ChatRequest
+
+    request = ChatRequest(
+        model="claude-opus-4-7",
+        messages=[
+            Message(
+                role=MessageRole.USER,
+                content=[
+                    ContentBlock(
+                        type=ContentType.TOOL_RESULT,
+                        tool_call_id="toolu_1",
+                        tool_result=[
+                            ContentBlock.from_image_url("https://example.com/broken.png"),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = Exception("Connection refused")
+
+    with patch("app.middleware.gateway_service._get_media_fetch_client", return_value=mock_client):
+        await GatewayService._convert_image_urls_to_base64(request)
+
+    nested_img = request.messages[0].content[0].tool_result[0]
+    assert nested_img.type == ContentType.IMAGE_URL
+    assert nested_img.url == "https://example.com/broken.png"
