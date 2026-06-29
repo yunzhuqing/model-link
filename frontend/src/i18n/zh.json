@@ -467,7 +467,10 @@
       "cacheUp1h": "1h缓存写入",
       "cacheUp": "缓存写入",
       "cacheDown": "缓存命中"
-    }
+    },
+    "syncToProviders": "同步到供应商",
+    "syncToProvidersResult": "同步完成：新增 {{added}} 个，更新 {{updated}} 个，共 {{total}} 个供应商。",
+    "syncToProvidersFailed": "同步失败：{{detail}}"
   },
   "login": {
     "title": "AI 网关",

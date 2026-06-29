@@ -964,10 +964,12 @@ const TemplateCard = ({
   tpl,
   onEdit,
   onDelete,
+  onSync,
 }: {
   tpl: ModelTemplate;
   onEdit: () => void;
   onDelete: () => void;
+  onSync: (id: number) => void;
 }) => {
   const { t, i18n } = useTranslation();
   const isZh = i18n.language?.startsWith('zh');
@@ -1159,6 +1161,13 @@ const TemplateCard = ({
           >
             <Trash2 className="w-4 h-4" />
           </button>
+          <button
+            onClick={() => onSync(tpl.id)}
+            className="text-slate-400 hover:text-green-600 p-2 hover:bg-green-50 rounded-lg transition-colors"
+            title={t('modelTemplates.syncToProviders')}
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>
@@ -1215,6 +1224,30 @@ export default function ModelTemplates() {
     },
     onError: () => {
       alert(t('modelTemplates.syncFailed'));
+    },
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: (id: number) => client.post(`/api/model-templates/${id}/sync`),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['model-templates'] });
+      qc.invalidateQueries({ queryKey: ['providers'] });
+      const { added, updated, total, model_name } = res.data as {
+        added: number;
+        updated: number;
+        total: number;
+        model_name: string;
+      };
+      alert(t('modelTemplates.syncToProvidersResult', {
+        modelName: model_name,
+        added,
+        updated,
+        total,
+      }));
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail || err?.message || t('modelTemplates.syncFailed');
+      alert(t('modelTemplates.syncToProvidersFailed', { detail }));
     },
   });
 
@@ -1426,6 +1459,7 @@ export default function ModelTemplates() {
                       deleteMutation.mutate(tpl.id);
                     }
                   }}
+                  onSync={(id) => syncMutation.mutate(id)}
                 />
               )
             )}

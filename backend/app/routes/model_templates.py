@@ -6,7 +6,7 @@ from quart import Blueprint, request, jsonify
 from sqlalchemy import select
 
 from app import get_db_session
-from app.models import ModelTemplate
+from app.models import ModelTemplate, Provider, Model
 from app.auth import token_required
 from app.routes.permissions import require_template_manage
 from app.data import BUILTIN_TEMPLATES
@@ -229,3 +229,134 @@ async def reseed_model_templates(current_user):
                 updated += 1
         await session.commit()
         return jsonify({'added': added, 'updated': updated})
+
+
+@model_templates_bp.route('/model-templates/<int:template_id>/sync', methods=['POST'])
+@token_required
+@require_template_manage()
+async def sync_model_template(current_user, template_id):
+    """
+    Sync a model template to all providers of the same type across all groups.
+
+    For each provider whose type matches the template's provider field:
+      - If a model with the same name already exists under that provider, update it.
+      - Otherwise, create a new model under that provider using the template's values.
+    """
+    async with get_db_session() as session:
+        result = await session.execute(select(ModelTemplate).where(ModelTemplate.id == template_id))
+        tpl = result.scalars().first()
+        if not tpl:
+            return jsonify({'detail': 'Template not found'}), 404
+
+        # Find all providers whose type matches the template's provider
+        result = await session.execute(
+            select(Provider).where(Provider.type == tpl.provider)
+        )
+        providers = result.scalars().all()
+
+        added = 0
+        updated = 0
+        errors = []
+
+        for provider in providers:
+            # Check if a model with the same name already exists under this provider
+            result = await session.execute(
+                select(Model).where(
+                    Model.provider_id == provider.id,
+                    Model.name == tpl.name
+                )
+            )
+            existing_model = result.scalars().first()
+
+            if existing_model:
+                # Update existing model fields from template
+                existing_model.alias = existing_model.alias or tpl.alias
+                existing_model.context_size = tpl.context_size
+                existing_model.input_size = tpl.input_size
+                existing_model.output_size = tpl.output_size
+                existing_model.reasoning_effort = tpl.reasoning_effort
+                existing_model.supported_image_formats = tpl.supported_image_formats
+                existing_model.pricing_tiers = tpl.pricing_tiers
+                existing_model.output_pricing = tpl.output_pricing
+                existing_model.input_price = tpl.input_price
+                existing_model.output_price = tpl.output_price
+                existing_model.cache_creation_price = tpl.cache_creation_price
+                existing_model.cache_5m_creation_price = tpl.cache_5m_creation_price
+                existing_model.cache_1h_creation_price = tpl.cache_1h_creation_price
+                existing_model.cache_hit_price = tpl.cache_hit_price
+                existing_model.currency = tpl.currency or 'USD'
+                existing_model.retirement_time = tpl.retirement_time
+                existing_model.rpm = tpl.rpm
+                existing_model.tpm = tpl.tpm
+                existing_model.discount = tpl.discount
+                existing_model.timeout = tpl.timeout
+                existing_model.support_kvcache = tpl.support_kvcache
+                existing_model.support_image = tpl.support_image
+                existing_model.support_audio = tpl.support_audio
+                existing_model.support_video = tpl.support_video
+                existing_model.support_file = tpl.support_file
+                existing_model.support_web_search = tpl.support_web_search
+                existing_model.support_tool_search = tpl.support_tool_search
+                existing_model.support_thinking = tpl.support_thinking
+                existing_model.support_online_image = tpl.support_online_image
+                existing_model.support_online_video = tpl.support_online_video
+                existing_model.support_embedding = tpl.support_embedding
+                existing_model.api_type = tpl.api_type
+                updated += 1
+            else:
+                # Create new model from template
+                model = Model(
+                    provider_id=provider.id,
+                    name=tpl.name,
+                    alias=tpl.alias,
+                    context_size=tpl.context_size,
+                    input_size=tpl.input_size,
+                    output_size=tpl.output_size,
+                    reasoning_effort=tpl.reasoning_effort,
+                    supported_image_formats=tpl.supported_image_formats,
+                    pricing_tiers=tpl.pricing_tiers,
+                    output_pricing=tpl.output_pricing,
+                    input_price=tpl.input_price,
+                    output_price=tpl.output_price,
+                    cache_creation_price=tpl.cache_creation_price,
+                    cache_5m_creation_price=tpl.cache_5m_creation_price,
+                    cache_1h_creation_price=tpl.cache_1h_creation_price,
+                    cache_hit_price=tpl.cache_hit_price,
+                    currency=tpl.currency or 'USD',
+                    retirement_time=tpl.retirement_time,
+                    rpm=tpl.rpm,
+                    tpm=tpl.tpm,
+                    discount=tpl.discount if tpl.discount is not None else 1.0,
+                    timeout=tpl.timeout,
+                    support_kvcache=tpl.support_kvcache,
+                    support_image=tpl.support_image,
+                    support_audio=tpl.support_audio,
+                    support_video=tpl.support_video,
+                    support_file=tpl.support_file,
+                    support_web_search=tpl.support_web_search,
+                    support_tool_search=tpl.support_tool_search,
+                    support_thinking=tpl.support_thinking,
+                    support_online_image=tpl.support_online_image,
+                    support_online_video=tpl.support_online_video,
+                    support_embedding=tpl.support_embedding,
+                    is_active=True,
+                    api_type=tpl.api_type,
+                )
+                session.add(model)
+                added += 1
+
+        await session.commit()
+
+        total = added + updated
+
+        return jsonify({
+            'template_id': template_id,
+            'template_label': tpl.label,
+            'provider_type': tpl.provider,
+            'model_name': tpl.name,
+            'providers_scanned': len(providers),
+            'added': added,
+            'updated': updated,
+            'total': total,
+            'errors': errors
+        })

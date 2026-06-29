@@ -465,7 +465,10 @@
       "cacheUp1h": "cache↑1h",
       "cacheUp": "cache↑",
       "cacheDown": "cache↓"
-    }
+    },
+    "syncToProviders": "Sync to providers",
+    "syncToProvidersResult": "Sync complete: {{added}} added, {{updated}} updated, {{total}} total provider(s).",
+    "syncToProvidersFailed": "Sync failed: {{detail}}"
   },
   "login": {
     "title": "AI Gateway",

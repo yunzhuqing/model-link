@@ -38,7 +38,9 @@ export default function ShareModelModal({ model, currentGroupId, onClose }: Prop
   async function loadGroups() {
     try {
       const res = await client.get<Group[]>('/api/groups/');
-      setGroups((res.data || []).filter((g) => g.id !== currentGroupId));
+      const filtered = (res.data || []).filter((g) => g.id !== currentGroupId);
+      filtered.sort((a, b) => a.name.localeCompare(b.name));
+      setGroups(filtered);
     } catch {
       setError('Failed to load groups');
     } finally {
