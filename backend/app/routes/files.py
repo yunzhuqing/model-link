@@ -31,7 +31,7 @@ from app.routes.gateway_helpers import (
     _build_error_context,
     _check_allowed_models,
 )
-from app.providers.volcengine.asset import create_asset, upload_and_create_asset, delete_asset
+from app.providers.volcengine.asset import create_asset, upload_and_create_asset, delete_asset, poll_asset_status, batch_delete_assets
 from app.models import UploadedFile
 
 logger = logging.getLogger("gateway")
@@ -318,6 +318,32 @@ async def upload_file():
             return _error_response(str(e), code="upstream_error", status_code=502)
 
         asset_id = result.get("Result", {}).get("Id", _gen_file_id())
+
+        # Poll asset status to ensure it reaches Active before returning success
+        try:
+            await poll_asset_status(
+                asset_ids=[asset_id],
+                project_name=project_name,
+                access_key=creds.get("access_key"),
+                secret_key=creds.get("secret_key"),
+                api_key=creds.get("api_key"),
+                region=creds.get("ark_region", "cn-beijing"),
+            )
+        except RuntimeError as e:
+            # Clean up: delete the failed/pending asset
+            try:
+                await delete_asset(
+                    asset_id=asset_id,
+                    project_name=project_name,
+                    access_key=creds.get("access_key"),
+                    secret_key=creds.get("secret_key"),
+                    api_key=creds.get("api_key"),
+                    region=creds.get("ark_region", "cn-beijing"),
+                )
+            except Exception as cleanup_err:
+                logger.warning("files: failed to clean up asset %s: %s", asset_id, cleanup_err)
+            _log_error("files_upload", 502, str(e), _build_error_context(auth_ctx))
+            return _error_response(str(e), code="upstream_error", status_code=502)
         request_id = result.get("ResponseMetadata", {}).get("RequestId", "")
         file_id = _gen_file_id()
 
@@ -428,6 +454,39 @@ async def upload_file():
                 logger.error("files: failed to create asset for url %s: %s", img_url[:80], e)
                 errors.append({"url": img_url, "error": str(e)})
 
+
+        # Poll all created assets to ensure they reach Active before returning success
+        if results:
+            asset_ids_to_poll = [
+                r.get("Result", {}).get("Id", "")
+                for r in results
+                if r.get("Result", {}).get("Id")
+            ]
+            if asset_ids_to_poll:
+                try:
+                    await poll_asset_status(
+                        asset_ids=asset_ids_to_poll,
+                        project_name=project_name,
+                        access_key=creds.get("access_key"),
+                        secret_key=creds.get("secret_key"),
+                        api_key=creds.get("api_key"),
+                        region=creds.get("ark_region", "cn-beijing"),
+                    )
+                except RuntimeError as e:
+                    # Clean up: delete all created assets (best-effort)
+                    try:
+                        await batch_delete_assets(
+                            asset_ids=asset_ids_to_poll,
+                            project_name=project_name,
+                            access_key=creds.get("access_key"),
+                            secret_key=creds.get("secret_key"),
+                            api_key=creds.get("api_key"),
+                            region=creds.get("ark_region", "cn-beijing"),
+                        )
+                    except Exception as cleanup_err:
+                        logger.warning("files: failed to clean up assets: %s", cleanup_err)
+                    _log_error("files_upload", 502, str(e), _build_error_context(auth_ctx))
+                    return _error_response(str(e), code="upstream_error", status_code=502)
         if not results and errors:
             _log_error("files_upload", 502, f"All assets failed: {errors[0]['error']}", _build_error_context(auth_ctx))
             return _error_response(
