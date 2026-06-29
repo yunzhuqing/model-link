@@ -96,8 +96,19 @@ class ResolvedModelData:
     # Per-model timeout override (seconds)
     timeout: Optional[int] = None
 
+    # Per-model rate limits (RPM / TPM) — used by the gateway rate-limit pre-check.
+    # Each provider candidate carries its own limits, enabling 429 fallback across
+    # providers when the provider-scoped rate limit is hit.
+    rpm: Optional[int] = None
+    tpm: Optional[int] = None
+
     # Supported API access types (comma-separated: chat_completions,responses,messages)
     api_type: Optional[str] = None
 
     # Reference to the (cached, long-lived) provider instance — populated by GatewayService
     provider_instance: Any = field(default=None, repr=False)
+
+    # Alternative provider candidates for the same model name/alias.
+    # Used for 429 rate-limit fallback: if the primary provider returns 429,
+    # the gateway retries with these candidates (up to a total of 3 attempts).
+    fallback_candidates: List["ResolvedModelData"] = field(default_factory=list, repr=False)

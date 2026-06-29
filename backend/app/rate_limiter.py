@@ -66,6 +66,9 @@ class RateLimitResult:
     remaining_tpm: Optional[float] = None
     workspace_remaining_rpm: Optional[int] = None
     workspace_remaining_tpm: Optional[float] = None
+    # Which rate-limit level rejected the request (None when allowed).
+    # Values: "model", "workspace", "apikey".
+    limit_level: Optional[str] = None
 
 # ── Token Estimation Utility ──────────────────────────────────────────────────
 
@@ -276,7 +279,7 @@ class AsyncRateLimiter:
         if has_rpm:
             remaining_rpm = await self._decr_rpm(rpm_key, rpm_limit)
             if remaining_rpm is not None and remaining_rpm < 0:
-                return RateLimitResult(allowed=False, detail=f"RPM limit exceeded (limit: {rpm_limit}/min). {retry_msg}", remaining_rpm=0)
+                return RateLimitResult(allowed=False, detail=f"RPM limit exceeded (limit: {rpm_limit}/min). {retry_msg}", remaining_rpm=0, limit_level="model")
             await self._update_apikey_usage(model_id, group_id, apikey_preview, rpm_delta=1)
 
         tpm_key = self._tpm_key(model_id, group_id) if has_tpm else None
@@ -286,7 +289,7 @@ class AsyncRateLimiter:
                 if has_rpm:
                     await self._incr_rpm(rpm_key, rpm_limit)
                     await self._update_apikey_usage(model_id, group_id, apikey_preview, rpm_delta=-1)
-                return RateLimitResult(allowed=False, detail=f"TPM limit exceeded (limit: {tpm_limit}/min). {retry_msg}", remaining_tpm=0.0)
+                return RateLimitResult(allowed=False, detail=f"TPM limit exceeded (limit: {tpm_limit}/min). {retry_msg}", remaining_tpm=0.0, limit_level="model")
             await self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=estimated_input_tokens)
 
         ws_rpm_key = self._ws_rpm_key(workspace_id, model_name, ws_provider_type, ws_provider_id) if has_ws_rpm else None
@@ -299,7 +302,7 @@ class AsyncRateLimiter:
                 if has_tpm:
                     await self._incr_tpm(tpm_key, tpm_limit, estimated_input_tokens)
                     await self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=-estimated_input_tokens)
-                return RateLimitResult(allowed=False, detail=f"Workspace RPM limit exceeded (limit: {workspace_rpm}/min). {retry_msg}", workspace_remaining_rpm=0)
+                return RateLimitResult(allowed=False, detail=f"Workspace RPM limit exceeded (limit: {workspace_rpm}/min). {retry_msg}", workspace_remaining_rpm=0, limit_level="workspace")
             await self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, rpm_delta=1,
                                                provider_type=ws_provider_type, provider_id=ws_provider_id)
 
@@ -317,7 +320,7 @@ class AsyncRateLimiter:
                 if has_tpm:
                     await self._incr_tpm(tpm_key, tpm_limit, estimated_input_tokens)
                     await self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=-estimated_input_tokens)
-                return RateLimitResult(allowed=False, detail=f"Workspace TPM limit exceeded (limit: {workspace_tpm}/min). {retry_msg}", workspace_remaining_tpm=0.0)
+                return RateLimitResult(allowed=False, detail=f"Workspace TPM limit exceeded (limit: {workspace_tpm}/min). {retry_msg}", workspace_remaining_tpm=0.0, limit_level="workspace")
             await self._update_ws_apikey_usage(workspace_id, model_name, apikey_preview, tpm_delta=estimated_input_tokens,
                                                provider_type=ws_provider_type, provider_id=ws_provider_id)
 
@@ -339,7 +342,7 @@ class AsyncRateLimiter:
                 if has_tpm:
                     await self._incr_tpm(tpm_key, tpm_limit, estimated_input_tokens)
                     await self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=-estimated_input_tokens)
-                return RateLimitResult(allowed=False, detail=f"API key RPM limit exceeded (limit: {apikey_rpm}/min). {retry_msg}", remaining_rpm=0)
+                return RateLimitResult(allowed=False, detail=f"API key RPM limit exceeded (limit: {apikey_rpm}/min). {retry_msg}", remaining_rpm=0, limit_level="apikey")
 
         ak_tpm_key = self._ak_tpm_key(api_key_id) if has_ak_tpm else None
         if has_ak_tpm:
@@ -361,7 +364,7 @@ class AsyncRateLimiter:
                 if has_tpm:
                     await self._incr_tpm(tpm_key, tpm_limit, estimated_input_tokens)
                     await self._update_apikey_usage(model_id, group_id, apikey_preview, tpm_delta=-estimated_input_tokens)
-                return RateLimitResult(allowed=False, detail=f"API key TPM limit exceeded (limit: {apikey_tpm}/min). {retry_msg}", remaining_tpm=0.0)
+                return RateLimitResult(allowed=False, detail=f"API key TPM limit exceeded (limit: {apikey_tpm}/min). {retry_msg}", remaining_tpm=0.0, limit_level="apikey")
 
         return RateLimitResult(allowed=True, remaining_rpm=remaining_rpm, remaining_tpm=remaining_tpm)
 

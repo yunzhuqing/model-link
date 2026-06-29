@@ -470,6 +470,12 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                     const active = m.is_active && inst.providerActive;
                     const isShared = !!inst.sharedFromGroup;
                     const rowSpan = agg.instances.length;
+                    const instShareable = isShared ? null : {
+                      id: m.id,
+                      name: m.name,
+                      alias: m.alias,
+                      providerName: inst.providerName,
+                    };
                     return (
                       <tr key={`${m.id}-${idx}-${isShared ? 's' : 'o'}`} className={`hover:bg-slate-50 ${!active ? 'opacity-50' : ''} ${idx > 0 ? 'border-t-0' : ''}`}>
                         {idx === 0 ? (
@@ -548,9 +554,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          {idx === 0 && shareable && (
+                          {instShareable && (
                             <button
-                              onClick={() => setShareModel(shareable)}
+                              onClick={() => setShareModel(instShareable)}
                               className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                               title={t('group.groupDetail.shareToGroup')}
                             >

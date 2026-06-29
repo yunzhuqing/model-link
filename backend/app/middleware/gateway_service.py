@@ -265,24 +265,38 @@ class GatewayService:
         # Priority + Traffic-ratio based routing
         db_model = self._select_model_by_priority(active_models, user_id=user_id)
 
-        provider_result = await session.execute(
-            select(Provider).where(Provider.id == db_model.provider_id)
-        )
-        db_provider = provider_result.scalars().first()
+        # Order candidates: selected model first, then the remaining active
+        # models (by descending priority) as fallback candidates for 429 retry.
+        ordered_models = [db_model]
+        remaining = [m for m in active_models if m.id != db_model.id]
+        remaining.sort(key=lambda m: getattr(m, 'priority', 0) or 0, reverse=True)
+        ordered_models.extend(remaining)
 
-        if not db_provider:
-            raise ModelNotFoundError(model_name)
+        resolved_candidates: List[ResolvedModelData] = []
+        for m in ordered_models:
+            db_provider = m.provider
+            if not db_provider:
+                continue
+            provider_instance = await self._create_provider_instance(db_provider)
+            if not provider_instance:
+                continue
+            resolved_candidates.append(self._build_resolved(m, db_provider, provider_instance))
 
-        # 创建供应商实例
-        provider_instance = await self._create_provider_instance(db_provider)
-        if not provider_instance:
+        if not resolved_candidates:
             raise GatewayServiceError(
-                f"Failed to create provider instance for '{db_provider.name}'",
+                f"Failed to create provider instance for '{model_name}'",
                 status_code=500
             )
 
-        # Eagerly extract all primitive fields to a plain dataclass so callers
-        # can close the DB session before the (potentially minute-long) LLM call.
+        primary = resolved_candidates[0]
+        primary.fallback_candidates = resolved_candidates[1:]
+        return primary
+
+    @staticmethod
+    def _build_resolved(db_model: Model, db_provider: Provider, provider_instance: BaseProvider) -> ResolvedModelData:
+        """Eagerly extract all primitive fields to a plain dataclass so callers
+        can close the DB session before the (potentially minute-long) LLM call.
+        """
         return ResolvedModelData(
             provider_id=db_provider.id,
             provider_name=db_provider.name,
@@ -309,6 +323,8 @@ class GatewayService:
             support_embedding=bool(getattr(db_model, 'support_embedding', False)),
             timeout=getattr(db_model, 'timeout', None),
             api_type=getattr(db_model, 'api_type', None),
+            rpm=getattr(db_model, 'rpm', None),
+            tpm=getattr(db_model, 'tpm', None),
             provider_instance=provider_instance,
         )
 
@@ -467,6 +483,274 @@ class GatewayService:
                         info['url'] = f"asset://{okey}"
 
 
+    # ── 429 fallback helpers ──────────────────────────────────────────────
+
+    # Maximum total attempts (primary + fallbacks) when a provider returns 429.
+    MAX_RATE_LIMIT_ATTEMPTS = 3
+
+    @staticmethod
+    def _ordered_candidates(resolved: ResolvedModelData) -> List[ResolvedModelData]:
+        """Return the primary candidate followed by its fallbacks, capped at
+        ``MAX_RATE_LIMIT_ATTEMPTS`` total attempts."""
+        candidates = [resolved]
+        if resolved.fallback_candidates:
+            candidates.extend(resolved.fallback_candidates)
+        return candidates[:GatewayService.MAX_RATE_LIMIT_ATTEMPTS]
+
+    @staticmethod
+    def _is_rate_limit_error(exc: BaseException) -> bool:
+        """Whether *exc* represents an upstream 429 (rate-limited) response."""
+        if isinstance(exc, UpstreamProviderError):
+            return exc.status_code == 429
+        if isinstance(exc, ProviderError):
+            return exc.status_code == 429
+        if isinstance(exc, RuntimeError):
+            status_code, _ = GatewayService._parse_provider_error(exc)
+            return status_code == 429
+        return False
+
+    @staticmethod
+    def _apply_candidate(resolved: ResolvedModelData, cand: ResolvedModelData) -> None:
+        """Mutate *resolved* in place to reflect the candidate that actually
+        served the request, so downstream usage recording uses the correct
+        provider/pricing. No-op when *cand* is *resolved* itself."""
+        resolved.provider_id = cand.provider_id
+        resolved.provider_name = cand.provider_name
+        resolved.provider_type = cand.provider_type
+        resolved.model_id = cand.model_id
+        resolved.model_real_name = cand.model_real_name
+        resolved.input_price = cand.input_price
+        resolved.output_price = cand.output_price
+        resolved.cache_creation_price = cand.cache_creation_price
+        resolved.cache_5m_creation_price = cand.cache_5m_creation_price
+        resolved.cache_1h_creation_price = cand.cache_1h_creation_price
+        resolved.cache_hit_price = cand.cache_hit_price
+        resolved.currency = cand.currency
+        resolved.discount = cand.discount
+        resolved.pricing_tiers = cand.pricing_tiers
+        resolved.output_pricing = cand.output_pricing
+        resolved.api_type = cand.api_type
+        resolved.support_thinking = cand.support_thinking
+        resolved.support_online_image = cand.support_online_image
+        resolved.support_online_video = cand.support_online_video
+        resolved.support_image = cand.support_image
+        resolved.support_audio = cand.support_audio
+        resolved.support_video = cand.support_video
+        resolved.support_embedding = cand.support_embedding
+        resolved.timeout = cand.timeout
+        resolved.rpm = cand.rpm
+        resolved.tpm = cand.tpm
+        resolved.provider_instance = cand.provider_instance
+
+    @staticmethod
+    def _convert_to_provider_error(exc: BaseException, cand: ResolvedModelData) -> ProviderError:
+        """Convert a raw provider exception into a canonical ProviderError,
+        tagged with the candidate that raised it."""
+        if isinstance(exc, ValueError):
+            raise GatewayServiceError(str(exc), status_code=400)
+        if isinstance(exc, UpstreamProviderError):
+            canonical_data: dict = {
+                'type': exc.error_type,
+                'message': str(exc),
+            }
+            if exc.request_id:
+                canonical_data['request_id'] = exc.request_id
+            return ProviderError(str(exc), status_code=exc.status_code, error_data=canonical_data,
+                                 provider_id=cand.provider_id,
+                                 provider_name=cand.provider_name)
+        if isinstance(exc, RuntimeError):
+            status_code, error_data = GatewayService._parse_provider_error(exc)
+            return ProviderError(str(exc), status_code=status_code, error_data=error_data,
+                                 provider_id=cand.provider_id,
+                                 provider_name=cand.provider_name)
+        if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+            return ProviderError(f"Connection to upstream provider failed: {str(exc)}", status_code=502,
+                                 provider_id=cand.provider_id,
+                                 provider_name=cand.provider_name)
+        if isinstance(exc, httpx.HTTPError):
+            return ProviderError(f"HTTP error from upstream provider: {str(exc)}", status_code=502,
+                                 provider_id=cand.provider_id,
+                                 provider_name=cand.provider_name)
+        return ProviderError(f"Provider error: {str(exc)}", status_code=500,
+                             provider_id=cand.provider_id,
+                             provider_name=cand.provider_name)
+
+    async def check_rate_limit_with_fallback(
+        self,
+        resolved: ResolvedModelData,
+        rate_limiter,
+        estimated_input_tokens: int,
+        *,
+        group_id: int = 0,
+        workspace_id: Optional[int] = None,
+        model_name: str = "",
+        apikey_preview: str = "",
+        apikey_rpm: Optional[int] = None,
+        apikey_tpm: Optional[int] = None,
+        api_key_id: Optional[int] = None,
+    ) -> Tuple[ResolvedModelData, Optional[tuple], Optional[str]]:
+        """Run the gateway rate-limit pre-check with 429 fallback across
+        provider candidates.
+
+        Iterates through the primary candidate and its fallbacks (capped at
+        ``MAX_RATE_LIMIT_ATTEMPTS``).  For each candidate the per-provider
+        model-level limits (``rpm``/``tpm``) and the provider-scoped workspace
+        rate limit are looked up, then ``check_and_reserve`` is called.
+
+        When a candidate is rejected by a **provider-scoped** rate limit
+        (the workspace rate limit tied to a specific provider account —
+        "供应商模型限流"), the next candidate is tried.  Rejections from
+        shared limits (workspace-wide or API-key level) are returned
+        immediately because switching providers cannot bypass them.
+
+        Returns ``(chosen_candidate, rate_limit_info, None)`` on success, or
+        ``(resolved, None, error_detail)`` when every applicable candidate is
+        rejected.  ``rate_limit_info`` is the tuple expected by
+        ``_reconcile_tpm``.
+        """
+        from app.models import WorkspaceRateLimit
+
+        candidates = self._ordered_candidates(resolved)
+        last_detail: Optional[str] = None
+
+        for cand in candidates:
+            # Resolve the workspace rate limit for this candidate's provider.
+            ws_rpm = ws_tpm = None
+            ws_provider_type = ""
+            ws_provider_id = None
+            ws_rl = None
+            if workspace_id:
+                ws_rl = await self._lookup_workspace_rate_limit(
+                    workspace_id, cand, model_name,
+                )
+                if ws_rl:
+                    ws_rpm = ws_rl.rpm
+                    ws_tpm = ws_rl.tpm
+                    ws_provider_type = ws_rl.provider_type or ""
+                    ws_provider_id = ws_rl.provider_id
+
+            result = await rate_limiter.check_and_reserve(
+                model_id=cand.model_id,
+                group_id=group_id,
+                rpm_limit=cand.rpm,
+                tpm_limit=cand.tpm,
+                estimated_input_tokens=estimated_input_tokens,
+                apikey_preview=apikey_preview,
+                workspace_id=workspace_id,
+                model_name=model_name,
+                workspace_rpm=ws_rpm,
+                workspace_tpm=ws_tpm,
+                ws_provider_type=ws_provider_type,
+                ws_provider_id=ws_provider_id,
+                apikey_rpm=apikey_rpm,
+                apikey_tpm=apikey_tpm,
+                api_key_id=api_key_id,
+            )
+
+            if result.allowed:
+                rate_limit_info = (
+                    cand.model_id, group_id, cand.rpm, cand.tpm,
+                    estimated_input_tokens, apikey_preview,
+                    workspace_id, model_name, ws_tpm,
+                    ws_provider_type, ws_provider_id,
+                    apikey_rpm, apikey_tpm, api_key_id,
+                )
+                self._apply_candidate(resolved, cand)
+                return resolved, rate_limit_info, None
+
+            last_detail = result.detail or 'Rate limit exceeded'
+
+            # Determine whether this rejection is bypassable by switching
+            # providers.  Two levels are per-provider and thus bypassable:
+            #
+            #   1. Model-level limit (limit_level="model") — each candidate
+            #      has a distinct model_id with its own RPM/TPM counter.
+            #   2. Provider-scoped workspace limit (limit_level="workspace"
+            #      with ws_rl.provider_id set) — "供应商模型限流", tied to a
+            #      specific provider account.
+            #
+            # Shared limits that cannot be bypassed:
+            #   - Workspace limit with provider_id=None (shared across all
+            #     accounts of the same provider_type — "空间级别限流").
+            #   - API-key level limit (shared regardless of provider).
+            is_model_level = result.limit_level == "model"
+            is_provider_scoped_ws = (
+                result.limit_level == "workspace"
+                and ws_rl is not None
+                and ws_rl.provider_id is not None
+            )
+            if not (is_model_level or is_provider_scoped_ws):
+                # Shared limit (workspace-wide or API-key) — cannot bypass
+                # by switching providers.
+                return resolved, None, last_detail
+
+            logger.info(
+                "[fallback] %s rate limit hit for provider '%s' "
+                "(model_id=%s); trying next candidate...",
+                result.limit_level, cand.provider_name, cand.model_id,
+            )
+
+        return resolved, None, last_detail
+
+    async def _lookup_workspace_rate_limit(
+        self, workspace_id: int, cand: ResolvedModelData, model_name: str,
+    ):
+        """Look up the WorkspaceRateLimit row for *cand*'s provider.
+
+        Priority: exact provider_id match, then provider_type-wide (NULL id).
+        """
+        from app import get_db_session
+        from app.models import WorkspaceRateLimit
+        from sqlalchemy import select as sa_select
+
+        provider_type_val = cand.provider_type
+        alt_name = cand.model_alias or cand.model_real_name
+        candidates_names = [model_name]
+        if alt_name and alt_name != model_name:
+            candidates_names.append(alt_name)
+
+        async with get_db_session() as session:
+            for try_name in candidates_names:
+                result = await session.execute(
+                    sa_select(WorkspaceRateLimit).where(
+                        WorkspaceRateLimit.workspace_id == workspace_id,
+                        WorkspaceRateLimit.model_name == try_name,
+                        WorkspaceRateLimit.provider_type == provider_type_val,
+                        WorkspaceRateLimit.provider_id == cand.provider_id,
+                    )
+                )
+                ws_rl = result.scalars().first()
+                if ws_rl:
+                    return ws_rl
+                result = await session.execute(
+                    sa_select(WorkspaceRateLimit).where(
+                        WorkspaceRateLimit.workspace_id == workspace_id,
+                        WorkspaceRateLimit.model_name == try_name,
+                        WorkspaceRateLimit.provider_type == provider_type_val,
+                        WorkspaceRateLimit.provider_id.is_(None),
+                    )
+                )
+                ws_rl = result.scalars().first()
+                if ws_rl:
+                    return ws_rl
+        return None
+
+    @staticmethod
+    def _prepare_chat_request(cand: ResolvedModelData, request: ChatRequest, tracer: Any) -> None:
+        """Update per-candidate fields on a ChatRequest before dispatch."""
+        request.model = cand.model_real_name
+        request.metadata['support_thinking'] = cand.support_thinking
+        if cand.timeout:
+            request.metadata['timeout'] = cand.timeout
+        request.metadata['output_pricing'] = cand.output_pricing
+        cand.provider_instance.tracer = tracer
+        cand.provider_instance._model_api_type = cand.api_type
+        if tracer:
+            tracer.set_metadata({
+                "provider_id": cand.provider_id,
+                "provider": cand.provider_name,
+            })
+
     async def chat(
         self, resolved: ResolvedModelData, request: ChatRequest, tracer: Any = None,
     ) -> ChatResponse:
@@ -520,47 +804,44 @@ class GatewayService:
                 "gateway_service: failed to resolve file_ids: %s", e
             )
 
-        # 4. 调用供应商 API
-        resolved.provider_instance.tracer = tracer
-        try:
-            response = await resolved.provider_instance.chat(request)
+        # 4. 调用供应商 API（429 时按候选顺序最多重试 MAX_RATE_LIMIT_ATTEMPTS 次）
+        candidates = self._ordered_candidates(resolved)
+        last_exc: Optional[BaseException] = None
+        for attempt, cand in enumerate(candidates):
+            self._prepare_chat_request(cand, request, tracer)
+            try:
+                response = await cand.provider_instance.chat(request)
 
-            if not self._should_include_reasoning(request):
-                for choice in response.choices:
-                    choice.reasoning_content = None
-                    if choice.message:
-                        choice.message.reasoning_content = None
+                if not self._should_include_reasoning(request):
+                    for choice in response.choices:
+                        choice.reasoning_content = None
+                        if choice.message:
+                            choice.message.reasoning_content = None
 
-            return response
-        except ValueError as e:
-            raise GatewayServiceError(str(e), status_code=400)
-        except UpstreamProviderError as e:
-            canonical_data: dict = {
-                'type': e.error_type,
-                'message': str(e),
-            }
-            if e.request_id:
-                canonical_data['request_id'] = e.request_id
-            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
-                                     provider_id=resolved.provider_id,
-                                     provider_name=resolved.provider_name)
-        except RuntimeError as e:
-            status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                     provider_id=resolved.provider_id,
-                                     provider_name=resolved.provider_name)
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
-            raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
-        except httpx.HTTPError as e:
-            raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
-        except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
+                self._apply_candidate(resolved, cand)
+                return response
+            except ValueError as e:
+                raise GatewayServiceError(str(e), status_code=400)
+            except (UpstreamProviderError, RuntimeError, httpx.HTTPError) as e:
+                if self._is_rate_limit_error(e) and attempt < len(candidates) - 1:
+                    logger.warning(
+                        "[fallback] 429 from provider '%s' (model_id=%s); "
+                        "trying next candidate (%d/%d)...",
+                        cand.provider_name, cand.model_id,
+                        attempt + 2, len(candidates),
+                    )
+                    last_exc = e
+                    continue
+                raise self._convert_to_provider_error(e, cand)
+            except Exception as e:
+                raise self._convert_to_provider_error(e, cand)
+
+        # All candidates exhausted with rate-limit errors
+        if last_exc is not None:
+            raise self._convert_to_provider_error(last_exc, candidates[-1])
+        raise ProviderError("All provider candidates exhausted", status_code=502,
+                            provider_id=resolved.provider_id,
+                            provider_name=resolved.provider_name)
 
     async def stream_chat(
         self, resolved: ResolvedModelData, request: ChatRequest, tracer: Any = None,
@@ -616,35 +897,43 @@ class GatewayService:
         # 4. Determine reasoning flag
         include_reasoning = self._should_include_reasoning(request)
 
-        # 5. Attach tracer to provider so it can create child spans internally.
-        resolved.provider_instance.tracer = tracer
+        # 5. Return lazy async generator with 429 fallback across candidates.
+        candidates = self._ordered_candidates(resolved)
 
-        # 6. Return lazy async generator
         async def _stream():
-            try:
-                async for chunk in resolved.provider_instance.stream_chat(request):
-                    if not include_reasoning:
-                        chunk.delta_reasoning_content = None
-                    yield chunk
-            except ValueError as e:
-                raise GatewayServiceError(str(e), status_code=400)
-            except RuntimeError as e:
-                status_code, error_data = self._parse_provider_error(e)
-                raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                    provider_id=resolved.provider_id,
-                                    provider_name=resolved.provider_name)
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
-                raise ProviderError(f"Connection to upstream provider failed: {str(e)}", status_code=502,
-                                    provider_id=resolved.provider_id,
-                                    provider_name=resolved.provider_name)
-            except httpx.HTTPError as e:
-                raise ProviderError(f"HTTP error from upstream provider: {str(e)}", status_code=502,
-                                    provider_id=resolved.provider_id,
-                                    provider_name=resolved.provider_name)
-            except Exception as e:
-                raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                    provider_id=resolved.provider_id,
-                                    provider_name=resolved.provider_name)
+            last_exc: Optional[BaseException] = None
+            for attempt, cand in enumerate(candidates):
+                self._prepare_chat_request(cand, request, tracer)
+                yielded_any = False
+                try:
+                    async for chunk in cand.provider_instance.stream_chat(request):
+                        yielded_any = True
+                        if not include_reasoning:
+                            chunk.delta_reasoning_content = None
+                        yield chunk
+                    # Stream completed successfully on this candidate.
+                    self._apply_candidate(resolved, cand)
+                    return
+                except ValueError as e:
+                    raise GatewayServiceError(str(e), status_code=400)
+                except (UpstreamProviderError, RuntimeError, httpx.HTTPError) as e:
+                    # Only retry if nothing has been streamed yet — once bytes
+                    # have been sent to the client we cannot switch providers.
+                    if not yielded_any and self._is_rate_limit_error(e) and attempt < len(candidates) - 1:
+                        logger.warning(
+                            "[fallback] 429 from provider '%s' (model_id=%s) during stream; "
+                            "trying next candidate (%d/%d)...",
+                            cand.provider_name, cand.model_id,
+                            attempt + 2, len(candidates),
+                        )
+                        last_exc = e
+                        continue
+                    raise self._convert_to_provider_error(e, cand)
+                except Exception as e:
+                    raise self._convert_to_provider_error(e, cand)
+
+            if last_exc is not None:
+                raise self._convert_to_provider_error(last_exc, candidates[-1])
 
         return _stream()
 
@@ -948,39 +1237,44 @@ class GatewayService:
             GatewayServiceError: 供应商不支持 rerank
             ProviderError: 供应商 API 调用失败
         """
-        # Replace with real model name
-        request.model = resolved.model_real_name
+        # 429 时按候选顺序最多重试 MAX_RATE_LIMIT_ATTEMPTS 次
+        candidates = self._ordered_candidates(resolved)
+        last_exc: Optional[BaseException] = None
+        for attempt, cand in enumerate(candidates):
+            request.model = cand.model_real_name
+            if not hasattr(cand.provider_instance, 'rerank'):
+                if attempt < len(candidates) - 1:
+                    continue
+                raise GatewayServiceError(
+                    f"Provider '{cand.provider_name}' does not support rerank",
+                    status_code=400
+                )
 
-        # Check that the provider supports rerank
-        if not hasattr(resolved.provider_instance, 'rerank'):
-            raise GatewayServiceError(
-                f"Provider '{resolved.provider_name}' does not support rerank",
-                status_code=400
-            )
+            try:
+                response = await cand.provider_instance.rerank(request)
+                self._apply_candidate(resolved, cand)
+                return response
+            except ValueError as e:
+                raise GatewayServiceError(str(e), status_code=400)
+            except (UpstreamProviderError, RuntimeError, httpx.HTTPError) as e:
+                if self._is_rate_limit_error(e) and attempt < len(candidates) - 1:
+                    logger.warning(
+                        "[fallback] 429 from provider '%s' (model_id=%s) during rerank; "
+                        "trying next candidate (%d/%d)...",
+                        cand.provider_name, cand.model_id,
+                        attempt + 2, len(candidates),
+                    )
+                    last_exc = e
+                    continue
+                raise self._convert_to_provider_error(e, cand)
+            except Exception as e:
+                raise self._convert_to_provider_error(e, cand)
 
-        try:
-            return await resolved.provider_instance.rerank(request)
-        except ValueError as e:
-            raise GatewayServiceError(str(e), status_code=400)
-        except UpstreamProviderError as e:
-            canonical_data: dict = {
-                'type': e.error_type,
-                'message': str(e),
-            }
-            if e.request_id:
-                canonical_data['request_id'] = e.request_id
-            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
-                                     provider_id=resolved.provider_id,
-                                     provider_name=resolved.provider_name)
-        except RuntimeError as e:
-            status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
-        except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
+        if last_exc is not None:
+            raise self._convert_to_provider_error(last_exc, candidates[-1])
+        raise ProviderError("All provider candidates exhausted", status_code=502,
+                            provider_id=resolved.provider_id,
+                            provider_name=resolved.provider_name)
 
     async def embed(self, resolved: ResolvedModelData, request: EmbeddingRequest, tracer: Any = None) -> EmbeddingResponse:
         """
@@ -1013,48 +1307,60 @@ class GatewayService:
         request.metadata['support_video'] = resolved.support_video
         request.metadata['support_audio'] = resolved.support_audio
 
-        # Attach tracer so providers can create child spans
-        resolved.provider_instance.tracer = tracer
+        # 429 时按候选顺序最多重试 MAX_RATE_LIMIT_ATTEMPTS 次
+        candidates = self._ordered_candidates(resolved)
+        last_exc: Optional[BaseException] = None
+        for attempt, cand in enumerate(candidates):
+            if not cand.support_embedding:
+                if attempt < len(candidates) - 1:
+                    continue
+                raise GatewayServiceError(
+                    f"Model '{cand.model_alias or cand.model_real_name}' is not an embedding model. "
+                    f"Set support_embedding=true for this model in the admin panel.",
+                    status_code=400
+                )
+            if not hasattr(cand.provider_instance, 'embed'):
+                if attempt < len(candidates) - 1:
+                    continue
+                raise GatewayServiceError(
+                    f"Provider '{cand.provider_name}' does not support embedding",
+                    status_code=400
+                )
+            request.model = cand.model_real_name
+            request.metadata['support_image'] = cand.support_image
+            request.metadata['support_video'] = cand.support_video
+            request.metadata['support_audio'] = cand.support_audio
+            cand.provider_instance.tracer = tracer
+            if tracer:
+                tracer.set_metadata({
+                    "provider_id": cand.provider_id,
+                    "provider": cand.provider_name,
+                })
+            try:
+                response = await cand.provider_instance.embed(request)
+                self._apply_candidate(resolved, cand)
+                return response
+            except ValueError as e:
+                raise GatewayServiceError(str(e), status_code=400)
+            except (UpstreamProviderError, RuntimeError, httpx.HTTPError) as e:
+                if self._is_rate_limit_error(e) and attempt < len(candidates) - 1:
+                    logger.warning(
+                        "[fallback] 429 from provider '%s' (model_id=%s) during embed; "
+                        "trying next candidate (%d/%d)...",
+                        cand.provider_name, cand.model_id,
+                        attempt + 2, len(candidates),
+                    )
+                    last_exc = e
+                    continue
+                raise self._convert_to_provider_error(e, cand)
+            except Exception as e:
+                raise self._convert_to_provider_error(e, cand)
 
-        # Check that the model is flagged as an embedding model
-        if not resolved.support_embedding:
-            raise GatewayServiceError(
-                f"Model '{resolved.model_alias or resolved.model_real_name}' is not an embedding model. "
-                f"Set support_embedding=true for this model in the admin panel.",
-                status_code=400
-            )
-
-        # Check that the provider supports embeddings
-        if not hasattr(resolved.provider_instance, 'embed'):
-            raise GatewayServiceError(
-                f"Provider '{resolved.provider_name}' does not support embedding",
-                status_code=400
-            )
-
-        try:
-            response = await resolved.provider_instance.embed(request)
-            return response
-        except ValueError as e:
-            raise GatewayServiceError(str(e), status_code=400)
-        except UpstreamProviderError as e:
-            canonical_data: dict = {
-                'type': e.error_type,
-                'message': str(e),
-            }
-            if e.request_id:
-                canonical_data['request_id'] = e.request_id
-            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
-                                     provider_id=resolved.provider_id,
-                                     provider_name=resolved.provider_name)
-        except RuntimeError as e:
-            status_code, error_data = self._parse_provider_error(e)
-            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
-        except Exception as e:
-            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
-                                provider_id=resolved.provider_id,
-                                provider_name=resolved.provider_name)
+        if last_exc is not None:
+            raise self._convert_to_provider_error(last_exc, candidates[-1])
+        raise ProviderError("All provider candidates exhausted", status_code=502,
+                            provider_id=resolved.provider_id,
+                            provider_name=resolved.provider_name)
 
     async def generate_images(
         self,

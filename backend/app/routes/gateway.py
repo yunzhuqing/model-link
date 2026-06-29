@@ -195,36 +195,26 @@ async def _handle_request(adapter):
             # Pass the model's configured API type to the provider for upstream routing
             resolved.provider_instance._model_api_type = resolved.api_type
 
-            # Rate-limit pre-check
+            # Rate-limit pre-check (with 429 fallback across provider candidates)
             try:
                 from app.rate_limiter import get_async_rate_limiter, estimate_input_tokens
                 rate_limiter = get_async_rate_limiter()
 
                 workspace_id = auth_ctx.api_key_workspace_id if auth_ctx else None
-                ws_rl, model_name_for_ws = await _resolve_workspace_rate_limit(
-                    session, resolved, model_name, workspace_id,
-                )
-
-                # Model-level rpm/tpm — already in ResolvedModelData? No, query directly.
-                # The per-model rpm/tpm are on the Model row; resolve_model didn't snapshot them.
-                # Fetch them here while session is open.
-                from app.models import Model as ModelOrm
-                model_row = (await session.execute(
-                    sa_select(ModelOrm.rpm, ModelOrm.tpm).where(ModelOrm.id == resolved.model_id)
-                )).first()
-                rpm_limit = model_row[0] if model_row else None
-                tpm_limit = model_row[1] if model_row else None
-
-                workspace_rpm = ws_rl.rpm if ws_rl else None
-                workspace_tpm = ws_rl.tpm if ws_rl else None
-                ws_provider_type = ws_rl.provider_type if ws_rl else ""
-                ws_provider_id_val = ws_rl.provider_id if ws_rl else None
 
                 apikey_rpm = auth_ctx.api_key_rpm if auth_ctx else None
                 apikey_tpm = auth_ctx.api_key_tpm if auth_ctx else None
                 api_key_id = auth_ctx.api_key_id if auth_ctx else None
 
-                has_any_limit = rpm_limit or tpm_limit or workspace_rpm or workspace_tpm or apikey_rpm or apikey_tpm
+                # Gather per-candidate limit flags to decide whether any rate
+                # limiting applies at all.
+                has_any_limit = any(
+                    c.rpm or c.tpm for c in _gateway_service._ordered_candidates(resolved)
+                ) or apikey_rpm or apikey_tpm
+                if not has_any_limit and workspace_id:
+                    # Workspace rate limits may still exist even if model-level
+                    # limits are unset — check via a lightweight lookup below.
+                    has_any_limit = True
                 if has_any_limit:
                     messages_list = data.get('messages', [])
                     system_prompt = None
@@ -241,38 +231,26 @@ async def _handle_request(adapter):
                     if auth_ctx and auth_ctx.api_key_raw:
                         apikey_preview = auth_ctx.api_key_raw[:8] + '...'
 
-                    result = await rate_limiter.check_and_reserve(
-                        model_id=resolved.model_id,
+                    resolved, rate_limit_info, rl_error = await _gateway_service.check_rate_limit_with_fallback(
+                        resolved,
+                        rate_limiter,
+                        estimated_tokens,
                         group_id=group_id or 0,
-                        rpm_limit=rpm_limit,
-                        tpm_limit=tpm_limit,
-                        estimated_input_tokens=estimated_tokens,
-                        apikey_preview=apikey_preview,
                         workspace_id=workspace_id,
-                        model_name=model_name_for_ws,
-                        workspace_rpm=workspace_rpm,
-                        workspace_tpm=workspace_tpm,
-                        ws_provider_type=ws_provider_type,
-                        ws_provider_id=ws_provider_id_val,
+                        model_name=model_name,
+                        apikey_preview=apikey_preview,
                         apikey_rpm=apikey_rpm,
                         apikey_tpm=apikey_tpm,
                         api_key_id=api_key_id,
                     )
-                    if not result.allowed:
+                    if rl_error:
                         rate_limit_extra = _build_error_context(auth_ctx, model_name)
-                        rate_limit_extra["rate_limit_detail"] = result.detail
-                        _log_error("handle_request", 429, result.detail or 'Rate limit exceeded', rate_limit_extra)
-                        return jsonify(adapter.format_error_response(
-                            result.detail or 'Rate limit exceeded', 429
-                        )), 429
+                        rate_limit_extra["rate_limit_detail"] = rl_error
+                        _log_error("handle_request", 429, rl_error, rate_limit_extra)
+                        return jsonify(adapter.format_error_response(rl_error, 429)), 429
 
-                    rate_limit_info = (
-                        resolved.model_id, group_id or 0, rpm_limit, tpm_limit,
-                        estimated_tokens, apikey_preview,
-                        workspace_id, model_name_for_ws, workspace_tpm,
-                        ws_provider_type, ws_provider_id_val,
-                        apikey_rpm, apikey_tpm, api_key_id,
-                    )
+                    # Update the provider API type for the winning candidate.
+                    resolved.provider_instance._model_api_type = resolved.api_type
             except ModelNotFoundError:
                 pass
             except Exception as e:
