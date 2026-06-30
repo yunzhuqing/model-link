@@ -436,6 +436,14 @@ class AzureProvider(OpenAIProvider):
             # Build Responses API request body
             request_data = await self._prepare_responses_api_request(request)
             request_data["stream"] = False
+            # Azure Responses API stream_options only supports include_obfuscation
+            _so = request_data.get("stream_options")
+            if isinstance(_so, dict):
+                _filtered = {k: v for k, v in _so.items() if k == "include_obfuscation"}
+                if _filtered:
+                    request_data["stream_options"] = _filtered
+                else:
+                    request_data.pop("stream_options", None)
         else:
             request_data = await self.aprepare_request(request)
             request_data["stream"] = False
@@ -484,6 +492,14 @@ class AzureProvider(OpenAIProvider):
         if self._uses_responses_api(deployment_name):
             request_data = await self._prepare_responses_api_request(request)
             request_data["stream"] = True
+            # Azure Responses API stream_options only supports include_obfuscation
+            _so = request_data.get("stream_options")
+            if isinstance(_so, dict):
+                _filtered = {k: v for k, v in _so.items() if k == "include_obfuscation"}
+                if _filtered:
+                    request_data["stream_options"] = _filtered
+                else:
+                    request_data.pop("stream_options", None)
 
             try:
                 async with self._trace_call(request.model, input_data=request_data) as child_span:
