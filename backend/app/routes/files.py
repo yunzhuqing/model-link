@@ -3,7 +3,7 @@ Files API route module.
 
 Provides an OpenAI-compatible /v1/files endpoint that supports:
 - Standard multipart/form-data file upload (OpenAI-compatible)
-- JSON body with `input_image` parameter (string URL or array of URL strings)
+- JSON body with `input_image`, `input_audio`, `input_video`, or `input_file`
 
 Uploaded files are registered in the Volcengine ARK asset library via
 CreateAsset API, assigned to the specified AssetGroup for use with
@@ -211,7 +211,7 @@ async def upload_file():
        - ``group_id``: (optional) Volcengine ARK AssetGroup ID
 
     2. application/json (extended format):
-       - ``input_image``: Image URL string or array of URL strings
+       - ``input_image`` / ``input_audio`` / ``input_video`` / ``input_file``: URL string or array of URL strings (at least one must be provided)
        - ``purpose``:     File purpose
        - ``group_id``:    Volcengine ARK AssetGroup ID (required or from provider config)
        - ``filename``:    (optional) Asset name
@@ -375,25 +375,44 @@ async def upload_file():
         })
 
     elif "application/json" in content_type:
-        # ── JSON mode (input_image) ──
+        # ── JSON mode (input_image / input_audio / input_video / input_file) ──
         data = await _parse_json_body()
         if not data:
             _log_error("files_upload", 400, "Invalid or empty JSON request body")
             return _error_response("Invalid or empty JSON request body", code="invalid_request", status_code=400)
 
-        input_image = data.get("input_image")
-        if not input_image:
-            _log_error("files_upload", 400, "input_image is required for JSON mode", _build_error_context(auth_ctx))
-            return _error_response("input_image is required when using JSON mode.", code="invalid_request", param="input_image", status_code=400)
+        # Collect URLs from all media fields (input_image, input_audio, input_video, input_file).
+        # Each field can be a string or an array of strings. All may be present simultaneously.
+        # Order follows insertion order in the JSON body, not a hardcoded sequence.
+        _MEDIA_KEYS = frozenset({"input_image", "input_audio", "input_video", "input_file"})
+        media_urls: list[str] = []
+        media_keys: list[str] = []
+        for key, val in data.items():
+            if key not in _MEDIA_KEYS:
+                continue
+            if isinstance(val, str):
+                media_urls.append(val)
+                media_keys.append(key)
+            elif isinstance(val, list):
+                for v in val:
+                    if isinstance(v, str):
+                        media_urls.append(v)
+                    else:
+                        return _error_response(
+                            f"Each item in '{key}' must be a URL string.",
+                            code="invalid_request", param=key, status_code=400)
+                media_keys.append(key)
+            else:
+                return _error_response(
+                    f"'{key}' must be a string (URL) or array of URL strings.",
+                    code="invalid_request", param=key, status_code=400)
 
-        # Normalize to list
-        if isinstance(input_image, str):
-            image_urls = [input_image]
-        elif isinstance(input_image, list):
-            image_urls = input_image
-        else:
+        if not media_urls:
+            _log_error("files_upload", 400,
+                       "input_image, input_audio, input_video, or input_file is required for JSON mode",
+                       _build_error_context(auth_ctx))
             return _error_response(
-                "input_image must be a string (URL) or array of URL strings.",
+                "input_image, input_audio, input_video, or input_file is required when using JSON mode.",
                 code="invalid_request", param="input_image", status_code=400)
 
         purpose = data.get("purpose", "seedance-ref")
@@ -414,8 +433,8 @@ async def upload_file():
                 code="invalid_request", param="group_id", status_code=400)
 
         logger.info(
-            "files: JSON input_image mode urls=%d purpose=%s group=%s",
-            len(image_urls), purpose, group_id,
+            "files: JSON mode keys=%s urls=%d purpose=%s group=%s",
+            ",".join(media_keys), len(media_urls), purpose, group_id,
         )
 
         # Resolve project_name from group's dept tag
@@ -430,18 +449,18 @@ async def upload_file():
         # Process all image URLs
         results = []
         errors = []
-        for idx, img_url in enumerate(image_urls):
+        for idx, media_url in enumerate(media_urls):
             try:
                 name = filename or None
-                if not name and len(image_urls) > 1:
-                    url_path = img_url.split("?")[0]
-                    name = url_path.rsplit("/", 1)[-1] or f"image_{idx}"
+                if not name and len(media_urls) > 1:
+                    url_path = media_url.split("?")[0]
+                    name = url_path.rsplit("/", 1)[-1] or f"media_{idx}"
                     if "." in name:
                         name = name.rsplit(".", 1)[0]
 
                 result = await upload_and_create_asset(
                     group_id=group_id,
-                    image_url=img_url,
+                    image_url=media_url,
                     name=name,
                     project_name=project_name,
                     access_key=creds.get("access_key"),
@@ -451,8 +470,8 @@ async def upload_file():
                 )
                 results.append(result)
             except RuntimeError as e:
-                logger.error("files: failed to create asset for url %s: %s", img_url[:80], e)
-                errors.append({"url": img_url, "error": str(e)})
+                logger.error("files: failed to create asset for url %s: %s", media_url[:80], e)
+                errors.append({"url": media_url, "error": str(e)})
 
 
         # Poll all created assets to ensure they reach Active before returning success
