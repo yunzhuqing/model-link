@@ -25,7 +25,7 @@ CATEGORY_MIN_AGE_MINUTES = {
 
 # Video model prefixes (case-insensitive)
 _VIDEO_PREFIXES = (
-    "seedance", "happyhorse-", "kling-", "veo-", "veo3",
+    "doubao-seedance", "seedance", "happyhorse-", "kling-", "veo-", "veo3",
     "gv-", "hy-video-", "viduq", "pixverse-",
 )
 
