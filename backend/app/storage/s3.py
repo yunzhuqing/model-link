@@ -158,11 +158,7 @@ class S3StorageBackend(StorageBackend):
 
     def read_binary(self, key_or_url: str) -> Optional[bytes]:
         """Retrieve binary data stored via write_binary() by S3 key."""
-        import os as _os
-        if key_or_url.startswith(f"{self.prefix}/files/"):
-            s3_key = key_or_url
-        else:
-            s3_key = f"{self.prefix}/files/{key_or_url}"
+        s3_key = self._resolve_s3_key(key_or_url)
         client = self._get_client()
         try:
             response = client.get_object(Bucket=self.bucket, Key=s3_key)
@@ -171,6 +167,30 @@ class S3StorageBackend(StorageBackend):
             return None
         except Exception:
             return None
+
+    def delete_binary(self, key_or_url: str) -> bool:
+        """
+        Delete binary data stored via write_binary() from S3.
+
+        Returns:
+            True if the object was deleted, False if it was not found.
+        """
+        s3_key = self._resolve_s3_key(key_or_url)
+        client = self._get_client()
+        try:
+            client.head_object(Bucket=self.bucket, Key=s3_key)
+            client.delete_object(Bucket=self.bucket, Key=s3_key)
+            return True
+        except client.exceptions.NoSuchKey:
+            return False
+        except Exception:
+            return False
+
+    def _resolve_s3_key(self, key_or_url: str) -> str:
+        """Resolve a key or URL to an S3 object key."""
+        if key_or_url.startswith(f"{self.prefix}/files/"):
+            return key_or_url
+        return f"{self.prefix}/files/{key_or_url}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -276,11 +296,14 @@ class AsyncS3StorageBackend(AsyncStorageBackend):
             return f"{public_base}/{s3_key}"
         return self.url_for(s3_key)
 
-    async def read_binary(self, key_or_url: str) -> Optional[bytes]:
+    def _resolve_s3_key(self, key_or_url: str) -> str:
+        """Resolve a key or URL to an S3 object key."""
         if key_or_url.startswith(f"{self.prefix}/files/"):
-            s3_key = key_or_url
-        else:
-            s3_key = f"{self.prefix}/files/{key_or_url}"
+            return key_or_url
+        return f"{self.prefix}/files/{key_or_url}"
+
+    async def read_binary(self, key_or_url: str) -> Optional[bytes]:
+        s3_key = self._resolve_s3_key(key_or_url)
         session = self._get_session()
         async with session.client("s3", **self._client_kwargs()) as client:
             try:
@@ -290,3 +313,22 @@ class AsyncS3StorageBackend(AsyncStorageBackend):
                 return None
             except Exception:
                 return None
+
+    async def delete_binary(self, key_or_url: str) -> bool:
+        """
+        Delete binary data stored via write_binary() from S3 (async).
+
+        Returns:
+            True if the object was deleted, False if it was not found.
+        """
+        s3_key = self._resolve_s3_key(key_or_url)
+        session = self._get_session()
+        async with session.client("s3", **self._client_kwargs()) as client:
+            try:
+                await client.head_object(Bucket=self.bucket, Key=s3_key)
+                await client.delete_object(Bucket=self.bucket, Key=s3_key)
+                return True
+            except client.exceptions.NoSuchKey:
+                return False
+            except Exception:
+                return False

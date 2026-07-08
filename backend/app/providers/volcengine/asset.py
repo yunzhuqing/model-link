@@ -33,6 +33,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.http_client import shared_client
+from app.qps_rate_limiter import QPSRateLimiter
 
 logger = logging.getLogger("gateway")
 
@@ -700,19 +701,26 @@ async def batch_delete_assets(
     secret_key: Optional[str] = None,
     api_key: Optional[str] = None,
     region: str = ARK_API_REGION,
+    max_concurrency: int = 5,
+    max_qps: int = 8,
 ) -> Dict[str, bool]:
     """
     批量删除多个资产（并发调用 DeleteAsset，尽力而为）。
 
+    使用 asyncio.Semaphore 控制并发数 + RateLimiter 控制每秒请求数，
+    确保不超过 DeleteAsset QPS 限制（默认 10，这里用 8 留余地）。
+
     如果某个资产删除失败，记录错误日志但继续尝试删除其他资产。
 
     Args:
-        asset_ids:    资产 ID 列表
-        project_name: 项目名称
-        access_key:   ARK Access Key ID
-        secret_key:   ARK Secret Access Key
-        api_key:      ARK API Key (后备)
-        region:       区域
+        asset_ids:        资产 ID 列表
+        project_name:     项目名称
+        access_key:       ARK Access Key ID
+        secret_key:       ARK Secret Access Key
+        api_key:          ARK API Key (后备)
+        region:           区域
+        max_concurrency:  最大并发删除数（默认 5）
+        max_qps:          最大每秒请求数（默认 8，安全低于 QPS=10 限制）
 
     Returns:
         字典，key 为 asset_id，value 为 True(成功)/False(失败)
@@ -720,23 +728,28 @@ async def batch_delete_assets(
     if not asset_ids:
         return {}
 
+    semaphore = asyncio.Semaphore(max_concurrency)
+    rate_limiter = QPSRateLimiter(max_qps)
+
     async def _delete_one(aid: str) -> tuple:
-        try:
-            await delete_asset(
-                asset_id=aid,
-                project_name=project_name,
-                access_key=access_key,
-                secret_key=secret_key,
-                api_key=api_key,
-                region=region,
-            )
-            return aid, True
-        except Exception as e:
-            logger.warning(
-                "Volcengine ARK batch delete: failed to delete asset %s: %s",
-                aid, e,
-            )
-            return aid, False
+        async with semaphore:
+            await rate_limiter.acquire()
+            try:
+                await delete_asset(
+                    asset_id=aid,
+                    project_name=project_name,
+                    access_key=access_key,
+                    secret_key=secret_key,
+                    api_key=api_key,
+                    region=region,
+                )
+                return aid, True
+            except Exception as e:
+                logger.warning(
+                    "Volcengine ARK batch delete: failed to delete asset %s: %s",
+                    aid, e,
+                )
+                return aid, False
 
     tasks = [_delete_one(aid) for aid in asset_ids]
     results_list = await asyncio.gather(*tasks)
