@@ -385,6 +385,135 @@ class GatewayService:
 
 
     @staticmethod
+    def _collect_file_ids(request) -> set:
+        """
+        Scan all messages and metadata in the request for file_id references
+        (file-xxx format). Returns the set of raw file_ids found, without any
+        DB lookup. Used both to constrain provider selection (before
+        resolve_model) and to resolve asset:// replacements (after).
+        """
+        import re
+        fid_pattern = re.compile(r'\bfile-[a-f0-9]{24}\b')
+
+        all_file_ids: set = set()
+
+        def _collect(text: str) -> None:
+            if text:
+                all_file_ids.update(fid_pattern.findall(text))
+
+        for msg in request.messages:
+            if msg.content:
+                if isinstance(msg.content, str):
+                    _collect(msg.content)
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if hasattr(block, 'text') and block.text:
+                            _collect(block.text)
+                        if hasattr(block, 'url') and block.url:
+                            _collect(block.url)
+
+        fid_map = request.metadata.get('file_id_media_map', {})
+        if isinstance(fid_map, dict):
+            all_file_ids.update(fid_map.keys())
+
+        return all_file_ids
+
+    async def resolve_file_provider_constraint(
+        self, session, request, group_id: Optional[int] = None,
+        explicit_provider_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """
+        Determine the provider_id that seedance generation must run on, based
+        on the file_id references in the request.
+
+        Each uploaded seedance-ref file is registered into a specific
+        Volcengine account's asset library (recorded as UploadedFile.provider_id).
+        Because generation and upload are asynchronous, we must guarantee the
+        generation call targets the same account that holds the referenced
+        assets — otherwise ARK cannot resolve the asset references.
+
+        Rules:
+        - No file references → return None (no constraint).
+        - Caller explicitly pinned a provider (explicit_provider_id): if the
+          referenced files were uploaded to a different provider, raise.
+        - No explicit pin: if all referenced files share one provider, return
+          it (auto-route). If they span multiple providers, raise.
+        - Legacy files without a recorded provider_id are ignored.
+
+        Raises GatewayServiceError (400) on a conflict.
+        """
+        from app.models import UploadedFile
+
+        file_ids = self._collect_file_ids(request)
+        if not file_ids:
+            return None
+
+        result = await session.execute(
+            select(UploadedFile.file_id, UploadedFile.provider_id).where(
+                UploadedFile.file_id.in_(list(file_ids))
+            )
+        )
+        rows = result.all()
+
+        if not rows:
+            return None
+
+        # NOTE: file_id lookups are global, but a cross-group file_id can't
+        # actually steer generation onto an inaccessible provider —
+        # resolve_model filters candidates by group_id, so a provider whose
+        # models aren't visible to this group yields ModelNotFoundError.
+
+        provider_ids = {r.provider_id for r in rows if r.provider_id is not None}
+        if not provider_ids:
+            return None
+
+        if explicit_provider_id is not None:
+            if provider_ids and not provider_ids.issubset({explicit_provider_id}):
+                raise GatewayServiceError(
+                    f"Referenced files were uploaded to a different Volcengine "
+                    f"provider than the one requested (requested provider_id="
+                    f"{explicit_provider_id}, file providers={sorted(provider_ids)}). "
+                    f"Use an API key without a provider pin, or upload the files "
+                    f"to the requested provider first.",
+                    status_code=400,
+                )
+            return explicit_provider_id
+
+        if len(provider_ids) > 1:
+            raise GatewayServiceError(
+                f"Referenced files were uploaded to different Volcengine "
+                f"providers {sorted(provider_ids)}; seedance generation requires "
+                f"all referenced assets to live in the same account. Re-upload "
+                f"them under one provider.",
+                status_code=400,
+            )
+
+        return next(iter(provider_ids))
+
+    async def resolve_model_for_request(
+        self, session, model_name: str, request,
+        group_id: Optional[int] = None, user_id: Optional[str] = None,
+        provider_id_override: Optional[int] = None,
+    ) -> ResolvedModelData:
+        """
+        Resolve a model for an incoming chat request, honoring the
+        file→provider consistency constraint.
+
+        If the request references uploaded seedance-ref files, the generation
+        must run on the provider that holds those assets. This derives that
+        provider from the file records and constrains resolve_model to it
+        (unless the caller explicitly pinned a provider, in which case the
+        pin is validated against the files).
+        """
+        file_provider_id = await self.resolve_file_provider_constraint(
+            session, request, group_id, explicit_provider_id=provider_id_override,
+        )
+        effective_provider_id = provider_id_override if provider_id_override else file_provider_id
+        return await self.resolve_model(
+            session, model_name, group_id, user_id=user_id, provider_id=effective_provider_id,
+        )
+
+    @staticmethod
     async def _resolve_file_ids(request, session) -> None:
         """
         Scan all messages and metadata in the request for file_id references
@@ -403,31 +532,16 @@ class GatewayService:
         fid_pattern = re.compile(r'\bfile-[a-f0-9]{24}\b')
         template_pattern = re.compile(r'\{\{file-[a-f0-9]{24}\}\}')
 
-        # Collect all file_ids from message content (text + block urls)
-        all_file_ids = set()
-
-        def _collect(text: str) -> None:
-            if text:
-                all_file_ids.update(fid_pattern.findall(text))
-
-        for msg in request.messages:
-            if msg.content:
-                if isinstance(msg.content, str):
-                    _collect(msg.content)
-                elif isinstance(msg.content, list):
-                    for block in msg.content:
-                        if hasattr(block, 'text') and block.text:
-                            _collect(block.text)
-                        if hasattr(block, 'url') and block.url:
-                            _collect(block.url)
-
-        # Also collect from metadata file_id_media_map keys
-        fid_map = request.metadata.get('file_id_media_map', {})
-        if isinstance(fid_map, dict):
-            all_file_ids.update(fid_map.keys())
+        # Collect all file_ids from message content (text + block urls) and
+        # metadata file_id_media_map keys.
+        all_file_ids = GatewayService._collect_file_ids(request)
 
         if not all_file_ids:
             return
+
+        fid_map = request.metadata.get('file_id_media_map', {})
+        if not isinstance(fid_map, dict):
+            fid_map = {}
 
         # Look up mappings from the database
         result = await session.execute(

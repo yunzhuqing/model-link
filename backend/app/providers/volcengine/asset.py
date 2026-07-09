@@ -362,7 +362,7 @@ async def delete_asset(
     调用火山引擎 ARK DeleteAsset API，从素材组中删除资产。
 
     Args:
-        asset_id:     资产 ID (如 "Asset-2026...")
+        asset_id:     资产 ID (如 "asset-2026...")
         project_name: 项目名称 (默认 "default")
         access_key:   ARK Access Key ID (HMAC-SHA256 签名用)
         secret_key:   ARK Secret Access Key (HMAC-SHA256 签名用)
@@ -469,7 +469,7 @@ async def get_asset(
     - "Failed":     资产处理失败
 
     Args:
-        asset_id:     资产 ID (如 "Asset-2026...")
+        asset_id:     资产 ID (如 "asset-2026...")
         project_name: 项目名称 (默认 "default")
         access_key:   ARK Access Key ID (HMAC-SHA256 签名用)
         secret_key:   ARK Secret Access Key (HMAC-SHA256 签名用)
@@ -583,7 +583,7 @@ async def poll_asset_status(
     如果超过 timeout 秒后仍有资产处于 Processing，则抛出 RuntimeError。
 
     Args:
-        asset_ids:    资产 ID 列表（如 ["Asset-2026...", ...]）
+        asset_ids:    资产 ID 列表（如 ["asset-2026...", ...]）
         project_name: 项目名称
         access_key:   ARK Access Key ID
         secret_key:   ARK Secret Access Key
