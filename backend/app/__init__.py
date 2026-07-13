@@ -319,7 +319,17 @@ def create_app(config=None):
             'write_timeout': int(os.getenv('DB_WRITE_TIMEOUT', 30)),
         }
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
-    
+
+    # Statistics data source: "db" (default, aggregate from UsageRecord) or
+    # "metabase" (query a Metabase dataset card). Only one is active at a time.
+    app.config['STATS_DATA_SOURCE'] = os.getenv('STATS_DATA_SOURCE', 'db').lower()
+    # Metabase connection + source-card identifiers (env-driven, see .env.example).
+    app.config['METABASE_BASE_URL'] = os.getenv('METABASE_BASE_URL', '')
+    app.config['METABASE_API_KEY'] = os.getenv('METABASE_API_KEY', '')
+    app.config['METABASE_CARD_ID'] = os.getenv('METABASE_CARD_ID', '')
+    app.config['METABASE_DATABASE_ID'] = os.getenv('METABASE_DATABASE_ID', '')
+    app.config['METABASE_TIMEOUT'] = float(os.getenv('METABASE_TIMEOUT', '30'))
+
     # Apply any custom config
     if config:
         app.config.update(config)

@@ -16,6 +16,7 @@ from quart import Blueprint, request, jsonify, current_app
 from sqlalchemy import select, func
 from app import get_db_session
 from app.models import UsageRecord
+from app.stats import metabase_client
 from jose import JWTError, jwt
 
 usage_bp = Blueprint('usage', __name__)
@@ -247,6 +248,13 @@ async def get_summary_totals():
 
     filters = _get_summary_filters(current_username)
 
+    if metabase_client.is_enabled():
+        try:
+            return jsonify(await metabase_client.fetch_totals(filters))
+        except Exception as exc:  # noqa: BLE001 — no fallback per project rule
+            logger.error("metabase fetch_totals failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
+
     stmt = _apply_filters(
         select(
             func.count(UsageRecord.id).label("requests"),
@@ -295,6 +303,13 @@ async def get_summary_by_model():
         return jsonify({"detail": str(e)}), 401
 
     filters = _get_summary_filters(current_username)
+
+    if metabase_client.is_enabled():
+        try:
+            return jsonify(await metabase_client.fetch_by_model(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_by_model failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     stmt = _apply_filters(
         select(
@@ -431,6 +446,13 @@ async def get_summary_by_api_key():
 
     filters = _get_summary_filters(current_username)
 
+    if metabase_client.is_enabled():
+        try:
+            return jsonify(await metabase_client.fetch_by_api_key(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_by_api_key failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
+
     stmt = _apply_filters(
         select(
             UsageRecord.api_key_hash,
@@ -488,6 +510,15 @@ async def get_summary_time_series_by_model():
 
     granularity = request.args.get("granularity", "day")
 
+    # Card ``ds`` is per-day; only ``day`` is served by Metabase. hour/month
+    # fall back to the DB path below regardless of the source switch.
+    if metabase_client.is_enabled() and granularity == "day":
+        try:
+            return jsonify(await metabase_client.fetch_time_series_by_model(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_time_series_by_model failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
+
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
     stmt = _apply_filters(
         select(
@@ -540,6 +571,15 @@ async def get_summary_time_series():
     filters = _get_summary_filters(current_username)
 
     granularity = request.args.get("granularity", "day")
+
+    # Card ``ds`` is per-day; only ``day`` is served by Metabase. hour/month
+    # fall back to the DB path below regardless of the source switch.
+    if metabase_client.is_enabled() and granularity == "day":
+        try:
+            return jsonify(await metabase_client.fetch_time_series(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_time_series failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
     stmt = _apply_filters(

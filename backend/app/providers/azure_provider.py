@@ -111,8 +111,19 @@ class AzureProvider(OpenAIProvider):
     }
 
     def _uses_responses_api(self, model: str) -> bool:
-        """Check if the given model requires the Responses API."""
-        return model in self.RESPONSES_API_MODELS
+        """Check if the given model requires the Responses API.
+
+        Routes to the Responses API when either:
+        1. The model name is in the hardcoded RESPONSES_API_MODELS list, OR
+        2. The model's configured api_type (set by the gateway from model.api_type)
+           contains "responses" — this is the runtime "responses API" switch.
+        """
+        if model in self.RESPONSES_API_MODELS:
+            return True
+        # Honor the model's configured api_type switch (e.g. "chat_completions,responses")
+        model_api_type = getattr(self, '_model_api_type', None) or ''
+        return 'responses' in model_api_type
+
     def get_chat_url(self, deployment_name: str) -> str:
         """
         获取聊天 API URL
