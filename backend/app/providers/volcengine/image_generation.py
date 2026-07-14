@@ -116,7 +116,7 @@ class DoubaoImageProvider:
         if reference_images:
             request_body["image"] = reference_images
             # 有参考图时禁用顺序生成，避免参数冲突
-            request_body["sequential_image_generation"] = "disabled"
+            # request_body["sequential_image_generation"] = "disabled"
 
         # 多图生成：启用顺序图像生成
         if number > 1:
