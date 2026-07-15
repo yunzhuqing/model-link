@@ -108,11 +108,17 @@ def _filter_clauses(filters: dict) -> list:
     dict produced by ``routes/usage._get_summary_filters``.
 
     Dimension mapping (mutually exclusive in practice via auto-scoping):
-      group_id → groupid (eq), api_key_hash → apikeyhash (eq),
-      user_name → username (eq). Date range filters on the ``ds`` day-string.
+      group_ids → groupid (in/eq), group_id → groupid (eq),
+      api_key_hash → apikeyhash (eq), user_name → username (eq).
+      Date range filters on the ``ds`` day-string.
     """
     clauses: list = []
-    if filters.get("group_id"):
+    group_ids = filters.get("group_ids") or []
+    if len(group_ids) > 1:
+        clauses.append(["in", _clause_uuid(), _field_ref("groupid"), [int(g) for g in group_ids]])
+    elif len(group_ids) == 1:
+        clauses.append(_eq("groupid", int(group_ids[0])))
+    elif filters.get("group_id"):
         clauses.append(_eq("groupid", int(filters["group_id"])))
     if filters.get("api_key_hash"):
         clauses.append(_eq("apikeyhash", filters["api_key_hash"]))

@@ -545,6 +545,15 @@ def create_app(config=None):
     from app.arq_client import init_arq as _init_arq
     app.before_serving(_init_arq)
 
+    # Seed default permission points so newly-added keys exist on boot.
+    # ``check_permission`` returns False for any role (incl. root) when the
+    # permission row is missing, so this must run before the first gated
+    # request. Idempotent — existing keys are skipped.
+    async def _seed_permissions():
+        from app.models import seed_default_permissions
+        await seed_default_permissions()
+    app.before_serving(_seed_permissions)
+
     # Start an embedded ARQ worker so this process is both producer AND
     # consumer of background jobs.  Enabled by default; set
     # ARQ_EMBEDDED_WORKER=false to disable.

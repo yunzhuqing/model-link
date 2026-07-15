@@ -931,6 +931,12 @@ DEFAULT_PERMISSIONS = [
         "description": "查看、创建、编辑和删除系统用户",
         "allowed_roles": ["root"],
     },
+    {
+        "key": "stats.analyze_all_groups",
+        "label": "全分组数据分析",
+        "description": "查看跨所有分组的使用统计数据（而非仅当前用户维度），并可按分组多选筛选",
+        "allowed_roles": ["root"],
+    },
 ]
 
 
