@@ -505,6 +505,7 @@ def _parse_function_tool_def(tool_data: dict) -> ToolDefinition:
         description=description,
         parameters=parameters,
         tool_type=ToolType.FUNCTION,
+        parameters_schema=params_schema or None,
     )
 
 

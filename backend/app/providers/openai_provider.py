@@ -190,7 +190,8 @@ def parse_openai_request(data: dict) -> ChatRequest:
             name=name,
             description=description,
             parameters=parameters,
-            tool_type=ToolType.FUNCTION
+            tool_type=ToolType.FUNCTION,
+            parameters_schema=params_schema or None,
         ))
     
     known_keys = {
