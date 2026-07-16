@@ -176,6 +176,17 @@ async def get_seedance_block_reasons(
 
     Returns:
         封控原因的可读文本；无封控时返回 "未检测到封控"。
+
+    注意 — 若你手上只有 Responses API 返回的 ``response_id``（而非直接的火山引擎
+    ID），**不要**直接把它当作 ``id`` 传入本工具。应先调用
+    ``get_response_detail(response_id=...)`` 获取该响应的明细，再从返回信息中
+    解析出真正的火山引擎 ID 并判断其类型：
+
+      - 素材库 ID（通常形如 ``asset-...``，出现在产出内容里）→ ``type=asset_id``
+      - 任务 ID（火山引擎上游任务/响应 ID，即明细中的 ``task_id``）→ ``type=task_id``
+      - 推理请求 ID（网关侧的 ``request_id``）→ ``type=request_id``
+
+    据此确定 ``id`` 与 ``type`` 后，再调用本工具。
     """
     await _ensure_db()
 
