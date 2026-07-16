@@ -24,6 +24,7 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "google-auth>=2.29.0",
     "requests>=2.31.0",
+    "pydes==2.0.1",
     "boto3>=1.42.88",
     "langfuse>=2.0.0",
     "tooz>=6.0.0",
@@ -32,6 +33,7 @@ dependencies = [
     "demjson3>=3.0.6",
     "json-repair>=0.30.0",
     "greenlet>=3.3.2",
+    "mcp>=1.2.0",
 ]
 
 [project.optional-dependencies]

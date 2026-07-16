@@ -60,6 +60,7 @@ def _build_ark_auth_headers(
     payload_str: str,
     region: str = ARK_API_REGION,
     service: str = ARK_API_SERVICE,
+    host: str = ARK_API_HOST,
 ) -> Dict[str, str]:
     """
     构建火山引擎 ARK API 的 HMAC-SHA256 签名请求头。
@@ -73,12 +74,13 @@ def _build_ark_auth_headers(
         payload_str: JSON 序列化后的请求体字符串
         region:      区域 (默认 cn-beijing)
         service:     服务名称 (默认 ark)
+        host:        签名所用主机名 (默认 ARK_API_HOST；调用 open.volcengineapi.com
+                     上的 GetModerationResult 等接口时需显式传入该主机)
 
     Returns:
         包含 Authorization、X-Date、X-Content-Sha256 等认证头的字典
     """
     algorithm = "HMAC-SHA256"
-    host = ARK_API_HOST
     content_type = "application/json"
 
     # 使用 UTC 时间
