@@ -15,7 +15,9 @@ request (the Metabase query processor treats them as tracking identifiers).
 Coverage notes (card schema vs. endpoint fields):
   - ``requests``        → Metabase ``count`` aggregation (row count)
   - ``api_key_preview`` → derived from ``apikeyhash`` (column not on card)
-  - ``group_name``       → not on card; ``/by_group`` stays on DB
+  - ``group_name``       → not broken out by the ``/by_group`` endpoint (stays on
+                           DB); the ``groupname`` column IS on the card and is
+                           used for the relay-group exclusion filter
   - native currency amt  → not on card (only USD ``actualamountusd``); ``/by_currency``
                            stays on DB
   - ``granularity``      → card ``ds`` is per-day; only ``day`` is served here,
@@ -42,6 +44,7 @@ _FIELD_TYPES = {
     "apikeyname": ("type/Text", "type/Text"),
     "apikeyhash": ("type/Text", "type/Text"),
     "groupid": ("type/BigInteger", "type/BigInteger"),
+    "groupname": ("type/Text", "type/Text"),
     "username": ("type/Text", "type/Text"),
     "modelname": ("type/Text", "type/Text"),
     "inputtokens": ("type/BigInteger", "type/BigInteger"),
@@ -97,10 +100,40 @@ def _eq(field_name: str, value) -> list:
     return ["=", _clause_uuid(), _field_ref(field_name), value]
 
 
+def _does_not_contain(field_name: str, value: str) -> list:
+    """Case-insensitive ``does-not-contain`` filter, mirroring the DB path's
+    ``NOT ILIKE '%value%'``. Used to drop relay groups from stats."""
+    return [
+        "does-not-contain",
+        {"case-sensitive": False, "lib/uuid": str(uuid.uuid4())},
+        _field_ref(field_name),
+        value,
+    ]
+
+
 def _date_str(dt) -> Optional[str]:
     if dt is None:
         return None
     return dt.strftime("%Y-%m-%d")
+
+
+def _iso_period(v) -> Optional[str]:
+    """把 metabase ``ds`` 文本列归一成 ISO ``yyyy-MM-dd``。
+
+    ``ds`` 是 ``type/Text`` 分区字符串，数仓里通常是 ``20260713`` 形式；
+    偶有 ``2026-07-13`` / datetime 也兼容。归一后与 SQL 分支
+    (``date_trunc`` / ``strftime``) 返回格式一致，前端 ``slice(5, 10)``
+    才能正确取到月-日（否则 ``20260713`` 切出来是 ``713``）。
+    """
+    if v is None:
+        return None
+    s = str(v).strip()[:10]
+    if not s:
+        return None
+    digs = s.replace("-", "").replace("/", "")
+    if len(digs) == 8 and digs.isdigit():
+        return f"{digs[0:4]}-{digs[4:6]}-{digs[6:8]}"
+    return s  # 已是 ISO 或其它，原样返回
 
 
 def _filter_clauses(filters: dict) -> list:
@@ -124,6 +157,10 @@ def _filter_clauses(filters: dict) -> list:
         clauses.append(_eq("apikeyhash", filters["api_key_hash"]))
     if filters.get("user_name"):
         clauses.append(_eq("username", filters["user_name"]))
+    # Relay groups excluded from all stats to avoid double counting (mirrors the
+    # DB path's group_name NOT ILIKE). One clause per name, AND-ed by Metabase.
+    for name in (filters.get("excluded_group_names") or []):
+        clauses.append(_does_not_contain("groupname", name))
     # model_name (ilike) / provider_id / user_id are not supported by the card;
     # the three target pages do not pass them, so they are intentionally ignored.
     start_date = _date_str(filters.get("start"))
@@ -339,7 +376,7 @@ async def fetch_time_series(filters: dict) -> list[dict]:
     # [ds, count, in, out, reasoning, cache_creation, amount]
     items = [
         {
-            "period": (str(r[0])[:10] if r[0] is not None else None),
+            "period": _iso_period(r[0]),
             "requests": _int(r[1]),
             "input_tokens": _int(r[2]),
             "output_tokens": _int(r[3]),
@@ -371,7 +408,7 @@ async def fetch_time_series_by_model(filters: dict) -> list[dict]:
     # [ds, modelname, count, in, out, reasoning, cache_creation, amount]
     items = [
         {
-            "period": (str(r[0])[:10] if r[0] is not None else None),
+            "period": _iso_period(r[0]),
             "model_name": r[1],
             "requests": _int(r[2]),
             "input_tokens": _int(r[3]),

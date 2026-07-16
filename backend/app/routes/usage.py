@@ -124,6 +124,27 @@ def _parse_group_ids() -> list[int]:
     return ids
 
 
+def _period_str(p) -> str | None:
+    """Normalize a grouped ``period`` value to a frontend-safe ISO 8601 string.
+
+    PostgreSQL ``date_trunc`` returns a ``datetime`` whose ``str()`` is
+    ``"YYYY-MM-DD HH:MM:SS"`` (space, no ``T``); the frontend date parser treats
+    such strings as invalid → ``NaN-NaN-NaN`` labels. SQLite/MySQL already return
+    ``T``-delimited strings via ``strftime``/``date_format``. This normalizer
+    guarantees a consistent ``T``-delimited ISO string for all backends.
+
+    Metabase already returns ``"YYYY-MM-DD"``; it does not go through here.
+    """
+    if p is None:
+        return None
+    if isinstance(p, datetime):
+        return p.isoformat()
+    s = str(p)
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T", 1)
+    return s
+
+
 def _granularity_trunc(granularity: str, dt_col):
     """
     Return a SQLAlchemy expression that truncates a datetime column to the
@@ -630,7 +651,7 @@ async def get_summary_time_series_by_model():
         result_data = []
         for r in rows:
             result_data.append({
-                "period": str(r.period),
+                "period": _period_str(r.period),
                 "model_name": r.model_name,
                 "requests": r.requests,
                 "input_tokens": int(r.input_tokens),
@@ -692,7 +713,7 @@ async def get_summary_time_series():
         result_data = []
         for r in rows:
             result_data.append({
-                "period": str(r.period),
+                "period": _period_str(r.period),
                 "requests": r.requests,
                 "input_tokens": int(r.input_tokens),
                 "output_tokens": int(r.output_tokens),
@@ -870,7 +891,7 @@ async def get_summary():
 
         time_series = [
             {
-                "period": str(r.period),
+                "period": _period_str(r.period),
                 "requests": r.requests,
                 "input_tokens": int(r.input_tokens),
                 "output_tokens": int(r.output_tokens),
