@@ -75,12 +75,12 @@ def _body(sent) -> str:
 
 
 def _patch_verify(monkeypatch, ok: bool, detail: str = "", group_id: int = 7):
-    """Replace _verify_apikey with a stub returning (ok, detail, group_id)."""
+    """Replace _verify_apikey with a stub returning (ok, detail, group_id, api_key)."""
     captured = {}
 
     async def _stub(raw_token):
         captured["token"] = raw_token
-        return ok, detail, group_id if ok else None
+        return ok, detail, group_id if ok else None, raw_token if ok else None
 
     monkeypatch.setattr(mcp_server, "_verify_apikey", _stub)
     return captured
