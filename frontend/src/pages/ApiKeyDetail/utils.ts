@@ -5,6 +5,13 @@ export function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
+/** Format a per-1M-token price like $3.00/1M — strips trailing zeros beyond 2 decimal places. */
+export function fmtPrice(n: number | null | undefined): string {
+  const v = Number(n) || 0;
+  // Remove floating-point noise (e.g. 3.0000000000 → "3")
+  return parseFloat(v.toFixed(6)).toString();
+}
+
 export function fmtCost(n: number | null | undefined): string {
   const v = Number(n) || 0;
   if (v >= 1000) return '$' + (v / 1000).toFixed(1) + 'K';

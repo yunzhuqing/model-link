@@ -278,7 +278,6 @@ async def fetch_totals(filters: dict) -> dict:
         ],
         filters=filters,
     )
-    print("mbql:", json.dumps(mbql, ensure_ascii=False))
     rows = await _run(mbql)
     r = rows[0] if rows else [0] * 11
     # [count, in, out, reasoning, cache_creation, cache, image, video, audio, web, amount]
