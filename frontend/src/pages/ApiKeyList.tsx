@@ -367,7 +367,7 @@ const ApiKeyList = ({ groupId, currentRole, permissions }: { groupId?: number; c
   const createMutation = useMutation({
     mutationFn: (data: any) => {
       if (groupId) {
-        return client.post('/api/apikeys/', { ...data, group_id: groupId });
+        return apiKeysApi.create({ ...data, group_id: groupId });
       }
       return apiKeysApi.create(data);
     },
