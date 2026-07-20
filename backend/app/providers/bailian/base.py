@@ -284,7 +284,14 @@ class BailianProvider(OpenAIProvider):
             'kimi/kimi-k2.7-code-highspeed', 'kimi/kimi-k2.7-code',
         )
 
-        enable_thinking = model_has_thinking or has_reasoning_effort or is_coding_tool or is_kimi_code_model
+        # kimi-k3 on Bailian is a mandatory-thinking model: thinking cannot be
+        # disabled, so never send enable_thinking=False for it.
+        is_kimi_k3_model = request.model.lower().rsplit('/', 1)[-1].startswith('kimi-k3')
+
+        enable_thinking = (
+            model_has_thinking or has_reasoning_effort or is_coding_tool
+            or is_kimi_code_model or is_kimi_k3_model
+        )
 
         if is_minimax:
             m = re.search(r'-m(\d+)', request.model.lower())
