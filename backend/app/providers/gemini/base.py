@@ -28,6 +28,7 @@ from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 from app.utils import gen_id
 from .image_generation import is_gemini_image_model, has_image_generation_tool, stream_image_generation
+from app.providers._schema_utils import inline_jsonschema_refs
 from .video_generation import (
     is_veo_video_model,
     execute_veo_video_generation,
@@ -463,43 +464,24 @@ class GeminiProvider(BaseProvider):
 
     def _tool_to_gemini(self, tool: ToolDefinition) -> Dict[str, Any]:
         """将 ToolDefinition 转换为 Gemini 格式
-        
-        Note: Gemini API 不支持 JSON Schema 的 $ref 引用，
-        需要移除所有 ref 属性，确保 schema 是完全内联的。
+
+        Note: Gemini API 不支持 JSON Schema 的 $ref / $defs / definitions 引用，
+        需要将引用内联展开并移除相关键，确保 schema 是完全内联的。
         """
         schema = tool.get_parameters_schema()
-        # Remove 'ref' attributes recursively since Gemini doesn't support $ref
-        schema = self._remove_ref_from_schema(schema)
+        schema = inline_jsonschema_refs(schema)
         return {
             "name": tool.name,
             "description": tool.description,
             "parameters": schema
         }
-    
+
     def _remove_ref_from_schema(self, schema: Any) -> Any:
-        """递归移除 schema 中的 ref 和 additionalProperties 属性
-        
-        Gemini API 不支持 JSON Schema 的 $ref 引用和 additionalProperties，
-        此方法递归遍历 schema 并移除这些不支持的键。
-        
-        Args:
-            schema: JSON Schema 对象或值
-            
-        Returns:
-            清理后的 schema
+        """递归内联 schema 中的 $ref 引用并移除 $defs/definitions/additionalProperties。
+
+        保留以向后兼容；实际逻辑委托给 ``inline_jsonschema_refs``。
         """
-        if isinstance(schema, dict):
-            result = {}
-            for key, value in schema.items():
-                if key in ("ref", "additionalProperties"):
-                    # Skip keys not supported by Gemini API
-                    continue
-                result[key] = self._remove_ref_from_schema(value)
-            return result
-        elif isinstance(schema, list):
-            return [self._remove_ref_from_schema(item) for item in schema]
-        else:
-            return schema
+        return inline_jsonschema_refs(schema)
 
     # ==================== 响应解析 ====================
 

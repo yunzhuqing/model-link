@@ -17,6 +17,7 @@ from app import get_db_session
 from app.models import ApiKey, ApiKeyBudget, ApiKeyPolicy, Group
 from app.auth import token_required
 from app.models import check_permission
+from app.stats import metabase_client
 from app.routes.permissions import (
     _get_role,
     _is_admin_or_above_inner,
@@ -969,46 +970,53 @@ async def get_api_key_detail(current_user, api_key_id):
             cache_info['total_audio_seconds'] = usage_totals['total_audio_seconds']
             cache.set_api_key_info(api_key.key, cache_info)
 
-        # ── By model usage (always from DB for accuracy) ──────────────────────
-        _cost_expr_model = (
-            UsageRecord.input_tokens * UsageRecord.input_price_unit / 1000000.0
-            + UsageRecord.output_tokens * UsageRecord.output_price_unit / 1000000.0
-            + UsageRecord.cache_creation_tokens * UsageRecord.cache_creation_price_unit / 1000000.0
-            + UsageRecord.cache_tokens * UsageRecord.cache_token_price_unit / 1000000.0
-            + UsageRecord.output_image_number * UsageRecord.output_image_price_unit
-            + UsageRecord.output_video_number * UsageRecord.output_video_price_unit
-            + UsageRecord.output_audio_seconds * UsageRecord.output_audio_price_unit
-            + UsageRecord.web_search_requests * UsageRecord.web_search_price_unit
-        )
-
-        by_model_rows = (
-            await session.execute(
-                select(
-                    UsageRecord.model_name,
-                    func.count(UsageRecord.id).label('requests'),
-                    func.coalesce(func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-                    func.coalesce(func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-                    func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-                    func.coalesce(func.sum(_cost_expr_model), 0).label('estimated_cost'),
+        # ── By model usage (Metabase when enabled, otherwise DB) ──────────────
+        if metabase_client.is_enabled():
+            try:
+                metabase_result = await metabase_client.fetch_by_model({"api_key_hash": key_hash})
+                by_model = [
+                    {
+                        'model_name': r['model_name'],
+                        'requests': r['requests'],
+                        'input_tokens': r['input_tokens'],
+                        'output_tokens': r['output_tokens'],
+                        'reasoning_tokens': r.get('reasoning_tokens', 0),
+                        'estimated_cost': round(float(r.get('total_cost_usd', 0) or 0), 6),
+                    }
+                    for r in metabase_result
+                ]
+            except Exception as exc:
+                logger.error("metabase fetch_by_model failed for apikey detail: %s", exc)
+                by_model = []  # graceful fallback — empty list instead of 502
+        else:
+            by_model_rows = (
+                await session.execute(
+                    select(
+                        UsageRecord.model_name,
+                        func.count(UsageRecord.id).label('requests'),
+                        func.coalesce(func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
+                        func.coalesce(func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
+                        func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
+                        func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label('estimated_cost'),
+                    )
+                    .where(UsageRecord.api_key_hash == key_hash)
+                    .group_by(UsageRecord.model_name)
+                    .order_by(func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).desc())
+                    .limit(50)
                 )
-                .where(UsageRecord.api_key_hash == key_hash)
-                .group_by(UsageRecord.model_name)
-                .order_by(func.coalesce(func.sum(_cost_expr_model), 0).desc())
-                .limit(50)
-            )
-        ).all()
+            ).all()
 
-        by_model = [
-            {
-                'model_name': r.model_name,
-                'requests': r.requests,
-                'input_tokens': int(r.input_tokens),
-                'output_tokens': int(r.output_tokens),
-                'reasoning_tokens': int(r.reasoning_tokens),
-                'estimated_cost': round(float(r.estimated_cost or 0), 6),
-            }
-            for r in by_model_rows
-        ]
+            by_model = [
+                {
+                    'model_name': r.model_name,
+                    'requests': r.requests,
+                    'input_tokens': int(r.input_tokens),
+                    'output_tokens': int(r.output_tokens),
+                    'reasoning_tokens': int(r.reasoning_tokens),
+                    'estimated_cost': round(float(r.estimated_cost or 0), 6),
+                }
+                for r in by_model_rows
+            ]
 
         # ── Available models with rpm/tpm ─────────────────────────────────────
         pairs = await get_group_models_with_shares(api_key.group_id, session=session)

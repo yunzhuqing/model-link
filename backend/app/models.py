@@ -931,6 +931,12 @@ DEFAULT_PERMISSIONS = [
         "description": "查看、创建、编辑和删除系统用户",
         "allowed_roles": ["root"],
     },
+    {
+        "key": "stats.analyze_all_groups",
+        "label": "全分组数据分析",
+        "description": "查看跨所有分组的使用统计数据（而非仅当前用户维度），并可按分组多选筛选",
+        "allowed_roles": ["root"],
+    },
 ]
 
 
@@ -1240,10 +1246,22 @@ class UploadedFile(db.Model):
     object_key = db.Column(db.String(500), nullable=False)
     purpose = db.Column(db.String(100), nullable=True)
     group_id = db.Column(db.Integer, nullable=True, index=True)
+    # SHA-256 hash of the raw API key (same scheme as UsageRecord.api_key_hash),
+    # not a truncated "sk-xxx..." preview, so uploaded files can be joined to
+    # an API key / usage records for querying by key.
     api_key = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     client_user_id = db.Column(db.String(100), nullable=True)
     type = db.Column(db.String(50), nullable=False, default="volcengine")
+    # Storage backend key (e.g. "uploads/xxx.png") for retrieving/cleaning up
+    # the hosted copy registered with the upstream asset library. The public
+    # URL can be derived from this key via the storage backend. NULL for
+    # legacy rows uploaded before this field existed.
+    storage_key = db.Column(db.String(500), nullable=True)
+    # Provider.id whose upstream account holds the registered asset. Seedance
+    # video generation is routed to this provider to guarantee the asset and
+    # the generation call share the same account. NULL for legacy rows.
+    provider_id = db.Column(db.Integer, nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -1258,6 +1276,8 @@ class UploadedFile(db.Model):
             "user_id": self.user_id,
             "client_user_id": self.client_user_id,
             "type": self.type,
+            "storage_key": self.storage_key,
+            "provider_id": self.provider_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

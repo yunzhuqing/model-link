@@ -190,7 +190,8 @@ def parse_openai_request(data: dict) -> ChatRequest:
             name=name,
             description=description,
             parameters=parameters,
-            tool_type=ToolType.FUNCTION
+            tool_type=ToolType.FUNCTION,
+            parameters_schema=params_schema or None,
         ))
     
     known_keys = {
@@ -198,7 +199,7 @@ def parse_openai_request(data: dict) -> ChatRequest:
         'max_completion_tokens',
         'stream', 'tools', 'tool_choice', 'stop', 'presence_penalty',
         'frequency_penalty', 'user', 'session_id', 'reasoning_effort',
-        'n', 'seed', 'response_format',
+        'n', 'seed', 'response_format', 'stream_options',
     }
     metadata = {k: v for k, v in data.items() if k not in known_keys}
     

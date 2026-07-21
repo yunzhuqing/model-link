@@ -111,8 +111,19 @@ class AzureProvider(OpenAIProvider):
     }
 
     def _uses_responses_api(self, model: str) -> bool:
-        """Check if the given model requires the Responses API."""
-        return model in self.RESPONSES_API_MODELS
+        """Check if the given model requires the Responses API.
+
+        Routes to the Responses API when either:
+        1. The model name is in the hardcoded RESPONSES_API_MODELS list, OR
+        2. The model's configured api_type (set by the gateway from model.api_type)
+           contains "responses" — this is the runtime "responses API" switch.
+        """
+        if model in self.RESPONSES_API_MODELS:
+            return True
+        # Honor the model's configured api_type switch (e.g. "chat_completions,responses")
+        model_api_type = getattr(self, '_model_api_type', None) or ''
+        return 'responses' in model_api_type
+
     def get_chat_url(self, deployment_name: str) -> str:
         """
         获取聊天 API URL
@@ -436,6 +447,14 @@ class AzureProvider(OpenAIProvider):
             # Build Responses API request body
             request_data = await self._prepare_responses_api_request(request)
             request_data["stream"] = False
+            # Azure Responses API stream_options only supports include_obfuscation
+            _so = request_data.get("stream_options")
+            if isinstance(_so, dict):
+                _filtered = {k: v for k, v in _so.items() if k == "include_obfuscation"}
+                if _filtered:
+                    request_data["stream_options"] = _filtered
+                else:
+                    request_data.pop("stream_options", None)
         else:
             request_data = await self.aprepare_request(request)
             request_data["stream"] = False
@@ -484,6 +503,14 @@ class AzureProvider(OpenAIProvider):
         if self._uses_responses_api(deployment_name):
             request_data = await self._prepare_responses_api_request(request)
             request_data["stream"] = True
+            # Azure Responses API stream_options only supports include_obfuscation
+            _so = request_data.get("stream_options")
+            if isinstance(_so, dict):
+                _filtered = {k: v for k, v in _so.items() if k == "include_obfuscation"}
+                if _filtered:
+                    request_data["stream_options"] = _filtered
+                else:
+                    request_data.pop("stream_options", None)
 
             try:
                 async with self._trace_call(request.model, input_data=request_data) as child_span:

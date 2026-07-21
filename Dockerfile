@@ -45,8 +45,14 @@ RUN uv sync --frozen --no-dev
 # Copy React build output into static/ folder (Quart will serve it)
 COPY --from=frontend-build /app/frontend/dist ./static
 
+# Copy the entrypoint script (fixed constants live inside it)
+COPY backend/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+
 # Expose the port
 EXPOSE 8000
 
-# Run with uvicorn — Quart app is native ASGI
-CMD ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "1200", "app.main:app"]
+# Run the entrypoint script — applies DB migrations then launches uvicorn.
+# Fixed runtime constants (host/port/workers/keepalive) are configured in
+# entrypoint.sh; PORT and WORKERS can still be overridden via env vars.
+CMD ["./entrypoint.sh"]

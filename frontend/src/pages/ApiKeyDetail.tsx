@@ -15,7 +15,7 @@ import DailyCostByModelChart from './ApiKeyDetail/DailyCostByModelChart';
 import BudgetBars from './ApiKeyDetail/BudgetBars';
 import BudgetEditModal from './ApiKeyDetail/BudgetEditModal';
 import CompressionSettingsModal from './ApiKeyDetail/CompressionSettingsModal';
-import { fmtNum, fmtCost, fmtDate } from './ApiKeyDetail/utils';
+import { fmtNum, fmtCost, fmtDate, fmtPrice } from './ApiKeyDetail/utils';
 import { Search } from 'lucide-react';
 import { fuzzyMatchTokens } from '../utils/fuzzyMatch';
 
@@ -568,7 +568,7 @@ const ApiKeyDetail = () => {
                 </thead>
                 <tbody>
                   {filtered.map((m, idx) => (
-                    <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
+                    <tr key={idx} className="border-b border-slate-50 hover:bg-slate-100 transition-colors">
                       <td className="py-2.5 px-3 font-medium text-slate-800">{m.name}</td>
                       <td className="py-2.5 px-3 text-slate-500">{m.alias || '-'}</td>
                       <td className="py-2.5 px-3 text-slate-500">{m.provider_name || '-'}</td>
@@ -587,10 +587,10 @@ const ApiKeyDetail = () => {
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-right text-slate-600">
-                        {currencySymbol(m.currency)}{m.input_price}/1M
+                        {currencySymbol(m.currency)}{fmtPrice(m.input_price)}/1M
                       </td>
                       <td className="py-2.5 px-3 text-right text-slate-600">
-                        {currencySymbol(m.currency)}{m.output_price}/1M
+                        {currencySymbol(m.currency)}{fmtPrice(m.output_price)}/1M
                       </td>
                       <td className="py-2.5 px-3 text-right">
                         {m.discount < 1 ? (
@@ -648,7 +648,7 @@ const ApiKeyDetail = () => {
                       'bg-rose-400', 'bg-cyan-400', 'bg-orange-400', 'bg-indigo-400',
                     ];
                     return (
-                      <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
+                      <tr key={idx} className="border-b border-slate-50 hover:bg-slate-100 transition-colors">
                         <td className="py-2.5 px-3">
                           <span className="w-5 h-5 bg-slate-100 rounded flex items-center justify-center text-xs font-bold text-slate-500">
                             {idx + 1}

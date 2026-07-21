@@ -15,7 +15,8 @@ from quart import Blueprint, request, jsonify, current_app
 
 from sqlalchemy import select, func
 from app import get_db_session
-from app.models import UsageRecord
+from app.models import UsageRecord, User, UserGroup, check_permission
+from app.stats import metabase_client
 from jose import JWTError, jwt
 
 usage_bp = Blueprint('usage', __name__)
@@ -68,6 +69,82 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+# ── Cross-group analytics permission ──────────────────────────────────────────
+
+async def _can_analyze_all_groups(session, username: str) -> bool:
+    """Return True if the user may view cross-group usage analytics.
+
+    Resolves the user's best role across all groups (root > admin) and checks
+    the ``stats.analyze_all_groups`` permission. ``check_permission`` returns
+    True for the ``root`` role automatically, so root is the default holder.
+    """
+    res = await session.execute(select(User).where(User.username == username))
+    user = res.scalars().first()
+    if user is None:
+        return False
+    roles_res = await session.execute(
+        select(UserGroup.role).where(UserGroup.user_id == user.id)
+    )
+    roles = {row[0] for row in roles_res.all()}
+    if "root" in roles:
+        best_role = "root"
+    elif "admin" in roles:
+        best_role = "admin"
+    else:
+        return False
+    return await check_permission(best_role, "stats.analyze_all_groups", session)
+
+
+async def _resolve_analyze_all(username: str) -> bool:
+    """Permission check in a short-lived session (no held connection)."""
+    async with get_db_session() as session:
+        return await _can_analyze_all_groups(session, username)
+
+
+def _parse_group_ids() -> list[int]:
+    """Collect group id filters from request args.
+
+    Supports repeated ``group_id`` params (``?group_id=1&group_id=2``) and a
+    single comma-separated ``group_ids`` param (``?group_ids=1,2,3``). Values
+    are parsed to int, deduplicated while preserving order.
+    """
+    raw: list[str] = list(request.args.getlist("group_id"))
+    csv = request.args.get("group_ids")
+    if csv:
+        raw.extend(s.strip() for s in csv.split(",") if s.strip())
+
+    ids: list[int] = []
+    for item in raw:
+        try:
+            gid = int(item)
+        except (ValueError, TypeError):
+            continue
+        if gid not in ids:
+            ids.append(gid)
+    return ids
+
+
+def _period_str(p) -> str | None:
+    """Normalize a grouped ``period`` value to a frontend-safe ISO 8601 string.
+
+    PostgreSQL ``date_trunc`` returns a ``datetime`` whose ``str()`` is
+    ``"YYYY-MM-DD HH:MM:SS"`` (space, no ``T``); the frontend date parser treats
+    such strings as invalid → ``NaN-NaN-NaN`` labels. SQLite/MySQL already return
+    ``T``-delimited strings via ``strftime``/``date_format``. This normalizer
+    guarantees a consistent ``T``-delimited ISO string for all backends.
+
+    Metabase already returns ``"YYYY-MM-DD"``; it does not go through here.
+    """
+    if p is None:
+        return None
+    if isinstance(p, datetime):
+        return p.isoformat()
+    s = str(p)
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T", 1)
+    return s
+
+
 def _granularity_trunc(granularity: str, dt_col):
     """
     Return a SQLAlchemy expression that truncates a datetime column to the
@@ -105,14 +182,16 @@ async def list_records():
     """
     Return a paginated list of raw usage records.
 
-    Only returns records belonging to the currently logged-in user.
+    Scope: restricted to the currently logged-in user's records by default.
+    Holders of the ``stats.analyze_all_groups`` permission see records across
+    all groups (or the selected ones) instead.
 
     Query parameters:
         page        int   (default 1)
         page_size   int   (default 20, max 200)
         start       ISO datetime  (inclusive)
         end         ISO datetime  (inclusive)
-        group_id    int
+        group_id    int   (repeatable, or comma-separated via group_ids)
         api_key_hash  str  (SHA-256 hex, exact match)
         model_name  str   (partial match)
         provider_id int
@@ -127,31 +206,41 @@ async def list_records():
 
     start = _parse_datetime(request.args.get("start"))
     end = _parse_datetime(request.args.get("end"))
-    group_id = request.args.get("group_id")
+    group_ids = _parse_group_ids()
     api_key_hash = request.args.get("api_key_hash")
     model_name = request.args.get("model_name")
     provider_id = request.args.get("provider_id")
 
+    analyze_all = await _resolve_analyze_all(current_username)
+
     stmt = select(UsageRecord)
 
-    # When filtering by group_id or api_key_hash, show all records in that scope
-    # (the user is already authorized via JWT; group membership is checked by the
-    #  frontend/API key endpoints). Otherwise, restrict to current user's records.
-    if not group_id and not api_key_hash:
-        stmt = stmt.where(UsageRecord.user_name == current_username)
+    # Scope rules:
+    #  - Holder of ``stats.analyze_all_groups``: no auto user-scoping; sees all
+    #    groups (or the selected ones). user_name only applies when explicit.
+    #  - Otherwise: when no group/api_key scope is provided, restrict to the
+    #    current user's own records (preserves the user-dimension default).
+    if analyze_all:
+        user_name = request.args.get("user_name")
+    elif not group_ids and not api_key_hash:
+        user_name = current_username
+    else:
+        user_name = request.args.get("user_name")
 
     if start:
         stmt = stmt.where(UsageRecord.created_at >= start)
     if end:
         stmt = stmt.where(UsageRecord.created_at <= end)
-    if group_id:
-        stmt = stmt.where(UsageRecord.group_id == int(group_id))
+    if group_ids:
+        stmt = stmt.where(UsageRecord.group_id.in_(group_ids))
     if api_key_hash:
         stmt = stmt.where(UsageRecord.api_key_hash == api_key_hash)
     if model_name:
         stmt = stmt.where(UsageRecord.model_name.ilike(f"%{model_name}%"))
     if provider_id:
         stmt = stmt.where(UsageRecord.provider_id == int(provider_id))
+    if user_name:
+        stmt = stmt.where(UsageRecord.user_name == user_name)
 
     # Count total matching records
     count_stmt = select(func.count()).select_from(stmt.subquery())
@@ -175,20 +264,25 @@ async def list_records():
 
 # ── Summary helpers ──────────────────────────────────────────────────────────
 
-def _get_summary_filters(current_username: str = None):
+def _get_summary_filters(current_username: str = None, analyze_all: bool = False):
     """
     Parse common filter parameters from request args.
 
-    When current_username is provided and no group_id or api_key_hash scope is
-    specified, the user_name filter is automatically set to restrict results to
-    the current user's own records.  When a group_id or api_key_hash is provided,
-    the query is already scoped, so no user filter is applied.
+    Scope rules:
+      - ``analyze_all=True`` (holder of ``stats.analyze_all_groups``): no
+        automatic user-scoping; the query spans all groups unless narrowed by
+        ``group_ids`` / ``api_key_hash``. ``user_name`` is only applied when
+        explicitly provided.
+      - ``analyze_all=False``: when no group/api_key scope is provided, the
+        user_name filter is automatically set to restrict results to the
+        current user's own records (user-dimension default).
     """
-    group_id = request.args.get("group_id")
+    group_ids = _parse_group_ids()
     api_key_hash = request.args.get("api_key_hash")
 
-    # Determine user_name filter: only apply when NOT scoped by group or api_key
-    if current_username and not group_id and not api_key_hash:
+    if analyze_all:
+        user_name = request.args.get("user_name")
+    elif current_username and not group_ids and not api_key_hash:
         user_name = current_username
     else:
         user_name = request.args.get("user_name")
@@ -196,7 +290,8 @@ def _get_summary_filters(current_username: str = None):
     return {
         'start': _parse_datetime(request.args.get("start")),
         'end': _parse_datetime(request.args.get("end")),
-        'group_id': group_id,
+        'group_id': group_ids[0] if group_ids else None,
+        'group_ids': group_ids,
         'api_key_hash': api_key_hash,
         'model_name': request.args.get("model_name"),
         'provider_id': request.args.get("provider_id"),
@@ -211,7 +306,10 @@ def _apply_filters(stmt, filters: dict):
         stmt = stmt.where(UsageRecord.created_at >= filters['start'])
     if filters['end']:
         stmt = stmt.where(UsageRecord.created_at <= filters['end'])
-    if filters['group_id']:
+    group_ids = filters.get('group_ids') or []
+    if group_ids:
+        stmt = stmt.where(UsageRecord.group_id.in_(group_ids))
+    elif filters.get('group_id'):
         stmt = stmt.where(UsageRecord.group_id == int(filters['group_id']))
     if filters['api_key_hash']:
         stmt = stmt.where(UsageRecord.api_key_hash == filters['api_key_hash'])
@@ -235,7 +333,9 @@ async def get_summary_totals():
     """
     Return aggregated totals for the filtered usage records.
     All costs are aggregated in USD via actual_amount_usd.
-    Only returns data belonging to the currently logged-in user.
+    Scope: restricted to the currently logged-in user by default; holders of the
+    ``stats.analyze_all_groups`` permission see data across all groups (or the
+    selected ones) instead.
 
     Query parameters (all optional):
         start, end, group_id, api_key_hash, model_name, provider_id
@@ -245,7 +345,15 @@ async def get_summary_totals():
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
+
+    if metabase_client.is_enabled():
+        try:
+            return jsonify(await metabase_client.fetch_totals(filters))
+        except Exception as exc:  # noqa: BLE001 — no fallback per project rule
+            logger.error("metabase fetch_totals failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     stmt = _apply_filters(
         select(
@@ -287,14 +395,24 @@ async def get_summary_by_model():
     """
     Return usage aggregated by model name (top 20).
     Uses actual_amount_usd for cost aggregation — no runtime currency conversion needed.
-    Only returns data belonging to the currently logged-in user.
+    Scope: restricted to the currently logged-in user by default; holders of the
+    ``stats.analyze_all_groups`` permission see data across all groups (or the
+    selected ones) instead.
     """
     try:
         current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
+
+    if metabase_client.is_enabled():
+        try:
+            return jsonify(await metabase_client.fetch_by_model(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_by_model failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     stmt = _apply_filters(
         select(
@@ -335,7 +453,8 @@ async def get_summary_by_group():
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
 
     stmt = _apply_filters(
         select(
@@ -375,14 +494,17 @@ async def get_summary_by_currency():
       - total_cost_usd: sum of actual_amount_usd (pre-computed at write time)
 
     Also returns the total across all currencies in USD.
-    Only returns data belonging to the currently logged-in user.
+    Scope: restricted to the currently logged-in user by default; holders of the
+    ``stats.analyze_all_groups`` permission see data across all groups (or the
+    selected ones) instead.
     """
     try:
         current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
 
     stmt = _apply_filters(
         select(
@@ -422,14 +544,24 @@ async def get_summary_by_api_key():
     """
     Return usage aggregated by API key (top 20).
     Uses actual_amount_usd for cost aggregation.
-    Only returns data belonging to the currently logged-in user.
+    Scope: restricted to the currently logged-in user by default; holders of the
+    ``stats.analyze_all_groups`` permission see data across all groups (or the
+    selected ones) instead.
     """
     try:
         current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
+
+    if metabase_client.is_enabled():
+        try:
+            return jsonify(await metabase_client.fetch_by_api_key(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_by_api_key failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     stmt = _apply_filters(
         select(
@@ -484,9 +616,19 @@ async def get_summary_time_series_by_model():
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
 
     granularity = request.args.get("granularity", "day")
+
+    # Card ``ds`` is per-day; only ``day`` is served by Metabase. hour/month
+    # fall back to the DB path below regardless of the source switch.
+    if metabase_client.is_enabled() and granularity == "day":
+        try:
+            return jsonify(await metabase_client.fetch_time_series_by_model(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_time_series_by_model failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
     stmt = _apply_filters(
@@ -509,7 +651,7 @@ async def get_summary_time_series_by_model():
         result_data = []
         for r in rows:
             result_data.append({
-                "period": str(r.period),
+                "period": _period_str(r.period),
                 "model_name": r.model_name,
                 "requests": r.requests,
                 "input_tokens": int(r.input_tokens),
@@ -537,9 +679,19 @@ async def get_summary_time_series():
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
 
     granularity = request.args.get("granularity", "day")
+
+    # Card ``ds`` is per-day; only ``day`` is served by Metabase. hour/month
+    # fall back to the DB path below regardless of the source switch.
+    if metabase_client.is_enabled() and granularity == "day":
+        try:
+            return jsonify(await metabase_client.fetch_time_series(filters))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("metabase fetch_time_series failed: %s", exc)
+            return jsonify({"detail": f"failed to load stats: {exc}"}), 502
 
     period_col = _granularity_trunc(granularity, UsageRecord.created_at)
     stmt = _apply_filters(
@@ -561,7 +713,7 @@ async def get_summary_time_series():
         result_data = []
         for r in rows:
             result_data.append({
-                "period": str(r.period),
+                "period": _period_str(r.period),
                 "requests": r.requests,
                 "input_tokens": int(r.input_tokens),
                 "output_tokens": int(r.output_tokens),
@@ -588,14 +740,17 @@ async def get_summary():
       - /api/usage/summary/by_group
       - /api/usage/summary/by_api_key
       - /api/usage/summary/time_series
-    Only returns data belonging to the currently logged-in user.
+    Scope: restricted to the currently logged-in user by default; holders of the
+    ``stats.analyze_all_groups`` permission see data across all groups (or the
+    selected ones) instead.
     """
     try:
         current_username = _require_jwt()
     except ValueError as e:
         return jsonify({"detail": str(e)}), 401
 
-    filters = _get_summary_filters(current_username)
+    analyze_all = await _resolve_analyze_all(current_username)
+    filters = _get_summary_filters(current_username, analyze_all)
 
     granularity = request.args.get("granularity", "day")
 
@@ -736,7 +891,7 @@ async def get_summary():
 
         time_series = [
             {
-                "period": str(r.period),
+                "period": _period_str(r.period),
                 "requests": r.requests,
                 "input_tokens": int(r.input_tokens),
                 "output_tokens": int(r.output_tokens),

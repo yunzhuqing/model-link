@@ -218,7 +218,8 @@ class AnthropicMessagesAdapter(BaseAdapter):
                 name=name,
                 description=description,
                 parameters=parameters,
-                tool_type=ToolType.FUNCTION
+                tool_type=ToolType.FUNCTION,
+                parameters_schema=input_schema or None,
             )
             # Preserve cache_control on tool definitions for Anthropic prompt caching
             if 'cache_control' in tool_data:

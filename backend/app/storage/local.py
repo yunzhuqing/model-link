@@ -95,19 +95,39 @@ class LocalStorageBackend(StorageBackend):
         Returns:
             The raw binary data, or ``None`` if not found.
         """
-        # Strip the /v1/files/ prefix if present
-        if key_or_url.startswith("/v1/files/"):
-            key = key_or_url[len("/v1/files/"):]
-        else:
-            key = key_or_url
-
-        files_dir = getattr(self, '_files_dir', None) or os.path.join(self.base_dir, "files")
-        file_path = os.path.join(files_dir, key)
+        file_path = self._resolve_file_path(key_or_url)
         try:
             with open(file_path, "rb") as fh:
                 return fh.read()
         except (FileNotFoundError, OSError):
             return None
+
+    def delete_binary(self, key_or_url: str) -> bool:
+        """
+        Delete binary data stored via write_binary().
+
+        Accepts both the short key and the full URL path returned by write_binary().
+
+        Returns:
+            True if the file was deleted, False if it was not found.
+        """
+        file_path = self._resolve_file_path(key_or_url)
+        try:
+            os.remove(file_path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+    def _resolve_file_path(self, key_or_url: str) -> str:
+        """Resolve a key or URL to an absolute file path."""
+        if key_or_url.startswith("/v1/files/"):
+            key = key_or_url[len("/v1/files/"):]
+        else:
+            key = key_or_url
+        files_dir = getattr(self, '_files_dir', None) or os.path.join(self.base_dir, "files")
+        return os.path.join(files_dir, key)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -164,14 +184,30 @@ class AsyncLocalStorageBackend(AsyncStorageBackend):
 
     async def read_binary(self, key_or_url: str) -> Optional[bytes]:
         import aiofiles
-        if key_or_url.startswith("/v1/files/"):
-            key = key_or_url[len("/v1/files/"):]
-        else:
-            key = key_or_url
-        files_dir = getattr(self, '_files_dir', None) or os.path.join(self.base_dir, "files")
-        file_path = os.path.join(files_dir, key)
+        file_path = self._resolve_file_path(key_or_url)
         try:
             async with aiofiles.open(file_path, "rb") as fh:
                 return await fh.read()
         except (FileNotFoundError, OSError):
             return None
+
+    async def delete_binary(self, key_or_url: str) -> bool:
+        """Delete binary data stored via write_binary() (async). Returns True if deleted, False if not found."""
+        import aiofiles.os
+        file_path = self._resolve_file_path(key_or_url)
+        try:
+            await aiofiles.os.remove(file_path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+    def _resolve_file_path(self, key_or_url: str) -> str:
+        """Resolve a key or URL to an absolute file path."""
+        if key_or_url.startswith("/v1/files/"):
+            key = key_or_url[len("/v1/files/"):]
+        else:
+            key = key_or_url
+        files_dir = getattr(self, '_files_dir', None) or os.path.join(self.base_dir, "files")
+        return os.path.join(files_dir, key)

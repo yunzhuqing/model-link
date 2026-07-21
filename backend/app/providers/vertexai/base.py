@@ -51,6 +51,7 @@ from app.providers.vertexai.video_generation import (
     execute_vertexai_veo_generation,
     stream_vertexai_veo_generation,
 )
+from app.providers._schema_utils import inline_jsonschema_refs
 
 # Configure logger for VertexAI provider
 logger = logging.getLogger("vertexai")
@@ -956,43 +957,24 @@ class VertexAIProvider(BaseProvider):
 
     def _tool_to_gemini(self, tool: ToolDefinition) -> Dict[str, Any]:
         """将 ToolDefinition 转换为 Gemini 格式
-        
-        Note: Gemini API 不支持 JSON Schema 的 $ref 引用，
-        需要移除所有 ref 属性，确保 schema 是完全内联的。
+
+        Note: Gemini API 不支持 JSON Schema 的 $ref / $defs / definitions 引用，
+        需要将引用内联展开并移除相关键，确保 schema 是完全内联的。
         """
         schema = tool.get_parameters_schema()
-        # Remove 'ref' attributes recursively since Gemini doesn't support $ref
         schema = self._remove_ref_from_schema(schema)
         return {
             "name": tool.name,
             "description": tool.description,
             "parameters": schema
         }
-    
+
     def _remove_ref_from_schema(self, schema: Any) -> Any:
-        """递归移除 schema 中的 ref 和 additionalProperties 属性
-        
-        Gemini API 不支持 JSON Schema 的 $ref 引用和 additionalProperties，
-        此方法递归遍历 schema 并移除这些不支持的键。
-        
-        Args:
-            schema: JSON Schema 对象或值
-            
-        Returns:
-            清理后的 schema
+        """递归内联 schema 中的 $ref 引用并移除 $defs/definitions/additionalProperties。
+
+        保留以向后兼容；实际逻辑委托给 ``inline_jsonschema_refs``。
         """
-        if isinstance(schema, dict):
-            result = {}
-            for key, value in schema.items():
-                if key in ("ref", "additionalProperties"):
-                    # Skip keys not supported by Gemini API
-                    continue
-                result[key] = self._remove_ref_from_schema(value)
-            return result
-        elif isinstance(schema, list):
-            return [self._remove_ref_from_schema(item) for item in schema]
-        else:
-            return schema
+        return inline_jsonschema_refs(schema)
 
     def _parse_gemini_response(self, response_data: Dict[str, Any], model: str) -> ChatResponse:
         """解析 Gemini generateContent 格式的响应"""

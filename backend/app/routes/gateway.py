@@ -182,8 +182,9 @@ async def _handle_request(adapter):
     try:
         async with get_db_session() as session:
             try:
-                resolved = await _gateway_service.resolve_model(
-                    session, model_name, group_id, provider_id=provider_id
+                resolved = await _gateway_service.resolve_model_for_request(
+                    session, model_name, chat_request,
+                    group_id=group_id, provider_id_override=provider_id,
                 )
             except ModelNotFoundError as e:
                 _log_error("handle_request", e.status_code, e.message, _build_error_context(auth_ctx, model_name), exc_info=True)

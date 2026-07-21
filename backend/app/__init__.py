@@ -5,6 +5,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import re
 import uuid
 from contextvars import ContextVar
 
@@ -49,6 +50,108 @@ class LogFormatter(logging.Formatter):
         self._style = SafePercentStyle(format_string)
 
 
+class HourlyRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """Hourly log rotation with a configurable filename rule.
+
+    The active log is written to ``baseFilename`` (e.g. ``model-link.log``). On
+    each hour boundary the file is rotated and renamed according to
+    ``name_format`` (default ``{name}_{time}.log`` → ``model-link_2026-07-13-14.log``).
+
+    Placeholders:
+
+    - ``{name}`` — the log file's name with its trailing ``.log`` stripped
+      (e.g. ``model-link``). The rotated file always lands in the same
+      directory as ``baseFilename``; ``{name}`` carries no path component.
+    - ``{time}`` — the hour timestamp, formatted with ``self.suffix``
+      (``%Y-%m-%d-%H`` → e.g. ``2026-07-13-14``).
+
+    The base handler would name backups ``model-link.log.2026-07-13_14``; we
+    override ``namer`` to reshape that into the configured pattern and override
+    ``getFilesToDelete`` so prefix/suffix-based cleanup still finds the renamed
+    files (the base implementation only matches the ``base + "."`` prefix, which
+    no longer applies after renaming).
+
+    The format MUST contain exactly one ``{time}`` placeholder; otherwise the
+    default format is used. The ``{time}`` portion must remain sortable and
+    match ``_TIME_RE`` for cleanup to work. The format is a *filename* template
+    (no path separators) — rotated files always stay in the log directory.
+    """
+
+    # Matches the hour-portion timestamp produced by ``self.suffix``.
+    _TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}-\d{2}$")
+    DEFAULT_NAME_FORMAT = "{name}_{time}.log"
+
+    def __init__(
+        self,
+        filename,
+        backupCount=168,
+        encoding="utf-8",
+        name_format=None,
+    ):
+        super().__init__(
+            filename,
+            when="H",
+            interval=1,
+            backupCount=backupCount,
+            encoding=encoding,
+            utc=False,
+        )
+        # Re-shape suffix so the time portion of rotated names is "YYYY-MM-DD-HH".
+        self.suffix = "%Y-%m-%d-%H"
+        self.extMatch = self._TIME_RE
+
+        fmt = name_format or os.getenv("LOG_BACKUP_NAME_FORMAT") or self.DEFAULT_NAME_FORMAT
+        # Fall back to default if the format is malformed (no {time} placeholder).
+        if fmt.count("{time}") != 1:
+            fmt = self.DEFAULT_NAME_FORMAT
+        self._name_format = fmt
+
+        # {name} is the bare log name (no dir, no .log extension) so the format
+        # is a pure filename template; we always write into baseFilename's dir.
+        base_name = os.path.basename(self.baseFilename)
+        self._stem_name = base_name[:-4] if base_name.endswith(".log") else base_name
+        self._dir_name = os.path.dirname(self.baseFilename) or "."
+        # Precompute the literal text before and after {time}, with {name}
+        # already substituted, so namer/getFilesToDelete stay branch-free.
+        left, _, right = fmt.partition("{time}")
+        self._prefix = left.replace("{name}", self._stem_name)
+        self._suffix = right.replace("{name}", self._stem_name)
+
+    def namer(self, name):
+        """Reshape ``model-link.log.2026-07-13-14`` per the configured format."""
+        prefix = self.baseFilename + "."
+        if name.startswith(prefix):
+            time_part = name[len(prefix):]
+            return os.path.join(self._dir_name, f"{self._prefix}{time_part}{self._suffix}")
+        return name
+
+    def getFilesToDelete(self):
+        """Find rotated backups respecting the configured naming rule.
+
+        The base class only looks for files prefixed ``base + "."``; our renamed
+        backups use the text surrounding ``{time}`` instead. We glob by that
+        prefix/suffix, extract the embedded timestamp, and evict the oldest beyond
+        ``backupCount``.
+        """
+        prefix = self._prefix
+        suffix = self._suffix
+        prefix_len = len(prefix)
+        suffix_len = len(suffix)
+        candidates = []
+        for fname in os.listdir(self._dir_name):
+            if not fname.startswith(prefix) or not fname.endswith(suffix):
+                continue
+            time_part = fname[prefix_len : len(fname) - suffix_len]
+            if not self._TIME_RE.match(time_part):
+                continue
+            candidates.append(time_part)
+        candidates.sort()
+        if len(candidates) <= self.backupCount:
+            return []
+        excess = candidates[: len(candidates) - self.backupCount]
+        return [os.path.join(self._dir_name, f"{prefix}{t}{suffix}") for t in excess]
+
+
 def _configure_logging() -> None:
     """
     Configure application logging based on environment variables.
@@ -59,6 +162,18 @@ def _configure_logging() -> None:
         LOG_DIR         (str)  : Directory to write log files to (e.g. "/var/log/model-link").
                                  When set, logs are written to both stderr and ``{LOG_DIR}/{LOG_NAME}.log``.
                                  The directory will be created automatically.
+        LOG_ROTATION    (str)  : File rotation strategy. "size" (default) rotates when the file
+                                 reaches 50 MB (keeps 5 backups); "hourly" rotates every hour
+                                 and names backups ``{LOG_NAME}_{YYYY-MM-DD-HH}.log``
+                                 (e.g. ``model-link_2026-07-13-14.log``).
+        LOG_BACKUP_COUNT(int)  : Number of rotated backup files to keep. Overrides the default
+                                 (5 for size rotation, 168 = 7 days for hourly rotation).
+        LOG_BACKUP_NAME_FORMAT(str): Filename template for hourly-rotated backups (only used
+                                 with LOG_ROTATION=hourly). Supports ``{name}`` (the log file
+                                 name without ``.log``) and ``{time}`` (the hour timestamp
+                                 ``YYYY-MM-DD-HH``). Default: ``{name}_{time}.log`` →
+                                 ``model-link_2026-07-13-14.log``. Must contain exactly one
+                                 ``{time}``; rotated files always stay in the log directory.
         LOG_FORMAT      (str)  : Python log format string
                                  (default: "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         LOG_DATE_FORMAT (str)  : Date/time format string (default: "%Y-%m-%d %H:%M:%S")
@@ -96,12 +211,26 @@ def _configure_logging() -> None:
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
         log_file_path = os.path.join(log_dir, f"{log_name}")
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file_path,
-            maxBytes=50 * 1024 * 1024,  # 50 MB
-            backupCount=5,
-            encoding="utf-8",
-        )
+
+        # LOG_ROTATION controls the rollover strategy:
+        #   "size"   (default) — rotate by size (50 MB, keep 5 backups)
+        #   "hourly" — rotate every hour (keep LOG_BACKUP_COUNT backups, default 168 = 7 days)
+        rotation = os.getenv("LOG_ROTATION", "size").strip().lower()
+        backup_count = int(os.getenv("LOG_BACKUP_COUNT", "0") or 0)
+
+        if rotation == "hourly":
+            file_handler = HourlyRotatingFileHandler(
+                log_file_path,
+                backupCount=backup_count or 168,  # default: keep 7 days of hourly logs
+                encoding="utf-8",
+            )
+        else:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file_path,
+                maxBytes=50 * 1024 * 1024,  # 50 MB
+                backupCount=backup_count or 5,
+                encoding="utf-8",
+            )
         file_handler.setFormatter(formatter)
         handlers.append(file_handler)
 
@@ -319,7 +448,17 @@ def create_app(config=None):
             'write_timeout': int(os.getenv('DB_WRITE_TIMEOUT', 30)),
         }
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
-    
+
+    # Statistics data source: "db" (default, aggregate from UsageRecord) or
+    # "metabase" (query a Metabase dataset card). Only one is active at a time.
+    app.config['STATS_DATA_SOURCE'] = os.getenv('STATS_DATA_SOURCE', 'db').lower()
+    # Metabase connection + source-card identifiers (env-driven, see .env.example).
+    app.config['METABASE_BASE_URL'] = os.getenv('METABASE_BASE_URL', '')
+    app.config['METABASE_API_KEY'] = os.getenv('METABASE_API_KEY', '')
+    app.config['METABASE_CARD_ID'] = os.getenv('METABASE_CARD_ID', '')
+    app.config['METABASE_DATABASE_ID'] = os.getenv('METABASE_DATABASE_ID', '')
+    app.config['METABASE_TIMEOUT'] = float(os.getenv('METABASE_TIMEOUT', '30'))
+
     # Apply any custom config
     if config:
         app.config.update(config)
@@ -405,6 +544,15 @@ def create_app(config=None):
     # Initialise the ARQ client for offloading DB writes to a task queue.
     from app.arq_client import init_arq as _init_arq
     app.before_serving(_init_arq)
+
+    # Seed default permission points so newly-added keys exist on boot.
+    # ``check_permission`` returns False for any role (incl. root) when the
+    # permission row is missing, so this must run before the first gated
+    # request. Idempotent — existing keys are skipped.
+    async def _seed_permissions():
+        from app.models import seed_default_permissions
+        await seed_default_permissions()
+    app.before_serving(_seed_permissions)
 
     # Start an embedded ARQ worker so this process is both producer AND
     # consumer of background jobs.  Enabled by default; set

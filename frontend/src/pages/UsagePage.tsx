@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import client from '../api/client';
+import client, { permissionsApi } from '../api/client';
+import GroupMultiSelect from '../components/GroupMultiSelect';
 import {
   BarChart3,
   TrendingUp,
@@ -399,39 +400,43 @@ const UsagePage = () => {
 
   const setStart = (v: string) => { setStartRaw(v); validateRange(v, end); setPage(1); };
   const setEnd = (v: string) => { setEndRaw(v); validateRange(start, v); setPage(1); };
-  const [groupId, setGroupId] = useState('');
+  const [groupIds, setGroupIds] = useState<number[]>([]);
   const [modelName, setModelName] = useState('');
   const [activeTab, setActiveTab] = useState<'summary' | 'records'>('summary');
+
+  // Permission: only holders of stats.analyze_all_groups may view cross-group
+  // data and use the group multi-select filter.
+  const { data: permData } = useQuery({
+    queryKey: ['my-permissions'],
+    queryFn: async () => (await permissionsApi.myPermissions()).data,
+  });
+  const canAnalyzeAllGroups = permData?.permissions?.['stats.analyze_all_groups'] === true;
 
   // ── Records pagination ────────────────────────────────────────────────────
   const [page, setPage] = useState(1);
 
   // ── Build query params ────────────────────────────────────────────────────
-  const recordsParams = new URLSearchParams({
-    start: start ? new Date(start).toISOString() : '',
-    end: end ? new Date(end).toISOString() : '',
-    page: String(page),
-    page_size: '20',
-    ...(groupId ? { group_id: groupId } : {}),
-    ...(modelName ? { model_name: modelName } : {}),
-  });
+  const buildBaseParams = () => {
+    const p = new URLSearchParams({
+      start: start ? new Date(start).toISOString() : '',
+      end: end ? new Date(end).toISOString() : '',
+      ...(modelName ? { model_name: modelName } : {}),
+    });
+    groupIds.forEach((id) => p.append('group_id', String(id)));
+    return p;
+  };
+
+  // ── Build query params ────────────────────────────────────────────────────
+  const recordsParams = buildBaseParams();
+  recordsParams.set('page', String(page));
+  recordsParams.set('page_size', '20');
 
   // ── Build filter params (shared by all summary sub-queries) ─────────────
-  const filterParams = new URLSearchParams({
-    start: start ? new Date(start).toISOString() : '',
-    end: end ? new Date(end).toISOString() : '',
-    ...(groupId ? { group_id: groupId } : {}),
-    ...(modelName ? { model_name: modelName } : {}),
-  });
-  const filterKey = filterParams.toString();
+  const filterParams = buildBaseParams();
+  const filterKey = filterParams.toString() + '|' + groupIds.join(',');
 
-  const timeSeriesParams = new URLSearchParams({
-    start: start ? new Date(start).toISOString() : '',
-    end: end ? new Date(end).toISOString() : '',
-    granularity,
-    ...(groupId ? { group_id: groupId } : {}),
-    ...(modelName ? { model_name: modelName } : {}),
-  });
+  const timeSeriesParams = buildBaseParams();
+  timeSeriesParams.set('granularity', granularity);
 
   // ── Queries (split into 5 parallel requests for summary) ────────────────
   const isSummary = activeTab === 'summary' && !rangeError;
@@ -539,16 +544,15 @@ const UsagePage = () => {
               <option value="month">按月</option>
             </select>
           </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">Group ID</label>
-            <input
-              type="text"
-              placeholder="全部"
-              value={groupId}
-              onChange={(e) => { setGroupId(e.target.value); setPage(1); }}
-              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-300"
-            />
-          </div>
+          {canAnalyzeAllGroups && (
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">分组</label>
+              <GroupMultiSelect
+                value={groupIds}
+                onChange={(ids) => { setGroupIds(ids); setPage(1); }}
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs text-slate-500 mb-1">模型名称</label>
             <input
