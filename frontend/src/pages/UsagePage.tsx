@@ -165,10 +165,10 @@ function toLocalDateTimeString(d: Date): string {
   );
 }
 
-// Default date range: last 14 days (in local time)
+// Default date range: last 3 days (in local time)
 function defaultStart(): string {
   const d = new Date();
-  d.setDate(d.getDate() - 14);
+  d.setDate(d.getDate() - 3);
   return toLocalDateTimeString(d);
 }
 function defaultEnd(): string {
