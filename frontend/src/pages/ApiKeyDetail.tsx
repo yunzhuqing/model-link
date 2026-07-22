@@ -336,14 +336,23 @@ const ApiKeyDetail = () => {
                 </div>
                 <h3 className="text-sm font-bold text-slate-800">消费总览</h3>
               </div>
-              <div className="flex items-baseline gap-2 mb-1">
-                <span className="text-2xl font-bold" style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                  {fmtCost(usage.estimated_cost)}
-                </span>
-                <span className="text-xs text-slate-400 font-normal">USD</span>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-xl p-3 border border-blue-200/50">
+                  <p className="text-xs text-blue-500 font-medium mb-1">今年以来消费</p>
+                  <p className="text-xl font-bold text-blue-700">
+                    {fmtCost(usage.ytd_cost || 0)}
+                  </p>
+                  <p className="text-[10px] text-blue-400 mt-0.5">USD</p>
+                </div>
+                <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/50 rounded-xl p-3 border border-emerald-200/50">
+                  <p className="text-xs text-emerald-500 font-medium mb-1">当月以来消费</p>
+                  <p className="text-xl font-bold text-emerald-700">
+                    {fmtCost(usage.mtd_cost || 0)}
+                  </p>
+                  <p className="text-[10px] text-emerald-400 mt-0.5">USD</p>
+                </div>
               </div>
-              <p className="text-xs text-slate-400">历史总消费</p>
-              <div className="mt-3 space-y-1.5">
+              <div className="space-y-1.5">
                 {[
                   { label: '请求次数', value: usage.requests.toLocaleString(), color: 'text-slate-700' },
                   ...((usage.total_image_count || 0) > 0 ? [{ label: '🖼️ 图片生成', value: `${(usage.total_image_count || 0).toLocaleString()} 张`, color: 'text-pink-600' }] : []),

@@ -918,57 +918,74 @@ async def get_api_key_detail(current_user, api_key_id):
         key_hash = hashlib.sha256(api_key.key.encode()).hexdigest()
         cache = get_async_cache()
 
-        # ── Try reading usage stats from cache first ─────────────────────────
-        cached_info = await cache.get_api_key_info(api_key.key)
-        if cached_info is not None:
-            # Use cached usage stats (updated in real-time by each request)
+        # ── Usage stats: Metabase when enabled, otherwise cache only (updated by sync job) ──
+        if metabase_client.is_enabled():
+            try:
+                # Fetch all-time totals from Metabase
+                all_time_filters = {"api_key_hash": key_hash}
+                totals = await metabase_client.fetch_totals(all_time_filters)
+
+                now = datetime.now(timezone.utc)
+                start_of_year = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+                start_of_month = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+
+                # Fetch year-to-date totals
+                ytd_filters = {
+                    "api_key_hash": key_hash,
+                    "start": start_of_year.date(),
+                }
+                ytd_totals = await metabase_client.fetch_totals(ytd_filters)
+
+                # Fetch month-to-date totals
+                mtd_filters = {
+                    "api_key_hash": key_hash,
+                    "start": start_of_month.date(),
+                }
+                mtd_totals = await metabase_client.fetch_totals(mtd_filters)
+
+                usage_totals = {
+                    'requests': totals['requests'],
+                    'input_tokens': totals['input_tokens'],
+                    'output_tokens': totals['output_tokens'],
+                    'reasoning_tokens': totals['reasoning_tokens'],
+                    'estimated_cost': round(float(totals['total_cost'] or 0), 6),
+                    'ytd_cost': round(float(ytd_totals['total_cost'] or 0), 6),
+                    'mtd_cost': round(float(mtd_totals['total_cost'] or 0), 6),
+                    'total_image_count': totals.get('output_image_number', 0),
+                    'total_video_count': totals.get('output_video_number', 0),
+                    'total_audio_seconds': round(float(totals.get('output_audio_seconds', 0) or 0), 4),
+                }
+            except Exception as exc:
+                logger.error("metabase fetch_totals failed for apikey detail, falling back to cache: %s", exc)
+                # Fall back to cache on Metabase error
+                cached_info = await cache.get_api_key_info(api_key.key) or {}
+                usage_totals = {
+                    'requests': int(cached_info.get('request_count', 0) or 0),
+                    'input_tokens': int(cached_info.get('total_input_tokens', 0) or 0),
+                    'output_tokens': int(cached_info.get('total_output_tokens', 0) or 0),
+                    'reasoning_tokens': int(cached_info.get('total_reasoning_tokens', 0) or 0),
+                    'estimated_cost': round(float(cached_info.get('total_cost_usd', 0) or 0), 6),
+                    'ytd_cost': round(float(cached_info.get('ytd_cost_usd', 0) or 0), 6),
+                    'mtd_cost': round(float(cached_info.get('mtd_cost_usd', 0) or 0), 6),
+                    'total_image_count': int(cached_info.get('total_image_count', 0) or 0),
+                    'total_video_count': int(cached_info.get('total_video_count', 0) or 0),
+                    'total_audio_seconds': round(float(cached_info.get('total_audio_seconds', 0) or 0), 4),
+                }
+        else:
+            # Read from cache only — no DB queries; stats are synced to cache by background jobs
+            cached_info = await cache.get_api_key_info(api_key.key) or {}
             usage_totals = {
                 'requests': int(cached_info.get('request_count', 0) or 0),
                 'input_tokens': int(cached_info.get('total_input_tokens', 0) or 0),
                 'output_tokens': int(cached_info.get('total_output_tokens', 0) or 0),
                 'reasoning_tokens': int(cached_info.get('total_reasoning_tokens', 0) or 0),
                 'estimated_cost': round(float(cached_info.get('total_cost_usd', 0) or 0), 6),
+                'ytd_cost': round(float(cached_info.get('ytd_cost_usd', 0) or 0), 6),
+                'mtd_cost': round(float(cached_info.get('mtd_cost_usd', 0) or 0), 6),
                 'total_image_count': int(cached_info.get('total_image_count', 0) or 0),
                 'total_video_count': int(cached_info.get('total_video_count', 0) or 0),
                 'total_audio_seconds': round(float(cached_info.get('total_audio_seconds', 0) or 0), 4),
             }
-        else:
-            # Cache miss — fall back to DB aggregation and populate cache
-            totals_row = (await session.execute(
-                select(
-                    func.count(UsageRecord.id).label('requests'),
-                    func.coalesce(func.sum(UsageRecord.input_tokens), 0).label('input_tokens'),
-                    func.coalesce(func.sum(UsageRecord.output_tokens), 0).label('output_tokens'),
-                    func.coalesce(func.sum(UsageRecord.reasoning_tokens), 0).label('reasoning_tokens'),
-                    func.coalesce(func.sum(UsageRecord.actual_amount_usd), 0).label('total_cost_usd'),
-                    func.coalesce(func.sum(UsageRecord.output_image_number), 0).label('total_image_count'),
-                    func.coalesce(func.sum(UsageRecord.output_video_number), 0).label('total_video_count'),
-                    func.coalesce(func.sum(UsageRecord.output_audio_seconds), 0).label('total_audio_seconds'),
-                )
-                .where(UsageRecord.api_key_hash == key_hash)
-            )).one()
-
-            usage_totals = {
-                'requests': totals_row.requests or 0,
-                'input_tokens': int(totals_row.input_tokens or 0),
-                'output_tokens': int(totals_row.output_tokens or 0),
-                'reasoning_tokens': int(totals_row.reasoning_tokens or 0),
-                'estimated_cost': round(float(totals_row.total_cost_usd or 0), 6),
-                'total_image_count': int(totals_row.total_image_count or 0),
-                'total_video_count': int(totals_row.total_video_count or 0),
-                'total_audio_seconds': round(float(totals_row.total_audio_seconds or 0), 4),
-            }
-
-            # Populate cache with DB data for future reads
-            cache_info = cache.build_api_key_cache_info(api_key, budget_used=usage_totals['estimated_cost'])
-            cache_info['total_input_tokens'] = usage_totals['input_tokens']
-            cache_info['total_output_tokens'] = usage_totals['output_tokens']
-            cache_info['total_reasoning_tokens'] = usage_totals['reasoning_tokens']
-            cache_info['total_cost_usd'] = usage_totals['estimated_cost']
-            cache_info['total_image_count'] = usage_totals['total_image_count']
-            cache_info['total_video_count'] = usage_totals['total_video_count']
-            cache_info['total_audio_seconds'] = usage_totals['total_audio_seconds']
-            cache.set_api_key_info(api_key.key, cache_info)
 
         # ── By model usage (Metabase when enabled, otherwise DB) ──────────────
         if metabase_client.is_enabled():

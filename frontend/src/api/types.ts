@@ -96,6 +96,8 @@ export interface ApiKeyDetailData {
     output_tokens: number;
     reasoning_tokens: number;
     estimated_cost: number;
+    ytd_cost?: number;
+    mtd_cost?: number;
     total_image_count?: number;
     total_video_count?: number;
     total_audio_seconds?: number;
