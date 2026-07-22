@@ -157,7 +157,8 @@ const ApiKeyDetail = () => {
 
   const budget = data.budget_info;
   const usage = data.usage;
-  const totalTokens = usage.input_tokens + usage.output_tokens;
+  const ytdTotalTokens = (usage.ytd_input_tokens || 0) + (usage.ytd_output_tokens || 0) + (usage.ytd_reasoning_tokens || 0);
+  const mtdTotalTokens = (usage.mtd_input_tokens || 0) + (usage.mtd_output_tokens || 0) + (usage.mtd_reasoning_tokens || 0);
 
   return (
     <div className="space-y-6">
@@ -239,7 +240,7 @@ const ApiKeyDetail = () => {
       {/* ── Overview Tab ────────────────────────────────────────────────── */}
       {activeTab === 'overview' && (
         <>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Budget Bars Card */}
           <BudgetBars
             budgets={data.budgets || []}
@@ -253,10 +254,10 @@ const ApiKeyDetail = () => {
           {(() => {
             const compressPolicy = data.policies?.find(p => p.policy_type === 'compress') || null;
             return (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-                <div className="flex items-center space-x-2 mb-3">
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-400 to-cyan-600 flex items-center justify-center shadow-lg shadow-cyan-200/50">
-                    <Gauge className="w-4 h-4 text-white" />
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+                <div className="flex items-center space-x-2 mb-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-400 to-cyan-600 flex items-center justify-center shadow-md shadow-cyan-200/50">
+                    <Gauge className="w-3.5 h-3.5 text-white" />
                   </div>
                   <h3 className="text-sm font-bold text-slate-800">记录压缩</h3>
                 </div>
@@ -266,7 +267,7 @@ const ApiKeyDetail = () => {
                       {compressPolicy.enabled ? '已启用' : '已禁用'}
                     </span>
                     {compressPolicy.enabled && (
-                      <div className="mt-2 text-xs text-slate-500 space-y-1">
+                      <div className="mt-2 text-xs text-slate-500 space-y-0.5">
                         <div>每分钟: {compressPolicy.config?.per_minute ?? '-'}</div>
                         <div>每小时: {compressPolicy.config?.per_hour ?? '-'}</div>
                       </div>
@@ -277,7 +278,7 @@ const ApiKeyDetail = () => {
                 )}
                 <button
                   onClick={() => setShowCompressModal(true)}
-                  className="mt-3 text-xs font-medium text-indigo-500 hover:text-indigo-700 transition-colors"
+                  className="mt-2.5 text-xs font-medium text-indigo-500 hover:text-indigo-700 transition-colors"
                 >
                   设置 →
                 </button>
@@ -286,81 +287,89 @@ const ApiKeyDetail = () => {
           })()}
 
           {/* Token Stats */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 relative overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 relative overflow-hidden">
             {/* Decorative gradient overlay */}
-            <div className="absolute -top-8 -right-8 w-24 h-24 bg-gradient-to-br from-emerald-200/20 to-transparent rounded-full blur-xl" />
+            <div className="absolute -top-6 -right-6 w-20 h-20 bg-linear-to-br from-emerald-200/20 to-transparent rounded-full blur-xl" />
             <div className="relative z-10">
-              <div className="flex items-center space-x-2 mb-3">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-200/50">
-                  <TrendingUp className="w-4 h-4 text-white" />
+              <div className="flex items-center space-x-2 mb-2.5">
+                <div className="w-7 h-7 rounded-lg bg-linear-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-md shadow-emerald-200/50">
+                  <TrendingUp className="w-3.5 h-3.5 text-white" />
                 </div>
                 <h3 className="text-sm font-bold text-slate-800">Token 消耗</h3>
               </div>
-              <div className="text-2xl font-bold text-slate-800 mb-1">{fmtNum(totalTokens)}</div>
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-xl p-3 border border-blue-200/50">
-                  <p className="text-xs text-blue-500 font-medium">输入</p>
-                  <p className="text-lg font-bold text-blue-700 mt-0.5">{fmtNum(usage.input_tokens)}</p>
-                  <div className="mt-1.5 h-1 rounded-full bg-blue-200/50 overflow-hidden">
-                    <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-blue-400 to-blue-500" />
-                  </div>
+              <div className="grid grid-cols-2 gap-1.5 mb-2">
+                <div className="bg-linear-to-br from-blue-50 to-blue-100/50 rounded-lg p-2 border border-blue-200/50">
+                  <p className="text-[11px] text-blue-500 font-medium mb-0.5">今年</p>
+                  <p className="text-base font-bold text-blue-700 leading-tight">
+                    {fmtNum(ytdTotalTokens)}
+                  </p>
                 </div>
-                <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/50 rounded-xl p-3 border border-emerald-200/50">
-                  <p className="text-xs text-emerald-500 font-medium">输出</p>
-                  <p className="text-lg font-bold text-emerald-700 mt-0.5">{fmtNum(usage.output_tokens)}</p>
-                  <div className="mt-1.5 h-1 rounded-full bg-emerald-200/50 overflow-hidden">
-                    <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500" />
-                  </div>
+                <div className="bg-linear-to-br from-emerald-50 to-emerald-100/50 rounded-lg p-2 border border-emerald-200/50">
+                  <p className="text-[11px] text-emerald-500 font-medium mb-0.5">当月</p>
+                  <p className="text-base font-bold text-emerald-700 leading-tight">
+                    {fmtNum(mtdTotalTokens)}
+                  </p>
                 </div>
               </div>
-              {usage.reasoning_tokens > 0 && (
-                <div className="mt-2 bg-gradient-to-br from-violet-50 to-violet-100/50 rounded-xl p-3 border border-violet-200/50">
-                  <p className="text-xs text-violet-500 font-medium">推理</p>
-                  <p className="text-lg font-bold text-violet-700 mt-0.5">{fmtNum(usage.reasoning_tokens)}</p>
-                  <div className="mt-1.5 h-1 rounded-full bg-violet-200/50 overflow-hidden">
-                    <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-violet-400 to-violet-500" />
-                  </div>
+              <div className="space-y-0.5 text-xs">
+                <div className="flex justify-between py-0.5 px-2">
+                  <span className="text-slate-500">输入(年/月)</span>
+                  <span className="font-medium text-slate-700">
+                    {fmtNum(usage.ytd_input_tokens || 0)} / {fmtNum(usage.mtd_input_tokens || 0)}
+                  </span>
                 </div>
-              )}
+                <div className="flex justify-between py-0.5 px-2">
+                  <span className="text-slate-500">输出(年/月)</span>
+                  <span className="font-medium text-slate-700">
+                    {fmtNum(usage.ytd_output_tokens || 0)} / {fmtNum(usage.mtd_output_tokens || 0)}
+                  </span>
+                </div>
+                {(usage.ytd_reasoning_tokens || 0) > 0 || (usage.mtd_reasoning_tokens || 0) > 0 ? (
+                  <div className="flex justify-between py-0.5 px-2">
+                    <span className="text-slate-500">推理(年/月)</span>
+                    <span className="font-medium text-violet-700">
+                      {fmtNum(usage.ytd_reasoning_tokens || 0)} / {fmtNum(usage.mtd_reasoning_tokens || 0)}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
           {/* Request & Generation Stats */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 relative overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 relative overflow-hidden">
             {/* Decorative gradient overlay */}
-            <div className="absolute -top-8 -right-8 w-24 h-24 bg-gradient-to-br from-amber-200/20 to-transparent rounded-full blur-xl" />
+            <div className="absolute -top-6 -right-6 w-20 h-20 bg-gradient-to-br from-amber-200/20 to-transparent rounded-full blur-xl" />
             <div className="relative z-10">
-              <div className="flex items-center space-x-2 mb-3">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-200/50">
-                  <Zap className="w-4 h-4 text-white" />
+              <div className="flex items-center space-x-2 mb-2.5">
+                <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-400 to-orange-600 flex items-center justify-center shadow-md shadow-amber-200/50">
+                  <Zap className="w-3.5 h-3.5 text-white" />
                 </div>
                 <h3 className="text-sm font-bold text-slate-800">消费总览</h3>
               </div>
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-xl p-3 border border-blue-200/50">
-                  <p className="text-xs text-blue-500 font-medium mb-1">今年以来消费</p>
-                  <p className="text-xl font-bold text-blue-700">
+              <div className="grid grid-cols-2 gap-1.5 mb-2">
+                <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 rounded-lg p-2 border border-blue-200/50">
+                  <p className="text-[11px] text-blue-500 font-medium mb-0.5">今年</p>
+                  <p className="text-base font-bold text-blue-700 leading-tight">
                     {fmtCost(usage.ytd_cost || 0)}
                   </p>
-                  <p className="text-[10px] text-blue-400 mt-0.5">USD</p>
                 </div>
-                <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/50 rounded-xl p-3 border border-emerald-200/50">
-                  <p className="text-xs text-emerald-500 font-medium mb-1">当月以来消费</p>
-                  <p className="text-xl font-bold text-emerald-700">
+                <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/50 rounded-lg p-2 border border-emerald-200/50">
+                  <p className="text-[11px] text-emerald-500 font-medium mb-0.5">当月</p>
+                  <p className="text-base font-bold text-emerald-700 leading-tight">
                     {fmtCost(usage.mtd_cost || 0)}
                   </p>
-                  <p className="text-[10px] text-emerald-400 mt-0.5">USD</p>
                 </div>
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-0.5">
                 {[
-                  { label: '请求次数', value: usage.requests.toLocaleString(), color: 'text-slate-700' },
-                  ...((usage.total_image_count || 0) > 0 ? [{ label: '🖼️ 图片生成', value: `${(usage.total_image_count || 0).toLocaleString()} 张`, color: 'text-pink-600' }] : []),
-                  ...((usage.total_video_count || 0) > 0 ? [{ label: '🎬 视频生成', value: `${(usage.total_video_count || 0).toLocaleString()} 个`, color: 'text-purple-600' }] : []),
-                  ...((usage.total_audio_seconds || 0) > 0 ? [{ label: '🔊 音频生成', value: `${(usage.total_audio_seconds || 0).toFixed(1)}s`, color: 'text-cyan-600' }] : []),
+                  { label: '请求数', value: usage.requests.toLocaleString(), color: 'text-slate-700' },
+                  ...((usage.total_image_count || 0) > 0 ? [{ label: '🖼️ 图片', value: `${(usage.total_image_count || 0).toLocaleString()}`, color: 'text-pink-600' }] : []),
+                  ...((usage.total_video_count || 0) > 0 ? [{ label: '🎬 视频', value: `${(usage.total_video_count || 0).toLocaleString()}`, color: 'text-purple-600' }] : []),
+                  ...((usage.total_audio_seconds || 0) > 0 ? [{ label: '🔊 音频', value: `${(usage.total_audio_seconds || 0).toFixed(1)}s`, color: 'text-cyan-600' }] : []),
                   { label: '最近使用', value: fmtDate(data.last_used_at), color: 'text-slate-600' },
                 ].map((item, i) => (
-                  <div key={i} className="flex justify-between text-sm py-1.5 px-3 rounded-lg hover:bg-slate-50/80 transition-colors">
+                  <div key={i} className="flex justify-between text-xs py-1 px-2 rounded hover:bg-slate-50/80 transition-colors">
                     <span className="text-slate-500">{item.label}</span>
                     <span className={`font-semibold ${item.color}`}>{item.value}</span>
                   </div>
@@ -692,7 +701,7 @@ const ApiKeyDetail = () => {
                     <td className="py-2.5 px-3 text-right font-bold text-slate-700">{usage.requests.toLocaleString()}</td>
                     <td className="py-2.5 px-3 text-right font-medium text-slate-600">{fmtNum(usage.input_tokens)}</td>
                     <td className="py-2.5 px-3 text-right font-medium text-slate-600">{fmtNum(usage.output_tokens)}</td>
-                    <td className="py-2.5 px-3 text-right font-bold text-slate-700">{fmtNum(totalTokens)}</td>
+                    <td className="py-2.5 px-3 text-right font-bold text-slate-700">{fmtNum(usage.input_tokens + usage.output_tokens + usage.reasoning_tokens)}</td>
                     <td className="py-2.5 px-3 text-right font-bold text-amber-600">{fmtCost(usage.estimated_cost)}</td>
                     <td className="py-2.5 px-3"></td>
                   </tr>

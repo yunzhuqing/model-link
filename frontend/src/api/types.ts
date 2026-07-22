@@ -98,6 +98,12 @@ export interface ApiKeyDetailData {
     estimated_cost: number;
     ytd_cost?: number;
     mtd_cost?: number;
+    ytd_input_tokens?: number;
+    ytd_output_tokens?: number;
+    ytd_reasoning_tokens?: number;
+    mtd_input_tokens?: number;
+    mtd_output_tokens?: number;
+    mtd_reasoning_tokens?: number;
     total_image_count?: number;
     total_video_count?: number;
     total_audio_seconds?: number;
