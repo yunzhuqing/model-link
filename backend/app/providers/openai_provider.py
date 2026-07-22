@@ -866,10 +866,18 @@ class OpenAIProvider(BaseProvider):
         
         choice = choices[0]
         delta = choice.get("delta", {})
-        
+
         content = delta.get("content")
         role = delta.get("role")
-        
+        # DeepSeek-compatible and many OpenAI-compatible providers (vLLM,
+        # BytePlus, Moonshot, GLM, MiniMax, Volcengine chat/completions, …)
+        # stream the thinking chain via the non-standard `delta.reasoning_content`
+        # field. The non-streaming path (_parse_message) already reads it; mirror
+        # that here so streaming reasoning is forwarded to the client instead of
+        # being silently dropped. to_openai_format/to_anthropic_events both honor
+        # delta_reasoning_content downstream.
+        reasoning = delta.get("reasoning_content")
+
         finish_reason_str = choice.get("finish_reason")
         finish_reason = None
         if finish_reason_str:
@@ -877,14 +885,15 @@ class OpenAIProvider(BaseProvider):
                 finish_reason = FinishReason(finish_reason_str)
             except ValueError:
                 finish_reason = FinishReason.STOP
-        
+
         tool_calls = delta.get("tool_calls", [])
-        
+
         return StreamChunk(
             id=data.get("id", response_id),
             model=data.get("model", model),
             delta_content=content,
             delta_role=role,
+            delta_reasoning_content=reasoning,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,

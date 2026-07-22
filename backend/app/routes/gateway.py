@@ -311,6 +311,16 @@ async def _handle_request(adapter):
 
             chunks_gen = await _gateway_service.stream_chat(resolved, chat_request, tracer=tracer)
 
+            # For the OpenAI Chat Completions path, suppress inline usage chunks
+            # emitted by the provider (to_sse splits a finish+usage chunk into a
+            # finish event + a usage event). The trailing price_chunk below
+            # carries the same usage (augmented with price), so keeping the
+            # inline one would yield TWO usage events. Strip usage from provider
+            # chunks here so exactly one usage event reaches the client.
+            # The Anthropic path absorbs the price_chunk harmlessly and relies
+            # on inline usage for message_start, so it is left untouched.
+            _strip_inline_usage = getattr(adapter, 'API_TYPE', None) == 'chat_completions'
+
             async def _chunks_with_usage_recording():
                 last_usage = None
                 _accumulated_extra = {}
@@ -322,6 +332,11 @@ async def _handle_request(adapter):
                             if hasattr(chunk.usage, 'extra') and chunk.usage.extra:
                                 _accumulated_extra.update(chunk.usage.extra)
                             last_usage = chunk.usage
+                            if _strip_inline_usage:
+                                # Usage is captured for the trailing price_chunk;
+                                # drop it from the chunk so the OpenAI SSE layer
+                                # doesn't emit a second usage event inline.
+                                chunk.usage = None
                         if chunk.delta_content:
                             _content_parts.append(chunk.delta_content)
                         # Track metadata from the last chunk for price

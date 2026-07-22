@@ -2,6 +2,7 @@
 Anthropic Messages 适配器
 处理 /v1/messages 格式的请求和响应转换。
 """
+import dataclasses
 import itertools
 import json
 import re
@@ -597,8 +598,64 @@ class AnthropicMessagesAdapter(BaseAdapter):
                         accumulated_usage = chunk.usage
 
                     if chunk.finish_reason:
-                        # 缓冲 finish chunk，等待可能的 usage chunk
-                        pending_finish_chunk = chunk
+                        # finish chunk：百炼 incremental_output 等供应商会把最后一段
+                        # 增量文本/推理和 finish_reason 放在同一个 chunk 里。先走正常
+                        # 内容路径输出这部分 delta（含块管理），再缓冲 finish 部分，
+                        # 等待后续可能的 usage chunk。tool_calls 仍由 to_anthropic_events()
+                        # 在 finish 阶段统一输出，这里不处理。
+                        #
+                        # 但部分供应商（Azure、Volcengine 的 response.completed）会在
+                        # finish chunk 里携带"全文"（已通过增量 delta 发送过），并用
+                        # _skip_content_on_finish_reason=True 标记。此时不能把 delta_content
+                        # 当增量再发一次，跳过内联 delta 输出。
+                        if not chunk._skip_content_on_finish_reason and (
+                                chunk.delta_content or chunk.delta_reasoning_content
+                                or chunk.delta_signature):
+                            new_block_type = None
+                            if chunk.delta_reasoning_content and not thinking_block_started:
+                                new_block_type = "thinking"
+                            elif chunk.delta_content and not text_block_started:
+                                new_block_type = "text"
+
+                            if new_block_type:
+                                if block_open:
+                                    yield f"event: content_block_stop\ndata: {{\"type\": \"content_block_stop\", \"index\": {content_block_index}}}\n\n"
+                                    content_block_index += 1
+                                block_open = True
+                                if new_block_type == "thinking":
+                                    thinking_block_started = True
+                                    block_start_event = {
+                                        "type": "content_block_start",
+                                        "index": content_block_index,
+                                        "content_block": {"type": "thinking", "thinking": ""}
+                                    }
+                                    yield f"event: content_block_start\ndata: {json.dumps(block_start_event)}\n\n"
+                                elif new_block_type == "text":
+                                    text_block_started = True
+                                    block_start_event = {
+                                        "type": "content_block_start",
+                                        "index": content_block_index,
+                                        "content_block": {"type": "text", "text": ""}
+                                    }
+                                    yield f"event: content_block_start\ndata: {json.dumps(block_start_event)}\n\n"
+
+                            chunk.anthropic_index = content_block_index
+
+                            # 仅输出 delta 事件：构造一个去除 finish_reason 的临时副本，
+                            # 避免在此提前发出 content_block_stop / message_delta。
+                            delta_only = dataclasses.replace(chunk, finish_reason=None)
+                            formatted = self.format_stream_chunk(delta_only)
+                            if formatted:
+                                yield formatted
+
+                        # 缓冲 finish chunk；已输出的 delta 字段清空，防止
+                        # to_anthropic_events() 在收尾阶段重复发送。
+                        pending_finish_chunk = dataclasses.replace(
+                            chunk,
+                            delta_content=None,
+                            delta_reasoning_content=None,
+                            delta_signature=None,
+                        )
                         continue
 
                     # 跳过纯 usage chunk（其数据已累积，将合并到 finish chunk）

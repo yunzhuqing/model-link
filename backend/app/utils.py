@@ -22,7 +22,7 @@ _CODE_FENCE_RE = re.compile(
 
 # ── Reasoning Effort Constants ──────────────────────────────────────────────
 # Internal reasoning_effort levels used across adapters and providers.
-# Values: none, minimal, low, medium, high, xhigh
+# Values: none, minimal, low, medium, high, xhigh, max
 # These are the canonical set — provider-specific effort scales (e.g. Anthropic's
 # max, OpenAI's xhigh) map into this set via to_internal_effort().
 REASONING_EFFORT_NONE = 'none'
@@ -31,6 +31,7 @@ REASONING_EFFORT_LOW = 'low'
 REASONING_EFFORT_MEDIUM = 'medium'
 REASONING_EFFORT_HIGH = 'high'
 REASONING_EFFORT_XHIGH = 'xhigh'
+REASONING_EFFORT_MAX = 'max'
 
 # Default reasoning_effort applied when the model name contains "thinking"
 # but no explicit reasoning_effort / thinking parameter was provided.
@@ -62,6 +63,7 @@ _INTERNAL_TO_ANTHROPIC: dict[str, str] = {
     REASONING_EFFORT_MEDIUM: 'high',
     REASONING_EFFORT_HIGH: 'xhigh',
     REASONING_EFFORT_XHIGH: 'max',
+    REASONING_EFFORT_MAX: 'max',  # Anthropic has no level above max; cap at max
 }
 
 
@@ -74,6 +76,49 @@ def to_internal_effort(provider_effort: str) -> str | None:
 def to_anthropic_effort(internal_effort: str) -> str:
     """Convert an internal REASONING_EFFORT_* value to an Anthropic effort string."""
     return _INTERNAL_TO_ANTHROPIC.get(internal_effort, 'medium')
+
+
+# ── OpenAI/internal effort ↔ Volcengine Doubao effort mapping ──────────────
+# Doubao scale (responses /v3/responses):     minimal, low, medium, high, max
+# Doubao scale (chat/completions /v3/chat):   minimal, low, medium, high, xhigh, max
+#
+# IMPORTANT: Doubao "minimal" DISABLES thinking — this is incompatible with the
+# OpenAI Responses API where "minimal" is a genuine (low) effort level. To stay
+# compatible, OpenAI "none" maps to Doubao "minimal" (i.e. thinking off), and the
+# OpenAI levels that DO want thinking are shifted so they never hit "minimal":
+#   openai none      → minimal  (thinking OFF)
+#   openai minimal   → low
+#   openai low       → low
+#   openai medium    → medium   (and up: identity)
+#   openai high      → high
+#   openai xhigh     → xhigh    (chat/completions only)
+#   openai max       → max
+# Doubao also requires the `thinking` switch enabled to actually return thinking
+# content; see VolcengineProvider._resolve_doubao_reasoning.
+
+_INTERNAL_TO_VOLCENGINE: dict[str, str] = {
+    REASONING_EFFORT_NONE: 'minimal',
+    REASONING_EFFORT_MINIMAL: 'low',
+    REASONING_EFFORT_LOW: 'low',
+    REASONING_EFFORT_MEDIUM: 'medium',
+    REASONING_EFFORT_HIGH: 'high',
+    REASONING_EFFORT_XHIGH: 'xhigh',
+    REASONING_EFFORT_MAX: 'max',
+}
+
+
+def to_volcengine_effort(internal_effort: str, *, allow_xhigh: bool = True) -> str:
+    """Map an internal/OpenAI reasoning_effort to a Volcengine Doubao effort.
+
+    Args:
+        internal_effort: one of the REASONING_EFFORT_* constants.
+        allow_xhigh: when False (Doubao /v3/responses, which has no xhigh),
+            xhigh is clamped down to high. chat/completions accepts xhigh.
+    """
+    mapped = _INTERNAL_TO_VOLCENGINE.get(internal_effort, 'medium')
+    if mapped == 'xhigh' and not allow_xhigh:
+        return 'high'
+    return mapped
 
 
 def gen_id(prefix: str) -> str:

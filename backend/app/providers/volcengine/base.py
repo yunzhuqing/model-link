@@ -17,7 +17,8 @@ import uuid
 import sys
 import base64
 import logging
-from ..base import BaseProvider, ProviderConfig, ProviderCapability
+from ..base import ProviderConfig, ProviderCapability
+from ..openai_provider import OpenAIProvider
 from .._responses_format import build_responses_request, _tool_result_to_responses_output
 
 # Volcengine Responses API 仅接受白名单内的字段，不允许传入额外字段。
@@ -50,7 +51,12 @@ from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
-from app.utils import gen_id, json_loads, REASONING_EFFORT_MINIMAL
+from app.utils import (
+    gen_id,
+    json_loads,
+    REASONING_EFFORT_NONE,
+    to_volcengine_effort,
+)
 from .embedding import execute_volcengine_multimodal_embed
 from .image_generation import (
     DoubaoImageProvider,
@@ -73,11 +79,17 @@ from .threed_generation import (
 _INTERNAL_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning'})
 
 
-class VolcengineProvider(BaseProvider):
+class VolcengineProvider(OpenAIProvider):
     """
-    火山引擎供应商实现 (Responses API)
+    火山引擎供应商实现
 
-    使用 /v3/responses 端点，支持：
+    根据模型配置的 api_type 路由到不同上游端点：
+    - api_type 显式包含 "chat_completions"（且不含 "responses"）→ /v3/chat/completions
+      （走 OpenAI 兼容路径，复用 OpenAIProvider）
+    - 否则（默认，含 api_type=None 的现有 doubao 模型）→ /v3/responses
+      （火山引擎 Ark Responses API，保留原有行为）
+
+    支持能力：
     - reasoning with summary
     - 多模态输入 (图片、视频等)
     - 工具调用
@@ -125,7 +137,7 @@ class VolcengineProvider(BaseProvider):
     # Request preparation
     # ----------------------------------------------------------------
 
-    def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+    def _prepare_responses_request(self, request: ChatRequest) -> Dict[str, Any]:
         """
         Convert ChatRequest into Volcengine Responses API format.
 
@@ -133,6 +145,10 @@ class VolcengineProvider(BaseProvider):
         Volcengine-specific customizations:
         - input conversion via ``_message_to_input_item`` (partial, empty fallback)
         - reasoning without ``summary`` (Volcengine doesn't support it)
+
+        Note: This builds the *Responses* API body (/v3/responses). The
+        OpenAI-compatible /v3/chat/completions body is built by the inherited
+        ``OpenAIProvider.prepare_request`` (used when api_type opts in).
         """
         result = build_responses_request(request)
 
@@ -176,22 +192,27 @@ class VolcengineProvider(BaseProvider):
 
         result["input"] = input_items
 
-        # ── Override reasoning: Volcengine does NOT support "summary" ──
+        # ── Reasoning / thinking (Doubao) ──
+        # Volcengine does NOT support "summary" and its "minimal" effort disables
+        # thinking (unlike OpenAI). Drop whatever build_responses_request emitted
+        # and rebuild from the OpenAI/internal effort via _resolve_doubao_reasoning.
         result.pop("reasoning", None)
-        reasoning_config = request.metadata.get('reasoning')
-        support_thinking = request.metadata.get('support_thinking', False)
+        result.pop("thinking", None)
 
+        reasoning_config = request.metadata.get('reasoning')
+        effort_override = None
         if reasoning_config and isinstance(reasoning_config, dict):
-            result["reasoning"] = {"effort": reasoning_config.get("effort", "medium")}
-        elif support_thinking:
-            effort = request.reasoning_effort
-            if not effort or effort == 'none':
-                result["reasoning"] = {"effort": REASONING_EFFORT_MINIMAL}
-            else:
-                result["reasoning"] = {"effort": effort or "medium"}
-        elif request.reasoning_effort and request.reasoning_effort != 'none':
-            result["reasoning"] = {"effort": request.reasoning_effort}
-        
+            effort_override = reasoning_config.get("effort")
+
+        # /v3/responses has no xhigh level — clamp down to high.
+        thinking_type, doubao_effort = self._resolve_doubao_reasoning(
+            request, effort_override, allow_xhigh=False
+        )
+        if thinking_type is not None:
+            result["thinking"] = {"type": thinking_type}
+        if doubao_effort is not None:
+            result["reasoning"] = {"effort": doubao_effort}
+
         # ── 过滤掉 Volcengine Responses API 不支持的额外字段 ──
         result = {k: v for k, v in result.items() if k in _VOLCENGINE_RESPONSES_ALLOWED_KEYS}
         
@@ -365,8 +386,95 @@ class VolcengineProvider(BaseProvider):
         """Check if the model is a Seed3D 3D generation model."""
         return is_seed3d_model(model)
 
+    def _uses_chat_completions_api(self) -> bool:
+        """Decide whether to call /v3/chat/completions instead of /v3/responses.
+
+        Routes to chat/completions only when the model's configured api_type
+        explicitly opts in (contains "chat_completions" and not "responses").
+        Otherwise (default, including api_type=None for existing doubao models)
+        keeps the Responses API path — preserving existing Volcengine behavior.
+        """
+        model_api_type = getattr(self, '_model_api_type', None) or ''
+        return 'chat_completions' in model_api_type and 'responses' not in model_api_type
+
+    def _resolve_doubao_reasoning(
+        self,
+        request: ChatRequest,
+        effort_override: Optional[str] = None,
+        *,
+        allow_xhigh: bool = True,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Resolve Doubao reasoning params from an OpenAI/internal effort.
+
+        Doubao's "minimal" effort DISABLES thinking — incompatible with the
+        OpenAI Responses API where "minimal" is a real (low) level. To stay
+        compatible we drive the `thinking` switch and map efforts so that the
+        off case never produces a spurious thinking level:
+
+            openai none            → thinking "disabled"   (off)
+            openai minimal/low     → thinking "enabled", effort = low
+            openai medium/high/... → thinking "enabled", effort = <same>
+            openai max             → thinking "enabled", effort = max
+            no effort + support_thinking → thinking "auto"  (let doubao decide)
+
+        Args:
+            effort_override: explicit effort (e.g. metadata['reasoning']['effort']
+                from the Responses API). Falls back to request.reasoning_effort.
+            allow_xhigh: False for the /v3/responses endpoint (no xhigh level);
+                xhigh is clamped down to high there.
+
+        Returns:
+            (thinking_type, doubao_effort) — either may be None to omit.
+            thinking_type ∈ {"enabled", "disabled", "auto", None}.
+        """
+        support_thinking = request.metadata.get('support_thinking', False)
+        effort = effort_override
+        if effort is None:
+            effort = request.reasoning_effort
+
+        if effort is None:
+            # No explicit effort — enable thinking only if the model supports it,
+            # and let Doubao pick the level ("auto").
+            if support_thinking:
+                return "auto", None
+            return None, None
+
+        if effort == REASONING_EFFORT_NONE:
+            # Explicit off. Doubao "minimal" also means off, but express it via
+            # the thinking switch to be unambiguous.
+            return "disabled", None
+
+        return "enabled", to_volcengine_effort(effort, allow_xhigh=allow_xhigh)
+
+    def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
+        """Build the OpenAI chat/completions body, then apply Doubao-specific
+        reasoning mapping.
+
+        OpenAIProvider forwards the raw OpenAI ``reasoning_effort``. Doubao
+        needs the ``thinking`` switch enabled to return thinking, and its
+        ``minimal`` means thinking OFF (unlike OpenAI), so map the effort and
+        drive the switch the same way as /v3/responses.
+        """
+        result = super().prepare_request(request)
+
+        raw_effort = result.pop("reasoning_effort", None)
+        effort_override = raw_effort or request.reasoning_effort
+        thinking_type, doubao_effort = self._resolve_doubao_reasoning(
+            request, effort_override, allow_xhigh=True
+        )
+        if thinking_type is not None:
+            result["thinking"] = {"type": thinking_type}
+        if doubao_effort is not None:
+            result["reasoning_effort"] = doubao_effort
+        return result
+
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        """Execute non-streaming request via /responses."""
+        """Execute non-streaming chat request.
+
+        Routes to /v3/chat/completions or /v3/responses based on the model's
+        api_type. Generation models (3D / video / image) always use their
+        dedicated paths regardless of api_type.
+        """
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
@@ -393,12 +501,19 @@ class VolcengineProvider(BaseProvider):
                 tracer=self.tracer,
             )
 
-        # For image generation models (e.g. Seedream), bypass the Responses API
+        # For image generation models (e.g. Seedream), bypass the chat APIs
         # and call the image generation API directly.
         if self.is_image_generation_model(request.model):
             return await self._execute_image_generation_direct(request)
 
-        request_data = await self.aprepare_request(request)
+        # Standard chat — route by api_type
+        if self._uses_chat_completions_api():
+            return await super().chat(request)
+        return await self._chat_responses(request)
+
+    async def _chat_responses(self, request: ChatRequest) -> ChatResponse:
+        """Execute non-streaming request via /v3/responses."""
+        request_data = self._prepare_responses_request(request)
         request_data["stream"] = False
 
         url = f"{self.config.base_url}/responses"
@@ -742,7 +857,12 @@ class VolcengineProvider(BaseProvider):
         yield finish_chunk
 
     async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
-        """Execute streaming request via /responses."""
+        """Execute streaming chat request.
+
+        Routes to /v3/chat/completions or /v3/responses based on the model's
+        api_type. Generation models (3D / video / image) always use their
+        dedicated streaming paths regardless of api_type.
+        """
         error = self.validate_request(request)
         if error:
             raise ValueError(error)
@@ -759,14 +879,25 @@ class VolcengineProvider(BaseProvider):
                 yield chunk
             return
 
-        # For image generation models (e.g. Seedream), bypass the Responses API
+        # For image generation models (e.g. Seedream), bypass the chat APIs
         # and emit the result as stream chunks.
         if self.is_image_generation_model(request.model):
             async for chunk in self._stream_image_generation(request):
                 yield chunk
             return
 
-        request_data = await self.aprepare_request(request)
+        # Standard chat — route by api_type
+        if self._uses_chat_completions_api():
+            async for chunk in super().stream_chat(request):
+                yield chunk
+            return
+
+        async for chunk in self._stream_chat_responses(request):
+            yield chunk
+
+    async def _stream_chat_responses(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
+        """Execute streaming request via /v3/responses."""
+        request_data = self._prepare_responses_request(request)
         request_data["stream"] = True
 
         url = f"{self.config.base_url}/responses"
@@ -1051,7 +1182,13 @@ class VolcengineProvider(BaseProvider):
                 finish_reason=finish,
                 usage=usage_info,
                 event_type=StreamEventType.CONTENT_DELTA,
-                created=resp.get("created_at", int(time.time()))
+                created=resp.get("created_at", int(time.time())),
+                # The completed event carries the FULL assembled text in
+                # delta_content, but that text was already streamed incrementally
+                # via response.output_text.delta. Skip it on the finish chunk so
+                # OpenAI/Anthropic SSE don't re-send the whole answer. Mirrors
+                # Azure's response.completed handling.
+                _skip_content_on_finish_reason=True,
             )
 
         # Ignore other events (response.created, response.in_progress,

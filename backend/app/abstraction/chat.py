@@ -139,7 +139,7 @@ class ChatRequest:
     frequency_penalty: Optional[float] = None
     user: Optional[str] = None
     session_id: Optional[str] = None  # 会话 ID，用于 tracer 追踪整个会话
-    reasoning_effort: Optional[str] = None  # 推理力度: "none"(默认), "minimal", "low", "medium", "high", "xhigh"
+    reasoning_effort: Optional[str] = None  # 推理力度: "none"(默认), "minimal", "low", "medium", "high", "xhigh", "max"
     parallel_tool_calls: Optional[bool] = None  # 是否允许并行工具调用
     n: Optional[int] = None  # 候选回复数量（OpenAI/vLLM 兼容）
     seed: Optional[int] = None  # 随机种子，用于复现采样结果（OpenAI/vLLM 兼容）

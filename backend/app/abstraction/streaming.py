@@ -347,10 +347,15 @@ class StreamChunk:
             })
 
         # 处理文本内容
-        # When finish_reason is set, delta_content may contain the FULL assembled text
-        # (e.g. from Volcengine/Azure response.completed event), not a new incremental
-        # delta. Skip it to avoid re-sending all content in the final Anthropic chunk.
-        if self.delta_content and not self.finish_reason:
+        # When finish_reason is set, delta_content may be the FULL assembled text
+        # (Volcengine/Azure response.completed event) — providers in that case set
+        # _skip_content_on_finish_reason=True so the whole text isn't re-sent in the
+        # final Anthropic chunk. Other providers (Bailian incremental_output, MiniMax)
+        # send a genuine incremental delta alongside finish_reason and must keep it.
+        # This mirrors the OpenAI path (see to_openai_format) instead of hardcoding
+        # `not self.finish_reason`, which dropped legitimate final deltas.
+        skip_content = self._skip_content_on_finish_reason and self.finish_reason
+        if self.delta_content and not skip_content:
             events.append({
                 "type": "content_block_delta",
                 "index": idx,
