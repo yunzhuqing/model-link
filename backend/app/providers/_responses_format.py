@@ -211,6 +211,13 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
     if role == MessageRole.ASSISTANT:
         result = []
 
+        # Emit reasoning item if present (from multi-turn reasoning input)
+        if message.reasoning_content:
+            result.append({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": message.reasoning_content}],
+            })
+
         for block in blocks:
             if block.type == ContentType.TOOL_CALL:
                 args = block.tool_arguments or {}

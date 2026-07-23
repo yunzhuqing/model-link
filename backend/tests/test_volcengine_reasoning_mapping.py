@@ -132,6 +132,72 @@ def test_chatcompletions_request_max_and_xhigh():
     print("PASS: /v3/chat/completions max->max, xhigh->xhigh")
 
 
+# ── reasoning input item in multi-turn ─────────────────────────────────────
+
+def test_reasoning_only_message_emits_reasoning_input_item():
+    """An ASSISTANT message with only reasoning_content (no text/tool_calls)
+    must produce a ``{"type": "reasoning", ...}`` input item, not be dropped."""
+    p = _provider()
+    req = ChatRequest(
+        model="doubao-seed-2-0-pro-260215",
+        messages=[
+            Message(role=MessageRole.USER, content="hello"),
+            Message(role=MessageRole.ASSISTANT, reasoning_content="I thought about this."),
+            Message(role=MessageRole.USER, content="continue"),
+        ],
+    )
+    req.metadata = {}
+    data = p._prepare_responses_request(req)
+    input_items = data["input"]
+
+    # Find the reasoning item
+    reasoning_items = [it for it in input_items if it.get("type") == "reasoning"]
+    assert len(reasoning_items) == 1, f"Expected 1 reasoning item, got {len(reasoning_items)}: {input_items}"
+    r = reasoning_items[0]
+    assert r["summary"][0]["type"] == "summary_text"
+    assert r["summary"][0]["text"] == "I thought about this."
+    print("PASS: reasoning-only assistant message → reasoning input item")
+
+
+def test_reasoning_plus_text_message_emits_both_items():
+    """An ASSISTANT message with reasoning_content AND text content must
+    produce both a reasoning item and a message item."""
+    p = _provider()
+    req = ChatRequest(
+        model="doubao-seed-2-0-pro-260215",
+        messages=[
+            Message(role=MessageRole.USER, content="hello"),
+            Message(role=MessageRole.ASSISTANT, content="Here is my answer.",
+                    reasoning_content="Let me think..."),
+            Message(role=MessageRole.USER, content="thanks"),
+        ],
+    )
+    req.metadata = {}
+    data = p._prepare_responses_request(req)
+    input_items = data["input"]
+
+    reasoning_items = [it for it in input_items if it.get("type") == "reasoning"]
+    message_items = [it for it in input_items
+                     if it.get("type") == "message" and it.get("role") == "assistant"]
+    assert len(reasoning_items) == 1, f"Expected 1 reasoning item: {input_items}"
+    assert len(message_items) == 1, f"Expected 1 assistant message item: {input_items}"
+    assert reasoning_items[0]["summary"][0]["text"] == "Let me think..."
+    print("PASS: reasoning + text → reasoning item + message item")
+
+
+def test_shared_responses_format_emits_reasoning_item():
+    """The shared _message_to_responses_items must also emit reasoning items
+    for providers that use build_responses_request (Azure, etc.)."""
+    from app.providers._responses_format import _message_to_responses_items
+
+    msg = Message(role=MessageRole.ASSISTANT, reasoning_content="Deep thought.")
+    items = _message_to_responses_items(msg)
+    reasoning_items = [it for it in items if it.get("type") == "reasoning"]
+    assert len(reasoning_items) == 1, f"Expected 1 reasoning item: {items}"
+    assert reasoning_items[0]["summary"][0]["text"] == "Deep thought."
+    print("PASS: shared _message_to_responses_items emits reasoning item")
+
+
 if __name__ == "__main__":
     test_resolve_off_when_none()
     test_resolve_enabled_mapping()
@@ -144,4 +210,7 @@ if __name__ == "__main__":
     test_chatcompletions_request_builds_thinking_and_reasoning_effort()
     test_chatcompletions_request_none_disables()
     test_chatcompletions_request_max_and_xhigh()
+    test_reasoning_only_message_emits_reasoning_input_item()
+    test_reasoning_plus_text_message_emits_both_items()
+    test_shared_responses_format_emits_reasoning_item()
     print("\nAll Volcengine reasoning mapping tests passed.")

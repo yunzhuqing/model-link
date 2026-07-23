@@ -276,47 +276,86 @@ class VolcengineProvider(OpenAIProvider):
                     items.append({"role": role, "content": remaining_content})
                 return items
 
-        # Handle assistant messages with tool calls
-        if message.role == MessageRole.ASSISTANT and isinstance(message.content, list):
-            items = []
-            has_tool_calls = any(
-                isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
-                for b in message.content
-            )
+        # Handle assistant messages (reasoning / tool_calls / text)
+        if message.role == MessageRole.ASSISTANT:
+            items: List[Dict[str, Any]] = []
 
-            if has_tool_calls:
-                # Emit function_call items for tool calls
-                for block in message.content:
-                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
-                        args = block.tool_arguments
-                        if isinstance(args, dict):
-                            args = json.dumps(args, ensure_ascii=False)
-                        items.append({
-                            "type": "function_call",
-                            "call_id": block.tool_call_id or "",
-                            "name": block.tool_name or "",
-                            "arguments": args or "{}"
-                        })
+            # Emit reasoning item if present
+            if message.reasoning_content:
+                items.append({
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": message.reasoning_content}]
+                })
 
-                # Also include text content as a regular message if present
-                text_blocks = [b for b in message.content
-                               if isinstance(b, ContentBlock) and b.type == ContentType.TEXT and b.text]
-                if text_blocks:
-                    content_parts = [{"type": "output_text", "text": b.text} for b in text_blocks]
-                    items.insert(0, {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content_parts,
-                        "status": "completed"
-                    })
+            # Handle tool calls in content blocks
+            if isinstance(message.content, list):
+                has_tool_calls = any(
+                    isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                    for b in message.content
+                )
+
+                if has_tool_calls:
+                    # Emit function_call items for tool calls
+                    for block in message.content:
+                        if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                            args = block.tool_arguments
+                            if isinstance(args, dict):
+                                args = json.dumps(args, ensure_ascii=False)
+                            items.append({
+                                "type": "function_call",
+                                "call_id": block.tool_call_id or "",
+                                "name": block.tool_name or "",
+                                "arguments": args or "{}"
+                            })
+
+                    # Also include text content as a regular message if present
+                    text_blocks = [b for b in message.content
+                                   if isinstance(b, ContentBlock) and b.type == ContentType.TEXT and b.text]
+                    if text_blocks:
+                        content_parts = [{"type": "output_text", "text": b.text} for b in text_blocks]
+                        # Insert message item before function_call items
+                        msg_item = {
+                            "type": "message", "role": "assistant",
+                            "content": content_parts, "status": "completed"
+                        }
+                        fc_idx = next(
+                            (i for i, it in enumerate(items) if it.get("type") == "function_call"),
+                            len(items)
+                        )
+                        items.insert(fc_idx, msg_item)
+                    return items
+
+            # No tool calls — check if there is meaningful text content
+            has_text = False
+            if isinstance(message.content, str) and message.content.strip():
+                has_text = True
+            elif isinstance(message.content, list):
+                has_text = any(
+                    isinstance(b, ContentBlock) and b.type == ContentType.TEXT and b.text and b.text.strip()
+                    for b in message.content
+                )
+
+            if has_text:
+                content = self._convert_content(message)
+                items.append({
+                    "role": "assistant", "content": content,
+                    "type": "message", "status": "completed"
+                })
+
+            # If we emitted reasoning and/or text, we are done
+            if items:
                 return items
 
-        # Regular message
-        content = self._convert_content(message)
-        item: Dict[str, Any] = {"role": role, "content": content}
-        if message.role == MessageRole.ASSISTANT:
+            # Empty assistant with no reasoning — fall through to regular path
+            content = self._convert_content(message)
+            item: Dict[str, Any] = {"role": role, "content": content}
             item["type"] = "message"
             item["status"] = "completed"
+            return item
+
+        # Regular message (non-assistant, non-tool)
+        content = self._convert_content(message)
+        item: Dict[str, Any] = {"role": role, "content": content}
         return item
 
     def _convert_content(self, message: Message) -> Any:
