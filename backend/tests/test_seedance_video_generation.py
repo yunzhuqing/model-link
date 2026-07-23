@@ -40,6 +40,8 @@ import pytest_asyncio
 BASE_URL = os.environ.get("MODEL_LINK_BASE_URL", "http://localhost:8000").rstrip("/")
 API_KEY = os.environ.get("MODEL_LINK_API_KEY", "")
 DEFAULT_MODEL = "doubao-seedance-2.0-fast"
+# Model used for 1080p (non-fast tier supports 1080p; fast only supports 480p/720p)
+MODEL_1080P = os.environ.get("MODEL_LINK_SEEDANCE_MODEL_1080P", "doubao-seedance-2.0")
 
 POLL_INTERVAL_S = 5.0
 POLL_MAX_WAIT_S = 600  # 10 minutes
@@ -232,11 +234,40 @@ class TestSeedanceVideoGeneration:
         )
         print(f"[seedance-bg] usage: {usage}")
 
+    async def test_background_video_generation_480p_fast(self, client):
+        """doubao-seedance-2.0-fast supports 480p and 720p (not 1080p). Verify 480p works."""
+        payload = _build_seedance_payload(
+            prompt="雨天窗外的城市",
+            model=self.model,
+            resolution="480p",
+            background=True,
+        )
+        r = await client.post("/v1/responses", json=payload, headers=_auth_headers())
+        assert r.status_code == 200, f"Submit failed: {r.status_code} {r.text}"
+        initial = r.json()
+        response_id = initial["id"]
+        print(f"\n[seedance-480p-fast] Submitted; response_id={response_id}")
+
+        final = await _poll_until_terminal(client, response_id)
+        assert final.get("status") == "completed", (
+            f"unexpected status: {final.get('status')} — {final.get('error')}"
+        )
+        videos = _extract_video_items(final.get("output", []))
+        assert videos and all(v.get("result", "").startswith("http") for v in videos), (
+            f"missing video URLs: {final}"
+        )
+        for v in videos:
+            print(f"[seedance-480p-fast] video ready: {v['result'][:140]}")
+
     async def test_background_video_generation_1080p(self, client):
-        """1080p 16:9 video generation also reaches a completed state."""
+        """1080p video generation requires the non-fast Seedance tier (doubao-seedance-2.0).
+
+        Override with MODEL_LINK_SEEDANCE_MODEL_1080P if your account uses a
+        different 1080p-capable model.
+        """
         payload = _build_seedance_payload(
             prompt="一只橘猫在草地上追蝴蝶",
-            model=self.model,
+            model=MODEL_1080P,
             resolution="1080p",
             ratio="16:9",
             background=True,
@@ -245,7 +276,7 @@ class TestSeedanceVideoGeneration:
         assert r.status_code == 200, f"Submit failed: {r.status_code} {r.text}"
         initial = r.json()
         response_id = initial["id"]
-        print(f"\n[seedance-1080p] Submitted; response_id={response_id}")
+        print(f"\n[seedance-1080p] Submitted model={MODEL_1080P}; response_id={response_id}")
 
         final = await _poll_until_terminal(client, response_id)
         assert final.get("status") == "completed", (
@@ -293,6 +324,8 @@ if __name__ == "__main__":
             tester = TestSeedanceVideoGeneration()
             print("=== test_background_video_generation_polls_to_completion ===")
             await tester.test_background_video_generation_polls_to_completion(client)
+            print("\n=== test_background_video_generation_480p_fast ===")
+            await tester.test_background_video_generation_480p_fast(client)
             print("\n=== test_background_video_generation_1080p ===")
             await tester.test_background_video_generation_1080p(client)
             print("\n=== test_invalid_resolution_returns_error ===")
