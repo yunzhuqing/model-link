@@ -850,6 +850,26 @@ async def get_response(response_id: str):
                     obj = {"code": "server_error", "message": raw}
             else:
                 obj = {"code": "server_error", "message": str(raw) if raw else ""}
+            # Flatten a nested upstream `error` object into the `message` field.
+            # Some upstream Responses APIs return the raw provider error nested
+            # inside an outer error envelope, e.g. for a Seedance content-policy
+            # failure:
+            #   {"code": "server_error",
+            #    "error": {"code": "InputTextSensitiveContentDetected",
+            #              "message": "...", "param": "content[0]",
+            #              "type": "BadRequest"}}
+            # Surface the whole nested error as a string in `message` so the
+            # client-facing error is always a flat {code, message} structure.
+            nested = obj.get("error")
+            if isinstance(nested, dict):
+                obj = dict(obj)
+                obj["message"] = json.dumps(nested, ensure_ascii=False)
+                obj.pop("error", None)
+            elif isinstance(nested, str) and nested:
+                obj = dict(obj)
+                if not obj.get("message"):
+                    obj["message"] = nested
+                obj.pop("error", None)
             if obj.get("code") not in _VALID_ERROR_CODES:
                 obj = dict(obj)
                 obj["code"] = "server_error"
