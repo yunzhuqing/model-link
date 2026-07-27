@@ -558,7 +558,7 @@ class OpenAIProvider(BaseProvider):
         elif block.type == ContentType.VIDEO_URL:
             video_url_dict: dict = {"url": block.url}
             if block.video_fps is not None:
-                video_url_dict["fps"] = block.video_fps
+                video_url_dict["fps"] = float(block.video_fps)
             return {"type": "video_url", "video_url": video_url_dict}
         elif block.type == ContentType.VIDEO_BASE64:
             return {

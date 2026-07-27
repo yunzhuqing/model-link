@@ -265,8 +265,18 @@ async def _do_resync(app, min_age_minutes: int = 10) -> None:
             logger.info(f"[bg_resync] Record {response_id!r} synced to completed")
             resolved_count += 1
         elif result.status == TaskStatus.FAILED:
-            await _bg_dao.mark_failed_async(response_id, "Task failed at upstream provider")
-            logger.info(f"[bg_resync] Record {response_id!r} synced to failed")
+            err = result.error
+            if err:
+                # Preserve the upstream-specific error (code + message) so the
+                # client sees the real failure reason (e.g. content-policy /
+                # copyright violation) instead of a generic placeholder.
+                error_msg = json.dumps(err, ensure_ascii=False)
+            else:
+                error_msg = "Task failed at upstream provider"
+            await _bg_dao.mark_failed_async(response_id, error_msg)
+            logger.info(
+                f"[bg_resync] Record {response_id!r} synced to failed: {error_msg}"
+            )
             resolved_count += 1
         else:
             # UNKNOWN — skip, try again next cycle

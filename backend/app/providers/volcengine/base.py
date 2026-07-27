@@ -386,7 +386,7 @@ class VolcengineProvider(OpenAIProvider):
                 elif block.type == ContentType.VIDEO_URL:
                     item = {"type": "input_video", "video_url": block.url}
                     if block.video_fps is not None:
-                        item["fps"] = int(block.video_fps)
+                        item["fps"] = float(block.video_fps)
                     parts.append(item)
                 elif block.type == ContentType.AUDIO_URL:
                     parts.append({"type": "input_audio", "audio_url": block.url})
@@ -454,7 +454,8 @@ class VolcengineProvider(OpenAIProvider):
             openai minimal/low     → thinking "enabled", effort = low
             openai medium/high/... → thinking "enabled", effort = <same>
             openai max             → thinking "enabled", effort = max
-            no effort + support_thinking → thinking "auto"  (let doubao decide)
+            no effort              → thinking "disabled" if support_thinking
+                                     else omitted (off by default)
 
         Args:
             effort_override: explicit effort (e.g. metadata['reasoning']['effort']
@@ -464,7 +465,7 @@ class VolcengineProvider(OpenAIProvider):
 
         Returns:
             (thinking_type, doubao_effort) — either may be None to omit.
-            thinking_type ∈ {"enabled", "disabled", "auto", None}.
+            thinking_type ∈ {"enabled", "disabled", None}.
         """
         support_thinking = request.metadata.get('support_thinking', False)
         effort = effort_override
@@ -472,10 +473,14 @@ class VolcengineProvider(OpenAIProvider):
             effort = request.reasoning_effort
 
         if effort is None:
-            # No explicit effort — enable thinking only if the model supports it,
-            # and let Doubao pick the level ("auto").
+            # No explicit effort → thinking off by default. For models that
+            # support thinking, explicitly disable it (do not rely on the
+            # model's built-in default, and never send "auto" — some models
+            # like doubao-seed-2.0-pro reject it with "Unsupported thinking
+            # type"). For models that don't support thinking, omit the switch
+            # entirely (they don't accept it and are already off).
             if support_thinking:
-                return "auto", None
+                return "disabled", None
             return None, None
 
         if effort == REASONING_EFFORT_NONE:

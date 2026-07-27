@@ -58,6 +58,42 @@ _POLL_MAX_WAIT_S: int = 600   # 10 分钟
 _TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
+class SeedanceTaskError(RuntimeError):
+    """Raised when a Seedance task ends in a failed/cancelled state.
+
+    Carries a normalized, client-facing error dict (``error_info``) so the
+    background response handler can persist the structured error (code +
+    message) for the GET /v1/responses/<id> endpoint, instead of a generic
+    ``server_error`` placeholder. It is still a ``RuntimeError`` subclass so
+    the gateway's existing ``except RuntimeError`` handling applies unchanged.
+    """
+
+    def __init__(self, message: str, error_info: Optional[Dict[str, str]] = None):
+        super().__init__(message)
+        self.error_info = error_info
+
+
+def _normalize_seedance_error(upstream_error: Dict[str, Any]) -> Dict[str, str]:
+    """Build a client-facing error dict from an upstream Seedance task error.
+
+    Content / sensitive / policy / copyright violations are mapped to the
+    gateway's ``content_policy_violation`` code (one of the GET-endpoint's
+    allowlisted codes); other failures fall back to ``server_error``. The
+    ``message`` carries the full upstream error info — upstream code plus the
+    upstream message (which already embeds the Volcengine request id).
+    """
+    code = str(upstream_error.get("code") or "").strip()
+    message = str(upstream_error.get("message") or "").strip()
+    full = f"{code}: {message}" if (code and message) else (code or message or "")
+
+    lowered = code.lower()
+    is_policy = any(kw in lowered for kw in ("sensitive", "policy", "copyright"))
+    return {
+        "code": "content_policy_violation" if is_policy else "server_error",
+        "message": full,
+    }
+
+
 # Shared async HTTP client for Volcengine ARK control-plane calls.
 # Per-call ``httpx.Client`` creates a new TLS handshake + connection pool every
 # time and is sync (blocks the event loop). The shared AsyncClient eliminates
@@ -99,43 +135,6 @@ def is_seedance_video_model(model: str) -> bool:
     """
     lower = model.lower()
     return any(lower.startswith(prefix) for prefix in _SEEDANCE_MODEL_PREFIXES)
-
-
-# =============================================================================
-# 用户友好名称 → 实际 API 模型 ID 映射
-# =============================================================================
-
-# 当用户传入简短名称时，映射到火山引擎实际的 model endpoint ID。
-# 若未命中此表，则直接将用户输入的名称透传给 API（适用于用户已配置完整 ID 的情况）。
-_SEEDANCE_MODEL_ID_MAP: Dict[str, str] = {
-    # 豆包 Seedance 系列
-    "doubao-seedance-pro":            "doubao-seedance-pro",
-    "doubao-seedance-1.0-pro":        "doubao-seedance-1-0-pro-250528",
-    "doubao-seedance-1.0-pro-fast":   "doubao-seedance-1-0-pro-fast-251015",
-    "doubao-seedance-1.5-pro":        "doubao-seedance-1-5-pro-251215",
-    "doubao-seedance-2.0-fast":       "doubao-seedance-2-0-fast-260518",
-    "doubao-seedance-2.0":            "doubao-seedance-2-0-260128",
-    # Seedance 系列（无 doubao 前缀）
-    "seedance-pro":                   "doubao-seedance-pro",
-    "seedance-1.0-pro":               "doubao-seedance-1-0-pro-250528",
-    "seedance-1.0-pro-fast":          "doubao-seedance-1-0-pro-fast-251015",
-    "seedance-1.5-pro":               "doubao-seedance-1-5-pro-251215",
-    "seedance-2.0-fast":              "doubao-seedance-2-0-fast-260518",
-    "seedance-2.0":                   "doubao-seedance-2-0-260128",
-}
-
-
-def _resolve_seedance_model_id(model: str) -> str:
-    """
-    将用户友好的模型名称解析为 API 实际使用的模型 ID。
-
-    Args:
-        model: 用户传入的模型名称
-
-    Returns:
-        API 模型 ID（若未命中映射表则原样返回）
-    """
-    return _SEEDANCE_MODEL_ID_MAP.get(model.lower(), model)
 
 
 def _model_supports_audio(model_id: str) -> bool:
@@ -620,6 +619,14 @@ async def check_seedance_task_status(
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
         }
+    elif status in ("failed", "cancelled"):
+        # Carry the upstream error (code + message) so callers can surface the
+        # real failure reason (e.g. content-policy / copyright violations)
+        # instead of a generic "task failed" string. Normalize to the gateway's
+        # client-facing codes (content_policy_violation / server_error).
+        error = data.get("error")
+        if isinstance(error, dict) and error:
+            result["error"] = _normalize_seedance_error(error)
     return result
 
 
@@ -687,6 +694,13 @@ async def _poll_video_task(
                 return video_url, result["usage"], poll_count
 
             if status in ("failed", "cancelled"):
+                err = result.get("error")
+                if err:
+                    raise SeedanceTaskError(
+                        f"Seedance video task {task_id} ended with status={status}: "
+                        f"{err.get('message', '')}".strip(),
+                        error_info=err,
+                    )
                 raise RuntimeError(
                     f"Seedance video task {task_id} ended with status={status}"
                 )
@@ -722,7 +736,7 @@ async def execute_seedance_video_generation(
     Args:
         api_key:   ARK API Key
         base_url:  API 基础 URL（含 /v3）
-        model:     模型名称（用户传入，如 "doubao-seedance-2.0"）
+        model:     已解析的真实模型 ID（来自网关 DB，如 "doubao-seedance-2-0-260128"）
         messages:  消息列表
         metadata:  请求 metadata（视频生成参数）
         tracer:    可选的 tracer 实例，用于追踪 API 调用
@@ -733,7 +747,6 @@ async def execute_seedance_video_generation(
     Raises:
         RuntimeError: API 错误或任务失败
     """
-    model_id = _resolve_seedance_model_id(model)
 
     # ── 参数提取 ──────────────────────────────────────────────────────────
     # AspectRatio / Resolution
@@ -765,7 +778,7 @@ async def execute_seedance_video_generation(
     # Audio / watermark / seed
     # generate_audio is only supported by Seedance 1.5+ models.
     # For earlier versions (1.0, pro), it should not be sent to the API.
-    supports_audio = _model_supports_audio(model_id)
+    supports_audio = _model_supports_audio(model)
     generate_audio_raw = metadata.get("generate_audio")
     if supports_audio:
         generate_audio: Optional[bool] = bool(generate_audio_raw) if generate_audio_raw is not None else True
@@ -806,7 +819,7 @@ async def execute_seedance_video_generation(
         raise RuntimeError("Seedance video generation: no text prompt found in user messages")
 
     # ── Tracing ────────────────────────────────────────────────────────────
-    _request_data: Dict[str, Any] = {"model": model_id, "content": content, "ratio": ratio, "resolution": resolution}
+    _request_data: Dict[str, Any] = {"model": model, "content": content, "ratio": ratio, "resolution": resolution}
     if duration is not None:
         _request_data["duration"] = duration
     _child_span = None
@@ -821,7 +834,7 @@ async def execute_seedance_video_generation(
         task_id = await _create_video_task(
             api_key=api_key,
             base_url=base_url,
-            model_id=model_id,
+            model_id=model,
             content=content,
             ratio=ratio,
             duration=duration,

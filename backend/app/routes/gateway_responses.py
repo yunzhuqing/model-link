@@ -120,6 +120,7 @@ async def _run_background_response(
         storage = get_storage_backend()
 
         final_error: Optional[str] = None
+        final_error_info: Optional[Dict[str, Any]] = None
         formatted_output: Optional[str] = None
         _bg_start_time = time.monotonic()
 
@@ -366,6 +367,10 @@ async def _run_background_response(
                 f"request_id={request_id} duration_ms={_bg_duration_ms}: {exc}"
             )
             final_error = str(exc)
+            # Providers may attach a structured, client-facing error dict
+            # (e.g. SeedanceTaskError.error_info) so the GET endpoint can
+            # return a precise code + message instead of a generic placeholder.
+            final_error_info = getattr(exc, "error_info", None)
 
         # Write output to storage (outside any DB transaction)
         if formatted_output is not None:
@@ -374,10 +379,15 @@ async def _run_background_response(
             except Exception as write_exc:
                 logger.exception(f"[background] Failed to write output for {response_id!r} (request_id={request_id}): {write_exc}")
                 final_error = str(write_exc)
+                final_error_info = None
                 formatted_output = None
 
         # Update DB via shared async engine (reuses pool, no per-call TCP)
         if final_error:
+            if final_error_info:
+                # Persist the structured error (code + message) so the GET
+                # /v1/responses/<id> endpoint surfaces the real failure reason.
+                final_error = json.dumps(final_error_info, ensure_ascii=False)
             await _bg_dao.mark_failed_async(response_id, final_error)
         else:
             await _bg_dao.mark_completed_async(response_id)
@@ -826,6 +836,7 @@ async def get_response(response_id: str):
             "image_content_policy_violation", "invalid_image_mode",
             "image_file_too_large", "unsupported_image_media_type",
             "empty_image_file", "failed_to_download_image", "image_file_not_found",
+            "content_policy_violation",
         })
 
         def _normalise_error(raw) -> dict:

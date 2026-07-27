@@ -59,11 +59,11 @@ def test_resolve_responses_clamps_xhigh():
     print("PASS: responses path clamps xhigh -> high")
 
 
-def test_resolve_no_effort_support_thinking_auto():
+def test_resolve_no_effort_support_thinking_disabled_by_default():
     p = _provider()
     t, e = p._resolve_doubao_reasoning(_request(support_thinking=True))
-    assert t == "auto" and e is None, (t, e)
-    print("PASS: support_thinking + no effort -> thinking auto")
+    assert t == "disabled" and e is None, (t, e)
+    print("PASS: support_thinking + no effort -> thinking disabled by default")
 
 
 def test_resolve_no_effort_no_support():
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     test_resolve_off_when_none()
     test_resolve_enabled_mapping()
     test_resolve_responses_clamps_xhigh()
-    test_resolve_no_effort_support_thinking_auto()
+    test_resolve_no_effort_support_thinking_disabled_by_default()
     test_resolve_no_effort_no_support()
     test_responses_request_builds_thinking_and_reasoning()
     test_responses_request_none_disables()

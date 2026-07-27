@@ -57,9 +57,13 @@ class TaskCheckResult:
         output_items: For COMPLETED tasks, the formatted output items
                       (e.g. image_generation_call / video_generation_call)
                       ready to be saved to storage.  None otherwise.
+        error:        For FAILED tasks, the upstream-specific error info
+                      (e.g. {"code": "...", "message": "..."}) to surface to
+                      the client.  None when the upstream did not provide one.
     """
     status: TaskStatus
     output_items: Optional[List[Dict[str, Any]]] = None
+    error: Optional[Dict[str, Any]] = None
 
 
 # ── TencentVOD output extraction ──────────────────────────────────────────────
@@ -91,12 +95,18 @@ def _extract_tencentvod_output(resp: Dict[str, Any], model: str) -> Optional[Lis
     items: List[Dict[str, Any]] = []
     file_url = output.get("FileUrl", "")
     if file_url:
-        items.append({"type": item_type, "status": "completed", "result": file_url})
+        if item_type == "3d_generation_call":
+            items.append({"type": item_type, "status": "completed", "content": [{"url": file_url}]})
+        else:
+            items.append({"type": item_type, "status": "completed", "result": file_url})
 
     for fi in output.get("FileInfos") or []:
         url = fi.get("FileUrl", "")
         if url:
-            items.append({"type": item_type, "status": "completed", "result": url})
+            if item_type == "3d_generation_call":
+                items.append({"type": item_type, "status": "completed", "content": [{"url": url}]})
+            else:
+                items.append({"type": item_type, "status": "completed", "result": url})
 
     return items if items else None
 
@@ -222,7 +232,9 @@ async def resolve_and_check_task_status_async(
                     "status": "completed",
                     "result": result["video_url"],
                 }]
-            return TaskCheckResult(mapped, output_items=output_items)
+            return TaskCheckResult(
+                mapped, output_items=output_items, error=result.get("error")
+            )
         except Exception as exc:
             logger.error(f"[task_status] Volcengine check error for {task_id}: {exc}", exc_info=True)
             return TaskCheckResult(TaskStatus.UNKNOWN)
@@ -321,8 +333,11 @@ async def resolve_and_check_task_status_async(
                     items.append({
                         "type": "3d_generation_call",
                         "status": "completed",
-                        "result": f.get("Url", ""),
-                        "preview_url": f.get("PreviewImageUrl", ""),
+                        "content": [{
+                            "type": f.get("Type", "OBJ"),
+                            "url": f.get("Url", ""),
+                            "preview_url": f.get("PreviewImageUrl", ""),
+                        }],
                     })
                 if items:
                     output_items = items
