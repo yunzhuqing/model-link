@@ -27,7 +27,9 @@ import uuid
 from typing import Dict, Any, List, Optional
 
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType, ADDITIONAL_TOOLS_MARKER_NAME,
+)
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.utils import json_loads
 
@@ -36,7 +38,7 @@ _GATEWAY_INTERNAL_KEYS = frozenset({
     'support_thinking', 'support_online_image', 'support_online_video', 'reasoning',
     'output_pricing', 'timeout', '_image_generation', '_video_generation',
     '_3d_generation', '_on_task_created', '_on_model_resolved',
-    'verbosity',
+    'verbosity', '_additional_tools',
 })
 
 # ── OpenAI Responses API 允许的元数据透传键 ──────────────────────
@@ -329,20 +331,35 @@ def build_responses_request(request: ChatRequest) -> Dict[str, Any]:
       - max_tokens → max_output_tokens
       - reasoning_effort → reasoning.effort
 
+    ``additional_tools`` 是 Responses API 输入的一部分：原始条目按其在对话中
+    的位置重新注入 ``input``（占位 developer 消息标记位置），其 function 形
+    工具不从顶层 ``tools`` 数组中重复出现，避免同一工具同时出现在 ``input``
+    与 ``tools`` 中导致上游报错。非 Responses API（Chat-Completions）上游不
+    经过本函数，由各自的 ``prepare_request`` 从 ``request.tools`` 提取并放入
+    顶层 ``tools`` 字段。
+
     这是一个纯函数，不依赖 Provider 实例状态。
     调用方可在返回的 dict 上继续添加 Provider 特有字段。
     """
-    other_messages = []
-    developer_items = []
+    additional_raw = list(request.metadata.get('_additional_tools') or [])
+    addl_idx = 0
+
+    input_array: List[Dict[str, Any]] = []
     for msg in request.messages:
+        if msg.role == MessageRole.SYSTEM:
+            continue
         if msg.role == MessageRole.DEVELOPER:
+            if msg.name == ADDITIONAL_TOOLS_MARKER_NAME:
+                # Re-inject the original additional_tools item in place.
+                if addl_idx < len(additional_raw):
+                    input_array.append(additional_raw[addl_idx])
+                    addl_idx += 1
+                continue
             content = msg.get_text_content() or ''
             if content:
-                developer_items.append({"role": "developer", "content": content})
-        elif msg.role != MessageRole.SYSTEM:
-            other_messages.append(msg)
-
-    input_array = developer_items + messages_to_responses_input(other_messages)
+                input_array.append({"role": "developer", "content": content})
+            continue
+        input_array.extend(_message_to_responses_items(msg))
 
     result: Dict[str, Any] = {
         "model": request.model,
@@ -369,8 +386,16 @@ def build_responses_request(request: ChatRequest) -> Dict[str, Any]:
     if request.max_tokens is not None:
         result["max_output_tokens"] = request.max_tokens
 
+    # additional_tools' tools travel inside the re-injected input item, so
+    # exclude them from the global tools array to avoid duplication.
     if request.tools:
-        result["tools"] = [tool_to_responses_api(t) for t in request.tools]
+        global_tools = [
+            tool_to_responses_api(t)
+            for t in request.tools
+            if t.source != 'additional_tools'
+        ]
+        if global_tools:
+            result["tools"] = global_tools
     if request.tool_choice:
         result["tool_choice"] = request.tool_choice
 

@@ -14,6 +14,7 @@ class ToolType(Enum):
     RETRIEVAL = "retrieval"
     WEB_SEARCH = "web_search"
     IMAGE_GENERATION = "image_generation"
+    CUSTOM = "custom"
 
 
 @dataclass
@@ -59,6 +60,17 @@ class ToolDefinition:
     # 直接保存原始 schema，避免在 ToolParameter 转换过程中丢失信息。
     # get_parameters_schema() 优先返回此字段。
     parameters_schema: Optional[Dict[str, Any]] = None
+    # 工具来源标记。None 表示来自顶层 ``tools`` 字段；``"additional_tools"``
+    # 表示来自 Responses API ``input`` 中的 ``additional_tools`` 条目。
+    # Responses-API 上游（build_responses_request）会把这些工具从全局
+    # ``tools`` 数组中排除（它们已随原始 additional_tools 条目透传）；
+    # Chat-Completions 上游则把它们放入全局 ``tools`` 数组。
+    source: Optional[str] = None
+    # 原始工具定义透传。用于无法用 function 抽象忠实表达的工具类型
+    # （如 Responses API ``additional_tools`` 里的 ``custom`` 工具,它带
+    # ``format`` / ``defer_loading`` / ``allowed_callers`` 等专属字段）。
+    # 序列化时若该字段非空,优先原样输出,避免字段丢失或类型降级。
+    raw: Optional[Dict[str, Any]] = None
 
     def get_parameters_schema(self) -> Dict[str, Any]:
         """获取 JSON Schema 格式的参数定义

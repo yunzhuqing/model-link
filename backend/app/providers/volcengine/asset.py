@@ -424,6 +424,24 @@ async def delete_asset(
                     error_data = response.json()
                 except json.JSONDecodeError:
                     error_data = {"raw": response.text}
+
+                # NotFound.asset_id (HTTP 404) means the asset is already gone —
+                # the exact end state a delete is trying to reach. Treat it as
+                # success so callers proceed to clean up the DB record instead of
+                # being blocked by a missing upstream resource.
+                err_code = (
+                    error_data.get("ResponseMetadata", {})
+                    .get("Error", {})
+                    .get("Code")
+                )
+                if response.status_code == 404 and err_code == "NotFound.asset_id":
+                    logger.info(
+                        "Volcengine ARK DeleteAsset: asset %s already deleted "
+                        "(NotFound.asset_id) — treating as success",
+                        asset_id,
+                    )
+                    return error_data
+
                 logger.error(
                     "Volcengine ARK DeleteAsset error (status=%d): %s",
                     response.status_code,

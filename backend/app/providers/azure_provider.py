@@ -4,6 +4,7 @@ Azure OpenAI 供应商实现 (Azure OpenAI Provider)
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
+import re
 import time
 import uuid
 
@@ -99,30 +100,52 @@ class AzureProvider(OpenAIProvider):
         """获取 API 版本"""
         return self.config.extra_config.get('api_version', self.DEFAULT_API_VERSION)
     
-    # Models that must use the Responses API (/v1/responses) instead of Chat Completions
-    RESPONSES_API_MODELS = {
-        "gpt-5.5", "gpt-5.5-pro",
-        "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4",
-        "gpt-5.3-chat", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2",
-        "gpt-5.2-chat", "gpt-5.1-codex-max", "gpt-5.1", "gpt-5.1-chat",
-        "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-pro", "gpt-5-codex",
-        "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat", "computer-use-preview", "gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5",
-        "o1", "o3-mini", "o3", "o4-mini"
-    }
+    # Matches the leading ``gpt-<version>`` portion of a model/deployment name,
+    # e.g. "gpt-5", "gpt-5.5", "gpt-4o", "gpt-4", "gpt-35", "gpt-3.5".
+    _GPT_VERSION_RE = re.compile(r'^gpt-(\d+)(?:\.(\d+))?', re.IGNORECASE)
+
+    def _is_pre_gpt5(self, model: str) -> bool:
+        """Return True for gpt-5 之前的版本（gpt-4o / gpt-4 / gpt-3.5 等）.
+
+        Uses the model's gpt major version, not a hardcoded allowlist:
+
+          - gpt-4o / gpt-4-turbo / gpt-4 / gpt-3.5 → major 4 / 3 → pre-gpt-5
+          - gpt-35-turbo (Azure "3.5" naming) → treated as 3.5 → pre-gpt-5
+          - gpt-5 / gpt-5.5 / gpt-5-mini → major 5 → not pre-gpt-5
+          - o1 / o3 / o4-mini / computer-use-preview / gpt-image-1 → no
+            ``gpt-<digit>`` prefix → not pre-gpt-5 (these need the
+            Responses API and are not "gpt-5 之前的版本").
+
+        Non-gpt and unparseable names return False so callers default to the
+        Responses API (the safer choice for newer/unknown Azure deployments).
+        """
+        m = self._GPT_VERSION_RE.match(model or '')
+        if not m:
+            return False
+        major = int(m.group(1))
+        if major == 35:  # Azure gpt-35-turbo == gpt-3.5-turbo
+            return True
+        minor = int(m.group(2)) if m.group(2) else 0
+        return (major + minor / 10) < 5
 
     def _uses_responses_api(self, model: str) -> bool:
         """Check if the given model requires the Responses API.
 
-        Routes to the Responses API when either:
-        1. The model name is in the hardcoded RESPONSES_API_MODELS list, OR
-        2. The model's configured api_type (set by the gateway from model.api_type)
-           contains "responses" — this is the runtime "responses API" switch.
+        Routing priority:
+        1. If the model's ``api_type`` is explicitly configured (set by the
+           gateway from ``model.api_type``), honor it: route to the Responses
+           API when it contains "responses", otherwise to Chat Completions.
+        2. If ``api_type`` is not set, fall back to a model-version heuristic:
+           gpt-5 之前的版本（gpt-4o / gpt-4 / gpt-3.5 等）走 chat/completions,
+           其余（gpt-5+ 及 o 系列 / image / computer-use 等非 gpt-N 模型）
+           走 responses API。
         """
-        if model in self.RESPONSES_API_MODELS:
-            return True
-        # Honor the model's configured api_type switch (e.g. "chat_completions,responses")
         model_api_type = getattr(self, '_model_api_type', None) or ''
-        return 'responses' in model_api_type
+        if model_api_type:
+            # api_type 已显式设置 — 优先按它路由
+            return 'responses' in model_api_type
+        # api_type 未设置 — 按模型版本启发式判断
+        return not self._is_pre_gpt5(model)
 
     def get_chat_url(self, deployment_name: str) -> str:
         """
@@ -206,8 +229,19 @@ class AzureProvider(OpenAIProvider):
         result = build_responses_request(request)
     
         # Azure 特有：覆盖 tools 为 Responses API flat 格式
+        # 跳过 source=='additional_tools' 的工具：它们已随 input 中的原始
+        # additional_tools 条目透传（见 build_responses_request），重复放入
+        # 顶层 tools 会导致与 input 重复、上游报错。
         if request.tools:
-            result["tools"] = [tool_to_responses_api(t) for t in request.tools]
+            global_tools = [
+                tool_to_responses_api(t)
+                for t in request.tools
+                if t.source != 'additional_tools'
+            ]
+            if global_tools:
+                result["tools"] = global_tools
+            else:
+                result.pop("tools", None)
         if request.tool_choice:
             result["tool_choice"] = self._normalize_tool_choice_for_responses(request.tool_choice)
     

@@ -25,7 +25,10 @@ logger = logging.getLogger("gateway")
 
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType,
+    ADDITIONAL_TOOLS_MARKER_NAME,
+)
 from app.utils import json_loads
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 
@@ -337,6 +340,25 @@ def _handle_function_call_output_item(item: dict, messages: list):
     messages.append(Message(role=MessageRole.TOOL, content=[block], tool_call_id=call_id))
 
 
+def _handle_additional_tools_item(item: dict, messages: list):
+    """Record an ``additional_tools`` input item's position with an empty placeholder.
+
+    The Responses API accepts ``additional_tools`` as an input item (role
+    ``developer``) carrying a ``tools`` array of function / custom / namespace /
+    tool_search tool definitions. These are not conversation messages, so we
+    insert an empty ``developer`` placeholder (tagged with
+    ``ADDITIONAL_TOOLS_MARKER_NAME``) to preserve the item's position in the
+    turn order. The raw item itself is collected separately by ``_parse_tools``
+    into ``metadata['_additional_tools']`` and the function-shaped tools are
+    merged into ``ChatRequest.tools``.
+    """
+    messages.append(Message(
+        role=MessageRole.DEVELOPER,
+        name=ADDITIONAL_TOOLS_MARKER_NAME,
+        content='',
+    ))
+
+
 def _handle_reasoning_item(item: dict, messages: list):
     """Convert a reasoning input item → assistant Message with reasoning_content.
 
@@ -507,6 +529,59 @@ def _parse_function_tool_def(tool_data: dict) -> ToolDefinition:
         tool_type=ToolType.FUNCTION,
         parameters_schema=params_schema or None,
     )
+
+
+def _parse_additional_tool(tool_data: dict, collected: list):
+    """Parse a tool from an ``additional_tools`` array into ToolDefinitions.
+
+    Supported tool types (Responses API ``additional_tools`` format, flat —
+    no ``function`` wrapper):
+
+      - ``function``: standard function tool (name / description / parameters /
+        strict). Reuses ``_parse_function_tool_def``.
+      - ``custom``: client-executed tool whose ``format`` is the JSON schema
+        of its call. Carried as a ``ToolType.CUSTOM`` ToolDefinition with the
+        *original* tool dict preserved verbatim in ``ToolDefinition.raw`` —
+        Chat-Completions upstreams re-emit it as ``type=custom`` (they now
+        support it), and Responses-API upstreams exclude it from the global
+        ``tools`` array via the ``source='additional_tools'`` tag (the raw
+        additional_tools item is re-injected into ``input`` instead).
+      - ``namespace``: groups nested tools. Recursively flattened, preserving
+        member order.
+      - ``tool_search``: OpenAI-specific meta-tool for tool discovery. Not
+        representable as a function tool, so skipped here — the raw item (kept
+        verbatim in ``metadata['_additional_tools']``) carries it through to
+        Responses-API upstreams. Chat-Completions upstreams simply drop it.
+
+    Every collected ToolDefinition is tagged ``source='additional_tools'`` so
+    Responses-API upstreams can exclude it from the global ``tools`` array
+    (it travels inside the re-injected additional_tools item).
+    """
+    ttype = tool_data.get('type', 'function')
+
+    if ttype == 'function':
+        td = _parse_function_tool_def(tool_data)
+        td.source = 'additional_tools'
+        collected.append(td)
+    elif ttype == 'custom':
+        fmt = tool_data.get('format')
+        td = ToolDefinition(
+            name=tool_data.get('name', ''),
+            description=tool_data.get('description', ''),
+            tool_type=ToolType.CUSTOM,
+            parameters_schema=fmt if isinstance(fmt, dict) else None,
+            # Preserve the original tool dict so Chat-Completions upstreams
+            # can re-emit it verbatim (type=custom, with format /
+            # defer_loading / allowed_callers etc. intact) instead of
+            # lossy-converting it to a function tool.
+            raw=tool_data,
+        )
+        td.source = 'additional_tools'
+        collected.append(td)
+    elif ttype == 'namespace':
+        for nested in _safe_list(tool_data.get('tools')):
+            _parse_additional_tool(nested, collected)
+    # 'tool_search' and any unknown type: preserved only via the raw item.
 
 
 def _extract_video_gen_metadata(tool_data: dict, file_id_media_map: dict) -> dict:
@@ -822,6 +897,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         '3d_generation_call':     (_handle_generation_call_item, True),
         'function_call_output':   (_handle_function_call_output_item, False),
         'reasoning':              (_handle_reasoning_item, False),
+        'additional_tools':       (_handle_additional_tools_item, False),
     }
 
     # Set of item types that are dispatched via _INPUT_DISPATCH (not plain content blocks)
@@ -856,7 +932,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
         return file_map
 
     def _parse_tools(self, data: dict, file_id_media_map: dict):
-        """Parse the 'tools' array → (ToolDefinition list, accumulated metadata dict)."""
+        """Parse the 'tools' array → (ToolDefinition list, accumulated metadata dict).
+
+        Also scans the ``input`` array for ``additional_tools`` items: the raw
+        items are returned (in order) for ``metadata['_additional_tools']`` and
+        their function-shaped tools are merged into the returned ``tools`` list.
+        """
         tools = []
         img_meta: dict = {}
         vid_meta: dict = {}
@@ -878,7 +959,26 @@ class OpenAIResponsesAdapter(BaseAdapter):
             elif ttype == '3d_generation':
                 vid_meta.update(_extract_3d_gen_metadata(tool_data))
 
-        return tools, img_meta, vid_meta, erase_meta
+        # ── Collect additional_tools from input items ──────────────────────
+        additional_raw: list = []
+        additional_function_tools: list = []
+        for item in _safe_list(data.get('input')):
+            if isinstance(item, dict) and item.get('type') == 'additional_tools':
+                additional_raw.append(item)
+                for td in _safe_list(item.get('tools')):
+                    _parse_additional_tool(td, additional_function_tools)
+
+        # Merge additional function tools after top-level tools, dedup by name
+        # (additional_tools may recur across multi-turn input).
+        seen = {t.name for t in tools if t.name}
+        for t in additional_function_tools:
+            if not t.name:
+                tools.append(t)
+            elif t.name not in seen:
+                tools.append(t)
+                seen.add(t.name)
+
+        return tools, img_meta, vid_meta, erase_meta, additional_raw
 
     @staticmethod
     def _resolve_reasoning_effort(data: dict) -> Optional[str]:
@@ -1027,7 +1127,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
         file_id_media_map = self._build_file_id_media_map(data)
 
         # 3. Parse tools
-        tools, img_meta, vid_meta, erase_meta = self._parse_tools(data, file_id_media_map)
+        tools, img_meta, vid_meta, erase_meta, additional_raw = self._parse_tools(
+            data, file_id_media_map)
 
         # 4. Resolve reasoning effort
         reasoning_effort = self._resolve_reasoning_effort(data)
@@ -1035,6 +1136,11 @@ class OpenAIResponsesAdapter(BaseAdapter):
         # 5. Collect metadata (extra params + tool metadata)
         metadata = self._collect_metadata(
             data, data.get('reasoning'), img_meta, vid_meta, erase_meta)
+
+        # 5.1 Preserve raw additional_tools items for Responses-API upstreams
+        # (re-injected into input by build_responses_request).
+        if additional_raw:
+            metadata['_additional_tools'] = additional_raw
 
         # 5.5. Capture parallel_tool_calls and user-facing metadata
         parallel_tool_calls = data.get('parallel_tool_calls')

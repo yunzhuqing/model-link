@@ -610,7 +610,30 @@ class OpenAIProvider(BaseProvider):
             return {"type": block.type.value, "url": block.url, "data": block.data}
 
     def _tool_to_openai(self, tool: ToolDefinition) -> Dict[str, Any]:
-        """将 ToolDefinition 转换为 OpenAI Chat Completions 工具格式（嵌套 function 包装）。"""
+        """将 ToolDefinition 转换为 OpenAI Chat Completions 工具格式。
+
+        - function: 嵌套 ``function`` 包装格式。
+        - custom: Chat Completions 要求嵌套 ``custom`` 包装格式::
+
+            {"type": "custom", "custom": {"name": ..., "description": ...,
+                                          "format": ...}}
+
+          而 Responses API ``additional_tools`` 里 custom 是扁平格式
+          (``{"type":"custom","name":...,"format":...}``),所以这里需要
+          把扁平结构重新包装:取 ``tool.raw`` 除 ``type`` 外的字段(name /
+          description / format / defer_loading / allowed_callers 等)塞进
+          ``custom`` 键,保留全部专属字段,避免降级或丢失。
+        """
+        if tool.tool_type == ToolType.CUSTOM:
+            if tool.raw is not None:
+                body = {k: v for k, v in tool.raw.items() if k != "type"}
+            else:
+                body = {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "format": tool.get_parameters_schema(),
+                }
+            return {"type": "custom", "custom": body}
         return {
             "type": "function",
             "function": {

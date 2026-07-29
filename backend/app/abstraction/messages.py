@@ -20,6 +20,15 @@ class MessageRole(Enum):
         return self in (MessageRole.SYSTEM, MessageRole.DEVELOPER)
 
 
+# 标记 ``additional_tools`` 输入条目位置的占位 ``developer`` 消息的 ``name``。
+# Responses API 的 ``additional_tools`` 是 input 中的特殊条目（非对话消息），
+# 网关在解析阶段先插入一个空的 developer 占位消息以保留其在对话中的位置，
+# 真正的原始条目保存在 metadata['_additional_tools'] 中：
+#   - Responses-API 上游：按位置把原始条目重新注入 input，并跳过占位消息；
+#   - Chat-Completions 上游：直接丢弃占位消息（developer 角色本就不透传）。
+ADDITIONAL_TOOLS_MARKER_NAME = "__additional_tools__"
+
+
 class ContentType(Enum):
     """内容类型枚举"""
     TEXT = "text"

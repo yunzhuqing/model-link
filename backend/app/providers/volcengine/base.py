@@ -20,6 +20,7 @@ import logging
 from ..base import ProviderConfig, ProviderCapability
 from ..openai_provider import OpenAIProvider
 from .._responses_format import build_responses_request, _tool_result_to_responses_output
+from app.abstraction.messages import ADDITIONAL_TOOLS_MARKER_NAME
 
 # Volcengine Responses API 仅接受白名单内的字段，不允许传入额外字段。
 # 参考: https://www.volcengine.com/docs/82379/1263482
@@ -153,9 +154,19 @@ class VolcengineProvider(OpenAIProvider):
         result = build_responses_request(request)
 
         # ── Override input: use Volcengine-specific message conversion ──
+        # Re-inject additional_tools raw items at their placeholder positions
+        # (additional_tools is part of the Responses API input; Volcengine's
+        # own message converter would otherwise drop the empty placeholder).
+        additional_raw = list(request.metadata.get('_additional_tools') or [])
+        addl_idx = 0
         input_items = []
         for msg in request.messages:
             if msg.role == MessageRole.DEVELOPER:
+                if msg.name == ADDITIONAL_TOOLS_MARKER_NAME:
+                    if addl_idx < len(additional_raw):
+                        input_items.append(additional_raw[addl_idx])
+                        addl_idx += 1
+                    continue
                 content = msg.get_text_content() or ''
                 if content:
                     input_items.append({"role": "developer", "content": content})

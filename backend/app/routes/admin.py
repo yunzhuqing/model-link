@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -140,20 +141,235 @@ async def trigger_compress():
 
 # ── Cleanup Files ───────────────────────────────────────────────────────────────
 
+# In-memory registry of background cleanup jobs, keyed by job_id.
+#
+# Each entry is a dict with the public progress fields plus a private "_task"
+# holding the asyncio.Task (a strong reference so the task isn't GC'd mid-run).
+# Progress is updated per page inside _run_cleanup. The registry lives only on
+# the instance that runs the job and is lost on process restart — acceptable
+# for an idempotent, per-page-committed maintenance task (just call again).
+_cleanup_jobs: dict[str, dict] = {}
+
+
+def _cleanup_job_view(state: dict) -> dict:
+    """Return the public view of a cleanup job's state (strips private keys)."""
+    return {k: v for k, v in state.items() if not k.startswith("_")}
+
+
+async def _run_cleanup(job_id: str, cutoff: datetime, limit: int) -> None:
+    """
+    Background coroutine that performs the actual file cleanup.
+
+    Walks UploadedFile rows created before ``cutoff`` in keyset pages
+    (id > last_id), deletes the Volcengine ARK asset for seedance-ref rows,
+    then deletes the DB record. Per-page commits make progress durable and
+    keep memory bounded. Updates ``_cleanup_jobs[job_id]`` as it goes.
+    """
+    page_size = 500
+    state = _cleanup_jobs[job_id]
+    state["status"] = "in_progress"
+    state["started_at"] = datetime.utcnow().isoformat()
+
+    deleted_count = 0
+    failed_count = 0
+    processed_count = 0
+    last_id = 0
+    has_more = False
+
+    logger.info(
+        "[admin] Cleanup-files %s: started (cutoff=%s, limit=%s, page_size=%d)",
+        job_id, cutoff.isoformat(), limit or "unlimited", page_size,
+    )
+
+    try:
+        while True:
+            # Respect the per-call limit if set; stop and report whether more
+            # rows remain so the caller can page through large backlogs.
+            if limit:
+                remaining = limit - processed_count
+                if remaining <= 0:
+                    async with get_db_session() as s:
+                        from sqlalchemy import select as sa_select
+                        more = await s.execute(
+                            sa_select(UploadedFile.id)
+                            .where(UploadedFile.created_at < cutoff, UploadedFile.id > last_id)
+                            .limit(1)
+                        )
+                        has_more = more.first() is not None
+                    break
+                fetch_size = min(page_size, remaining)
+            else:
+                fetch_size = page_size
+
+            # Fetch one page with a short-lived session, then release it
+            # before any upstream call (per the "no DB connection across
+            # upstream call" guideline).
+            async with get_db_session() as session:
+                from sqlalchemy import select as sa_select
+                result = await session.execute(
+                    sa_select(UploadedFile)
+                    .where(UploadedFile.created_at < cutoff, UploadedFile.id > last_id)
+                    .order_by(UploadedFile.id)
+                    .limit(fetch_size)
+                )
+                page = result.scalars().all()
+
+            if not page:
+                has_more = False
+                break
+
+            logger.info(
+                "[admin] Cleanup-files %s: page fetched — %d records (after_id=%d, processed=%d)",
+                job_id, len(page), last_id, processed_count,
+            )
+
+            # Split this page into volcengine (needs upstream deletion) and others.
+            volcengine_records = [
+                r for r in page
+                if r.purpose == "seedance-ref" and r.type == "volcengine" and r.object_key and r.group_id
+            ]
+            volcengine_ids = {r.id for r in volcengine_records}
+            deletable_ids: set[int] = {r.id for r in page if r.id not in volcengine_ids}
+            page_errors = 0
+
+            # Group this page's volcengine records by group_id.
+            by_group: dict[int, list] = {}
+            for rec in volcengine_records:
+                by_group.setdefault(rec.group_id, []).append(rec)
+
+            # Resolve credentials for every group in this page (short DB
+            # session), then close it before the upstream calls.
+            group_creds: dict[int, tuple] = {}
+            if by_group:
+                async with get_db_session() as s:
+                    from app.routes.files import (
+                        _get_volcengine_credentials, _get_group_project_name,
+                    )
+                    for gid in by_group:
+                        group_creds[gid] = (
+                            await _get_volcengine_credentials(s, gid),
+                            await _get_group_project_name(s, gid),
+                        )
+
+            # Delete upstream assets group by group (no DB session held here).
+            for gid, grecs in by_group.items():
+                creds, project_name = group_creds[gid]
+                asset_ids = [r.object_key for r in grecs]
+                try:
+                    from app.providers.volcengine.asset import batch_delete_assets
+                    result_map = await batch_delete_assets(
+                        asset_ids=asset_ids,
+                        project_name=project_name,
+                        access_key=creds.get("access_key"),
+                        secret_key=creds.get("secret_key"),
+                        api_key=creds.get("api_key"),
+                        region=creds.get("ark_region", "cn-beijing"),
+                    )
+                    ok = 0
+                    for rec in grecs:
+                        if result_map.get(rec.object_key, False):
+                            deletable_ids.add(rec.id)
+                            ok += 1
+                        else:
+                            page_errors += 1
+                            logger.warning(
+                                "[admin] Cleanup-files %s: skipped DB deletion for %s — upstream DeleteAsset failed",
+                                job_id, rec.file_id,
+                            )
+                    logger.info(
+                        "[admin] Cleanup-files %s: group_id=%d — %d/%d assets deleted",
+                        job_id, gid, ok, len(grecs),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "[admin] Cleanup-files %s: group_id=%d errored: %s",
+                        job_id, gid, e,
+                    )
+                    page_errors += len(grecs)
+
+            # Commit this page's deletable DB records (short session).
+            if deletable_ids:
+                async with get_db_session() as session:
+                    from sqlalchemy import delete as sa_delete
+                    await session.execute(
+                        sa_delete(UploadedFile).where(UploadedFile.id.in_(list(deletable_ids)))
+                    )
+                    await session.commit()
+
+            deleted_count += len(deletable_ids)
+            failed_count += page_errors
+            processed_count += len(page)
+            last_id = page[-1].id
+
+            # Publish live progress so callers polling the status endpoint
+            # see the run advance page by page.
+            state.update(
+                deleted_count=deleted_count,
+                failed_count=failed_count,
+                processed_count=processed_count,
+                last_id=last_id,
+                has_more=has_more,
+            )
+
+            logger.info(
+                "[admin] Cleanup-files %s: page done — deleted=%d failed=%d (processed=%d, last_id=%d)",
+                job_id, len(deletable_ids), page_errors, processed_count, last_id,
+            )
+
+        state.update(
+            status="completed",
+            deleted_count=deleted_count,
+            failed_count=failed_count,
+            processed_count=processed_count,
+            last_id=last_id,
+            has_more=has_more,
+            completed_at=datetime.utcnow().isoformat(),
+        )
+        logger.info(
+            "[admin] Cleanup-files %s: completed — deleted=%d failed=%d processed=%d has_more=%s (cutoff=%s)",
+            job_id, deleted_count, failed_count, processed_count, has_more, cutoff.isoformat(),
+        )
+
+    except Exception as e:
+        logger.exception("[admin] Cleanup-files %s: failed", job_id)
+        state.update(
+            status="failed",
+            error=str(e),
+            deleted_count=deleted_count,
+            failed_count=failed_count,
+            processed_count=processed_count,
+            last_id=last_id,
+            completed_at=datetime.utcnow().isoformat(),
+        )
+    finally:
+        # Drop the strong task reference so the Task object can be collected
+        # once complete; the progress fields remain for status polling.
+        state.pop("_task", None)
+
+
 @admin_bp.route("/api/admin/cleanup-files", methods=["POST"])
 @_require_admin_secret
 async def cleanup_files():
     """
-    Delete uploaded files created before a specified time.
+    Start a background cleanup that deletes uploaded files created before a
+    specified time. Returns immediately with a job_id; the cleanup runs as a
+    background asyncio task on the same event loop and does not block the
+    HTTP response. Poll GET /api/admin/cleanup-files/jobs/<job_id> for progress.
 
     Query params:
         before  str  (required)  Duration before now. Supports:
                                  - "7d"   → 7 days ago
                                  - "12h"  → 12 hours ago
                                  - "3600" or "3600s" → 3600 seconds ago
+        limit   int  (optional)  Max records to process per call (0 = all).
+                                 When set and the backlog exceeds it, the
+                                 job's final state carries has_more=true;
+                                 start another job to continue.
 
-    For each matching file, deletes the Volcengine ARK asset (seedance-ref type)
-    and the database record.
+    For each matching file, deletes the Volcengine ARK asset (seedance-ref
+    type) and the database record. Processing is keyset-paginated internally
+    (500 rows/page) with a per-page commit, so a large backlog won't exhaust
+    memory and progress survives interruption.
     """
     raw = request.args.get("before", "").strip()
     if not raw:
@@ -167,96 +383,61 @@ async def cleanup_files():
 
     cutoff = (datetime.now(timezone.utc) - retention).replace(tzinfo=None)
 
-    logger.info("[admin] Cleanup-files: deleting files created before %s (retention=%s)", cutoff.isoformat(), raw)
+    try:
+        limit = max(0, int(request.args.get("limit", "0")))
+    except (TypeError, ValueError):
+        return jsonify({"detail": "limit must be a non-negative integer"}), 400
 
-    async with get_db_session() as session:
-        from sqlalchemy import select as sa_select, delete as sa_delete
+    job_id = f"cleanup_{uuid.uuid4().hex[:12]}"
+    _cleanup_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "before": cutoff.isoformat(),
+        "limit": limit,
+        "deleted_count": 0,
+        "failed_count": 0,
+        "processed_count": 0,
+        "last_id": 0,
+        "has_more": False,
+        "started_at": None,
+        "completed_at": None,
+        "error": None,
+    }
 
-        result = await session.execute(
-            sa_select(UploadedFile).where(UploadedFile.created_at < cutoff)
-        )
-        records = result.scalars().all()
-
-        if not records:
-            return jsonify({
-                "detail": "No files found before the given time",
-                "deleted_count": 0,
-                "failed_count": 0,
-                "before": cutoff.isoformat(),
-            })
-
-        # Split records into volcengine (needs upstream deletion) and others
-        volcengine_records = [
-            r for r in records
-            if r.purpose == "seedance-ref" and r.type == "volcengine" and r.object_key and r.group_id
-        ]
-        non_volcengine_ids = {r.id for r in records if r not in volcengine_records}
-
-        # Track which DB record IDs can be safely deleted
-        deletable_ids: set[int] = set(non_volcengine_ids)
-        volcengine_delete_errors = 0
-
-        # Group volcengine/seedance-ref records by group_id for batch deletion
-        volcengine_by_group: dict[int, list] = {}
-        for rec in volcengine_records:
-            volcengine_by_group.setdefault(rec.group_id, []).append(rec)
-
-        for group_id, group_records in volcengine_by_group.items():
-            try:
-                from app.routes.files import _get_volcengine_credentials, _get_group_project_name
-                from app.providers.volcengine.asset import batch_delete_assets
-
-                creds = await _get_volcengine_credentials(session, group_id)
-                project_name = await _get_group_project_name(session, group_id)
-                asset_ids = [r.object_key for r in group_records]
-                result_map = await batch_delete_assets(
-                    asset_ids=asset_ids,
-                    project_name=project_name,
-                    access_key=creds.get("access_key"),
-                    secret_key=creds.get("secret_key"),
-                    api_key=creds.get("api_key"),
-                    region=creds.get("ark_region", "cn-beijing"),
-                )
-
-                # Only mark DB records as deletable if the upstream asset was deleted
-                for rec in group_records:
-                    if result_map.get(rec.object_key, False):
-                        deletable_ids.add(rec.id)
-                    else:
-                        volcengine_delete_errors += 1
-                        logger.warning(
-                            "[admin] Cleanup-files: skipped DB deletion for %s — upstream DeleteAsset failed",
-                            rec.file_id,
-                        )
-
-            except Exception as e:
-                logger.error(
-                    "[admin] Cleanup-files: failed to delete Volcengine assets for group %d: %s",
-                    group_id, e,
-                )
-                volcengine_delete_errors += len(group_records)
-
-        # Delete only DB records whose upstream assets were successfully removed
-        if deletable_ids:
-            await session.execute(
-                sa_delete(UploadedFile).where(UploadedFile.id.in_(list(deletable_ids)))
-            )
-        await session.commit()
-
-    total_errors = volcengine_delete_errors
-    deleted_count = len(deletable_ids)
+    # Strong reference to the task lives in the registry so it isn't GC'd.
+    task = asyncio.create_task(_run_cleanup(job_id, cutoff, limit))
+    _cleanup_jobs[job_id]["_task"] = task
 
     logger.info(
-        "[admin] Cleanup-files: completed — %d deleted, %d DB records kept due to upstream failures (cutoff=%s)",
-        deleted_count, total_errors, cutoff.isoformat(),
+        "[admin] Cleanup-files %s: enqueued (cutoff=%s, limit=%s)",
+        job_id, cutoff.isoformat(), limit or "unlimited",
     )
-
     return jsonify({
-        "detail": f"Deleted {deleted_count} files, {total_errors} failed (DB records kept)",
-        "deleted_count": deleted_count,
-        "failed_count": total_errors,
+        "detail": "Cleanup started in background",
+        "job_id": job_id,
+        "status": "queued",
         "before": cutoff.isoformat(),
-    })
+    }), 202
+
+
+@admin_bp.route("/api/admin/cleanup-files/jobs/<job_id>", methods=["GET"])
+@_require_admin_secret
+async def cleanup_job_status(job_id: str):
+    """Return the current progress of a background cleanup job."""
+    state = _cleanup_jobs.get(job_id)
+    if state is None:
+        return jsonify({"detail": f"Unknown cleanup job: {job_id}"}), 404
+    return jsonify(_cleanup_job_view(state))
+
+
+@admin_bp.route("/api/admin/cleanup-files/jobs", methods=["GET"])
+@_require_admin_secret
+async def cleanup_jobs_list():
+    """List all known background cleanup jobs (most recent first)."""
+    jobs = [_cleanup_job_view(s) for s in _cleanup_jobs.values()]
+    # Newest job_ids last; show latest first.
+    jobs.reverse()
+    return jsonify({"jobs": jobs, "count": len(jobs)})
 
 
 # ── Resync ─────────────────────────────────────────────────────────────────────
