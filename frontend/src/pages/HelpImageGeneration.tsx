@@ -833,9 +833,64 @@ export default function HelpImageGeneration() {
         <SectionCard
           id="seedream-sizes"
           title="Seedream 支持尺寸"
-          description='doubao-seedream 为国内模型名称，seedream 为海外模型名称。size 参数传入 WxH 精确分辨率（如 "2048x2048"），需与下表中的尺寸匹配。'
+          description='doubao-seedream 为国内模型名称，seedream 为海外模型名称。size 参数传入 WxH 精确分辨率（如 "2048x2048"），需与下表中的尺寸匹配（5.0 pro 除外，支持像素范围内的自定义尺寸）。'
         >
           <div className="space-y-6">
+            {/* Seedream 5.0 pro */}
+            <div>
+              <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 5.0 pro</h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold text-slate-600 w-16">比例</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">1K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">2K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">3K</th>
+                      <th className="px-3 py-2 font-semibold text-slate-600">4K</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {[
+                      { ratio: '1:1',  k1: '1024x1024', k2: '2048x2048' },
+                      { ratio: '4:3',  k1: '1152x864',  k2: '2368x1776' },
+                      { ratio: '3:4',  k1: '864x1152',  k2: '1776x2368' },
+                      { ratio: '16:9', k1: '1424x800',  k2: '2816x1584' },
+                      { ratio: '9:16', k1: '800x1424',  k2: '1584x2816' },
+                      { ratio: '3:2',  k1: '1248x832',  k2: '2496x1664' },
+                      { ratio: '2:3',  k1: '832x1248',  k2: '1664x2496' },
+                      { ratio: '21:9', k1: '1568x672',  k2: '3136x1344' },
+                    ].map((r) => (
+                      <tr key={r.ratio} className="hover:bg-slate-50">
+                        <td className="px-3 py-1.5"><code className="text-pink-600 font-semibold">{r.ratio}</code></td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k1}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600">{r.k2}</td>
+                        <td className="px-3 py-1.5 text-slate-400">—</td>
+                        <td className="px-3 py-1.5 text-slate-400">—</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-xs text-slate-500 leading-relaxed">
+                除上表推荐尺寸外，5.0 pro 还支持自定义 WxH：总像素取值范围为{' '}
+                <code className="text-pink-600">[921600（1280x720）, 4624220（2048x2048 × 1.1025）]</code>，
+                例如 <code className="font-mono">"1920x1080"</code>（2073600 像素）也在允许范围内。
+              </p>
+              <p className="mt-1.5 text-xs text-slate-500 leading-relaxed">
+                与其他版本最大的不同：5.0 pro 支持<strong className="text-slate-600">图片交互编辑</strong>，可以对图片的指定区域进行编辑。具体参考{' '}
+                <a
+                  href="https://console.volcengine.com/ark/region:cn-beijing/docs/82379/2582775?lang=zh"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-700 underline"
+                >
+                  火山引擎官方文档
+                </a>
+                。
+              </p>
+            </div>
+
             {/* Seedream 5.0 lite */}
             <div>
               <h4 className="text-sm font-semibold text-slate-700 mb-2">Seedream 5.0 lite</h4>
@@ -952,7 +1007,7 @@ export default function HelpImageGeneration() {
           </div>
 
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 mt-2">
-            <strong>提示：</strong>Seedream 的 size 参数仅支持 WxH 精确分辨率格式（如 <code>"2048x2048"</code>），需与上表中的尺寸匹配。
+            <strong>提示：</strong>Seedream 的 size 参数仅支持 WxH 精确分辨率格式（如 <code>"2048x2048"</code>），需与上表中的尺寸匹配；其中 5.0 pro 支持自定义 WxH，总像素需在 [921600, 4624220] 范围内。
           </div>
         </SectionCard>
 
