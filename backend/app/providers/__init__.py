@@ -22,6 +22,7 @@ from .deepseek_provider import DeepSeekProvider
 from .openai_chatcompletions_compt_provider import OpenAIChatCompletionsCompatProvider
 from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
 from .mulerun import MulerunProvider
+from .seed_tts_provider import SeedTTSProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
@@ -30,7 +31,7 @@ __all__ = [
     'MiniMaxProvider', 'GeminiProvider', 'TencentVODProvider', 'VLLMProvider',
     'TencentProvider', 'HunyuanProvider', 'MPSProvider', 'BytePlusProvider', 'DeepSeekProvider',
     'OpenAIChatCompletionsCompatProvider', 'OpenAIResponsesCompatProvider',
-    'MulerunProvider',
+    'MulerunProvider', 'SeedTTSProvider',
 ]
 
 # 供应商注册表
@@ -55,6 +56,7 @@ PROVIDER_REGISTRY = {
     'openai_chatcompletions_compt': OpenAIChatCompletionsCompatProvider,
     'openai_responses_compt': OpenAIResponsesCompatProvider,
     'mulerun': MulerunProvider,
+    'seed_tts': SeedTTSProvider,
 }
 
 

@@ -48,6 +48,7 @@ class BackgroundResponse(db.Model):
     request_id = db.Column(db.String(64), nullable=True)      # Original X-Request-Id
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime, nullable=True)
+    progress = db.Column(db.Integer, nullable=True)           # 0-100 completion percent for in_progress jobs
 
     def to_dict(self):
         return {
@@ -59,6 +60,7 @@ class BackgroundResponse(db.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "error": self.error,
+            "progress": self.progress,
         }
 
 
@@ -378,6 +380,7 @@ class Provider(db.Model):
     authorization = db.Column(db.String(50), nullable=True, default="Authorization")  # "Authorization" for Bearer token, "custom" for custom header (e.g., x-goog-api-key)
     extra_config = db.Column(db.JSON, nullable=True)  # Provider-specific extra config (e.g. api_version for Azure)
     tags = db.Column(db.JSON, nullable=True)  # Tags for billing usage binding (e.g. ["production", "team-a"])
+    source = db.Column(db.String(10), nullable=False, default="external")  # Provider provenance: "external" | "internal"
     is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this provider is enabled
 
     models = db.relationship("Model", back_populates="provider", cascade="all, delete-orphan")
@@ -405,6 +408,7 @@ class Provider(db.Model):
             'authorization': self.authorization or 'Authorization',
             'extra_config': self.extra_config or {},
             'tags': self.tags or [],
+            'source': self.source,
             'is_active': self.is_active,
             'models': [m.to_dict() for m in self.models] if state.attrs.models.loaded_value is not NO_VALUE else [],
         }
@@ -420,6 +424,7 @@ class Provider(db.Model):
             'authorization': self.authorization or 'Authorization',
             'extra_config': self.extra_config or {},
             'tags': self.tags or [],
+            'source': self.source,
             'is_active': self.is_active
         }
 
@@ -494,6 +499,7 @@ class ModelTemplate(db.Model):
     support_online_image = db.Column(db.Boolean, default=False)
     support_online_video = db.Column(db.Boolean, default=False)
     support_embedding = db.Column(db.Boolean, default=False)
+    support_tts = db.Column(db.Boolean, default=False)  # Whether this is a text-to-speech model
 
     # Supported API access types, comma-separated: chat_completions,responses,messages
     # NULL or empty means all types are supported (backward compatible)
@@ -544,6 +550,7 @@ class ModelTemplate(db.Model):
             'support_online_image': self.support_online_image,
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding,
+            'support_tts': self.support_tts,
             'api_type': self.api_type,
         }
 
@@ -625,6 +632,7 @@ class Model(db.Model):
     support_online_image = db.Column(db.Boolean, default=True)  # Whether the provider supports image URLs directly; if False, URLs are converted to base64
     support_online_video = db.Column(db.Boolean, default=True)  # Whether the provider supports video URLs directly; if False, URLs are converted to base64
     support_embedding = db.Column(db.Boolean, default=False)  # Whether this is an embedding model
+    support_tts = db.Column(db.Boolean, default=False)  # Whether this is a text-to-speech model
     is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this model is enabled
 
     # Supported API access types, comma-separated: chat_completions,responses,messages
@@ -680,6 +688,7 @@ class Model(db.Model):
             'support_online_image': self.support_online_image,
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding,
+            'support_tts': self.support_tts,
             'is_active': self.is_active,
             'api_type': self.api_type
         }

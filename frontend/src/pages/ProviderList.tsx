@@ -79,6 +79,7 @@ interface Model {
   support_online_image: boolean;
   support_online_video: boolean;
   support_embedding: boolean;
+  support_tts: boolean;
   is_active: boolean;
   api_type: string | null;
 }
@@ -133,6 +134,7 @@ interface ModelTemplate {
   support_online_image: boolean;
   support_online_video: boolean;
   support_embedding: boolean;
+  support_tts: boolean;
   retirement_time: string | null;
   is_retired: boolean;
   rpm: number | null;
@@ -149,6 +151,7 @@ interface ModelTemplate {
 const PROVIDER_TYPE_TO_TEMPLATE: Record<string, string[]> = {
   gemini: ['Google'],
   deepseek: ['DeepSeek'],
+  seed_tts: ['Volcengine'],
 };
 
 /** Return the subset of model templates that match a given provider type.
@@ -220,6 +223,7 @@ const defaultModelState = {
   support_online_image: false,
   support_online_video: false,
   support_embedding: false,
+  support_tts: false,
   api_type: '',
 };
 
@@ -353,6 +357,7 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle, canManage }: { model: Mo
             {model.support_online_image === false && <FeatureBadge label={t('provider.disabled') + ' Image Only'} color="slate" />}
             {model.support_online_video === false && <FeatureBadge label={t('provider.disabled') + ' Video Only'} color="slate" />}
             {model.support_embedding && <FeatureBadge label={t('modelTemplates.features.embedding')} color="emerald" />}
+            {model.support_tts && <FeatureBadge label={t('modelTemplates.features.tts')} color="violet" />}
           </div>
         </div>
         {canManage !== false && (
@@ -476,6 +481,7 @@ const ModelForm = ({
       support_online_image: tpl.support_online_image,
       support_online_video: tpl.support_online_video,
       support_embedding: tpl.support_embedding,
+      support_tts: tpl.support_tts,
       api_type: (tpl as any).api_type || '',
       retirement_time: tpl.retirement_time,
       rpm: tpl.rpm,
@@ -1198,6 +1204,7 @@ const ModelForm = ({
             { key: 'support_online_image', label: 'Online Image URL' },
             { key: 'support_online_video', label: 'Online Video URL' },
             { key: 'support_embedding', label: 'Embedding' },
+            { key: 'support_tts', label: 'TTS' },
           ].map((feature) => (
             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
               <input

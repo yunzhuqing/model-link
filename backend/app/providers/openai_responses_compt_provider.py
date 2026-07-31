@@ -43,6 +43,7 @@ from ._responses_format import (
 )
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk, StreamEventType, FinishReason
+from app.abstraction.tts import TTSRequest, TTSResponse
 
 
 class OpenAIResponsesCompatProvider(BaseProvider):
@@ -95,6 +96,18 @@ class OpenAIResponsesCompatProvider(BaseProvider):
     def prepare_request(self, request: ChatRequest) -> Dict[str, Any]:
         """委托给共享模块构建 Responses API 请求体。"""
         return build_responses_request(request)
+
+    async def speech(self, request: TTSRequest) -> TTSResponse:
+        """
+        执行文本转语音请求 (text-to-speech)。
+
+        Delegates to the shared ``openai_speech`` helper (same ``/audio/speech``
+        surface as the Chat-Completions-compatible provider). ``request.input``
+        may be a plain string or an array of content blocks (text / image /
+        audio) — it is passed through to the upstream verbatim.
+        """
+        from ._tts import openai_speech
+        return await openai_speech(self, request)
 
     # ------------------------------------------------------------------
     # 非流式请求

@@ -121,6 +121,7 @@ async def create_model_template(current_user):
         support_online_image=data.get('support_online_image', False),
         support_online_video=data.get('support_online_video', False),
         support_embedding=data.get('support_embedding', False),
+        support_tts=data.get('support_tts', False),
         timeout=data.get('timeout') or None,
         api_type=data.get('api_type') or None,
     )
@@ -149,7 +150,7 @@ async def update_model_template(current_user, template_id):
             'currency', 'rpm', 'tpm', 'discount', 'timeout',
             'support_kvcache', 'support_image', 'support_audio', 'support_video',
             'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
-            'support_online_image', 'support_online_video', 'support_embedding',
+            'support_online_image', 'support_online_video', 'support_embedding', 'support_tts',
             'output_size', 'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
             'api_type',
         ]:

@@ -130,6 +130,20 @@ class VolcengineProvider(OpenAIProvider):
     def get_model_info(self, model: str) -> Optional[Dict[str, Any]]:
         return {"description": f"Volcengine model: {model}", "context_size": 128000}
 
+    async def speech(self, request: Any) -> None:
+        """Volcengine provider 不再承载 TTS（已拆分为独立 provider）。
+
+        openspeech 文本转语音（seed-audio）已拆分为独立 provider 类型
+        ``seed_tts``（``SeedTTSProvider``），走 ``{base_url}/api/v3/tts/create``
+        + ``X-Api-Key``。请勿在 Ark（volcengine）供应商下启用 TTS —— 否则会误打
+        到 Ark 的 ``/audio/speech``（该端点不存在）。请为 seed-audio 模型创建
+        provider type = ``seed_tts`` 的供应商并勾选 TTS 能力。
+        """
+        raise RuntimeError(
+            "Volcengine provider no longer supports text-to-speech. "
+            "Create a separate provider with type 'seed_tts' for Seed TTS (openspeech) models."
+        )
+
     # ----------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------

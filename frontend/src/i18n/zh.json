@@ -316,6 +316,7 @@
       "featureWebSearch": "联网搜索",
       "featureThinking": "深度思考",
       "featureEmbedding": "嵌入",
+      "featureTts": "语音合成",
       "actions": "操作",
       "shareToGroup": "共享",
       "sharedBadge": "共享自 {{group}}"
@@ -457,7 +458,8 @@
       "thinking": "思考",
       "onlineImage": "在线图片 URL",
       "onlineVideo": "在线视频 URL",
-      "embedding": "嵌入"
+      "embedding": "嵌入",
+      "tts": "语音合成"
     },
     "card": {
       "ctx": "上下文",

@@ -6,6 +6,9 @@
 - image_generation: 豆包图像生成工具实现
 - video_generation: 豆包 Seedance 视频生成工具实现
 - threed_generation: 豆包 Seed3D 3D 生成工具实现
+
+文本转语音（openspeech / seed-audio）已拆分为独立 provider：
+``app.providers.seed_tts_provider.SeedTTSProvider``（PROVIDER_TYPE="seed_tts"）。
 """
 
 from .base import VolcengineProvider

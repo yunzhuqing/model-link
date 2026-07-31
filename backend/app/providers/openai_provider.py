@@ -15,6 +15,7 @@ from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolT
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
+from app.abstraction.tts import TTSRequest, TTSResponse
 
 # Internal metadata keys set by the gateway service.
 # These must be filtered out before sending requests to upstream provider APIs.
@@ -990,7 +991,19 @@ class OpenAIProvider(BaseProvider):
             raise
         except Exception as e:
             raise RuntimeError(f"OpenAI embedding API error: {str(e)}")
-    
+
+    async def speech(self, request: TTSRequest) -> TTSResponse:
+        """
+        执行文本转语音请求 (text-to-speech)。
+
+        Delegates to the shared ``openai_speech`` helper so the same
+        implementation is reused by the Responses-API-compatible provider.
+        ``request.input`` may be a plain string or an array of content blocks
+        (text / image / audio) — it is passed through to the upstream verbatim.
+        """
+        from ._tts import openai_speech
+        return await openai_speech(self, request)
+
     def _parse_embedding_response(self, data: Dict[str, Any], model: str) -> EmbeddingResponse:
         """解析嵌入响应"""
         embedding_data = []
