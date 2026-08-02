@@ -33,7 +33,10 @@ import sys
 import traceback
 
 from ..base import BaseProvider, ProviderConfig, ProviderCapability, UpstreamProviderError
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
+)
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -794,7 +797,7 @@ class VertexAIProvider(BaseProvider):
         for msg in request.messages:
             if isinstance(msg.content, list):
                 for block in msg.content:
-                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                    if isinstance(block, ContentBlock) and block.type in TOOL_CALL_TYPES:
                         if block.tool_call_id and block.tool_name:
                             call_id_to_name[block.tool_call_id] = block.tool_name
 
@@ -867,7 +870,7 @@ class VertexAIProvider(BaseProvider):
             call_id = message.tool_call_id or ""
             if isinstance(message.content, list):
                 for block in message.content:
-                    if block.type == ContentType.TOOL_RESULT:
+                    if block.type in TOOL_RESULT_TYPES:
                         # Use block's tool_call_id, or fall back to message's tool_call_id
                         bid = block.tool_call_id or call_id
                         # Get function name from block, message, or lookup by id
@@ -935,7 +938,7 @@ class VertexAIProvider(BaseProvider):
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.FILE_BASE64:
             return {"inlineData": {"data": _strip_data_uri(block.data or ""), "mimeType": block.media_type or "application/octet-stream"}}
-        elif block.type == ContentType.TOOL_CALL:
+        elif block.type in TOOL_CALL_TYPES:
             # Note: Vertex AI does not accept "id" in functionCall when sending request
             fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
             part: Dict[str, Any] = {"functionCall": fc}
@@ -945,7 +948,7 @@ class VertexAIProvider(BaseProvider):
                 if block.tool_call_id in _sigs:
                     part["thoughtSignature"] = _sigs[block.tool_call_id]
             return part
-        elif block.type == ContentType.TOOL_RESULT:
+        elif block.type in TOOL_RESULT_TYPES:
             bid = block.tool_call_id or ""
             name = block.tool_name or call_id_to_name.get(bid, "")
             # Note: Vertex AI does not accept "id" in functionResponse
@@ -1194,11 +1197,11 @@ class VertexAIProvider(BaseProvider):
             result["content"] = message.content or "(empty)"
         elif isinstance(message.content, list):
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
-            tool_call_blocks = [b for b in message.content if b.type == ContentType.TOOL_CALL]
-            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL, ContentType.TOOL_RESULT)]
+            tool_call_blocks = [b for b in message.content if b.type in TOOL_CALL_TYPES]
+            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, *TOOL_CALL_TYPES, *TOOL_RESULT_TYPES)]
 
             # For tool result blocks, extract text content
-            tool_result_blocks = [b for b in message.content if b.type == ContentType.TOOL_RESULT]
+            tool_result_blocks = [b for b in message.content if b.type in TOOL_RESULT_TYPES]
             if tool_result_blocks and not text_blocks and not other_blocks:
                 result["content"] = " ".join(b.tool_result or "" for b in tool_result_blocks) or "(empty)"
             elif text_blocks and not other_blocks:

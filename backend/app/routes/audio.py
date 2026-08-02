@@ -245,14 +245,25 @@ async def create_speech():
         # Stream mode: ensure we have bytes.
         audio_bytes = tts_response.audio_bytes
         if audio_bytes is None and tts_response.audio_url:
-            # Provider returned only a URL (e.g. doubao with enable_url) — download it.
-            from app.http_client import get_shared_client
+            # Provider returned only a URL — download it. Uses the
+            # follow_redirects client because signed audio URLs typically
+            # 302 to the actual storage location.
+            from app.http_client import get_shared_redirect_client
             try:
-                client = await get_shared_client()
+                client = await get_shared_redirect_client()
                 dl = await client.get(tts_response.audio_url)
                 if dl.status_code >= 400:
                     return _error_response(
                         f"Failed to download generated audio ({dl.status_code})",
+                        code="provider_error", status_code=502,
+                    )
+                # Use the real content-type from the download response.
+                downloaded_ct = (dl.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if downloaded_ct.startswith("audio/"):
+                    tts_response.content_type = downloaded_ct
+                elif downloaded_ct in ("text/html", "application/json", "text/plain"):
+                    return _error_response(
+                        f"Failed to download generated audio: unexpected content-type '{downloaded_ct}'",
                         code="provider_error", status_code=502,
                     )
                 audio_bytes = dl.content

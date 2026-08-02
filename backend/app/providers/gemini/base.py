@@ -21,7 +21,10 @@ import sys
 logger = logging.getLogger(__name__)
 
 from ..base import BaseProvider, ProviderConfig, ProviderCapability
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
+)
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -227,7 +230,7 @@ class GeminiProvider(BaseProvider):
         for msg in request.messages:
             if isinstance(msg.content, list):
                 for block in msg.content:
-                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                    if isinstance(block, ContentBlock) and block.type in TOOL_CALL_TYPES:
                         if block.tool_call_id and block.tool_name:
                             call_id_to_name[block.tool_call_id] = block.tool_name
 
@@ -370,7 +373,7 @@ class GeminiProvider(BaseProvider):
             call_id = message.tool_call_id or ""
             if isinstance(message.content, list):
                 for block in message.content:
-                    if block.type == ContentType.TOOL_RESULT:
+                    if block.type in TOOL_RESULT_TYPES:
                         bid = block.tool_call_id or call_id
                         name = block.tool_name or message.name or call_id_to_name.get(bid, "")
                         fr: Dict[str, Any] = {
@@ -441,7 +444,7 @@ class GeminiProvider(BaseProvider):
             return {"fileData": {"fileUri": block.url, "mimeType": block.media_type or "application/octet-stream"}}
         elif block.type == ContentType.FILE_BASE64:
             return {"inlineData": {"data": block.data, "mimeType": block.media_type or "application/octet-stream"}}
-        elif block.type == ContentType.TOOL_CALL:
+        elif block.type in TOOL_CALL_TYPES:
             fc: Dict[str, Any] = {"name": block.tool_name or "", "args": block.tool_arguments or {}}
             if block.tool_call_id:
                 fc["id"] = block.tool_call_id
@@ -452,7 +455,7 @@ class GeminiProvider(BaseProvider):
                 if block.tool_call_id in _sigs:
                     part["thoughtSignature"] = _sigs[block.tool_call_id]
             return part
-        elif block.type == ContentType.TOOL_RESULT:
+        elif block.type in TOOL_RESULT_TYPES:
             bid = block.tool_call_id or ""
             name = block.tool_name or call_id_to_name.get(bid, "")
             fr: Dict[str, Any] = {"name": name, "response": {"output": block.get_tool_result_text()}}

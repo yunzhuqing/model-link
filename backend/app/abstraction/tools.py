@@ -100,13 +100,19 @@ class ToolDefinition:
 class ToolCall:
     """
     工具调用 - 表示一个工具调用请求
-    
+
     包含工具名称、参数和调用 ID。
     """
     id: str
     name: str
     arguments: Dict[str, Any]
     call_type: str = "function"
+    # Custom tool (custom_tool_call) 专属字段，仅当 call_type == "custom" 时设置。
+    # 用于在 Responses API 上无损还原 custom_tool_call 输出项。
+    namespace: Optional[str] = None          # custom 工具命名空间
+    caller: Optional[Dict[str, Any]] = None  # {"type": "direct"} | {"type": "program", "caller_id": ...}
+    item_id: Optional[str] = None            # custom_tool_call 条目自身的 id（与 call id 不同）
+    input_raw: Optional[str] = None          # 原始 "input" JSON 字符串（无损透传）
 
 
 @dataclass

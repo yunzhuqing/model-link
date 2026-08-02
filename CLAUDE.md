@@ -94,6 +94,15 @@ Key rules enforced in `_process_chunk()` and `format_stream_chunk()`:
 3. **`response.completed` output array**: message BEFORE function_calls (matches output_index: 0=reasoning, 1=message, 2+=function_call).
 4. **`_is_marker_chunk()` MUST check `delta_reasoning_content`**: chunks with reasoning content are NOT role-only markers. Providers like Bailian send reasoning without `delta_content` (incremental_output mode), so omitting this check drops reasoning chunks.
 
+**Custom tools (`custom_tool_call` / `custom_tool_call_output`)**: supported for input and output, stream and non-stream.
+- Input `custom_tool_call` → assistant `ContentType.CUSTOM_TOOL_CALL` block; `custom_tool_call_output` → tool `ContentType.CUSTOM_TOOL_CALL_OUTPUT` block (distinct `ContentType` values, NOT plain `TOOL_CALL`/`TOOL_RESULT`). Pairing key is `call_id` ↔ `caller_id` (fallback `caller.caller_id`, then item `id`).
+- Custom metadata is stored as **fixed typed fields** on `ContentBlock` (`namespace` / `caller` / `item_id` / `input_raw` / `prompt_cache_breakpoint`), not a free-form dict. `build_responses_request` / Volcengine `_message_to_input_item` reconstruct the `custom_tool_call` / `custom_tool_call_output` items from these fields via `_custom_tool_call_item_from_block` / `_custom_tool_call_output_item_from_block`.
+- Providers treat custom variants uniformly: `TOOL_CALL_TYPES = (TOOL_CALL, CUSTOM_TOOL_CALL)` and `TOOL_RESULT_TYPES = (TOOL_RESULT, CUSTOM_TOOL_CALL_OUTPUT)` are exported from `messages.py` — CC upstreams (OpenAI/Anthropic/Gemini/Vertex/DeepSeek) serialize custom blocks as ordinary function tool calls; only the Responses-API paths emit `custom_tool_call` / `custom_tool_call_output`.
+- Output: a `ToolCall` with `call_type == "custom"` formats as a `custom_tool_call` item (`_custom_tool_call_output_item`), carrying `namespace` / `caller` / `item_id` / `input_raw` from the upstream. Streaming uses `response.custom_tool_call_input.delta` / `.done` events.
+- `openai_responses_compt_provider._parse_responses_event` maps `item_id` → `call_id` (`tc_id_map`) because `custom_tool_call_input.delta` only carries the item id.
+- Responses-API upstream parsers emit tool-call **delta chunks without `id`**: the adapter's `format_stream_chunk` treats any chunk with an `id` as a *new* tool-call start, so a repeated id would emit duplicate `response.output_item.added`. Deltas resolve via `output_index → call_id` or `_stream_current_tc_call_id`.
+- Custom tool input is often **not JSON** (e.g. code patches), so the JSON-completion `done`-event detection never fires. The finish-chunk cleanup (`not fc_info['done'] and (arguments or type == 'custom')`) always closes custom tool calls with `custom_tool_call_input.done` + `output_item.done`.
+
 ### Running tests
 
 ```

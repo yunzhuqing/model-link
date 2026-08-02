@@ -13,7 +13,7 @@ from .openai_provider import OpenAIProvider
 from .base import ProviderConfig, ProviderCapability
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType, TOOL_CALL_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ class DeepSeekProvider(OpenAIProvider):
             msg_call_ids = set()
             if isinstance(msg.content, list):
                 for block in msg.content:
-                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                    if isinstance(block, ContentBlock) and block.type in TOOL_CALL_TYPES:
                         if block.tool_call_id:
                             msg_call_ids.add(block.tool_call_id)
 
@@ -217,7 +217,7 @@ class DeepSeekProvider(OpenAIProvider):
             tool_call_ids: List[str] = []
             if isinstance(assistant_msg.content, list):
                 for block in assistant_msg.content:
-                    if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL and block.tool_call_id:
+                    if isinstance(block, ContentBlock) and block.type in TOOL_CALL_TYPES and block.tool_call_id:
                         tool_call_ids.append(block.tool_call_id)
             if not tool_call_ids:
                 continue

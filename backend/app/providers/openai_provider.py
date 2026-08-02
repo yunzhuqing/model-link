@@ -10,7 +10,10 @@ import time
 import uuid
 from .base import BaseProvider, ProviderConfig, ProviderCapability
 from app.utils import json_loads
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
+)
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -372,12 +375,12 @@ class OpenAIProvider(BaseProvider):
                     and merged_messages[-1].role == MessageRole.ASSISTANT):
                 last = merged_messages[-1]
                 if isinstance(last.content, list) and any(
-                        isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                        isinstance(b, ContentBlock) and b.type in TOOL_CALL_TYPES
                         for b in last.content):
                     # Merge this assistant's content into the tool_calls message
                     if isinstance(msg.content, list):
                         for block in msg.content:
-                            if isinstance(block, ContentBlock) and block.type != ContentType.TOOL_CALL:
+                            if isinstance(block, ContentBlock) and block.type not in TOOL_CALL_TYPES:
                                 last.content.append(block)
                     elif isinstance(msg.content, str) and msg.content:
                         last.content.append(ContentBlock.from_text(msg.content))
@@ -451,8 +454,8 @@ class OpenAIProvider(BaseProvider):
                 continue
 
             # Separate TOOL_RESULT blocks from other content blocks
-            tool_result_blocks = [b for b in msg.content if isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT]
-            other_content_blocks = [b for b in msg.content if not (isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT)]
+            tool_result_blocks = [b for b in msg.content if isinstance(b, ContentBlock) and b.type in TOOL_RESULT_TYPES]
+            other_content_blocks = [b for b in msg.content if not (isinstance(b, ContentBlock) and b.type in TOOL_RESULT_TYPES)]
 
             if not tool_result_blocks:
                 # No tool_result blocks, convert normally
@@ -504,11 +507,11 @@ class OpenAIProvider(BaseProvider):
         elif isinstance(message.content, list):
             from app.abstraction.messages import ContentType
             text_blocks = [b for b in message.content if b.type == ContentType.TEXT]
-            tool_call_blocks = [b for b in message.content if b.type == ContentType.TOOL_CALL]
+            tool_call_blocks = [b for b in message.content if b.type in TOOL_CALL_TYPES]
             # Exclude TOOL_RESULT blocks - they are handled by _expand_messages_to_openai
             # and converted to separate "tool" role messages.
             # Exclude THINKING blocks - OpenAI-compatible APIs don't accept them as content.
-            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, ContentType.TOOL_CALL, ContentType.TOOL_RESULT, ContentType.THINKING)]
+            other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, *TOOL_CALL_TYPES, *TOOL_RESULT_TYPES, ContentType.THINKING)]
             
             # content 只包含文本和其他类型（图片、视频等），不包含 tool_call
             if text_blocks and not other_blocks and not tool_call_blocks:
@@ -762,15 +765,38 @@ class OpenAIProvider(BaseProvider):
         """从 OpenAI 格式解析 ToolCall"""
         tool_id = data.get("id", "")
         call_type = data.get("type", "function")
+
+        if call_type == "custom":
+            # Chat Completions custom 工具调用形状:
+            #   {"type": "custom", "id": "call_xxx",
+            #    "custom": {"name": ..., "input": "...", "namespace": ..., "caller": ...}}
+            payload = data.get("custom", data)
+            name = payload.get("name", "") or data.get("name", "")
+            arguments_str = payload.get("input", payload.get("arguments", "{}"))
+            try:
+                arguments = json_loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
+            except json.JSONDecodeError:
+                arguments = {}
+            return ToolCall(
+                id=tool_id,
+                name=name,
+                arguments=arguments,
+                call_type="custom",
+                namespace=payload.get("namespace") or data.get("namespace"),
+                caller=payload.get("caller") or data.get("caller"),
+                item_id=data.get("item_id"),
+                input_raw=arguments_str if isinstance(arguments_str, str) else None,
+            )
+
         func = data.get("function", {})
         name = func.get("name", "")
         arguments_str = func.get("arguments", "{}")
-        
+
         try:
             arguments = json_loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
         except json.JSONDecodeError:
             arguments = {}
-        
+
         return ToolCall(
             id=tool_id,
             name=name,

@@ -19,7 +19,12 @@ import base64
 import logging
 from ..base import ProviderConfig, ProviderCapability
 from ..openai_provider import OpenAIProvider
-from .._responses_format import build_responses_request, _tool_result_to_responses_output
+from .._responses_format import (
+    build_responses_request,
+    _tool_result_to_responses_output,
+    _custom_tool_call_item_from_block,
+    _custom_tool_call_output_item_from_block,
+)
 from app.abstraction.messages import ADDITIONAL_TOOLS_MARKER_NAME
 
 # Volcengine Responses API 仅接受白名单内的字段，不允许传入额外字段。
@@ -47,7 +52,10 @@ _VOLCENGINE_RESPONSES_ALLOWED_KEYS = frozenset({
     "service_tier",
 })
 
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
+)
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -258,7 +266,10 @@ class VolcengineProvider(OpenAIProvider):
             tool_call_id = message.tool_call_id or ""
             blocks = message.get_content_blocks()
             for block in blocks:
-                if block.type == ContentType.TOOL_RESULT:
+                if block.type in TOOL_RESULT_TYPES:
+                    if block.type == ContentType.CUSTOM_TOOL_CALL_OUTPUT:
+                        # 由固定字段重建 custom_tool_call_output
+                        return _custom_tool_call_output_item_from_block(block)
                     return {
                         "type": "function_call_output",
                         "call_id": block.tool_call_id or tool_call_id,
@@ -276,20 +287,23 @@ class VolcengineProvider(OpenAIProvider):
         if isinstance(message.content, list):
             tool_result_blocks = [
                 b for b in message.content
-                if isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT
+                if isinstance(b, ContentBlock) and b.type in TOOL_RESULT_TYPES
             ]
             if tool_result_blocks:
                 items = []
                 for block in tool_result_blocks:
-                    items.append({
-                        "type": "function_call_output",
-                        "call_id": block.tool_call_id or "",
-                        "output": _tool_result_to_responses_output(block.tool_result)
-                    })
+                    if block.type == ContentType.CUSTOM_TOOL_CALL_OUTPUT:
+                        items.append(_custom_tool_call_output_item_from_block(block))
+                    else:
+                        items.append({
+                            "type": "function_call_output",
+                            "call_id": block.tool_call_id or "",
+                            "output": _tool_result_to_responses_output(block.tool_result)
+                        })
                 # Also include non-tool-result content as a regular message
                 other_blocks = [
                     b for b in message.content
-                    if not (isinstance(b, ContentBlock) and b.type == ContentType.TOOL_RESULT)
+                    if not (isinstance(b, ContentBlock) and b.type in TOOL_RESULT_TYPES)
                 ]
                 if other_blocks:
                     remaining_msg = Message(
@@ -315,14 +329,18 @@ class VolcengineProvider(OpenAIProvider):
             # Handle tool calls in content blocks
             if isinstance(message.content, list):
                 has_tool_calls = any(
-                    isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                    isinstance(b, ContentBlock) and b.type in TOOL_CALL_TYPES
                     for b in message.content
                 )
 
                 if has_tool_calls:
-                    # Emit function_call items for tool calls
+                    # Emit function_call / custom_tool_call items for tool calls
                     for block in message.content:
-                        if isinstance(block, ContentBlock) and block.type == ContentType.TOOL_CALL:
+                        if isinstance(block, ContentBlock) and block.type in TOOL_CALL_TYPES:
+                            if block.type == ContentType.CUSTOM_TOOL_CALL:
+                                # 由固定字段重建 custom_tool_call
+                                items.append(_custom_tool_call_item_from_block(block))
+                                continue
                             args = block.tool_arguments
                             if isinstance(args, dict):
                                 args = json.dumps(args, ensure_ascii=False)
@@ -417,7 +435,7 @@ class VolcengineProvider(OpenAIProvider):
                     parts.append({"type": "input_audio", "audio_url": block.url})
                 elif block.type == ContentType.FILE_URL:
                     parts.append({"type": "input_file", "file_url": block.url})
-                elif block.type == ContentType.TOOL_CALL:
+                elif block.type in TOOL_CALL_TYPES:
                     pass  # Handled separately
                 else:
                     parts.append({"type": "input_text", "text": str(block.text or block.data or "")})
@@ -646,6 +664,21 @@ class VolcengineProvider(OpenAIProvider):
                     name=item.get("name", ""),
                     arguments=json_loads(item.get("arguments", "{}")) if isinstance(item.get("arguments"), str) else item.get("arguments", {}),
                     call_type="function"
+                )
+                tool_calls.append(tc)
+
+            elif item_type == "custom_tool_call":
+                call_id = item.get("call_id", item.get("id", ""))
+                input_str = item.get("input", "{}")
+                tc = ToolCall(
+                    id=call_id,
+                    name=item.get("name", ""),
+                    arguments=json_loads(input_str) if isinstance(input_str, str) else (input_str or {}),
+                    call_type="custom",
+                    namespace=item.get("namespace"),
+                    caller=item.get("caller"),
+                    item_id=item.get("id"),
+                    input_raw=input_str if isinstance(input_str, str) else None,
                 )
                 tool_calls.append(tc)
 
@@ -1185,6 +1218,29 @@ class VolcengineProvider(OpenAIProvider):
                         event_type=StreamEventType.TOOL_CALL
                     )
 
+            elif item_type == "custom_tool_call":
+                # Custom tool call start — emit tool_calls with type "custom"
+                # carrying namespace / caller / item_id.
+                call_id = item.get("call_id") or item.get("id", "")
+                name = item.get("name", "")
+
+                if call_id and call_id not in seen_call_ids:
+                    seen_call_ids.add(call_id)
+                    tc = {
+                        "id": call_id,
+                        "type": "custom",
+                        "custom": {"name": name, "input": ""},
+                        "namespace": item.get("namespace"),
+                        "caller": item.get("caller"),
+                        "item_id": item.get("id", ""),
+                    }
+                    return StreamChunk(
+                        id=response_id,
+                        model=model,
+                        tool_calls=[tc],
+                        event_type=StreamEventType.TOOL_CALL
+                    )
+
         # ---- Function call arguments delta ----
         elif event_type == "response.function_call_arguments.delta":
             delta_args = data.get("delta", "")
@@ -1201,8 +1257,27 @@ class VolcengineProvider(OpenAIProvider):
                     event_type=StreamEventType.TOOL_CALL
                 )
 
+        # ---- Custom tool call input delta ----
+        elif event_type == "response.custom_tool_call_input.delta":
+            delta_args = data.get("delta", "")
+            if delta_args:
+                tc = {
+                    "type": "custom",
+                    "custom": {"input": delta_args}
+                }
+                return StreamChunk(
+                    id=response_id,
+                    model=model,
+                    tool_calls=[tc],
+                    event_type=StreamEventType.TOOL_CALL
+                )
+
         # Function call arguments done — no action needed
         elif event_type == "response.function_call_arguments.done":
+            return None
+
+        # Custom tool call input done — no action needed
+        elif event_type == "response.custom_tool_call_input.done":
             return None
 
         # ---- Response completed ----
@@ -1228,9 +1303,10 @@ class VolcengineProvider(OpenAIProvider):
             if status == "incomplete":
                 finish = FinishReason.LENGTH
 
-            # Check if output contains function_call items → set TOOL_CALLS finish reason
+            # Check if output contains function_call / custom_tool_call items
+            # → set TOOL_CALLS finish reason
             has_function_calls = any(
-                item.get("type") == "function_call"
+                item.get("type") in ("function_call", "custom_tool_call")
                 for item in resp.get("output", [])
             )
             if has_function_calls:

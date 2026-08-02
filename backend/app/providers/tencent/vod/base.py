@@ -599,6 +599,23 @@ class TencentVODProvider(OpenAIProvider):
                                             "function": {"name": name, "arguments": ""}
                                         }],
                                     )
+                            elif item.get("type") == "custom_tool_call":
+                                call_id = item.get("call_id") or item.get("id", "")
+                                name = item.get("name", "")
+                                if call_id:
+                                    yield StreamChunk(
+                                        id=response_id,
+                                        model=event.get("model", request.model),
+                                        tool_calls=[{
+                                            "index": 0,
+                                            "id": call_id,
+                                            "type": "custom",
+                                            "custom": {"name": name, "input": ""},
+                                            "namespace": item.get("namespace"),
+                                            "caller": item.get("caller"),
+                                            "item_id": item.get("id", ""),
+                                        }],
+                                    )
 
                         elif etype == "response.function_call_arguments.delta":
                             delta_args = event.get("delta", "")
@@ -610,6 +627,19 @@ class TencentVODProvider(OpenAIProvider):
                                         "index": 0,
                                         "type": "function",
                                         "function": {"arguments": delta_args}
+                                    }],
+                                )
+
+                        elif etype == "response.custom_tool_call_input.delta":
+                            delta_args = event.get("delta", "")
+                            if delta_args:
+                                yield StreamChunk(
+                                    id=response_id,
+                                    model=event.get("model", request.model),
+                                    tool_calls=[{
+                                        "index": 0,
+                                        "type": "custom",
+                                        "custom": {"input": delta_args}
                                     }],
                                 )
 

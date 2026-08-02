@@ -29,6 +29,7 @@ from typing import Dict, Any, List, Optional
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import (
     Message, MessageRole, ContentBlock, ContentType, ADDITIONAL_TOOLS_MARKER_NAME,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
 )
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.utils import json_loads
@@ -133,11 +134,20 @@ def tool_to_responses_api(tool: ToolDefinition) -> Dict[str, Any]:
     }
 
 
+def _with_pcb(part: Dict[str, Any], block: ContentBlock) -> Dict[str, Any]:
+    """Attach ``prompt_cache_breakpoint`` to a Responses API content block dict when set."""
+    pcb = getattr(block, 'prompt_cache_breakpoint', None)
+    if pcb:
+        part["prompt_cache_breakpoint"] = pcb
+    return part
+
+
 def _tool_result_to_responses_output(tool_result):
     """将 tool_result 转换为 Responses API function_call_output.output。
 
     纯文本返回字符串；含图片/文件等多模态内容时返回 input_* 内容块数组
     （input_text / input_image / input_file），从而保留工具返回的图片。
+    内容块上的 ``prompt_cache_breakpoint``（固定字段）会一并还原。
 
     Responses API function_call_output.output 支持：
         string | [{"type":"input_text","text":...},
@@ -147,24 +157,26 @@ def _tool_result_to_responses_output(tool_result):
     if not isinstance(tool_result, list):
         return tool_result or ""
 
-    # 纯文本 → 扁平化为字符串（向后兼容）
-    if all(b.type == ContentType.TEXT for b in tool_result):
+    # 纯文本 → 扁平化为字符串（向后兼容）。带 prompt_cache_breakpoint 的文本块
+    # 需保持数组形式，否则该字段会丢失。
+    if (all(b.type == ContentType.TEXT for b in tool_result)
+            and not any(getattr(b, 'prompt_cache_breakpoint', None) for b in tool_result)):
         return " ".join(b.text or "" for b in tool_result)
 
     parts: List[Dict[str, Any]] = []
     for b in tool_result:
         if b.type == ContentType.TEXT:
-            parts.append({"type": "input_text", "text": b.text or ""})
+            parts.append(_with_pcb({"type": "input_text", "text": b.text or ""}, b))
         elif b.type == ContentType.IMAGE_URL:
-            parts.append({"type": "input_image", "image_url": b.url or ""})
+            parts.append(_with_pcb({"type": "input_image", "image_url": b.url or ""}, b))
         elif b.type == ContentType.IMAGE_BASE64:
             media = b.media_type or "image/jpeg"
-            parts.append({
+            parts.append(_with_pcb({
                 "type": "input_image",
                 "image_url": f"data:{media};base64,{b.data or ''}",
-            })
+            }, b))
         elif b.type == ContentType.FILE_URL:
-            parts.append({"type": "input_file", "file_url": b.url or ""})
+            parts.append(_with_pcb({"type": "input_file", "file_url": b.url or ""}, b))
         elif b.type == ContentType.FILE_BASE64:
             media = b.media_type or "application/octet-stream"
             part: Dict[str, Any] = {
@@ -173,8 +185,40 @@ def _tool_result_to_responses_output(tool_result):
             }
             if b.filename:
                 part["filename"] = b.filename
-            parts.append(part)
+            parts.append(_with_pcb(part, b))
     return parts if parts else ""
+
+
+def _custom_tool_call_item_from_block(block: ContentBlock) -> Dict[str, Any]:
+    """从 TOOL_CALL 块的固定字段重建 Responses API ``custom_tool_call`` 输入条目。
+
+    ``input`` 优先使用捕获的原始 JSON 字符串（``input_raw``，保留空白），否则
+    由 ``tool_arguments`` 重新序列化。
+    """
+    input_raw = getattr(block, 'input_raw', None)
+    if input_raw is None:
+        args = block.tool_arguments or {}
+        input_raw = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+    return {
+        "type": "custom_tool_call",
+        "id": getattr(block, 'item_id', None) or block.tool_call_id or "",
+        "call_id": block.tool_call_id or "",
+        "name": block.tool_name or "",
+        "input": input_raw or "",
+        "namespace": getattr(block, 'namespace', None) or "",
+        "caller": getattr(block, 'caller', None) or {"type": "direct"},
+    }
+
+
+def _custom_tool_call_output_item_from_block(block: ContentBlock) -> Dict[str, Any]:
+    """从 TOOL_RESULT 块的固定字段重建 Responses API ``custom_tool_call_output`` 输入条目。"""
+    return {
+        "type": "custom_tool_call_output",
+        "id": getattr(block, 'item_id', None) or "",
+        "caller": getattr(block, 'caller', None) or {"type": "direct"},
+        "caller_id": block.tool_call_id or "",
+        "output": _tool_result_to_responses_output(block.tool_result),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -194,7 +238,12 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
     if role == MessageRole.TOOL:
         result: List[Dict[str, Any]] = []
         for block in blocks:
-            if block.type == ContentType.TOOL_RESULT:
+            if block.type in TOOL_RESULT_TYPES:
+                if block.type == ContentType.CUSTOM_TOOL_CALL_OUTPUT:
+                    # 由固定字段重建 custom_tool_call_output（caller /
+                    # prompt_cache_breakpoint 一并还原）。
+                    result.append(_custom_tool_call_output_item_from_block(block))
+                    continue
                 result.append({
                     "type": "function_call_output",
                     "call_id": block.tool_call_id or message.tool_call_id or "",
@@ -221,7 +270,12 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
             })
 
         for block in blocks:
-            if block.type == ContentType.TOOL_CALL:
+            if block.type in TOOL_CALL_TYPES:
+                if block.type == ContentType.CUSTOM_TOOL_CALL:
+                    # 由固定字段重建 custom_tool_call（namespace / caller /
+                    # item id 一并还原）。
+                    result.append(_custom_tool_call_item_from_block(block))
+                    continue
                 args = block.tool_arguments or {}
                 result.append({
                     "type": "function_call",
@@ -255,22 +309,25 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
     content_parts: List[Dict[str, Any]] = []
 
     for block in blocks:
-        if block.type == ContentType.TOOL_RESULT:
-            tool_result_items.append({
-                "type": "function_call_output",
-                "call_id": block.tool_call_id or "",
-                "output": _tool_result_to_responses_output(block.tool_result),
-            })
+        if block.type in TOOL_RESULT_TYPES:
+            if block.type == ContentType.CUSTOM_TOOL_CALL_OUTPUT:
+                tool_result_items.append(_custom_tool_call_output_item_from_block(block))
+            else:
+                tool_result_items.append({
+                    "type": "function_call_output",
+                    "call_id": block.tool_call_id or "",
+                    "output": _tool_result_to_responses_output(block.tool_result),
+                })
         elif block.type == ContentType.TEXT:
-            content_parts.append({"type": "input_text", "text": block.text or ""})
+            content_parts.append(_with_pcb({"type": "input_text", "text": block.text or ""}, block))
         elif block.type in (ContentType.IMAGE_URL,):
-            content_parts.append({"type": "input_image", "image_url": block.url or ""})
+            content_parts.append(_with_pcb({"type": "input_image", "image_url": block.url or ""}, block))
         elif block.type == ContentType.IMAGE_BASE64:
             media = block.media_type or "image/jpeg"
-            content_parts.append({
+            content_parts.append(_with_pcb({
                 "type": "input_image",
                 "image_url": f"data:{media};base64,{block.data or ''}",
-            })
+            }, block))
         elif block.type in (ContentType.AUDIO_URL,):
             content_parts.append({"type": "input_audio", "audio_url": block.url or ""})
         elif block.type == ContentType.AUDIO_BASE64:
@@ -281,15 +338,15 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
                 "format": media.split("/")[-1] if "/" in (media or "") else "mp3",
             })
         elif block.type in (ContentType.FILE_URL,):
-            content_parts.append({"type": "input_file", "file_url": block.url or ""})
+            content_parts.append(_with_pcb({"type": "input_file", "file_url": block.url or ""}, block))
         elif block.type == ContentType.FILE_BASE64:
             media = block.media_type or "application/octet-stream"
             filename = getattr(block, 'filename', None) or "document"
-            content_parts.append({
+            content_parts.append(_with_pcb({
                 "type": "input_file",
                 "file_data": f"data:{media};base64,{block.data or ''}",
                 "filename": filename,
-            })
+            }, block))
 
     result = []
     result.extend(tool_result_items)
@@ -562,6 +619,37 @@ def parse_responses_response(response_data: Dict[str, Any], model: str) -> ChatR
                 call_type="function"
             ))
             tool_call_blocks.append(ContentBlock.from_tool_call(call_id, name, args))
+
+        elif item_type == "custom_tool_call":
+            call_id = item.get("call_id") or item.get("id", "")
+            name = item.get("name", "")
+            input_str = item.get("input", "{}")
+            try:
+                args = json_loads(input_str) if isinstance(input_str, str) else (input_str or {})
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+
+            tool_calls.append(ToolCall(
+                id=call_id,
+                name=name,
+                arguments=args,
+                call_type="custom",
+                namespace=item.get("namespace"),
+                caller=item.get("caller"),
+                item_id=item.get("id"),
+                input_raw=input_str if isinstance(input_str, str) else (
+                    json.dumps(args, ensure_ascii=False) if args else "{}"
+                ),
+            ))
+            blk = ContentBlock.from_tool_call(call_id, name, args)
+            blk.type = ContentType.CUSTOM_TOOL_CALL
+            # 保留固定字段，便于客户端随后作为 input 喂回时经 _message_to_responses_items
+            # 重建为 custom_tool_call。
+            blk.namespace = item.get("namespace")
+            blk.caller = item.get("caller")
+            blk.item_id = item.get("id")
+            blk.input_raw = input_str if isinstance(input_str, str) else None
+            tool_call_blocks.append(blk)
 
     full_text = "\n".join(text_parts) if text_parts else None
     content_blocks: List[ContentBlock] = []

@@ -353,6 +353,30 @@ class AzureProvider(OpenAIProvider):
                                 created=int(time.time())
                             )
 
+                    elif item_type == "custom_tool_call":
+                        # Custom tool call start — emit tool_calls with type "custom"
+                        # carrying namespace / caller / item_id so the Responses adapter
+                        # can emit response.output_item.added (custom_tool_call).
+                        call_id = item.get("call_id") or item.get("id", "")
+                        name = item.get("name", "")
+                        fc_output_index = event_data.get("output_index", 0)
+                        if call_id:
+                            tc = {
+                                "index": fc_output_index,
+                                "id": call_id,
+                                "type": "custom",
+                                "custom": {"name": name, "input": ""},
+                                "namespace": item.get("namespace"),
+                                "caller": item.get("caller"),
+                                "item_id": item.get("id", ""),
+                            }
+                            yield StreamChunk(
+                                id=current_id,
+                                model=model,
+                                tool_calls=[tc],
+                                created=int(time.time())
+                            )
+
                 elif event_type == "response.output_text.done":
                     # Capture the full assembled text; pass it with the finish chunk so
                     # the adapter can emit response.output_text.done / content_part.done /
@@ -401,6 +425,20 @@ class AzureProvider(OpenAIProvider):
                         created=int(time.time())
                     )
 
+                elif event_type == "response.custom_tool_call_input.delta":
+                    delta = event_data.get("delta", "")
+                    index = event_data.get("output_index", 0)
+                    yield StreamChunk(
+                        id=current_id,
+                        model=model,
+                        tool_calls=[{
+                            "index": index,
+                            "type": "custom",
+                            "custom": {"input": delta}
+                        }],
+                        created=int(time.time())
+                    )
+
                 elif event_type == "response.completed":
                     resp = event_data.get("response", {})
                     # Use the authoritative ID that Azure assigns in the completed event
@@ -425,9 +463,9 @@ class AzureProvider(OpenAIProvider):
                         usage = UsageInfo(extra={"_azure_completed_response": resp}) if resp else None
 
                     # Determine finish_reason: TOOL_CALLS if the response output
-                    # contains any function_call items, otherwise STOP.
+                    # contains any function_call / custom_tool_call items, otherwise STOP.
                     has_tool_calls = any(
-                        item.get("type") == "function_call"
+                        item.get("type") in ("function_call", "custom_tool_call")
                         for item in resp.get("output", [])
                     )
                     finish = FinishReason.TOOL_CALLS if has_tool_calls else FinishReason.STOP

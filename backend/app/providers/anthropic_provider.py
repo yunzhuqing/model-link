@@ -19,7 +19,10 @@ import uuid
 import sys
 
 from .base import BaseProvider, ProviderConfig, ProviderCapability
-from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
+from app.abstraction.messages import (
+    Message, MessageRole, ContentBlock, ContentType,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
+)
 from app.abstraction.tools import ToolDefinition, ToolCall, ToolParameter, ToolType
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
@@ -278,7 +281,7 @@ class AnthropicProvider(BaseProvider):
             elif isinstance(message.content, list):
                 # 优先使用 TOOL_RESULT 块自身携带的多模态内容（含图片）
                 tr_block = next(
-                    (b for b in message.content if b.type == ContentType.TOOL_RESULT),
+                    (b for b in message.content if b.type in TOOL_RESULT_TYPES),
                     None,
                 )
                 if tr_block is not None:
@@ -355,14 +358,14 @@ class AnthropicProvider(BaseProvider):
                     "data": block.data,
                 }
             }
-        elif block.type == ContentType.TOOL_CALL:
+        elif block.type in TOOL_CALL_TYPES:
             result = {
                 "type": "tool_use",
                 "id": block.tool_call_id or "",
                 "name": block.tool_name or "",
                 "input": block.tool_arguments if isinstance(block.tool_arguments, dict) else {},
             }
-        elif block.type == ContentType.TOOL_RESULT:
+        elif block.type in TOOL_RESULT_TYPES:
             result = {
                 "type": "tool_result",
                 "tool_use_id": block.tool_call_id or "",

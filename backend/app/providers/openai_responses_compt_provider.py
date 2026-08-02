@@ -190,7 +190,8 @@ class OpenAIResponsesCompatProvider(BaseProvider):
         response_id = f"resp_{uuid.uuid4().hex[:8]}"
 
         # 跟踪工具调用参数累积
-        _tc_accum: Dict[str, Dict[str, Any]] = {}  # call_id → {name, args}
+        _tc_accum: Dict[str, Dict[str, Any]] = {}  # call_id → {name, args, ...}
+        _tc_id_map: Dict[str, str] = {}            # item_id → call_id (custom_tool_call)
 
         try:
             async with self._trace_call(request.model, input_data=request_data) as child_span:
@@ -234,7 +235,7 @@ class OpenAIResponsesCompatProvider(BaseProvider):
                                 continue
 
                             chunk = self._parse_responses_event(
-                                event_data, current_event, response_id, request.model, _tc_accum
+                                event_data, current_event, response_id, request.model, _tc_accum, _tc_id_map
                             )
                             if chunk:
                                 yield chunk
@@ -251,6 +252,7 @@ class OpenAIResponsesCompatProvider(BaseProvider):
         response_id: str,
         model: str,
         tc_accum: Dict[str, Dict[str, Any]],
+        tc_id_map: Dict[str, str],
     ) -> Optional[StreamChunk]:
         """
         将单个 Responses API SSE 事件解析为 StreamChunk。
@@ -260,7 +262,9 @@ class OpenAIResponsesCompatProvider(BaseProvider):
             event_name : 来自 ``event:`` 行的事件类型名称
             response_id: 当前响应 ID
             model      : 模型名称
-            tc_accum   : 工具调用参数累积字典（call_id → {name, args}）
+            tc_accum   : 工具调用参数累积字典（call_id → {name, args, ...}）
+            tc_id_map  : custom_tool_call item_id → call_id 映射（delta 事件
+                         只携带 item_id，需据此回查 call_id）
 
         Returns:
             StreamChunk 或 None（不需要产出的事件）
@@ -286,25 +290,53 @@ class OpenAIResponsesCompatProvider(BaseProvider):
         # ── 工具调用参数增量 ─────────────────────────────────────────
         elif etype in (
             "response.function_call_arguments.delta",
+            "response.custom_tool_call_input.delta",
         ):
             item_id = event_data.get("item_id", "")
-            call_id = event_data.get("call_id", item_id)
+            call_id = event_data.get("call_id", "")
             delta_args = event_data.get("delta", "")
 
+            is_custom = etype == "response.custom_tool_call_input.delta"
+            if is_custom:
+                # custom_tool_call_input.delta 只携带 item_id（ctc_xxx），需回查
+                # output_item.added 时登记的 item_id → call_id 映射。
+                if not call_id:
+                    call_id = tc_id_map.get(item_id, item_id)
+            else:
+                call_id = call_id or item_id
             if call_id not in tc_accum:
-                tc_accum[call_id] = {"name": "", "args": ""}
+                tc_accum[call_id] = {"name": "", "args": "", "namespace": None,
+                                     "caller": None, "item_id": item_id, "type": "custom" if is_custom else "function"}
             tc_accum[call_id]["args"] += delta_args
 
-            # 以 OpenAI Chat Completions 流格式透出，保持与适配器兼容
-            tool_call_delta = [{
-                "index": 0,
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": tc_accum[call_id].get("name", ""),
-                    "arguments": delta_args
-                }
-            }]
+            # 以 OpenAI Chat Completions 流格式透出，保持与适配器兼容。
+            # 注意:增量 chunk 不携带 id —— 适配器的 format_stream_chunk 会把
+            # 任何带 id 的 chunk 当作新的工具调用开始,重复 id 会触发重复的
+            # response.output_item.added。增量通过 output_index → call_id 映射
+            # (output_item.added 时登记)或 _stream_current_tc_call_id 解析。
+            acc = tc_accum[call_id]
+            tc_output_index = event_data.get("output_index", 0)
+            if is_custom:
+                tool_call_delta = [{
+                    "index": tc_output_index,
+                    "type": "custom",
+                    "custom": {
+                        "name": acc.get("name", ""),
+                        "input": delta_args
+                    },
+                    "namespace": acc.get("namespace"),
+                    "caller": acc.get("caller"),
+                    "item_id": acc.get("item_id") or item_id,
+                }]
+            else:
+                tool_call_delta = [{
+                    "index": tc_output_index,
+                    "type": "function",
+                    "function": {
+                        "name": acc.get("name", ""),
+                        "arguments": delta_args
+                    }
+                }]
             return StreamChunk(
                 id=resp_id,
                 model=model,
@@ -319,13 +351,45 @@ class OpenAIResponsesCompatProvider(BaseProvider):
                 call_id = item.get("call_id") or item.get("id", "")
                 name = item.get("name", "")
                 if call_id:
-                    tc_accum[call_id] = {"name": name, "args": ""}
+                    tc_accum[call_id] = {"name": name, "args": "", "namespace": None,
+                                         "caller": None, "item_id": "", "type": "function"}
                     # 发出带函数名的首个 tool_calls delta
                     tool_call_delta = [{
-                        "index": 0,
+                        "index": event_data.get("output_index", 0),
                         "id": call_id,
                         "type": "function",
                         "function": {"name": name, "arguments": ""}
+                    }]
+                    return StreamChunk(
+                        id=resp_id,
+                        model=model,
+                        tool_calls=tool_call_delta,
+                        created=int(time.time())
+                    )
+            elif item.get("type") == "custom_tool_call":
+                call_id = item.get("call_id") or item.get("id", "")
+                name = item.get("name", "")
+                if call_id:
+                    item_id = item.get("id", "")
+                    tc_accum[call_id] = {
+                        "name": name,
+                        "args": "",
+                        "namespace": item.get("namespace"),
+                        "caller": item.get("caller"),
+                        "item_id": item_id,
+                        "type": "custom",
+                    }
+                    if item_id:
+                        tc_id_map[item_id] = call_id
+                    # 发出带函数名/命名空间的首个 tool_calls delta
+                    tool_call_delta = [{
+                        "index": event_data.get("output_index", 0),
+                        "id": call_id,
+                        "type": "custom",
+                        "custom": {"name": name, "input": ""},
+                        "namespace": item.get("namespace"),
+                        "caller": item.get("caller"),
+                        "item_id": item.get("id", ""),
                     }]
                     return StreamChunk(
                         id=resp_id,

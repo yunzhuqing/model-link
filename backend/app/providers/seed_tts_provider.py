@@ -188,10 +188,25 @@ class SeedTTSProvider(BaseProvider):
                     usage=usage,
                 )
 
-            audio_resp = await http.get(audio_url)
+            # 下载音频：openspeech 返回的 URL 是火山临时签名地址，下载时会
+            # 302 重定向到实际存储。必须用 follow_redirects 的共享 client，
+            # 否则拿到的是 302 响应体（HTML），以 audio/* 返回后无法播放。
+            from app.http_client import get_shared_redirect_client
+            audio_resp = await (await get_shared_redirect_client()).get(audio_url)
             if audio_resp.status_code >= 400:
                 raise UpstreamProviderError(
                     f"Failed to download generated audio ({audio_resp.status_code})",
+                    status_code=502,
+                    error_type="api_error",
+                )
+            # 以真实响应 content-type 为准；若拿到的是 HTML/JSON（错误页），
+            # 直接报错而不是把非音频字节当音频返回。
+            downloaded_ct = (audio_resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            if downloaded_ct.startswith("audio/"):
+                content_type = downloaded_ct
+            elif downloaded_ct in ("text/html", "application/json", "text/plain"):
+                raise UpstreamProviderError(
+                    f"Failed to download generated audio: unexpected content-type '{downloaded_ct}'",
                     status_code=502,
                     error_type="api_error",
                 )

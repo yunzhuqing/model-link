@@ -43,6 +43,17 @@ class ContentType(Enum):
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     THINKING = "thinking"
+    # Responses API custom 工具条目（custom_tool_call / custom_tool_call_output）。
+    # 与 TOOL_CALL / TOOL_RESULT 同级,但携带 namespace/caller/item_id 等
+    # custom 专属字段,用于 Responses-API 上游的无损往返。
+    CUSTOM_TOOL_CALL = "custom_tool_call"
+    CUSTOM_TOOL_CALL_OUTPUT = "custom_tool_call_output"
+
+
+# 工具调用 / 工具结果的内容类型集合（含 custom 变体）。
+# 各 Provider 序列化消息时统一用这些集合判断,避免逐处遗漏 custom 类型。
+TOOL_CALL_TYPES = (ContentType.TOOL_CALL, ContentType.CUSTOM_TOOL_CALL)
+TOOL_RESULT_TYPES = (ContentType.TOOL_RESULT, ContentType.CUSTOM_TOOL_CALL_OUTPUT)
 
 
 @dataclass
@@ -77,6 +88,15 @@ class ContentBlock:
     video_fps: Optional[str] = None  # FPS for video_url inputs (doubao, etc.)
     filename: Optional[str] = None  # filename for file content blocks (e.g. "document.pdf")
     signature: Optional[str] = None  # Anthropic thinking 块签名（仅 THINKING 类型使用）
+    # ── Responses API custom 工具（custom_tool_call / custom_tool_call_output）固定字段 ──
+    # 仅当 type 为 CUSTOM_TOOL_CALL / CUSTOM_TOOL_CALL_OUTPUT 时设置；普通 function
+    # 工具调用保持默认值。序列化回 Responses-API 上游时由 _responses_format 据此
+    # 重建 custom_tool_call / custom_tool_call_output 条目。
+    namespace: Optional[str] = None                  # custom 工具命名空间
+    caller: Optional[Dict[str, Any]] = None          # {"type": "direct"} | {"type": "program", "caller_id": ...}
+    item_id: Optional[str] = None                    # custom_tool_call 条目自身 id（与 call_id 不同）
+    input_raw: Optional[str] = None                  # 原始 input JSON 字符串（无损透传）
+    prompt_cache_breakpoint: Optional[Dict[str, Any]] = None  # Responses API 内容块 prompt_cache_breakpoint
     
     @classmethod
     def from_text(cls, text: str) -> 'ContentBlock':
@@ -285,10 +305,13 @@ class Message:
             tool_call_id = item.get('tool_call_id') or item.get('tool_use_id') or item.get('id')
 
             # Extract tool_result: may be 'tool_result', or 'content' for tool_result type blocks
+            # (custom_tool_call_output 使用 'output' 字段)
             tool_result_val = item.get('tool_result')
-            if tool_result_val is None and content_type == ContentType.TOOL_RESULT:
+            if tool_result_val is None and content_type in TOOL_RESULT_TYPES:
                 # Anthropic format: tool_result block uses 'content' for the result text
                 raw_content = item.get('content')
+                if raw_content is None and content_type == ContentType.CUSTOM_TOOL_CALL_OUTPUT:
+                    raw_content = item.get('output')
                 if isinstance(raw_content, str):
                     tool_result_val = raw_content
                 elif isinstance(raw_content, list):
@@ -325,6 +348,11 @@ class Message:
                 cache_control=item.get('cache_control'),
                 video_fps=item.get('video_fps'),
                 signature=item.get('signature'),
+                namespace=item.get('namespace'),
+                caller=item.get('caller'),
+                item_id=item.get('item_id'),
+                input_raw=item.get('input_raw'),
+                prompt_cache_breakpoint=item.get('prompt_cache_breakpoint'),
             )
         else:
             # Unknown type, return empty text block

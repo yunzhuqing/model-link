@@ -28,6 +28,7 @@ from app.abstraction.streaming import StreamChunk
 from app.abstraction.messages import (
     Message, MessageRole, ContentBlock, ContentType,
     ADDITIONAL_TOOLS_MARKER_NAME,
+    TOOL_CALL_TYPES, TOOL_RESULT_TYPES,
 )
 from app.utils import json_loads
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
@@ -114,9 +115,13 @@ def _parse_content_blocks(blocks: list) -> list:
     for block in blocks:
         block_type = block.get('type', 'input_text')
         if block_type in ('input_text', 'output_text', 'text'):
-            result.append(ContentBlock.from_text(block.get('text', '')))
+            blk = ContentBlock.from_text(block.get('text', ''))
+            blk.prompt_cache_breakpoint = block.get('prompt_cache_breakpoint')
+            result.append(blk)
         elif block_type in ('input_image', 'image'):
-            result.append(_parse_image_block(block))
+            blk = _parse_image_block(block)
+            blk.prompt_cache_breakpoint = block.get('prompt_cache_breakpoint')
+            result.append(blk)
         elif block_type in ('input_video', 'video'):
             url = _extract_str(block, 'video_url')
             if url:
@@ -149,6 +154,7 @@ def _parse_content_blocks(blocks: list) -> list:
         elif block_type == 'input_file':
             file_block = _file_block_from_item(block)
             if file_block is not None:
+                file_block.prompt_cache_breakpoint = block.get('prompt_cache_breakpoint')
                 result.append(file_block)
         elif block_type == 'function_call':
             call_id = block.get('call_id', block.get('id', ''))
@@ -168,37 +174,34 @@ def _parse_content_blocks(blocks: list) -> list:
                 parsed_output = _parse_content_blocks(output)
                 output = parsed_output if parsed_output else output
             result.append(ContentBlock.from_tool_result(call_id, output))
+        elif block_type == 'custom_tool_call':
+            result.append(_custom_tool_call_block(block))
+        elif block_type == 'custom_tool_call_output':
+            result.append(_custom_tool_call_output_block(block))
     return result
 
 
 # ── Input item handlers (used by _dispatch_input_item) ──────────────────
 
-def _handle_function_call_item(item: dict, messages: list):
-    """Convert a function_call input item → assistant Message with tool_call block.
+def _merge_tool_call_block(messages: list, block: ContentBlock):
+    """Merge a tool-call ContentBlock into the preceding assistant message.
 
-    Consecutive function_call items are merged into a single assistant message
-    (they represent one model turn with multiple parallel tool calls), so that
-    downstream providers requiring tool-call / tool-result pairing (e.g.
-    DeepSeek, Bailian) can correctly match tool responses to their calls.
+    Consecutive tool_call items (function_call / custom_tool_call) are merged into
+    a single assistant message (they represent one model turn with multiple
+    parallel tool calls), so that downstream providers requiring tool-call /
+    tool-result pairing (e.g. DeepSeek, Bailian) can correctly match tool
+    responses to their calls.
 
     Also merges into a preceding assistant message that carries text content
     or reasoning, producing a single assistant turn with content + tool_calls.
     """
-    args_str = item.get('arguments', '{}')
-    try:
-        args = json_loads(args_str) if isinstance(args_str, str) else args_str
-    except (json.JSONDecodeError, TypeError):
-        args = {}
-    call_id = item.get('call_id') or item.get('id', '')
-    block = ContentBlock.from_tool_call(call_id, item.get('name', ''), args)
-
     if messages:
         last = messages[-1]
         if last.role == MessageRole.ASSISTANT:
             # Case 1: previous assistant message contains *only* tool_call blocks
             if (isinstance(last.content, list)
                     and last.content
-                    and all(isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                    and all(isinstance(b, ContentBlock) and b.type in TOOL_CALL_TYPES
                             for b in last.content)):
                 last.content.append(block)
                 return
@@ -226,7 +229,7 @@ def _handle_function_call_item(item: dict, messages: list):
                 return
             if isinstance(last.content, list) and last.content:
                 has_non_tc = any(
-                    isinstance(b, ContentBlock) and b.type != ContentType.TOOL_CALL
+                    isinstance(b, ContentBlock) and b.type not in TOOL_CALL_TYPES
                     for b in last.content
                 )
                 if has_non_tc:
@@ -234,6 +237,226 @@ def _handle_function_call_item(item: dict, messages: list):
                     return
 
     messages.append(Message(role=MessageRole.ASSISTANT, content=[block]))
+
+
+def _handle_function_call_item(item: dict, messages: list):
+    """Convert a function_call input item → assistant Message with tool_call block.
+
+    Consecutive function_call items are merged into a single assistant message
+    (they represent one model turn with multiple parallel tool calls), so that
+    downstream providers requiring tool-call / tool-result pairing (e.g.
+    DeepSeek, Bailian) can correctly match tool responses to their calls.
+
+    Also merges into a preceding assistant message that carries text content
+    or reasoning, producing a single assistant turn with content + tool_calls.
+    """
+    args_str = item.get('arguments', '{}')
+    try:
+        args = json_loads(args_str) if isinstance(args_str, str) else args_str
+    except (json.JSONDecodeError, TypeError):
+        args = {}
+    call_id = item.get('call_id') or item.get('id', '')
+    block = ContentBlock.from_tool_call(call_id, item.get('name', ''), args)
+    _merge_tool_call_block(messages, block)
+
+
+def _custom_tool_call_block(item: dict) -> ContentBlock:
+    """Convert a custom_tool_call item/block dict → TOOL_CALL ContentBlock.
+
+    ``input`` (JSON string) → ``tool_arguments``；custom 专属字段（namespace /
+    caller / item_id / input_raw）存入固定字段，供 Responses-API 上游按字段重建
+    custom_tool_call 条目。
+    """
+    item_id = item.get('id', '')
+    call_id = item.get('call_id') or item_id
+    input_str = item.get('input', '{}')
+    if isinstance(input_str, str):
+        try:
+            args = json_loads(input_str)
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+    else:
+        args = input_str or {}
+    block = ContentBlock.from_tool_call(call_id, item.get('name', ''), args)
+    block.type = ContentType.CUSTOM_TOOL_CALL
+    block.namespace = item.get('namespace')
+    block.caller = item.get('caller')
+    block.item_id = item_id
+    block.input_raw = input_str if isinstance(input_str, str) else None
+    return block
+
+
+def _custom_tool_call_output_block(item: dict) -> ContentBlock:
+    """Convert a custom_tool_call_output item/block dict → TOOL_RESULT ContentBlock.
+
+    Pairing key resolution order: top-level ``caller_id`` → ``caller.caller_id``
+    (program callers) → item ``id``. ``output`` may be a string or an array of
+    input_* content blocks (input_text / input_image / input_file, with optional
+    ``prompt_cache_breakpoint``)。
+    """
+    caller = item.get('caller') or {}
+    call_id = item.get('caller_id') or caller.get('caller_id') or item.get('id', '')
+    result_value = _parse_function_call_output(item.get('output', ''))
+    block = ContentBlock.from_tool_result(call_id, result_value)
+    block.type = ContentType.CUSTOM_TOOL_CALL_OUTPUT
+    block.caller = item.get('caller')
+    block.item_id = item.get('id', '')
+    return block
+
+
+def _handle_custom_tool_call_item(item: dict, messages: list):
+    """Convert a custom_tool_call input item → assistant Message with tool_call block.
+
+    Mirrors ``_handle_function_call_item``: consecutive custom_tool_call items (and
+    mixed function_call / custom_tool_call items) merge into a single assistant
+    turn, keeping tool-call / tool-result pairing intact downstream.
+    """
+    block = _custom_tool_call_block(item)
+    _merge_tool_call_block(messages, block)
+
+
+def _handle_custom_tool_call_output_item(item: dict, messages: list):
+    """Convert a custom_tool_call_output input item → tool Message."""
+    block = _custom_tool_call_output_block(item)
+    call_id = block.tool_call_id or ''
+    messages.append(Message(role=MessageRole.TOOL, content=[block], tool_call_id=call_id))
+
+
+def _custom_tool_call_output_item(tc) -> dict:
+    """Build a Responses API ``custom_tool_call`` output item from a ToolCall or
+    an accumulated ``_stream_tool_calls`` entry (``fc_info`` dict).
+
+    Mirrors the input shape:
+        {"type": "custom_tool_call", "id": ..., "name": ..., "input": ...,
+         "call_id": ..., "namespace": ..., "caller": ...}
+    """
+    if hasattr(tc, 'call_type'):  # ToolCall
+        return {
+            'type': 'custom_tool_call',
+            'id': tc.item_id or tc.id,
+            'call_id': tc.id,
+            'name': tc.name,
+            'input': tc.input_raw if tc.input_raw is not None
+                     else json.dumps(tc.arguments, ensure_ascii=False),
+            'namespace': tc.namespace or '',
+            'caller': tc.caller or {'type': 'direct'},
+            'status': 'completed',
+        }
+    # fc_info dict accumulated during streaming
+    return {
+        'type': 'custom_tool_call',
+        'id': tc.get('id') or tc.get('item_id') or tc.get('call_id') or '',
+        'call_id': tc.get('call_id', ''),
+        'name': tc.get('name', ''),
+        'input': tc.get('arguments', ''),
+        'namespace': tc.get('namespace', ''),
+        'caller': tc.get('caller') or {'type': 'direct'},
+        'status': 'completed',
+    }
+
+
+# ── Streaming tool-call event builders (function_call / custom_tool_call) ──
+
+def _emit_tool_call_added_event(fc_info: dict, call_id: str) -> str:
+    """Build the ``response.output_item.added`` SSE for a new tool-call output item."""
+    if fc_info.get('type') == 'custom':
+        item = {
+            'id': fc_info['id'],
+            'type': 'custom_tool_call',
+            'status': 'in_progress',
+            'call_id': call_id,
+            'name': fc_info['name'],
+            'input': '',
+            'namespace': fc_info.get('namespace', ''),
+            'caller': fc_info.get('caller') or {'type': 'direct'},
+        }
+    else:
+        item = {
+            'id': fc_info['id'],
+            'type': 'function_call',
+            'status': 'in_progress',
+            'arguments': '',
+            'call_id': call_id,
+            'name': fc_info['name'],
+        }
+    item_added = {
+        'type': 'response.output_item.added',
+        'output_index': fc_info['output_index'],
+        'item': item,
+    }
+    return f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n"
+
+
+def _emit_tool_call_args_delta(fc_info: dict, delta_args: str) -> str:
+    """Build the tool-call input/arguments delta SSE event.
+
+    function_call      → response.function_call_arguments.delta
+    custom_tool_call   → response.custom_tool_call_input.delta
+    """
+    if fc_info.get('type') == 'custom':
+        event_data = {
+            'type': 'response.custom_tool_call_input.delta',
+            'item_id': fc_info['id'],
+            'output_index': fc_info['output_index'],
+            'delta': delta_args,
+        }
+    else:
+        event_data = {
+            'type': 'response.function_call_arguments.delta',
+            'output_index': fc_info['output_index'],
+            'delta': delta_args,
+        }
+    return f"event: {event_data['type']}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+
+
+def _emit_tool_call_done_events(fc_info: dict, call_id: str) -> str:
+    """Build the done SSE events (input/arguments.done + output_item.done) for a
+    completed tool-call output item."""
+    events = []
+    if fc_info.get('type') == 'custom':
+        input_done = {
+            'type': 'response.custom_tool_call_input.done',
+            'item_id': fc_info['id'],
+            'output_index': fc_info['output_index'],
+            'input': fc_info['arguments'],
+        }
+        events.append(f"event: response.custom_tool_call_input.done\ndata: {json.dumps(input_done, ensure_ascii=False)}\n\n")
+        item_done = {
+            'type': 'response.output_item.done',
+            'output_index': fc_info['output_index'],
+            'item': {
+                'id': fc_info['id'],
+                'type': 'custom_tool_call',
+                'status': 'completed',
+                'call_id': call_id,
+                'name': fc_info['name'],
+                'input': fc_info['arguments'],
+                'namespace': fc_info.get('namespace', ''),
+                'caller': fc_info.get('caller') or {'type': 'direct'},
+            },
+        }
+        events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+    else:
+        args_done = {
+            'type': 'response.function_call_arguments.done',
+            'output_index': fc_info['output_index'],
+            'arguments': fc_info['arguments'],
+        }
+        events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
+        item_done = {
+            'type': 'response.output_item.done',
+            'output_index': fc_info['output_index'],
+            'item': {
+                'id': fc_info['id'],
+                'type': 'function_call',
+                'status': 'completed',
+                'arguments': fc_info['arguments'],
+                'call_id': call_id,
+                'name': fc_info['name'],
+            },
+        }
+        events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+    return ''.join(events)
 
 
 def _handle_generation_call_item(item: dict, messages: list, item_type: str):
@@ -312,19 +535,26 @@ def _parse_function_call_output(output):
             continue
         itype = it.get('type', 'input_text')
         if itype in ('input_text', 'text', 'output_text'):
-            blocks.append(ContentBlock.from_text(it.get('text', '')))
+            blk = ContentBlock.from_text(it.get('text', ''))
+            blk.prompt_cache_breakpoint = it.get('prompt_cache_breakpoint')
+            blocks.append(blk)
         elif itype in ('input_image', 'image'):
             ref = it.get('image_url') or it.get('url') or it.get('file_id') or ''
             blk = _image_block_from_ref(ref)
             if blk is not None:
+                blk.prompt_cache_breakpoint = it.get('prompt_cache_breakpoint')
                 blocks.append(blk)
         elif itype in ('input_file', 'file'):
             blk = _file_block_from_item(it)
             if blk is not None:
+                blk.prompt_cache_breakpoint = it.get('prompt_cache_breakpoint')
                 blocks.append(blk)
 
     if any(b.type != ContentType.TEXT for b in blocks):
         # 含图片/文件 → 保留为内容块列表
+        return blocks
+    if any(getattr(b, 'prompt_cache_breakpoint', None) for b in blocks):
+        # 带 prompt_cache_breakpoint → 保留为内容块列表（扁平化会丢失该字段）
         return blocks
     if blocks:
         # 纯文本 → 扁平化为字符串
@@ -433,9 +663,9 @@ def _handle_role_message_item(item: dict, messages: list):
             tool_result_blocks = []
             for b in blocks:
                 if isinstance(b, ContentBlock):
-                    if b.type == ContentType.TOOL_CALL:
+                    if b.type in TOOL_CALL_TYPES:
                         tool_call_blocks.append(b)
-                    elif b.type == ContentType.TOOL_RESULT:
+                    elif b.type in TOOL_RESULT_TYPES:
                         tool_result_blocks.append(b)
                     else:
                         regular_blocks.append(b)
@@ -475,13 +705,13 @@ def _handle_role_message_item(item: dict, messages: list):
             # Merge non-tool-call content blocks into the same turn.
             if isinstance(last.content, list):
                 has_tool_calls = any(
-                    isinstance(b, ContentBlock) and b.type == ContentType.TOOL_CALL
+                    isinstance(b, ContentBlock) and b.type in TOOL_CALL_TYPES
                     for b in last.content
                 )
                 if has_tool_calls:
                     if isinstance(content, list):
                         for block in content:
-                            if isinstance(block, ContentBlock) and block.type != ContentType.TOOL_CALL:
+                            if isinstance(block, ContentBlock) and block.type not in TOOL_CALL_TYPES:
                                 last.content.append(block)
                     elif isinstance(content, str) and content:
                         last.content.append(ContentBlock.from_text(content))
@@ -891,11 +1121,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
     # the item_type string to derive the correct tool name.
     _INPUT_DISPATCH = {
         'function_call':          (_handle_function_call_item, False),
+        'custom_tool_call':       (_handle_custom_tool_call_item, False),
         'image_generation_call':  (_handle_generation_call_item, True),
         'video_generation_call':  (_handle_generation_call_item, True),
         'video_erase_call':       (_handle_generation_call_item, True),
         '3d_generation_call':     (_handle_generation_call_item, True),
         'function_call_output':   (_handle_function_call_output_item, False),
+        'custom_tool_call_output': (_handle_custom_tool_call_output_item, False),
         'reasoning':              (_handle_reasoning_item, False),
         'additional_tools':       (_handle_additional_tools_item, False),
     }
@@ -921,6 +1153,13 @@ class OpenAIResponsesAdapter(BaseAdapter):
             for blk in _safe_list(item.get('content')):
                 if isinstance(blk, dict):
                     _register_fid_media(file_map, blk)
+
+            # 1b. Custom tool result content blocks (output may carry input_image /
+            #     input_file with file_ids)
+            if item.get('type') == 'custom_tool_call_output':
+                for blk in _safe_list(item.get('output')):
+                    if isinstance(blk, dict):
+                        _register_fid_media(file_map, blk)
 
             # 2. Top-level plain media blocks (role is a media role or absent)
             top_type = item.get('type', '')
@@ -1405,14 +1644,17 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
                     if choice.tool_calls:
                         for tc in choice.tool_calls:
-                            output.append({
-                                'type': 'function_call',
-                                'id': tc.id,
-                                'call_id': tc.id,
-                                'name': tc.name,
-                                'arguments': json.dumps(tc.arguments, ensure_ascii=False),
-                                'status': 'completed'
-                            })
+                            if getattr(tc, 'call_type', 'function') == 'custom':
+                                output.append(_custom_tool_call_output_item(tc))
+                            else:
+                                output.append({
+                                    'type': 'function_call',
+                                    'id': tc.id,
+                                    'call_id': tc.id,
+                                    'name': tc.name,
+                                    'arguments': json.dumps(tc.arguments, ensure_ascii=False),
+                                    'status': 'completed'
+                                })
 
                     if content_items:
                         output.append({
@@ -1508,12 +1750,17 @@ class OpenAIResponsesAdapter(BaseAdapter):
             for tc in chunk.tool_calls:
                 call_id = tc.get('id', '')
                 tc_index = tc.get('index')
-                func = tc.get('function', {})
-                name = func.get('name', '')
-                args = func.get('arguments', '')
+                # function_call → "function" + function{name, arguments}
+                # custom_tool_call → "custom" + custom{name, input} (+ namespace / caller)
+                tc_type = tc.get('type', 'function')
+                payload = tc.get('custom', tc.get('function', {}))
+                name = payload.get('name', '') or tc.get('name', '')
+                args = payload.get('input') or payload.get('arguments') or ''
+                if not isinstance(args, str):
+                    args = json.dumps(args, ensure_ascii=False) if args is not None else ''
 
                 if call_id:
-                    # New function call start — emit response.output_item.added
+                    # New tool call start — emit response.output_item.added
                     self._stream_current_tc_call_id = call_id
                     output_index = getattr(self, '_stream_output_index', 0)
                     self._stream_output_index = output_index + 1
@@ -1524,33 +1771,25 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     # Track index → call_id for providers that use index-based deltas
                     if tc_index is not None:
                         self._stream_tc_index_to_call_id[tc_index] = call_id
-                    
-                    # Store function call info for later use in response.output_item.done
+
+                    # Store tool call info for later use in response.output_item.done
                     if not hasattr(self, '_stream_tool_calls'):
                         self._stream_tool_calls = []
-                    fc_id = _gen_id("fc")
+                    fc_id = tc.get('item_id') or _gen_id("ctc" if tc_type == 'custom' else "fc")
                     self._stream_tool_calls.append({
                         'id': fc_id,
                         'call_id': call_id,
                         'name': name,
                         'arguments': '',  # will be accumulated
                         'output_index': output_index,
-                        'done': False  # track whether done events have been emitted
+                        'done': False,  # track whether done events have been emitted
+                        'type': tc_type,
+                        'namespace': tc.get('namespace'),
+                        'caller': tc.get('caller'),
+                        'item_id': tc.get('item_id'),
                     })
 
-                    item_added = {
-                        'type': 'response.output_item.added',
-                        'output_index': output_index,
-                        'item': {
-                            'id': fc_id,
-                            'type': 'function_call',
-                            'status': 'in_progress',
-                            'arguments': '',
-                            'call_id': call_id,
-                            'name': name
-                        }
-                    }
-                    events.append(f"event: response.output_item.added\ndata: {json.dumps(item_added, ensure_ascii=False)}\n\n")
+                    events.append(_emit_tool_call_added_event(self._stream_tool_calls[-1], call_id))
 
                 # For deltas without call_id, resolve via index → call_id mapping,
                 # then fall back to the last known call_id
@@ -1563,55 +1802,28 @@ class OpenAIResponsesAdapter(BaseAdapter):
                 if args:
                     # Accumulate arguments in _stream_tool_calls entry
                     tool_calls_list = getattr(self, '_stream_tool_calls', [])
-                    for fc_info in tool_calls_list:
-                        if fc_info['call_id'] == effective_call_id:
-                            fc_info['arguments'] += args
+                    fc_info = None
+                    for entry in tool_calls_list:
+                        if entry['call_id'] == effective_call_id:
+                            entry['arguments'] += args
+                            fc_info = entry
                             break
 
-                    # Determine output_index for this arguments delta
-                    tool_indices = getattr(self, '_stream_tool_output_indices', {})
-                    tc_output_index = tool_indices.get(effective_call_id, 0) if effective_call_id else (max(tool_indices.values()) if tool_indices else 0)
-                    event_data = {
-                        'type': 'response.function_call_arguments.delta',
-                        'output_index': tc_output_index,
-                        'delta': args
-                    }
-                    events.append(f"event: response.function_call_arguments.delta\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n")
-                    
-                    # Check if the ACCUMULATED arguments form complete JSON.
-                    # For providers like Gemini that send all args in one chunk, this
-                    # triggers immediately. For Azure/OpenAI (incremental deltas), it
-                    # triggers only when the full JSON is assembled.
-                    for fc_info in tool_calls_list:
-                        if fc_info['call_id'] == effective_call_id and not fc_info['done']:
+                    if fc_info is not None:
+                        events.append(_emit_tool_call_args_delta(fc_info, args))
+
+                        # Check if the ACCUMULATED arguments form complete JSON.
+                        # For providers like Gemini that send all args in one chunk, this
+                        # triggers immediately. For Azure/OpenAI (incremental deltas), it
+                        # triggers only when the full JSON is assembled.
+                        if not fc_info['done']:
                             try:
                                 json.loads(fc_info['arguments'])
                                 # Complete JSON — emit done events now
                                 fc_info['done'] = True
-                                fc_name = fc_info['name'] or name
-                                args_done = {
-                                    'type': 'response.function_call_arguments.done',
-                                    'output_index': fc_info['output_index'],
-                                    'arguments': fc_info['arguments']
-                                }
-                                events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
-                                
-                                item_done = {
-                                    'type': 'response.output_item.done',
-                                    'output_index': fc_info['output_index'],
-                                    'item': {
-                                        'id': fc_info['id'],
-                                        'type': 'function_call',
-                                        'status': 'completed',
-                                        'arguments': fc_info['arguments'],
-                                        'call_id': effective_call_id,
-                                        'name': fc_name
-                                    }
-                                }
-                                events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+                                events.append(_emit_tool_call_done_events(fc_info, effective_call_id))
                             except (json.JSONDecodeError, TypeError):
                                 pass
-                            break
 
         if chunk.finish_reason and chunk.delta_content is not None:
             # Full-text finish chunk
@@ -1623,27 +1835,12 @@ class OpenAIResponsesAdapter(BaseAdapter):
             # the done events weren't emitted during delta processing (e.g. edge cases).
             tool_calls_list = getattr(self, '_stream_tool_calls', [])
             for fc_info in tool_calls_list:
-                if not fc_info['done'] and fc_info['arguments']:
+                # Custom tool calls may carry non-JSON input (e.g. code patches), so
+                # JSON-completion detection never fires — always close them here.
+                needs_close = bool(fc_info['arguments']) or fc_info.get('type') == 'custom'
+                if not fc_info['done'] and needs_close:
                     fc_info['done'] = True
-                    args_done = {
-                        'type': 'response.function_call_arguments.done',
-                        'output_index': fc_info['output_index'],
-                        'arguments': fc_info['arguments']
-                    }
-                    events.append(f"event: response.function_call_arguments.done\ndata: {json.dumps(args_done, ensure_ascii=False)}\n\n")
-                    item_done = {
-                        'type': 'response.output_item.done',
-                        'output_index': fc_info['output_index'],
-                        'item': {
-                            'id': fc_info['id'],
-                            'type': 'function_call',
-                            'status': 'completed',
-                            'arguments': fc_info['arguments'],
-                            'call_id': fc_info['call_id'],
-                            'name': fc_info['name']
-                        }
-                    }
-                    events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
+                    events.append(_emit_tool_call_done_events(fc_info, fc_info['call_id']))
 
             # Only emit text/content_part/message done events if there was actual
             # text content AND it hasn't already been closed (e.g. by a tool_calls
@@ -1746,14 +1943,17 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
                     tool_calls_list = getattr(self, '_stream_tool_calls', [])
                     for fc_info in tool_calls_list:
-                        output_items.append({
-                            'type': 'function_call',
-                            'id': fc_info['id'],
-                            'call_id': fc_info['call_id'],
-                            'name': fc_info['name'],
-                            'arguments': fc_info['arguments'],
-                            'status': 'completed'
-                        })
+                        if fc_info.get('type') == 'custom':
+                            output_items.append(_custom_tool_call_output_item(fc_info))
+                        else:
+                            output_items.append({
+                                'type': 'function_call',
+                                'id': fc_info['id'],
+                                'call_id': fc_info['call_id'],
+                                'name': fc_info['name'],
+                                'arguments': fc_info['arguments'],
+                                'status': 'completed'
+                            })
                     completed_resp = {
                         'id': resp_id,
                         'object': 'response',
@@ -1801,20 +2001,31 @@ class OpenAIResponsesAdapter(BaseAdapter):
             if not getattr(self, '_stream_completed_emitted', False):
                 self._stream_completed_emitted = True
                 resp_id = chunk.id.replace('chatcmpl-', 'resp_') if chunk.id.startswith('chatcmpl-') else chunk.id
-                
-                # Build output array - include function_calls if any were accumulated
-                output_items = []
+
+                # Close any tool calls that haven't emitted done events yet
+                # (custom tool calls may carry non-JSON input, so always close them).
                 tool_calls_list = getattr(self, '_stream_tool_calls', [])
                 for fc_info in tool_calls_list:
-                    output_items.append({
-                        'type': 'function_call',
-                        'id': fc_info['id'],
-                        'call_id': fc_info['call_id'],
-                        'name': fc_info['name'],
-                        'arguments': fc_info['arguments'],
-                        'status': 'completed'
-                    })
-                
+                    needs_close = bool(fc_info['arguments']) or fc_info.get('type') == 'custom'
+                    if not fc_info['done'] and needs_close:
+                        fc_info['done'] = True
+                        events.append(_emit_tool_call_done_events(fc_info, fc_info['call_id']))
+
+                # Build output array - include tool calls if any were accumulated
+                output_items = []
+                for fc_info in tool_calls_list:
+                    if fc_info.get('type') == 'custom':
+                        output_items.append(_custom_tool_call_output_item(fc_info))
+                    else:
+                        output_items.append({
+                            'type': 'function_call',
+                            'id': fc_info['id'],
+                            'call_id': fc_info['call_id'],
+                            'name': fc_info['name'],
+                            'arguments': fc_info['arguments'],
+                            'status': 'completed'
+                        })
+
                 completed = {
                     'type': 'response.completed',
                     'response': {
@@ -2348,14 +2559,17 @@ class OpenAIResponsesAdapter(BaseAdapter):
 
                     tool_calls_list = getattr(self, '_stream_tool_calls', [])
                     for fc_info in tool_calls_list:
-                        output_items.append({
-                            'type': 'function_call',
-                            'id': fc_info['id'],
-                            'call_id': fc_info['call_id'],
-                            'name': fc_info['name'],
-                            'arguments': fc_info['arguments'],
-                            'status': 'completed'
-                        })
+                        if fc_info.get('type') == 'custom':
+                            output_items.append(_custom_tool_call_output_item(fc_info))
+                        else:
+                            output_items.append({
+                                'type': 'function_call',
+                                'id': fc_info['id'],
+                                'call_id': fc_info['call_id'],
+                                'name': fc_info['name'],
+                                'arguments': fc_info['arguments'],
+                                'status': 'completed'
+                            })
 
                     deferred_resp_id = getattr(self, '_stream_deferred_resp_id', _gen_id("resp"))
                     deferred_model = getattr(self, '_stream_deferred_model', model_name)
