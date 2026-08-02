@@ -215,12 +215,15 @@ def _custom_tool_call_item_from_block(block: ContentBlock) -> Dict[str, Any]:
 
 
 def _custom_tool_call_output_item_from_block(block: ContentBlock) -> Dict[str, Any]:
-    """从 TOOL_RESULT 块的固定字段重建 Responses API ``custom_tool_call_output`` 输入条目。"""
+    """从 TOOL_RESULT 块的固定字段重建 Responses API ``custom_tool_call_output`` 输入条目。
+
+    ``call_id`` 与 ``custom_tool_call.call_id`` 同名配对。
+    """
     return {
         "type": "custom_tool_call_output",
         "id": getattr(block, 'item_id', None) or "",
         "caller": getattr(block, 'caller', None) or {"type": "direct"},
-        "caller_id": block.tool_call_id or "",
+        "call_id": block.tool_call_id or "",
         "output": _tool_result_to_responses_output(block.tool_result),
     }
 

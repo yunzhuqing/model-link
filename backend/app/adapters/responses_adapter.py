@@ -289,13 +289,16 @@ def _custom_tool_call_block(item: dict) -> ContentBlock:
 def _custom_tool_call_output_block(item: dict) -> ContentBlock:
     """Convert a custom_tool_call_output item/block dict → TOOL_RESULT ContentBlock.
 
-    Pairing key resolution order: top-level ``caller_id`` → ``caller.caller_id``
-    (program callers) → item ``id``. ``output`` may be a string or an array of
-    input_* content blocks (input_text / input_image / input_file, with optional
-    ``prompt_cache_breakpoint``)。
+    Pairing key resolution order: ``call_id``（与 custom_tool_call.call_id 同名字段）
+    → ``caller_id``（兼容旧字段名）→ ``caller.caller_id``（program 调用）→ item ``id``。
+    ``output`` may be a string or an array of input_* content blocks
+    (input_text / input_image / input_file, with optional ``prompt_cache_breakpoint``)。
     """
     caller = item.get('caller') or {}
-    call_id = item.get('caller_id') or caller.get('caller_id') or item.get('id', '')
+    call_id = (item.get('call_id')
+               or item.get('caller_id')
+               or caller.get('caller_id')
+               or item.get('id', ''))
     result_value = _parse_function_call_output(item.get('output', ''))
     block = ContentBlock.from_tool_result(call_id, result_value)
     block.type = ContentType.CUSTOM_TOOL_CALL_OUTPUT

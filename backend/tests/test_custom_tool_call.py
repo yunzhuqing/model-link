@@ -45,7 +45,7 @@ CUSTOM_CALL_OUTPUT_ITEM = {
     "type": "custom_tool_call_output",
     "id": "ctc_1",
     "caller": {"type": "direct"},
-    "caller_id": "call_1",
+    "call_id": "call_1",
     "output": "the result",
 }
 
@@ -102,7 +102,7 @@ def test_custom_tool_call_output_with_program_caller():
         "type": "custom_tool_call_output",
         "id": "ctc_1",
         "caller": {"type": "program", "caller_id": "call_1"},
-        "caller_id": "call_1",
+        "call_id": "call_1",
         "output": [{"type": "input_text", "text": "ok"}],
     }
     req = OpenAIResponsesAdapter().parse_request({
@@ -114,6 +114,22 @@ def test_custom_tool_call_output_with_program_caller():
     assert req.messages[1].content[0].get_tool_result_text() == "ok"
     assert req.messages[1].content[0].type == ContentType.CUSTOM_TOOL_CALL_OUTPUT
     assert req.messages[1].content[0].caller["type"] == "program"
+
+
+def test_custom_tool_call_output_falls_back_to_caller_id():
+    """兼容旧字段名：无 call_id 时回退到 caller_id / caller.caller_id。"""
+    item = {
+        "type": "custom_tool_call_output",
+        "id": "ctco_1",
+        "caller": {"type": "direct"},
+        "caller_id": "call_1",
+        "output": "result",
+    }
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gpt-x",
+        "input": [CUSTOM_CALL_ITEM, item],
+    })
+    assert req.messages[1].tool_call_id == "call_1"
 
 
 def test_custom_tool_call_output_with_image_content():
@@ -145,7 +161,7 @@ def test_custom_tool_call_output_preserves_prompt_cache_breakpoint():
         "type": "custom_tool_call_output",
         "id": "ctc_1",
         "caller": {"type": "direct"},
-        "caller_id": "call_1",
+        "call_id": "call_1",
         "output": [
             {"type": "input_text", "text": "hi", "prompt_cache_breakpoint": {"mode": "explicit"}},
         ],
