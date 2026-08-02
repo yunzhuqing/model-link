@@ -331,28 +331,34 @@ def _custom_tool_call_output_item(tc) -> dict:
          "call_id": ..., "namespace": ..., "caller": ...}
     """
     if hasattr(tc, 'call_type'):  # ToolCall
-        return {
+        item = {
             'type': 'custom_tool_call',
             'id': tc.item_id or tc.id,
             'call_id': tc.id,
             'name': tc.name,
             'input': tc.input_raw if tc.input_raw is not None
                      else json.dumps(tc.arguments, ensure_ascii=False),
-            'namespace': tc.namespace or '',
             'caller': tc.caller or {'type': 'direct'},
             'status': 'completed',
         }
+        # namespace 为空时不传递该字段
+        if tc.namespace:
+            item['namespace'] = tc.namespace
+        return item
     # fc_info dict accumulated during streaming
-    return {
+    item = {
         'type': 'custom_tool_call',
         'id': tc.get('id') or tc.get('item_id') or tc.get('call_id') or '',
         'call_id': tc.get('call_id', ''),
         'name': tc.get('name', ''),
         'input': tc.get('arguments', ''),
-        'namespace': tc.get('namespace', ''),
         'caller': tc.get('caller') or {'type': 'direct'},
         'status': 'completed',
     }
+    # namespace 为空时不传递该字段
+    if tc.get('namespace'):
+        item['namespace'] = tc['namespace']
+    return item
 
 
 # ── Streaming tool-call event builders (function_call / custom_tool_call) ──
@@ -367,9 +373,11 @@ def _emit_tool_call_added_event(fc_info: dict, call_id: str) -> str:
             'call_id': call_id,
             'name': fc_info['name'],
             'input': '',
-            'namespace': fc_info.get('namespace', ''),
             'caller': fc_info.get('caller') or {'type': 'direct'},
         }
+        # namespace 为空时不传递该字段
+        if fc_info.get('namespace'):
+            item['namespace'] = fc_info['namespace']
     else:
         item = {
             'id': fc_info['id'],
@@ -431,10 +439,12 @@ def _emit_tool_call_done_events(fc_info: dict, call_id: str) -> str:
                 'call_id': call_id,
                 'name': fc_info['name'],
                 'input': fc_info['arguments'],
-                'namespace': fc_info.get('namespace', ''),
                 'caller': fc_info.get('caller') or {'type': 'direct'},
             },
         }
+        # namespace 为空时不传递该字段
+        if fc_info.get('namespace'):
+            item_done['item']['namespace'] = fc_info['namespace']
         events.append(f"event: response.output_item.done\ndata: {json.dumps(item_done, ensure_ascii=False)}\n\n")
     else:
         args_done = {

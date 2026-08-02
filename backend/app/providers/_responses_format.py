@@ -199,15 +199,19 @@ def _custom_tool_call_item_from_block(block: ContentBlock) -> Dict[str, Any]:
     if input_raw is None:
         args = block.tool_arguments or {}
         input_raw = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
-    return {
+    item = {
         "type": "custom_tool_call",
         "id": getattr(block, 'item_id', None) or block.tool_call_id or "",
         "call_id": block.tool_call_id or "",
         "name": block.tool_name or "",
         "input": input_raw or "",
-        "namespace": getattr(block, 'namespace', None) or "",
         "caller": getattr(block, 'caller', None) or {"type": "direct"},
     }
+    # namespace 为空时不传递该字段
+    namespace = getattr(block, 'namespace', None) or ""
+    if namespace:
+        item["namespace"] = namespace
+    return item
 
 
 def _custom_tool_call_output_item_from_block(block: ContentBlock) -> Dict[str, Any]:
@@ -459,6 +463,13 @@ def build_responses_request(request: ChatRequest) -> Dict[str, Any]:
     if request.response_format is not None:
         result["text"] = response_format_to_responses_api(request.response_format)
     
+    # verbosity 在 Responses API 中应嵌套在 text 下，而非顶层参数
+    verbosity = request.metadata.get("verbosity")
+    if verbosity is not None:
+        if "text" not in result:
+            result["text"] = {}
+        result["text"]["verbosity"] = verbosity
+
     # verbosity 在 Responses API 中应嵌套在 text 下，而非顶层参数
     verbosity = request.metadata.get("verbosity")
     if verbosity is not None:

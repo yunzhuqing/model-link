@@ -461,3 +461,67 @@ def test_real_world_custom_tool_call_stream_end_to_end():
     assert '"input": "const patch"' in sse2
     assert "response.completed" in sse2
     assert '"type": "custom_tool_call"' in sse2
+
+
+# ── Empty namespace is omitted on output ────────────────────────────
+
+def test_format_response_omits_empty_namespace():
+    """custom_tool_call output item omits ``namespace`` when empty."""
+    tc = ToolCall(
+        id="call_1",
+        name="my_tool",
+        arguments={"a": 1},
+        call_type="custom",
+        caller={"type": "direct"},
+        item_id="ctc_1",
+    )
+    choice = ChatChoice(
+        index=0,
+        message=Message(role=MessageRole.ASSISTANT, content=""),
+        finish_reason=FinishReason.TOOL_CALLS,
+        tool_calls=[tc],
+    )
+    resp = ChatResponse(id="resp_1", model="gpt-x", choices=[choice],
+                        usage=UsageInfo(prompt_tokens=1, completion_tokens=1, total_tokens=2))
+    item = OpenAIResponsesAdapter().format_response(resp)["output"][0]
+    assert item["type"] == "custom_tool_call"
+    assert "namespace" not in item
+    assert item["caller"] == {"type": "direct"}
+
+
+def test_build_responses_request_omits_empty_namespace():
+    """Round-trip to Responses-API upstream omits ``namespace`` when empty."""
+    item = {
+        "type": "custom_tool_call",
+        "id": "ctc_1",
+        "call_id": "call_1",
+        "name": "my_tool",
+        "input": '{"a": 1}',
+        "namespace": "",
+        "caller": {"type": "direct"},
+    }
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gpt-x",
+        "input": [item],
+    })
+    body = build_responses_request(req)
+    out_item = body["input"][0]
+    assert out_item["type"] == "custom_tool_call"
+    assert "namespace" not in out_item
+
+
+def test_format_stream_chunk_omits_empty_namespace():
+    """Streaming SSE omits ``namespace`` when the tool call carries none."""
+    adapter = OpenAIResponsesAdapter()
+    adapter._stream_msg_id = "msg_1"
+    chunk = StreamChunk(id="resp_1", model="gpt-x", tool_calls=[{
+        "index": 0,
+        "id": "call_1",
+        "type": "custom",
+        "custom": {"name": "my_tool", "input": ""},
+        "item_id": "ctc_1",
+    }])
+    sse = adapter.format_stream_chunk(chunk)
+    assert "response.output_item.added" in sse
+    assert '"type": "custom_tool_call"' in sse
+    assert "namespace" not in sse
