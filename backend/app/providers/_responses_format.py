@@ -276,6 +276,22 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
                 "summary": [{"type": "summary_text", "text": message.reasoning_content}],
             })
 
+        # Emit the text message BEFORE tool calls, matching the Responses API
+        # output order (message → function_call / custom_tool_call). If tool calls
+        # were emitted first, a round-trip would reorder the items and break
+        # providers (e.g. Azure) that rely on message-before-toolcall ordering.
+        text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
+        if text_blocks:
+            content_parts = [
+                {"type": "output_text", "text": b.text or ""}
+                for b in text_blocks
+            ]
+            result.append({
+                "type": "message",
+                "role": "assistant",
+                "content": content_parts,
+            })
+
         for block in blocks:
             if block.type in TOOL_CALL_TYPES:
                 if block.type == ContentType.CUSTOM_TOOL_CALL:
@@ -293,18 +309,6 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
                         else json.dumps(args, ensure_ascii=False)
                     ),
                 })
-
-        text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
-        if text_blocks:
-            content_parts = [
-                {"type": "output_text", "text": b.text or ""}
-                for b in text_blocks
-            ]
-            result.append({
-                "type": "message",
-                "role": "assistant",
-                "content": content_parts,
-            })
 
         if not result:
             result.append({"type": "message", "role": "assistant", "content": []})

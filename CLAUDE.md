@@ -93,6 +93,7 @@ Key rules enforced in `_process_chunk()` and `format_stream_chunk()`:
 2. **Text closes before tool_calls**: `chunk.tool_calls` + `_stream_text_started` + not `_stream_text_closed` → emit `_emit_text_close_events()` first.
 3. **`response.completed` output array**: message BEFORE function_calls (matches output_index: 0=reasoning, 1=message, 2+=function_call).
 4. **`_is_marker_chunk()` MUST check `delta_reasoning_content`**: chunks with reasoning content are NOT role-only markers. Providers like Bailian send reasoning without `delta_content` (incremental_output mode), so omitting this check drops reasoning chunks.
+5. **Input-side order also message BEFORE tool calls**: `_message_to_responses_items` (ASSISTANT) emits the text `message` item BEFORE `function_call` / `custom_tool_call` items — matching the Responses API output order. Reversing it would reorder a client's round-tripped input (e.g. Azure rejects the swapped order).
 
 **Custom tools (`custom_tool_call` / `custom_tool_call_output`)**: supported for input and output, stream and non-stream.
 - Input `custom_tool_call` → assistant `ContentType.CUSTOM_TOOL_CALL` block; `custom_tool_call_output` → tool `ContentType.CUSTOM_TOOL_CALL_OUTPUT` block (distinct `ContentType` values, NOT plain `TOOL_CALL`/`TOOL_RESULT`). Pairing key is `call_id` ↔ `call_id`; the output side resolves `call_id` → `caller_id` (legacy) → `caller.caller_id` → item `id`.

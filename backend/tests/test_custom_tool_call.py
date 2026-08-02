@@ -178,6 +178,57 @@ def test_custom_tool_call_output_preserves_prompt_cache_breakpoint():
     ]
 
 
+def test_build_responses_request_preserves_message_before_tool_calls():
+    """assistant 文本 message 必须排在 custom_tool_call 之前（Responses API 输出顺序）。
+
+    Regression: _message_to_responses_items 曾把工具调用排在 message 之前，导致
+    Azure 等上游收到的 input 顺序与客户端发送的不一致。
+    """
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gpt-x",
+        "input": [
+            {"type": "message", "id": "msg_1", "role": "assistant",
+             "content": [{"type": "output_text", "text": ""}]},
+            CUSTOM_CALL_ITEM,
+            CUSTOM_CALL_OUTPUT_ITEM,
+        ],
+    })
+    body = build_responses_request(req)
+    types = [it["type"] for it in body["input"]]
+    assert types == ["message", "custom_tool_call", "custom_tool_call_output"]
+    assert body["input"][0]["content"] == [{"type": "output_text", "text": ""}]
+    assert body["input"][1] == CUSTOM_CALL_ITEM
+    assert body["input"][2] == CUSTOM_CALL_OUTPUT_ITEM
+
+
+def test_build_responses_request_preserves_message_before_function_call():
+    """同样约束适用于普通 function_call：message 在 function_call 之前。"""
+    fc_item = {
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_1",
+        "name": "get_weather",
+        "arguments": '{"city": "sh"}',
+    }
+    fc_output = {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "sunny",
+    }
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gpt-x",
+        "input": [
+            {"type": "message", "id": "msg_1", "role": "assistant",
+             "content": [{"type": "output_text", "text": "checking..."}]},
+            fc_item,
+            fc_output,
+        ],
+    })
+    body = build_responses_request(req)
+    types = [it["type"] for it in body["input"]]
+    assert types == ["message", "function_call", "function_call_output"]
+
+
 def test_build_responses_request_round_trips_custom_items():
     req = OpenAIResponsesAdapter().parse_request({
         "model": "gpt-x",
