@@ -163,7 +163,7 @@ class TencentVODProvider(OpenAIProvider):
             "supports_vision": True,
             "is_image_model": True,
         },
-        # 视频生成模型 — 可灵 Kling (ModelName=Kling)
+        # 视频生成模型
         "kling-v3-omni": {
             "description": "可灵 v3 旗舰版 Omni 视频生成模型（Kling 3.0-Omni）",
             "context_size": 0,
@@ -228,6 +228,12 @@ class TencentVODProvider(OpenAIProvider):
         # 视频生成模型 — 混元视频 Hunyuan
         "hy-video-v1.0": {
             "description": "混元视频 v1.0 视频生成模型（Hunyuan 1.0）",
+            "context_size": 0,
+            "supports_vision": True,
+            "is_video_model": True,
+        },
+        "MiniMax-H3": {
+            "description": "MiniMax H3 视频生成模型（Hailuo H3，支持文本、图片、音频和视频输入）",
             "context_size": 0,
             "supports_vision": True,
             "is_video_model": True,

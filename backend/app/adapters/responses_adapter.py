@@ -1515,7 +1515,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         #   Bailian:       happyhorse-*
         #   Volcengine:    *seedance*
         #   Gemini/Vertex: veo*
-        #   TencentVOD:    kling-*, vidu*, pixverse-*, gv-*, hy-video-*
+        #   TencentVOD:    kling-*, vidu*, pixverse-*, gv-*, hy-video-*, MiniMax-H3
         is_video_generation = (
             model_lower.startswith("happyhorse") or
             "seedance" in model_lower or
@@ -1525,6 +1525,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
             model_lower.startswith("pixverse-") or
             model_lower.startswith("gv-") or
             model_lower.startswith("hy-video-") or 
+            model_lower == "minimax-h3" or
             model_lower.startswith("mps-")
         )
 

@@ -1,4 +1,4 @@
-"""TencentVOD model templates — chat (GPT, Gemini), image (Gemini), video (Kling)."""
+"""TencentVOD model templates — chat, image, video, and 3D models."""
 
 from enum import Flag
 
@@ -294,6 +294,23 @@ TENCENTVOD_TEMPLATES = [
         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False,
     ),
     # ── TencentVOD Kling Video Models ───────────────────────────────────────
+    # MiniMax H3 / Hailuo H3 — text-to-video, image-to-video, and reference-to-video.
+    # Pricing is intentionally zero until an official TencentVOD rate is configured.
+    dict(
+        label='MiniMax H3 (TencentVOD)',
+        provider='TencentVOD',
+        name='MiniMax-H3',
+        alias='MiniMax-H3',
+        context_size=4096, input_size=4096, output_size=1,
+        pricing_tiers=None,
+        input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+        currency='CNY',
+        timeout=900,
+        support_kvcache=False, support_image=True, support_audio=True, support_video=True,
+        support_file=False, support_web_search=False, support_tool_search=False,
+        api_type="responses",
+        support_thinking=False, support_online_image=True, support_online_video=True, support_embedding=False,
+    ),
     # Kling v3 Omni — video generation with per-second pricing.
     # Pricing varies by resolution × audio × reference_video (16 tiers).
     # Prices are in CNY per second.

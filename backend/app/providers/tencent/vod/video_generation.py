@@ -26,7 +26,7 @@ SubAppId 存放于 extra_config["sub_app_id"]。
 {
     "type": "input_image",
     "image_url": "https://...",
-    "file_id": "woman"        # 参考图别名，用于 Prompt 中的 {{woman}} 占位符
+    "file_id": "woman"        # 参考图别名，用于 Prompt 中的 {{woman}} / @woman 占位符
 }
 
 API 文档: https://cloud.tencent.com/document/product/266/
@@ -81,6 +81,7 @@ _TENCENTVOD_VIDEO_MODEL_PREFIXES = (
     "hy-video-",   # Hunyuan video models
     "viduq",       # Vidu video models (ModelName=Vidu)
     "pixverse-",   # Pixverse video models (ModelName=Pixverse)
+    "minimax-h3",  # MiniMax H3 video model (ModelName=Hailuo)
 )
 
 
@@ -99,6 +100,7 @@ def is_tencentvod_video_model(model: str) -> bool:
       - hy-video-v1.0        → Hunyuan, 1.0
       - pixverse-v6          → Pixverse, V6.0
       - pixverse-c1          → Pixverse, C1
+      - MiniMax-H3           → Hailuo, H3
 
     Args:
         model: Model name (case-insensitive)
@@ -137,6 +139,7 @@ def has_video_generation_tool(request: ChatRequest) -> bool:
 #   Kling    – 可灵 (Kling) video models
 #   GV       – Google Veo models routed via TencentVOD
 #   Hunyuan  – 混元视频 models
+#   Hailuo   – MiniMax video models
 _VIDEO_MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     # ── Kling video models (ModelName=Kling) ────────────────────────────────
     "kling-v3-omni":          ("Kling", "3.0-Omni"),
@@ -162,6 +165,8 @@ _VIDEO_MODEL_NAME_VERSION_MAP: Dict[str, Tuple[str, str]] = {
     # ── Pixverse video models (ModelName=Pixverse) ─────────────────────────
     "pixverse-v6":            ("PixVerse", "v6"),
     "pixverse-c1":            ("PixVerse", "c1"),
+    # ── MiniMax Hailuo video model ──────────────────────────────────────
+    "minimax-h3":             ("Hailuo", "H3"),
 }
 
 
@@ -570,11 +575,12 @@ def _build_file_infos_from_map(
           - >2 or mixed types            → FileInfos
 
     If prompt contains ``{{file_id}}`` vars, all FileInfos items matching those vars
-    get Usage="Reference".
+    get Usage="Reference". Hailuo additionally supports native ``@file_id``
+    references, including Unicode identifiers such as ``@图片1`` and ``@音频1``.
 
     Args:
         file_id_media_map: {file_id: {type, url, role}} from responses_adapter
-        model_name:       TencentVOD ModelName (Kling, GV, Vidu, Hunyuan)
+        model_name:       TencentVOD ModelName (Kling, GV, Vidu, Hunyuan, Hailuo)
         prompt:           User prompt text (to check for {{var}} usage)
 
     Returns:
@@ -590,6 +596,29 @@ def _build_file_infos_from_map(
     reference_items: List[Dict[str, Any]] = []
     unclassified: List[Dict[str, Any]] = []
 
+    # ── Build Hailuo aliases and detect prompt variables before classification ──
+    import re as _re2
+    hailuo_aliases: Dict[str, str] = {}
+    if model_name == "Hailuo":
+        counters = {"image": 0, "audio": 0, "video": 0}
+        labels = {"image": "图片", "audio": "音频", "video": "视频"}
+        for fid, info in (file_id_media_map or {}).items():
+            media_type = info.get("type", "")
+            if fid and info.get("url") and media_type in counters:
+                counters[media_type] += 1
+                hailuo_aliases[fid] = f"{labels[media_type]}{counters[media_type]}"
+
+    var_fids: set = set(_re2.findall(r"\{\{([^}]+)\}\}", prompt))
+    if model_name == "Hailuo":
+        # Accept both an original @file_id and the canonical @图片N/@音频N/@视频N
+        # form. They are normalized to canonical aliases below.
+        for fid, alias in hailuo_aliases.items():
+            if (
+                _re2.search(rf"@{_re2.escape(fid)}(?![A-Za-z0-9_-])", prompt)
+                or _re2.search(rf"@{_re2.escape(alias)}(?![A-Za-z0-9_-])", prompt)
+            ):
+                var_fids.add(fid)
+
     for fid, info in (file_id_media_map or {}).items():
         url = info.get("url", "")
         media_type = info.get("type", "")  # image / video / audio
@@ -603,7 +632,9 @@ def _build_file_infos_from_map(
             first_frame_items.append(item)
         elif role == "last_frame":
             last_frame_item = item
-        elif role in ("reference_image", "reference_video", "reference_audio"):
+        elif role in ("reference_image", "reference_video", "reference_audio") or (
+            model_name == "Hailuo" and fid in var_fids
+        ):
             reference_items.append(item)
         else:
             unclassified.append(item)
@@ -625,12 +656,8 @@ def _build_file_infos_from_map(
     # Remaining unclassified → treat as reference
     reference_items.extend(unclassified)
 
-    # ── Detect {{file_id}} vars in prompt ──
-    import re as _re2
-    var_fids: set = set(_re2.findall(r"\{\{([^}]+)\}\}", prompt))
-
     # ── Build FileInfos ──
-    # PixVerse expects fid in "Text" field, all other models use "ObjectId"
+    # PixVerse expects fid in "Text"; Hailuo expects numbered Chinese ObjectIds.
     _fid_key: str = "Text" if model_name == "PixVerse" else "ObjectId"
 
     def _push_image(fid: str, url: str, usage: str = "") -> None:
@@ -639,7 +666,7 @@ def _build_file_infos_from_map(
         seen_urls.add(url)
         item: Dict[str, Any] = {"Type": "Url", "Category": "Image", "Url": url}
         if fid:
-            item[_fid_key] = fid
+            item[_fid_key] = hailuo_aliases.get(fid, fid)
         if usage:
             item["Usage"] = usage
         file_infos.append(item)
@@ -650,7 +677,7 @@ def _build_file_infos_from_map(
         seen_urls.add(url)
         item: Dict[str, Any] = {"Type": "Url", "Category": "Video", "Url": url}
         if fid:
-            item[_fid_key] = fid
+            item[_fid_key] = hailuo_aliases.get(fid, fid)
         if usage:
             item["Usage"] = usage
         file_infos.append(item)
@@ -661,7 +688,7 @@ def _build_file_infos_from_map(
         seen_urls.add(url)
         item: Dict[str, Any] = {"Type": "Url", "Category": "Audio", "Url": url}
         if fid:
-            item[_fid_key] = fid
+            item[_fid_key] = hailuo_aliases.get(fid, fid)
         if usage:
             item["Usage"] = usage
         file_infos.append(item)
@@ -692,6 +719,23 @@ def _build_file_infos_from_map(
             prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"<<<\1>>>", prompt)
         elif model_name == "Vidu" or model_name == "PixVerse":
             prompt = _re2.sub(r"\{\{([^}]+)\}\}", r"@\1 ", prompt)
+        elif model_name == "Hailuo":
+            # Hailuo addresses media by type-specific, one-based aliases.
+            # Normalize both gateway {{file_id}} placeholders and any legacy
+            # @file_id references to @图片N / @音频N / @视频N.
+            def _replace_braced(match: "_re2.Match") -> str:
+                fid = match.group(1)
+                alias = hailuo_aliases.get(fid)
+                return f"@{alias}" if alias else match.group(0)
+
+            for fid in sorted(hailuo_aliases, key=len, reverse=True):
+                alias = hailuo_aliases[fid]
+                prompt = _re2.sub(
+                    rf"@{_re2.escape(fid)}(?![A-Za-z0-9_-])",
+                    f"@{alias}",
+                    prompt,
+                )
+            prompt = _re2.sub(r"\{\{([^}]+)\}\}", _replace_braced, prompt)
 
     return file_infos, last_frame_url, prompt
 

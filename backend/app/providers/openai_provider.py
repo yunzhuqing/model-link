@@ -409,7 +409,11 @@ class OpenAIProvider(BaseProvider):
             result["max_tokens"] = request.max_tokens
         if request.tools:
             result["tools"] = [self._tool_to_openai(t) for t in request.tools]
-        if request.tool_choice:
+        # Chat Completions rejects tool_choice when no tools are present.
+        # Responses API clients may still send tool_choice="auto" without
+        # tools, where omitting it during conversion preserves the same
+        # default behavior.
+        if request.tools and request.tool_choice:
             result["tool_choice"] = request.tool_choice
         if request.stop:
             result["stop"] = request.stop
