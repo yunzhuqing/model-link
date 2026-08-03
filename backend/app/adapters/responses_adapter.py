@@ -697,6 +697,39 @@ def _handle_role_message_item(item: dict, messages: list):
                 else:
                     regular_blocks.append(b)
 
+            # ── Merge into a preceding reasoning-only assistant message ──
+            # When the previous assistant message carries only reasoning_content
+            # (no content), merge regular_blocks and tool_call_blocks into it so
+            # that reasoning_content + content + tool_calls coexist in a single
+            # assistant turn.  This prevents duplicate assistant messages where
+            # one carries reasoning and another carries content + tool_calls.
+            if (role == MessageRole.ASSISTANT
+                    and messages
+                    and messages[-1].role == MessageRole.ASSISTANT
+                    and messages[-1].reasoning_content
+                    and (not messages[-1].content
+                         or (isinstance(messages[-1].content, list) and not messages[-1].content))):
+                last = messages[-1]
+                merged: list = []
+                if regular_blocks:
+                    merged.extend(regular_blocks)
+                if tool_call_blocks:
+                    merged.extend(tool_call_blocks)
+                if merged:
+                    last.content = merged
+                    if not last.id:
+                        last.id = msg_id
+                reasoning = item.get('reasoning_content')
+                if reasoning and not last.reasoning_content:
+                    last.reasoning_content = reasoning
+                for b in tool_result_blocks:
+                    messages.append(Message(
+                        role=MessageRole.TOOL,
+                        content=[b] if not isinstance(b, list) else b,
+                        tool_call_id=b.tool_call_id,
+                    ))
+                return
+
             # Emit in conversation order: user text → assistant (tool_calls) → tool (results)
             if regular_blocks:
                 messages.append(Message(

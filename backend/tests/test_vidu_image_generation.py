@@ -17,7 +17,7 @@ import pytest
 from app.abstraction.chat import ChatRequest
 from app.abstraction.messages import Message, MessageRole
 from app.providers import ViduProvider
-from app.providers.base import ProviderConfig
+from app.providers.base import ProviderConfig, UpstreamProviderError
 from app.providers.vidu.image_generation import (
     VIDU_MODEL_MAP,
     execute_vidu_image_generation,
@@ -189,7 +189,7 @@ async def test_execute_vidu_image_generation_failure(monkeypatch):
     ])
     monkeypatch.setattr("app.providers.vidu.image_generation.shared_client", lambda: fake)
 
-    with pytest.raises(RuntimeError, match="task failed"):
+    with pytest.raises(UpstreamProviderError) as exc_info:
         await execute_vidu_image_generation(
             api_key="vda_test_key",
             base_url="https://api.vidu.cn",
@@ -197,6 +197,42 @@ async def test_execute_vidu_image_generation_failure(monkeypatch):
             messages=[Message(role=MessageRole.USER, content="a cat")],
             metadata={},
         )
+    # 完整 Vidu 返回信息都放入 message，err_code 作为 error_type
+    err = exc_info.value
+    assert err.error_type == "E1001"
+    assert "task failed" in str(err)
+    assert '"state": "failed"' in str(err)
+    assert '"err_code": "E1001"' in str(err)
+
+
+@pytest.mark.asyncio
+async def test_execute_vidu_submit_http_error_includes_full_body(monkeypatch):
+    vidu_error_body = {
+        "code": "CreditInsufficient",
+        "message": "insufficient credits",
+        "metadata": {"trace_id": "af80f3aa9ff1d74e9a0d6aa2af923ffe"},
+        "reason": "CreditInsufficient",
+    }
+    fake = _FakeClient([_FakeResponse(402, vidu_error_body)])
+    monkeypatch.setattr("app.providers.vidu.image_generation.shared_client", lambda: fake)
+
+    with pytest.raises(UpstreamProviderError) as exc_info:
+        await execute_vidu_image_generation(
+            api_key="vda_test_key",
+            base_url="https://api.vidu.cn",
+            model="gemini-3.1-flash-image-preview",
+            messages=[Message(role=MessageRole.USER, content="a cat")],
+            metadata={},
+        )
+
+    err = exc_info.value
+    assert err.status_code == 402
+    assert err.error_type == "CreditInsufficient"
+    assert err.request_id == "af80f3aa9ff1d74e9a0d6aa2af923ffe"
+    # 完整 Vidu 响应体都放在 message 中
+    assert "insufficient credits" in str(err)
+    assert "CreditInsufficient" in str(err)
+    assert "af80f3aa9ff1d74e9a0d6aa2af923ffe" in str(err)
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ from app.abstraction.chat import (
 from app.abstraction.messages import ContentBlock, ContentType, Message, MessageRole
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.http_client import shared_client
+from app.providers.base import UpstreamProviderError
 from app.providers.image_size_utils import resolve_image_size
 from app.utils import gen_id, json_loads
 
@@ -236,7 +237,7 @@ async def _submit_vidu_task(
         task_id string
 
     Raises:
-        RuntimeError: On API error
+        UpstreamProviderError: On API error（message 中包含 Vidu 返回的完整信息）
     """
     url = f"{base_url.rstrip('/')}/ent/v2/reference2image"
     headers = {
@@ -248,8 +249,24 @@ async def _submit_vidu_task(
         response = await client.post(url, json=request_body, headers=headers, timeout=60)
 
     if response.status_code >= 400:
-        raise RuntimeError(
-            f"Vidu image generation API error ({response.status_code}): {response.text}"
+        body_text = response.text
+        error_type = "api_error"
+        request_id = None
+        try:
+            err_data = response.json()
+            if isinstance(err_data, dict):
+                meta = err_data.get("metadata")
+                if isinstance(meta, dict):
+                    request_id = meta.get("trace_id") or meta.get("request_id")
+                request_id = request_id or err_data.get("request_id") or err_data.get("trace_id")
+                error_type = err_data.get("code") or err_data.get("reason") or error_type
+        except Exception:
+            pass
+        raise UpstreamProviderError(
+            f"Vidu image generation API error ({response.status_code}): {body_text}",
+            status_code=response.status_code,
+            error_type=error_type,
+            request_id=request_id,
         )
 
     data = response.json()
@@ -283,7 +300,7 @@ async def _poll_vidu_task(
         List of generated image URLs
 
     Raises:
-        RuntimeError: On task failure or timeout
+        UpstreamProviderError: On task failure or timeout（message 中包含 Vidu 返回的完整信息）
     """
     poll_url = f"{base_url.rstrip('/')}/ent/v2/tasks/{task_id}/creations"
     headers = {
@@ -294,12 +311,13 @@ async def _poll_vidu_task(
     max_wait = poll_timeout or _POLL_MAX_WAIT_S
     start_time = time.monotonic()
     poll_count = 0
+    poll_http_retries = 0
 
     async with shared_client() as client:
         while True:
             elapsed = time.monotonic() - start_time
             if elapsed > max_wait:
-                raise RuntimeError(
+                raise UpstreamProviderError(
                     f"Vidu image generation timed out after {max_wait}s for task {task_id}"
                 )
 
@@ -308,11 +326,17 @@ async def _poll_vidu_task(
 
             response = await client.get(poll_url, headers=headers, timeout=60)
             if response.status_code >= 400:
-                logger.warning(
-                    "Vidu poll error (%s) for task %s, retrying...",
-                    response.status_code, task_id,
+                if response.status_code >= 500 and poll_http_retries < 3:
+                    poll_http_retries += 1
+                    logger.warning(
+                        "Vidu poll error (%s) for task %s, retrying (%d/3)...",
+                        response.status_code, task_id, poll_http_retries,
+                    )
+                    continue
+                raise UpstreamProviderError(
+                    f"Vidu image generation poll error ({response.status_code}) for task {task_id}: {response.text}",
+                    status_code=response.status_code,
                 )
-                continue
 
             data = response.json()
             state = str(data.get("state", "")).lower()
@@ -336,9 +360,11 @@ async def _poll_vidu_task(
                 return urls
 
             if state in ("failed", "error", "cancelled", "canceled"):
-                error_msg = data.get("err_msg") or data.get("err_code") or "Unknown error"
-                raise RuntimeError(
-                    f"Vidu image generation failed for task {task_id}: {error_msg}"
+                raise UpstreamProviderError(
+                    f"Vidu image generation failed for task {task_id}: "
+                    f"{json.dumps(data, ensure_ascii=False)}",
+                    status_code=500,
+                    error_type=str(data.get("err_code") or data.get("err_msg") or "api_error"),
                 )
 
 
@@ -412,12 +438,15 @@ async def execute_vidu_image_generation(
 
         return _parse_vidu_image_response(image_urls, model, metadata, task_id=task_id)
 
-    except RuntimeError:
+    except UpstreamProviderError:
         _trace_error = sys.exc_info()[1]
         raise
     except Exception as e:
         _trace_error = e
-        raise RuntimeError(f"Vidu image generation API error: {str(e)}")
+        raise UpstreamProviderError(
+            f"Vidu image generation API error: {str(e)}",
+            status_code=500,
+        )
     finally:
         if _child_span:
             _child_span.end(error=_trace_error)
