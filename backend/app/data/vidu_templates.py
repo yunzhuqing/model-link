@@ -1,0 +1,58 @@
+"""Vidu model templates — image generation (viduq2 / viduq1 / viduimage-2 / q3-fast / q2-pro / q2-fast).
+
+有网关标准模型对应的条目使用 ``alias`` 作为用户侧模型名（如 gpt-image-2），
+``name`` 为 Vidu API 上游模型名；viduq1 / viduq2 无对应关系，直接以原生名暴露。
+"""
+
+VIDU_TEMPLATES = [
+    # ── 有网关对应关系的模型（alias = 网关标准名，name = Vidu API 名）──────
+    dict(label='GPT Image 2 (Vidu)', provider='Vidu', name='viduimage-2', alias='gpt-image-2',
+         context_size=0, input_size=0, output_size=0, pricing_tiers=None,
+         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=300,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    dict(label='Gemini 2.5 Flash Image (Vidu)', provider='Vidu', name='q2-fast', alias='gemini-2.5-flash-image',
+         context_size=0, input_size=0, output_size=0, pricing_tiers=None,
+         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=300,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    dict(label='Gemini 3 Pro Image Preview (Vidu)', provider='Vidu', name='q2-pro', alias='gemini-3-pro-image-preview',
+         context_size=0, input_size=0, output_size=0, pricing_tiers=None,
+         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=300,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    dict(label='Gemini 3.1 Flash Image Preview (Vidu)', provider='Vidu', name='q3-fast', alias='gemini-3.1-flash-image-preview',
+         context_size=0, input_size=0, output_size=0, pricing_tiers=None,
+         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=300,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    # ── Vidu 原生模型（无网关对应关系，直接以原生名暴露）───────────────────
+    dict(label='Vidu Q1 (Vidu)', provider='Vidu', name='viduq1', alias='viduq1',
+         context_size=0, input_size=0, output_size=0, pricing_tiers=None,
+         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=300,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+    dict(label='Vidu Q2 (Vidu)', provider='Vidu', name='viduq2', alias='viduq2',
+         context_size=0, input_size=0, output_size=0, pricing_tiers=None,
+         input_price=0, output_price=0, cache_creation_price=0, cache_hit_price=0,
+         currency='CNY',
+         timeout=300,
+         support_kvcache=False, support_image=True, support_audio=False, support_video=False,
+         support_file=False, support_web_search=False, support_tool_search=False,
+         support_thinking=False, support_online_image=True, support_online_video=False, support_embedding=False),
+]

@@ -106,6 +106,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
             <option value="hunyuan">Hunyuan 3D (Tencent)</option>
             <option value="vllm">vLLM (self-hosted)</option>
             <option value="mulerun">Mulerun</option>
+            <option value="vidu">Vidu</option>
             <option value="openai_chatcompletions_compt">OpenAI ChatCompletions Compatible</option>
             <option value="openai_responses_compt">OpenAI Responses API Compatible</option>
           </select>
@@ -124,6 +125,8 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
                 ? 'http://localhost:8000/v1'
                 : data.type === 'mulerun'
                 ? 'https://api.mulerun.com/vendors/openai/v1'
+                : data.type === 'vidu'
+                ? 'https://api.vidu.cn'
                 : data.type === 'seed_tts'
                 ? 'https://openspeech.bytedance.com'
                 : 'https://api.example.com'
@@ -160,6 +163,11 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
           {data.type === 'mulerun' && (
             <p className="text-xs text-slate-400 mt-1">
               Default: https://api.mulerun.com/vendors/openai/v1 — leave blank to use default.
+            </p>
+          )}
+          {data.type === 'vidu' && (
+            <p className="text-xs text-slate-400 mt-1">
+              Default: https://api.vidu.cn — leave blank to use default.
             </p>
           )}
           {data.type === 'seed_tts' && (
