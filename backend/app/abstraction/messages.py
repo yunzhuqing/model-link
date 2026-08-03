@@ -97,7 +97,8 @@ class ContentBlock:
     item_id: Optional[str] = None                    # custom_tool_call 条目自身 id（与 call_id 不同）
     input_raw: Optional[str] = None                  # 原始 input JSON 字符串（无损透传）
     prompt_cache_breakpoint: Optional[Dict[str, Any]] = None  # Responses API 内容块 prompt_cache_breakpoint
-    
+    id: Optional[str] = None                         # Responses API 内容块自身 id（prompt cache key 锚点，round-trip 需透传）
+
     @classmethod
     def from_text(cls, text: str) -> 'ContentBlock':
         """从文本创建内容块"""
@@ -234,7 +235,8 @@ class Message:
     name: Optional[str] = None  # 用于工具调用时标识工具名称
     tool_call_id: Optional[str] = None  # 用于工具结果消息
     reasoning_content: Optional[str] = None  # 推理内容（如 DeepSeek R1）
-    
+    id: Optional[str] = None  # Responses API input 中 message 条目自身的 id（round-trip 需透传）
+
     def __post_init__(self):
         """初始化后处理，自动转换字符串内容"""
         if isinstance(self.content, str):
@@ -353,6 +355,7 @@ class Message:
                 item_id=item.get('item_id'),
                 input_raw=item.get('input_raw'),
                 prompt_cache_breakpoint=item.get('prompt_cache_breakpoint'),
+                id=item.get('id'),
             )
         else:
             # Unknown type, return empty text block

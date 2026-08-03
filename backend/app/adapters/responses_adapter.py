@@ -101,6 +101,7 @@ def _parse_image_block(block: dict) -> ContentBlock:
         cb = ContentBlock.from_text('')
     cb.role = image_role or cb.role
     cb.view = block.get('view')  # 3D multi-view angle
+    cb.id = block.get('id')
     return cb
 
 
@@ -110,16 +111,22 @@ def _parse_content_blocks(blocks: list) -> list:
     Handles: input_text, output_text, text, input_image, input_video, input_audio, input_file.
     Shared by both pure-content-block messages and content arrays inside
     role-based messages — this is the single source of truth for block parsing.
+
+    Each block's ``id`` (if present) is preserved on the ContentBlock so that
+    Responses-API upstreams can round-trip it (prompt-cache anchors rely on it).
     """
     result = []
     for block in blocks:
         block_type = block.get('type', 'input_text')
+        blk_id = block.get('id')
         if block_type in ('input_text', 'output_text', 'text'):
             blk = ContentBlock.from_text(block.get('text', ''))
+            blk.id = blk_id
             blk.prompt_cache_breakpoint = block.get('prompt_cache_breakpoint')
             result.append(blk)
         elif block_type in ('input_image', 'image'):
             blk = _parse_image_block(block)
+            blk.id = blk_id
             blk.prompt_cache_breakpoint = block.get('prompt_cache_breakpoint')
             result.append(blk)
         elif block_type in ('input_video', 'video'):
@@ -128,32 +135,40 @@ def _parse_content_blocks(blocks: list) -> list:
                 fps = block.get('fps')
                 cb = ContentBlock.from_video_url(url, fps=str(fps) if fps is not None else None)
                 cb.role = block.get('role') or cb.role
+                cb.id = blk_id
                 result.append(cb)
             elif block.get('file_id'):
                 # file_id-only reference — preserve as URL for later resolution
                 cb = ContentBlock.from_video_url(block['file_id'])
                 cb.role = block.get('role') or cb.role
+                cb.id = blk_id
                 result.append(cb)
         elif block_type == 'input_audio':
             if 'input_audio' in block:
                 a = block['input_audio']
-                result.append(ContentBlock.from_audio_base64(
+                blk = ContentBlock.from_audio_base64(
                     a.get('data', ''),
                     f"audio/{a.get('format', 'wav')}"
-                ))
+                )
+                blk.id = blk_id
+                result.append(blk)
             elif block.get('audio_url'):
                 url = block['audio_url']
                 if isinstance(url, dict):
                     url = url.get('url', '')
                 cb = ContentBlock.from_audio_url(url)
                 cb.role = block.get('role') or cb.role
+                cb.id = blk_id
                 result.append(cb)
             elif block.get('file_id'):
                 # file_id-only reference — preserve as URL for later resolution
-                result.append(ContentBlock.from_audio_url(block['file_id']))
+                cb = ContentBlock.from_audio_url(block['file_id'])
+                cb.id = blk_id
+                result.append(cb)
         elif block_type == 'input_file':
             file_block = _file_block_from_item(block)
             if file_block is not None:
+                file_block.id = blk_id
                 file_block.prompt_cache_breakpoint = block.get('prompt_cache_breakpoint')
                 result.append(file_block)
         elif block_type == 'function_call':
@@ -532,7 +547,9 @@ def _parse_function_call_output(output):
         output: string | [{"type":"input_text",...},
                           {"type":"input_image","image_url": "url|dataURI", "file_id":...},
                           {"type":"input_file","file_data": dataURI, "file_url":..., "filename":...}]
-    含图片/文件时返回 ContentBlock 列表，纯文本返回字符串（向后兼容）。
+    字符串输入保持字符串；数组输入保留为内容块列表 —— 不扁平化为纯文本字符串，
+    否则客户端发送的复杂 output 结构（如纯文本数组）在 round-trip 到
+    Responses-API 上游时会丢失数组形态。
     """
     if isinstance(output, str):
         return output
@@ -549,30 +566,24 @@ def _parse_function_call_output(output):
         itype = it.get('type', 'input_text')
         if itype in ('input_text', 'text', 'output_text'):
             blk = ContentBlock.from_text(it.get('text', ''))
+            blk.id = it.get('id')
             blk.prompt_cache_breakpoint = it.get('prompt_cache_breakpoint')
             blocks.append(blk)
         elif itype in ('input_image', 'image'):
             ref = it.get('image_url') or it.get('url') or it.get('file_id') or ''
             blk = _image_block_from_ref(ref)
             if blk is not None:
+                blk.id = it.get('id')
                 blk.prompt_cache_breakpoint = it.get('prompt_cache_breakpoint')
                 blocks.append(blk)
         elif itype in ('input_file', 'file'):
             blk = _file_block_from_item(it)
             if blk is not None:
+                blk.id = it.get('id')
                 blk.prompt_cache_breakpoint = it.get('prompt_cache_breakpoint')
                 blocks.append(blk)
 
-    if any(b.type != ContentType.TEXT for b in blocks):
-        # 含图片/文件 → 保留为内容块列表
-        return blocks
-    if any(getattr(b, 'prompt_cache_breakpoint', None) for b in blocks):
-        # 带 prompt_cache_breakpoint → 保留为内容块列表（扁平化会丢失该字段）
-        return blocks
-    if blocks:
-        # 纯文本 → 扁平化为字符串
-        return ' '.join(b.text or '' for b in blocks)
-    return ''
+    return blocks if blocks else ''
 
 
 def _handle_function_call_output_item(item: dict, messages: list):
@@ -666,6 +677,7 @@ def _handle_role_message_item(item: dict, messages: list):
     """
     role = MessageRole(item.get('role', 'user'))
     content = item.get('content', '')
+    msg_id = item.get('id')
 
     if isinstance(content, list):
         blocks = _parse_content_blocks(content)
@@ -691,6 +703,7 @@ def _handle_role_message_item(item: dict, messages: list):
                     role=role,
                     content=regular_blocks,
                     name=item.get('name'),
+                    id=msg_id,
                 ))
             if tool_call_blocks:
                 messages.append(Message(
@@ -713,6 +726,8 @@ def _handle_role_message_item(item: dict, messages: list):
             # Merge text content into the same turn.
             if last.reasoning_content and (not last.content or (isinstance(last.content, list) and not last.content)):
                 last.content = content
+                if not last.id:
+                    last.id = msg_id
                 return
             # Case B: preceding assistant has tool_calls in its content list.
             # Merge non-tool-call content blocks into the same turn.
@@ -731,6 +746,8 @@ def _handle_role_message_item(item: dict, messages: list):
                     reasoning = item.get('reasoning_content')
                     if reasoning and not last.reasoning_content:
                         last.reasoning_content = reasoning
+                    if not last.id:
+                        last.id = msg_id
                     return
 
     messages.append(Message(
@@ -738,6 +755,7 @@ def _handle_role_message_item(item: dict, messages: list):
         content=content,
         name=item.get('name'),
         tool_call_id=item.get('call_id') or item.get('tool_call_id'),
+        id=msg_id,
     ))
 
 
@@ -1258,11 +1276,15 @@ class OpenAIResponsesAdapter(BaseAdapter):
                           img_meta: dict, vid_meta: dict,
                           erase_meta: Optional[dict] = None) -> dict:
         """Collect extra parameters and merge tool metadata into ChatRequest.metadata."""
+        # 不在 _KNOWN 中的字段会进入 ChatRequest.metadata，再由
+        # build_responses_request 按 _RESPONSES_API_METADATA_PASSTHROUGH 白名单
+        # 透传到 Responses-API 上游。store / truncation 在白名单内，必须从
+        # _KNOWN 移除，否则会被排除、无法透传。
         _KNOWN = {
             'model', 'input', 'instructions', 'temperature', 'top_p',
             'max_output_tokens', 'stream', 'tools', 'tool_choice',
             'stop', 'presence_penalty', 'frequency_penalty', 'user',
-            'metadata', 'store', 'truncation', 'reasoning',
+            'metadata', 'reasoning',
             'n', 'seed',
         }
         metadata = {k: v for k, v in data.items() if k not in _KNOWN}

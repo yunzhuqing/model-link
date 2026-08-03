@@ -95,6 +95,22 @@ Key rules enforced in `_process_chunk()` and `format_stream_chunk()`:
 4. **`_is_marker_chunk()` MUST check `delta_reasoning_content`**: chunks with reasoning content are NOT role-only markers. Providers like Bailian send reasoning without `delta_content` (incremental_output mode), so omitting this check drops reasoning chunks.
 5. **Input-side order also message BEFORE tool calls**: `_message_to_responses_items` (ASSISTANT) emits the text `message` item BEFORE `function_call` / `custom_tool_call` items — matching the Responses API output order. Reversing it would reorder a client's round-tripped input (e.g. Azure rejects the swapped order).
 
+**Reasoning item order (adapter owns the whole lifecycle):** the reasoning item is emitted in the canonical order, with ONE consistent item_id across all its events:
+```
+response.output_item.added (type=reasoning) → response.reasoning_summary_part.added
+→ response.reasoning_summary_text.delta* → response.reasoning_summary_text.done
+→ response.reasoning_summary_part.done → response.output_item.done (type=reasoning)
+```
+Providers MUST feed reasoning content to the adapter ONLY as `StreamChunk.delta_reasoning_content` (from `response.reasoning_summary_text.delta`), and MUST drop the surrounding upstream reasoning events (`reasoning_summary_part.added`, `reasoning_summary_text.done`, `reasoning_summary_part.done`, and `output_item.added/done` with `type=reasoning`). The adapter synthesizes those itself via `_emit_reasoning_start/_delta/_done` — forwarding them verbatim (raw_sse_passthrough) would duplicate the done events with the upstream's mismatched item_id. See `azure_provider.py` / `volcengine/base.py` and `tests/test_responses_reasoning_stream_order.py`.
+
+**Round-trip passthrough fields (input → Responses-API upstreams)**: Codex-style clients depend on these surviving to Azure/OpenAI/Volcengine — do not drop them:
+- `prompt_cache_key`, `client_metadata`, `store`, `truncation` (top-level): captured into `ChatRequest.metadata` by the adapter and passed through via `_RESPONSES_API_METADATA_PASSTHROUGH` in `build_responses_request`. **Do not re-add them to the adapter's `_KNOWN` exclusion set** — `_KNOWN` fields never reach `metadata`, so whitelisted fields listed there are silently dropped (this bit `store` / `truncation`).
+- `text` (top-level): also lands in metadata (`text` is not in `_KNOWN`); `build_responses_request` merges `metadata['text']` into `result["text"]` alongside the `response_format`-derived text and the legacy top-level `verbosity`.
+- Content-part `id`: each input block may carry an `id` (prompt-cache anchor). The adapter preserves it on `ContentBlock.id` (`_parse_content_blocks` / `_parse_image_block` / `_parse_function_call_output`), and `_with_pcb` re-emits it on `input_text`/`input_image`/`input_file`/`output_text` parts.
+- Input `message` item `id`: the top-level `id` on `{"type": "message", "id": "msg_xxx", ...}` items is captured on `Message.id` (`_handle_role_message_item`) and re-emitted by `_message_item` in `build_responses_request` / Volcengine `_message_to_input_item`.
+- **Tool-result `output` preserves array shape**: `function_call_output` / `custom_tool_call_output` `output` may be a string OR an array of `input_*` content blocks. `_parse_function_call_output` / `_tool_result_to_responses_output` keep arrays as arrays — do NOT re-add the pure-text flattening, or round-tripped complex outputs collapse into a joined string. Chat-Completions upstreams flatten via `get_tool_result_text()` instead.
+- See `tests/test_responses_azure_passthrough.py` / `tests/test_custom_tool_call.py`.
+
 **Custom tools (`custom_tool_call` / `custom_tool_call_output`)**: supported for input and output, stream and non-stream.
 - Input `custom_tool_call` → assistant `ContentType.CUSTOM_TOOL_CALL` block; `custom_tool_call_output` → tool `ContentType.CUSTOM_TOOL_CALL_OUTPUT` block (distinct `ContentType` values, NOT plain `TOOL_CALL`/`TOOL_RESULT`). Pairing key is `call_id` ↔ `call_id`; the output side resolves `call_id` → `caller_id` (legacy) → `caller.caller_id` → item `id`.
 - Custom metadata is stored as **fixed typed fields** on `ContentBlock` (`namespace` / `caller` / `item_id` / `input_raw` / `prompt_cache_breakpoint`), not a free-form dict. `build_responses_request` / Volcengine `_message_to_input_item` reconstruct the `custom_tool_call` / `custom_tool_call_output` items from these fields via `_custom_tool_call_item_from_block` / `_custom_tool_call_output_item_from_block`.

@@ -162,11 +162,25 @@ def test_responses_adapter_parses_image_function_call_output():
     assert img.media_type == "image/png"
 
 
-def test_responses_adapter_text_only_output_stays_string():
+def test_responses_adapter_output_preserves_input_shape():
+    """字符串 output 保持字符串；数组 output 保持数组（不再扁平化为字符串）。
+
+    客户端显式发送的复杂 output 结构（如纯文本数组）必须在 round-trip 到
+    Responses-API 上游时保留数组形态，否则丢失结构信息。
+    """
     from app.adapters.responses_adapter import _parse_function_call_output
 
     assert _parse_function_call_output("plain") == "plain"
-    assert _parse_function_call_output([{"type": "input_text", "text": "a"}]) == "a"
+    single = _parse_function_call_output([{"type": "input_text", "text": "a"}])
+    assert isinstance(single, list)
+    assert single[0].type == ContentType.TEXT
+    assert single[0].text == "a"
+    multi = _parse_function_call_output([
+        {"type": "input_text", "text": "a"},
+        {"type": "input_text", "text": "b"},
+    ])
+    assert isinstance(multi, list)
+    assert [b.text for b in multi] == ["a", "b"]
 
 
 def test_responses_adapter_parses_input_file():

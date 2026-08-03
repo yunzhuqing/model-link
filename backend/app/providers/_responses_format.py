@@ -47,6 +47,7 @@ _GATEWAY_INTERNAL_KEYS = frozenset({
 # 通过 request.metadata 透传到上游请求体。其他字段由函数体显式构建。
 _RESPONSES_API_METADATA_PASSTHROUGH = frozenset({
     'background',
+    'client_metadata',    # Responses API 顶层 client_metadata（store/追踪用）
     'context_management',
     'conversation',
     'include',
@@ -56,6 +57,7 @@ _RESPONSES_API_METADATA_PASSTHROUGH = frozenset({
     'parallel_tool_calls',
     'previous_response_id',
     'prompt',
+    'prompt_cache_key',   # Responses API 顶层 prompt_cache_key（引用已缓存 prompt）
     'prompt_cache_retention',
     'safety_identifier',
     'service_tier',
@@ -135,19 +137,29 @@ def tool_to_responses_api(tool: ToolDefinition) -> Dict[str, Any]:
 
 
 def _with_pcb(part: Dict[str, Any], block: ContentBlock) -> Dict[str, Any]:
-    """Attach ``prompt_cache_breakpoint`` to a Responses API content block dict when set."""
+    """Attach ``prompt_cache_breakpoint`` and block ``id`` to a Responses API
+    content block dict when set.
+
+    Both fields are round-trip anchors: ``prompt_cache_breakpoint`` drives
+    upstream prompt caching, and the content-part ``id`` is what prompt-cache
+    keys anchor to. Losing either breaks the client's cache reuse.
+    """
     pcb = getattr(block, 'prompt_cache_breakpoint', None)
     if pcb:
         part["prompt_cache_breakpoint"] = pcb
+    blk_id = getattr(block, 'id', None)
+    if blk_id:
+        part["id"] = blk_id
     return part
 
 
 def _tool_result_to_responses_output(tool_result):
     """将 tool_result 转换为 Responses API function_call_output.output。
 
-    纯文本返回字符串；含图片/文件等多模态内容时返回 input_* 内容块数组
-    （input_text / input_image / input_file），从而保留工具返回的图片。
-    内容块上的 ``prompt_cache_breakpoint``（固定字段）会一并还原。
+    字符串输入保持字符串；数组输入保持为 input_* 内容块数组
+    （input_text / input_image / input_file）—— 不扁平化为纯文本字符串，
+    以便客户端发送的复杂 output 结构（含纯文本数组）在 round-trip 时
+    不失真。内容块上的 ``prompt_cache_breakpoint`` / ``id``（固定字段）会一并还原。
 
     Responses API function_call_output.output 支持：
         string | [{"type":"input_text","text":...},
@@ -156,12 +168,6 @@ def _tool_result_to_responses_output(tool_result):
     """
     if not isinstance(tool_result, list):
         return tool_result or ""
-
-    # 纯文本 → 扁平化为字符串（向后兼容）。带 prompt_cache_breakpoint 的文本块
-    # 需保持数组形式，否则该字段会丢失。
-    if (all(b.type == ContentType.TEXT for b in tool_result)
-            and not any(getattr(b, 'prompt_cache_breakpoint', None) for b in tool_result)):
-        return " ".join(b.text or "" for b in tool_result)
 
     parts: List[Dict[str, Any]] = []
     for b in tool_result:
@@ -232,6 +238,15 @@ def _custom_tool_call_output_item_from_block(block: ContentBlock) -> Dict[str, A
 # 消息转换：内部 Message → Responses API input 条目
 # ══════════════════════════════════════════════════════════════════
 
+def _message_item(role: str, content, msg_id: Optional[str]) -> Dict[str, Any]:
+    """Build a Responses API ``message`` input item, preserving the item's own
+    ``id`` when the Message carries one (round-trip anchor for the client)."""
+    item: Dict[str, Any] = {"type": "message", "role": role, "content": content}
+    if msg_id:
+        item["id"] = msg_id
+    return item
+
+
 def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
     """将单条 Message 转换为一个或多个 Responses API input 条目。
 
@@ -283,14 +298,10 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
         text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
         if text_blocks:
             content_parts = [
-                {"type": "output_text", "text": b.text or ""}
+                _with_pcb({"type": "output_text", "text": b.text or ""}, b)
                 for b in text_blocks
             ]
-            result.append({
-                "type": "message",
-                "role": "assistant",
-                "content": content_parts,
-            })
+            result.append(_message_item("assistant", content_parts, message.id))
 
         for block in blocks:
             if block.type in TOOL_CALL_TYPES:
@@ -311,7 +322,7 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
                 })
 
         if not result:
-            result.append({"type": "message", "role": "assistant", "content": []})
+            result.append(_message_item("assistant", [], message.id))
 
         return result
 
@@ -362,9 +373,9 @@ def _message_to_responses_items(message: Message) -> List[Dict[str, Any]]:
     result = []
     result.extend(tool_result_items)
     if content_parts:
-        result.append({"type": "message", "role": "user", "content": content_parts})
+        result.append(_message_item("user", content_parts, message.id))
     elif not tool_result_items:
-        result.append({"type": "message", "role": "user", "content": []})
+        result.append(_message_item("user", [], message.id))
 
     return result
 
@@ -469,20 +480,19 @@ def build_responses_request(request: ChatRequest) -> Dict[str, Any]:
 
     if request.response_format is not None:
         result["text"] = response_format_to_responses_api(request.response_format)
-    
-    # verbosity 在 Responses API 中应嵌套在 text 下，而非顶层参数
-    verbosity = request.metadata.get("verbosity")
-    if verbosity is not None:
-        if "text" not in result:
-            result["text"] = {}
-        result["text"]["verbosity"] = verbosity
 
-    # verbosity 在 Responses API 中应嵌套在 text 下，而非顶层参数
+    # 顶层 ``text`` 字段透传（客户端直接发送 {"verbosity": ..., "format": ...}），
+    # 与 response_format 派生的 text 合并，避免覆盖或丢失。
+    text_meta = request.metadata.get("text")
+    if isinstance(text_meta, dict) and text_meta:
+        text_target = result.setdefault("text", {})
+        for _tk, _tv in text_meta.items():
+            text_target[_tk] = _tv
+
+    # 兼容旧客户端：顶层 verbosity → 嵌套到 text 下
     verbosity = request.metadata.get("verbosity")
     if verbosity is not None:
-        if "text" not in result:
-            result["text"] = {}
-        result["text"]["verbosity"] = verbosity
+        result.setdefault("text", {})["verbosity"] = verbosity
 
     if request.user:
         result["user"] = request.user

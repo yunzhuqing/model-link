@@ -178,6 +178,35 @@ def test_custom_tool_call_output_preserves_prompt_cache_breakpoint():
     ]
 
 
+def test_custom_tool_call_output_preserves_complex_array_output():
+    """custom_tool_call_output.output 支持复杂格式（数组），round-trip 不得扁平化为字符串。
+
+    Regression: 纯文本数组（无 prompt_cache_breakpoint）曾被 _parse_function_call_output
+    和 _tool_result_to_responses_output 连接成 "line1 line2" 字符串，丢失数组形态。
+    """
+    item = {
+        "type": "custom_tool_call_output",
+        "id": "ctc_1",
+        "caller": {"type": "direct"},
+        "call_id": "call_1",
+        "output": [
+            {"type": "input_text", "text": "line 1"},
+            {"type": "input_text", "text": "line 2", "id": "blk_2"},
+        ],
+    }
+    req = OpenAIResponsesAdapter().parse_request({
+        "model": "gpt-x",
+        "input": [CUSTOM_CALL_ITEM, item],
+    })
+    body = build_responses_request(req)
+    output_item = body["input"][1]
+    assert output_item["type"] == "custom_tool_call_output"
+    assert output_item["output"] == [
+        {"type": "input_text", "text": "line 1"},
+        {"type": "input_text", "text": "line 2", "id": "blk_2"},
+    ]
+
+
 def test_build_responses_request_preserves_message_before_tool_calls():
     """assistant 文本 message 必须排在 custom_tool_call 之前（Responses API 输出顺序）。
 

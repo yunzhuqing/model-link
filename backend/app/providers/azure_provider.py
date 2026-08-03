@@ -4,6 +4,7 @@ Azure OpenAI 供应商实现 (Azure OpenAI Provider)
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
+import logging
 import re
 import time
 import uuid
@@ -16,6 +17,8 @@ from app.abstraction.messages import Message, MessageRole, ContentBlock, Content
 from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk
+
+logger = logging.getLogger("model_link.azure")
 
 
 class AzureProvider(OpenAIProvider):
@@ -288,6 +291,11 @@ class AzureProvider(OpenAIProvider):
                     continue
 
                 event_type = event_data.get("type", "")
+                logger.debug(
+                    "azure sse recv type=%s data=%s",
+                    event_type,
+                    json.dumps(event_data, ensure_ascii=False),
+                )
 
                 if event_type == "response.created":
                     # Capture Azure's real response ID from the first SSE event and yield a
@@ -330,6 +338,12 @@ class AzureProvider(OpenAIProvider):
                             delta_role=msg_id,  # encodes the real message ID
                             created=int(time.time())
                         )
+
+                    elif item_type == "reasoning":
+                        # Reasoning item start is dropped on purpose: the adapter generates
+                        # its own response.output_item.added (reasoning) when the first
+                        # reasoning_summary_text.delta arrives, keeping one canonical id.
+                        pass
 
                     elif item_type == "function_call":
                         # Function call start — emit tool_calls with id + name.
@@ -383,25 +397,26 @@ class AzureProvider(OpenAIProvider):
                     # output_item.done events to the client.
                     full_text = event_data.get("text", "")
 
-                elif event_type in (
-                    "response.reasoning_summary_part.added",
-                    "response.reasoning_summary_text.delta",
-                    "response.reasoning_summary_text.done",
-                    "response.reasoning_summary_part.done",
-                ):
-                    # Forward reasoning summary events verbatim to the Responses API adapter.
-                    # These events are Azure-specific and have no equivalent in the generic
-                    # StreamChunk model, so we encode them as raw SSE passthrough strings.
-                    raw_sse = (
-                        f"event: {event_type}\n"
-                        f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-                    )
-                    yield StreamChunk(
-                        id=current_id,
-                        model=model,
-                        raw_sse_passthrough=[raw_sse],
-                        created=int(time.time())
-                    )
+                elif event_type == "response.reasoning_summary_text.delta":
+                    # Reasoning/thinking content. Stream it as delta_reasoning_content so
+                    # the Responses API adapter accumulates it and synthesizes the full
+                    # reasoning event sequence itself:
+                    #   output_item.added → reasoning_summary_part.added
+                    #   → reasoning_summary_text.delta* → reasoning_summary_text.done
+                    #   → reasoning_summary_part.done → output_item.done
+                    # The surrounding Azure reasoning events (reasoning_summary_part.added,
+                    # reasoning_summary_text.done, reasoning_summary_part.done,
+                    # output_item.added/done with type=reasoning) are deliberately dropped:
+                    # the adapter regenerates them with a single consistent item_id, so
+                    # forwarding them verbatim would emit duplicate/mismatched events.
+                    delta_text = event_data.get("delta", "")
+                    if delta_text:
+                        yield StreamChunk(
+                            id=current_id,
+                            model=model,
+                            delta_reasoning_content=delta_text,
+                            created=int(time.time())
+                        )
 
                 elif event_type == "response.output_text.delta":
                     delta = event_data.get("delta", "")

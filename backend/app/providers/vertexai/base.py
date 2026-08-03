@@ -1201,9 +1201,10 @@ class VertexAIProvider(BaseProvider):
             other_blocks = [b for b in message.content if b.type not in (ContentType.TEXT, *TOOL_CALL_TYPES, *TOOL_RESULT_TYPES)]
 
             # For tool result blocks, extract text content
+            # (get_tool_result_text handles both str and ContentBlock-list tool_result)
             tool_result_blocks = [b for b in message.content if b.type in TOOL_RESULT_TYPES]
             if tool_result_blocks and not text_blocks and not other_blocks:
-                result["content"] = " ".join(b.tool_result or "" for b in tool_result_blocks) or "(empty)"
+                result["content"] = " ".join(b.get_tool_result_text() or "" for b in tool_result_blocks) or "(empty)"
             elif text_blocks and not other_blocks:
                 result["content"] = " ".join(b.text or "" for b in text_blocks) or "(empty)"
             elif text_blocks or other_blocks:

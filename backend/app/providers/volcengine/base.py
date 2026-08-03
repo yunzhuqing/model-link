@@ -24,6 +24,7 @@ from .._responses_format import (
     _tool_result_to_responses_output,
     _custom_tool_call_item_from_block,
     _custom_tool_call_output_item_from_block,
+    _with_pcb,
 )
 from app.abstraction.messages import ADDITIONAL_TOOLS_MARKER_NAME
 
@@ -361,6 +362,8 @@ class VolcengineProvider(OpenAIProvider):
                             "type": "message", "role": "assistant",
                             "content": content_parts, "status": "completed"
                         }
+                        if message.id:
+                            msg_item["id"] = message.id
                         fc_idx = next(
                             (i for i, it in enumerate(items) if it.get("type") == "function_call"),
                             len(items)
@@ -382,7 +385,8 @@ class VolcengineProvider(OpenAIProvider):
                 content = self._convert_content(message)
                 items.append({
                     "role": "assistant", "content": content,
-                    "type": "message", "status": "completed"
+                    "type": "message", "status": "completed",
+                    **({"id": message.id} if message.id else {}),
                 })
 
             # If we emitted reasoning and/or text, we are done
@@ -394,11 +398,15 @@ class VolcengineProvider(OpenAIProvider):
             item: Dict[str, Any] = {"role": role, "content": content}
             item["type"] = "message"
             item["status"] = "completed"
+            if message.id:
+                item["id"] = message.id
             return item
 
         # Regular message (non-assistant, non-tool)
         content = self._convert_content(message)
         item: Dict[str, Any] = {"role": role, "content": content}
+        if message.id:
+            item["id"] = message.id
         return item
 
     def _convert_content(self, message: Message) -> Any:
@@ -420,12 +428,12 @@ class VolcengineProvider(OpenAIProvider):
                     continue
 
                 if block.type == ContentType.TEXT:
-                    parts.append({"type": text_type, "text": block.text or ""})
+                    parts.append(_with_pcb({"type": text_type, "text": block.text or ""}, block))
                 elif block.type == ContentType.IMAGE_URL:
-                    parts.append({"type": "input_image", "image_url": block.url})
+                    parts.append(_with_pcb({"type": "input_image", "image_url": block.url}, block))
                 elif block.type == ContentType.IMAGE_BASE64:
                     data_uri = f"data:{block.media_type or 'image/jpeg'};base64,{block.data}"
-                    parts.append({"type": "input_image", "image_url": data_uri})
+                    parts.append(_with_pcb({"type": "input_image", "image_url": data_uri}, block))
                 elif block.type == ContentType.VIDEO_URL:
                     item = {"type": "input_video", "video_url": block.url}
                     if block.video_fps is not None:
@@ -434,7 +442,7 @@ class VolcengineProvider(OpenAIProvider):
                 elif block.type == ContentType.AUDIO_URL:
                     parts.append({"type": "input_audio", "audio_url": block.url})
                 elif block.type == ContentType.FILE_URL:
-                    parts.append({"type": "input_file", "file_url": block.url})
+                    parts.append(_with_pcb({"type": "input_file", "file_url": block.url}, block))
                 elif block.type in TOOL_CALL_TYPES:
                     pass  # Handled separately
                 else:
@@ -1141,46 +1149,18 @@ class VolcengineProvider(OpenAIProvider):
                     event_type=StreamEventType.CONTENT_DELTA
                 )
 
-        # Reasoning summary done events — contain the full assembled reasoning text.
-        # Pass through as raw SSE events for the Responses adapter (/v1/responses).
-        # For Anthropic/OpenAI format, the content was already streamed via deltas.
-        elif event_type == "response.reasoning_summary_text.done":
-            raw_event = {
-                "type": event_type,
-                "summary_index": data.get("summary_index", 0),
-                "item_id": data.get("item_id", ""),
-                "output_index": data.get("output_index", 0),
-                "text": data.get("text", ""),
-                "sequence_number": data.get("sequence_number", 0),
-            }
-            chunk = StreamChunk(
-                id=response_id,
-                model=model,
-                event_type=StreamEventType.CONTENT_DELTA
-            )
-            chunk.raw_sse_passthrough = [
-                f"event: {event_type}\ndata: {json.dumps(raw_event, ensure_ascii=False)}\n\n"
-            ]
-            return chunk
-
-        elif event_type == "response.reasoning_summary_part.done":
-            raw_event = {
-                "type": event_type,
-                "item_id": data.get("item_id", ""),
-                "output_index": data.get("output_index", 0),
-                "summary_index": data.get("summary_index", 0),
-                "part": data.get("part", {}),
-                "sequence_number": data.get("sequence_number", 0),
-            }
-            chunk = StreamChunk(
-                id=response_id,
-                model=model,
-                event_type=StreamEventType.CONTENT_DELTA
-            )
-            chunk.raw_sse_passthrough = [
-                f"event: {event_type}\ndata: {json.dumps(raw_event, ensure_ascii=False)}\n\n"
-            ]
-            return chunk
+        # Reasoning summary done events — deliberately NOT passed through.
+        # The Responses adapter (/v1/responses) accumulates the reasoning deltas
+        # (response.reasoning_summary_text.delta → delta_reasoning_content above) and
+        # synthesizes the whole done sequence itself, in the canonical order:
+        #   reasoning_summary_text.done → reasoning_summary_part.done → output_item.done
+        # Forwarding these verbatim would duplicate the done events with the upstream's
+        # (mismatched) item_id, breaking the adapter-generated reasoning item lifecycle.
+        elif event_type in (
+            "response.reasoning_summary_text.done",
+            "response.reasoning_summary_part.done",
+        ):
+            return None
 
         # ---- Output item added (role marker OR function_call start) ----
         elif event_type == "response.output_item.added":
@@ -1195,6 +1175,12 @@ class VolcengineProvider(OpenAIProvider):
                     delta_role="assistant",
                     event_type=StreamEventType.CONTENT_DELTA
                 )
+
+            elif item_type == "reasoning":
+                # Reasoning item start is dropped on purpose: the adapter generates its
+                # own response.output_item.added (reasoning) when the first
+                # reasoning_summary_text.delta arrives, keeping one canonical id.
+                return None
 
             elif item_type == "function_call":
                 # Function call start — emit tool_calls with id + name.
