@@ -394,6 +394,71 @@ def _resolve_output_price(
     return base_price
 
 
+def _resolve_output_credits(
+    pricing_config: Optional[dict],
+    *,
+    number: float = 0,
+    resolution: Optional[str] = None,
+    quality: Optional[str] = None,
+    audio: Optional[bool] = None,
+    reference_video: Optional[bool] = None,
+    seconds: float = 0.0,
+) -> float:
+    """
+    Resolve the total credits consumed from a per_credit output_pricing sub-config.
+
+    Used for image / video / audio generation models that are billed in
+    credits instead of money (e.g. Vidu).  The config structure is:
+
+      {"type": "per_credit",
+       "price": <float $ per credit>,          # optional money conversion
+       "credits": {
+           "base": <fixed credits per generated item>,
+           "per_second": <credits per second of output>,   # video / audio
+           "resolution": {"1K": <credits>, ...},           # additive per item
+           "quality": {"low": <credits>, ...},             # additive per item
+           "audio": <credits>,                             # additive when video has audio
+           "reference_video": <credits>,                   # additive when a reference video is used
+       }}
+
+    The per-item credits (base + matched option adders) are multiplied by the
+    number of generated items; duration-based credits are added separately.
+    Returns 0.0 when the config is not per_credit or no rules are defined.
+    """
+    if not pricing_config or not isinstance(pricing_config, dict):
+        return 0.0
+    if pricing_config.get('type') != 'per_credit':
+        return 0.0
+
+    rules = pricing_config.get('credits')
+    if not isinstance(rules, dict):
+        return 0.0
+
+    def _match_option(option_map, value) -> float:
+        """Look up an option (resolution / quality) in a rules map."""
+        if not isinstance(option_map, dict) or not value:
+            return 0.0
+        if value in option_map:
+            return float(option_map[value] or 0.0)
+        value_lower = str(value).strip().lower()
+        for key, val in option_map.items():
+            if str(key).strip().lower() == value_lower:
+                return float(val or 0.0)
+        return 0.0
+
+    per_item: float = float(rules.get('base', 0.0) or 0.0)
+    per_item += _match_option(rules.get('resolution'), resolution)
+    per_item += _match_option(rules.get('quality'), quality)
+    if audio and rules.get('audio'):
+        per_item += float(rules.get('audio') or 0.0)
+    if reference_video and rules.get('reference_video'):
+        per_item += float(rules.get('reference_video') or 0.0)
+
+    item_count: float = float(number) if number and number > 0 else 1.0
+    per_second: float = float(rules.get('per_second', 0.0) or 0.0)
+    return item_count * per_item + float(seconds or 0.0) * per_second
+
+
 def _compute_price_details(
     *,
     usage,
@@ -481,28 +546,65 @@ def _compute_price_details(
 
     # ── Resolve output pricing from model config ──────────────────────
     if output_pricing and isinstance(output_pricing, dict):
-        if output_image_price_unit == 0.0:
-            output_image_price_unit = _resolve_output_price(
-                output_pricing.get('image'), output_image_resolution,
-                quality=output_image_quality)
+        image_pricing_config = output_pricing.get('image')
         video_pricing_config = output_pricing.get('video')
+        audio_pricing_config = output_pricing.get('audio')
+        td_config = output_pricing.get('3d')
+
+        # Credit-based (per_credit) billing for image / video / audio models:
+        # the config's ``credits`` rules define how many credits each
+        # generation consumes; ``price`` is the optional $ per credit.
+        if image_pricing_config and isinstance(image_pricing_config, dict) \
+                and image_pricing_config.get('type') == 'per_credit':
+            credits += _resolve_output_credits(
+                image_pricing_config,
+                number=output_image_number,
+                resolution=output_image_resolution,
+                quality=output_image_quality,
+            )
+        elif output_image_price_unit == 0.0:
+            output_image_price_unit = _resolve_output_price(
+                image_pricing_config, output_image_resolution,
+                quality=output_image_quality)
+
         if video_pricing_config and isinstance(video_pricing_config, dict):
             video_pricing_type = video_pricing_config.get('type', '')
-            resolved_video_price = _resolve_output_price(
-                video_pricing_config, output_video_resolution,
-                audio=output_video_audio,
-                reference_video=output_video_reference_video)
-            if video_pricing_type == 'per_token' and resolved_video_price > 0:
-                output_price_unit = resolved_video_price
-            elif output_video_price_unit == 0.0:
-                output_video_price_unit = resolved_video_price
-        if output_audio_price_unit == 0.0:
+            if video_pricing_type == 'per_credit':
+                credits += _resolve_output_credits(
+                    video_pricing_config,
+                    number=output_video_number,
+                    resolution=output_video_resolution,
+                    audio=output_video_audio,
+                    reference_video=output_video_reference_video,
+                    seconds=output_video_seconds,
+                )
+            else:
+                resolved_video_price = _resolve_output_price(
+                    video_pricing_config, output_video_resolution,
+                    audio=output_video_audio,
+                    reference_video=output_video_reference_video)
+                if video_pricing_type == 'per_token' and resolved_video_price > 0:
+                    output_price_unit = resolved_video_price
+                elif output_video_price_unit == 0.0:
+                    output_video_price_unit = resolved_video_price
+
+        if audio_pricing_config and isinstance(audio_pricing_config, dict) \
+                and audio_pricing_config.get('type') == 'per_credit':
+            credits += _resolve_output_credits(
+                audio_pricing_config,
+                seconds=output_audio_seconds,
+            )
+        elif output_audio_price_unit == 0.0:
             output_audio_price_unit = _resolve_output_price(
-                output_pricing.get('audio'), None)
+                audio_pricing_config, None)
+
         if credit_price_unit == 0.0:
-            td_config = output_pricing.get('3d')
-            if td_config and isinstance(td_config, dict):
-                credit_price_unit = float(td_config.get('price', 0.0) or 0.0)
+            for _config in (image_pricing_config, video_pricing_config,
+                            audio_pricing_config, td_config):
+                if _config and isinstance(_config, dict) \
+                        and _config.get('type') == 'per_credit':
+                    credit_price_unit = float(_config.get('price', 0.0) or 0.0)
+                    break
 
     # ── Cache creation cost ───────────────────────────────────────────
     cache_creation_cost: float = 0.0

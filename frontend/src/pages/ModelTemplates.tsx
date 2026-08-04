@@ -363,21 +363,14 @@ const TemplateForm = ({
                   ].map(({ k, label, type }) => (
                     <div key={k}>
                       <label className="block text-xs text-slate-500 mb-1">{label}</label>
-                      <input
-                        type="number"
-                        step={type === 'float' ? '0.01' : '1'}
+                      <NumberInput
+                        integer={type === 'int'}
+                        step={type === 'float' ? '0.0001' : '1'}
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                        value={fmtNumber((tier as any)[k])}
-                        onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-                        onChange={(e) => {
-                          const raw = e.target.value;
+                        value={(tier as any)[k] as number}
+                        onChange={(v) => {
                           const tiers = [...value.pricing_tiers!];
-                          if (raw === '' || raw.trim() === '') {
-                            tiers[idx] = { ...tiers[idx], [k]: 0 };
-                          } else {
-                            const num = type === 'float' ? parseFloat(raw) : parseInt(raw);
-                            if (!isNaN(num)) tiers[idx] = { ...tiers[idx], [k]: num };
-                          }
+                          tiers[idx] = { ...tiers[idx], [k]: v ?? 0 };
                           set({ pricing_tiers: tiers });
                         }}
                       />
@@ -420,21 +413,10 @@ const TemplateForm = ({
           ].map(({ key, label }) => (
             <div key={key}>
               <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
-              <input
-                type="number"
-                step="0.01"
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                value={fmtNumber((value as any)[key])}
-                onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === '' || raw.trim() === '') {
-                    set({ [key]: 0 } as any);
-                  } else {
-                    const num = parseFloat(raw);
-                    if (!isNaN(num)) set({ [key]: num } as any);
-                  }
-                }}
+              <NumberInput
+                step="0.0001"
+                value={(value as any)[key] as number}
+                onChange={(v) => set({ [key]: v ?? 0 } as any)}
               />
             </div>
           ))}
@@ -550,19 +532,28 @@ const TemplateForm = ({
             image: [
               { value: 'per_token', label: 'Per Token ($/M)' },
               { value: 'per_image', label: 'Per Image ($)' },
+              { value: 'per_credit', label: 'Per Credit ($)' },
             ],
             video: [
               { value: 'per_token', label: 'Per Token ($/M)' },
               { value: 'per_second', label: 'Per Second ($)' },
+              { value: 'per_credit', label: 'Per Credit ($)' },
             ],
             audio: [
               { value: 'per_token', label: 'Per Token ($/M)' },
               { value: 'per_second', label: 'Per Second ($)' },
+              { value: 'per_credit', label: 'Per Credit ($)' },
             ],
             '3d': [
               { value: 'per_token', label: 'Per Token ($/M)' },
               { value: 'per_credit', label: 'Per Credit ($)' },
             ],
+          };
+          const creditRuleHints: Record<string, string[]> = {
+            image: ['base', 'resolution', 'quality'],
+            video: ['base', 'resolution', 'quality', 'audio', 'reference_video', 'per_second'],
+            audio: ['base', 'per_second'],
+            '3d': ['base', 'enable_pbr'],
           };
           const tierResolutionHints: Record<string, string[]> = {
             image: ['512', '1K', '2K', '3K', '4K'],
@@ -612,7 +603,14 @@ const TemplateForm = ({
                       <select
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
                         value={cat.type}
-                        onChange={(e) => updateCategory({ type: e.target.value })}
+                        onChange={(e) => {
+                          const newType = e.target.value;
+                          const patch: Partial<OutputPricingCategory> = { type: newType };
+                          if (newType === 'per_credit' && !cat.credits) {
+                            patch.credits = { base: 0 };
+                          }
+                          updateCategory(patch);
+                        }}
                       >
                         {typeOptions[category].map((opt) => (
                           <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -623,25 +621,16 @@ const TemplateForm = ({
                       <label className="block text-xs text-slate-500 mb-1">
                         Base Price {cat.type === 'per_token' ? '($/M tokens)' : cat.type === 'per_image' ? '($ per image)' : cat.type === 'per_second' ? '($ per second)' : '($ per credit)'}
                       </label>
-                      <input
-                        type="number"
+                      <NumberInput
                         step="0.0001"
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                        value={fmtNumber(cat.price)}
-                        onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          if (raw === '' || raw.trim() === '') {
-                            updateCategory({ price: 0 });
-                          } else {
-                            const num = parseFloat(raw);
-                            if (!isNaN(num)) updateCategory({ price: num });
-                          }
-                        }}
+                        value={cat.price}
+                        onChange={(v) => updateCategory({ price: v ?? 0 })}
                       />
                     </div>
                   </div>
-                  {/* Resolution tiers */}
+                  {/* Resolution tiers (money-based only) */}
+                  {cat.type !== 'per_credit' && (
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-xs font-medium text-slate-600">
@@ -737,21 +726,13 @@ const TemplateForm = ({
                               <label className="block text-xs text-slate-400 mb-0.5">
                                 Price {cat.type === 'per_token' ? '($/M)' : cat.type === 'per_image' ? '($)' : '($/s)'}
                               </label>
-                              <input
-                                type="number"
+                              <NumberInput
                                 step="0.0001"
                                 className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                                value={fmtNumber(tier.price)}
-                                onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-                                onChange={(e) => {
-                                  const raw = e.target.value;
+                                value={tier.price}
+                                onChange={(v) => {
                                   const tiers = [...(cat.tiers ?? [])];
-                                  if (raw === '' || raw.trim() === '') {
-                                    tiers[idx] = { ...tiers[idx], price: 0 };
-                                  } else {
-                                    const num = parseFloat(raw);
-                                    if (!isNaN(num)) tiers[idx] = { ...tiers[idx], price: num };
-                                  }
+                                  tiers[idx] = { ...tiers[idx], price: v ?? 0 };
                                   updateCategory({ tiers });
                                 }}
                               />
@@ -773,23 +754,42 @@ const TemplateForm = ({
                       <p className="text-xs text-slate-400 italic">No tiers — base price applies to all resolutions.</p>
                     )}
                   </div>
-                  {/* 3D credit rules editor */}
-                  {category === '3d' && (
+                  )}
+                  {/* Credit rules editor (per_credit billing) */}
+                  {cat.type === 'per_credit' && (
                     <div className="mt-3 pt-3 border-t border-slate-200">
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-xs font-medium text-slate-600">
-                          Credit Rules <span className="text-slate-400 font-normal">(cost per operation in credits)</span>
+                          Credit Rules <span className="text-slate-400 font-normal">(credits consumed per generation — e.g. Vidu)</span>
                         </label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const newCredits = { ...(cat.credits ?? {}), new_rule: 0 };
-                            updateCategory({ credits: newCredits });
-                          }}
-                          className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg hover:bg-blue-100 transition-colors"
-                        >
-                          + Add Rule
-                        </button>
+                        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                          {creditRuleHints[category]
+                            .filter((k) => !(cat.credits ?? {})[k])
+                            .map((k) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => {
+                                  const newCredits = { ...(cat.credits ?? {}) };
+                                  newCredits[k] = (k === 'resolution' || k === 'quality') ? {} : 0;
+                                  updateCategory({ credits: newCredits });
+                                }}
+                                className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg hover:bg-blue-100 transition-colors"
+                              >
+                                + {k}
+                              </button>
+                            ))}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newCredits = { ...(cat.credits ?? {}), new_rule: 0 };
+                              updateCategory({ credits: newCredits });
+                            }}
+                            className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-lg hover:bg-slate-200 transition-colors"
+                          >
+                            + Rule
+                          </button>
+                        </div>
                       </div>
                       {cat.credits && Object.keys(cat.credits).length > 0 ? (
                         <div className="space-y-2">
@@ -1105,9 +1105,11 @@ const TemplateCard = ({
                     ) : (
                       <span className="text-xs text-slate-600">{currencySymbol(tpl.currency)}{catConfig.price}{typeLabel}</span>
                     )}
-                    {cat === '3d' && catConfig.credits && (
+                    {catConfig.type === 'per_credit' && catConfig.credits && (
                       <div className="mt-1.5 pt-1.5 border-t border-blue-200">
-                        <span className="text-xs font-medium text-slate-500 block mb-0.5">Credit Rules</span>
+                        <span className="text-xs font-medium text-slate-500 block mb-0.5">
+                          Credit Rules (credits consumed per generation)
+                        </span>
                         <div className="space-y-0.5">
                           {Object.entries(catConfig.credits).map(([key, val]) => {
                             if (typeof val === 'object' && !Array.isArray(val)) {

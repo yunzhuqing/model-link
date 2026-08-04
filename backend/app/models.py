@@ -284,7 +284,7 @@ class ApiKey(db.Model):
     total_video_count = db.Column(db.BigInteger, default=0)      # Total videos generated
     total_audio_seconds = db.Column(db.Float, default=0.0)       # Total audio seconds generated
     total_web_search_requests = db.Column(db.BigInteger, default=0)  # Total web search requests
-    total_credits = db.Column(db.Float, default=0.0)            # Total 3D generation credits
+    total_credits = db.Column(db.Float, default=0.0)            # Total generation credits (3D / image / video / audio)
 
     # Incremental sync position — the max UsageRecord.id covered by the last sync cycle
     last_stat_id = db.Column(db.BigInteger, default=0, nullable=False)
@@ -458,7 +458,7 @@ class ModelTemplate(db.Model):
     pricing_tiers = db.Column(db.JSON, nullable=True, default=None)
 
     # Output pricing strategies for image / video / audio generation models.
-    # Same schema as Model.output_pricing.
+    # Same schema as Model.output_pricing (including "per_credit" credit billing).
     output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Pricing ($ per 1M tokens)  — these are the default / first-tier values
@@ -589,6 +589,11 @@ class Model(db.Model):
     #   "video": {"type": "per_second"|"per_token", "price": <float>, "tiers": [{"resolution": "720p", "audio": false, "price": <float>}, ...]},
     #   "audio": {"type": "per_second"|"per_token", "price": <float>}
     # }
+    # Credit-based billing (e.g. Vidu) uses "type": "per_credit" with a
+    # "credits" rules map that defines how many credits each generation consumes:
+    #   {"type": "per_credit", "price": <$ per credit>,
+    #    "credits": {"base": <per item>, "per_second": <per s>, "resolution": {...},
+    #                "quality": {...}, "audio": <credits>, "reference_video": <credits>}}
     output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Cache pricing
@@ -1118,7 +1123,7 @@ class UsageRecord(db.Model):
     web_search_requests = db.Column(db.Integer, default=0)
     web_search_price_unit = db.Column(db.Numeric(20, 10), default=0)  # $ per search request
 
-    # ── 3D generation credits ──────────────────────────────────────────────
+    # ── Generation credits (3D / image / video / audio) ───────────────────
     credits = db.Column(db.Numeric(20, 10), default=0)
     credit_price_unit = db.Column(db.Numeric(20, 10), default=0)  # price per credit
 

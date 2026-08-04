@@ -854,7 +854,6 @@ class OpenAIProvider(BaseProvider):
         request_data["stream"] = True
         # Request usage info in the final streaming chunk
         request_data["stream_options"] = {"include_usage": True}
-        logger.debug("Prepared OpenAI streaming request data: %s", json.dumps(request_data, ensure_ascii=False))
 
         url = f"{self.config.base_url}/chat/completions"
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
