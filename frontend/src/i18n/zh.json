@@ -40,6 +40,7 @@
     "helpMessages": "Messages API",
     "helpResponses": "Responses API",
     "helpFiles": "Files API",
+    "helpTTS": "TTS 语音合成",
     "helpEmbedding": "Embedding API",
     "helpRerank": "Rerank API",
     "helpImageGeneration": "图片生成",

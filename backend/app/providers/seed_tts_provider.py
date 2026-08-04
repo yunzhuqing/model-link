@@ -123,26 +123,31 @@ class SeedTTSProvider(BaseProvider):
 
         try:
             http = await self._http()
-            response = await http.post(url, json=body, headers=self.get_headers())
+            # 子 span：把发给 openspeech 的上游请求体（text_prompt / references /
+            # audio_config）与上游响应明细打进 Langfuse，便于排查 seed TTS 明细。
+            async with self._trace_call(request.model, input_data=body) as child_span:
+                response = await http.post(url, json=body, headers=self.get_headers())
 
-            if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    error_message = (
-                        error_data.get("message")
-                        or error_data.get("error", {}).get("message")
-                        or json.dumps(error_data, ensure_ascii=False)
+                if response.status_code >= 400:
+                    try:
+                        error_data = response.json()
+                        error_message = (
+                            error_data.get("message")
+                            or error_data.get("error", {}).get("message")
+                            or json.dumps(error_data, ensure_ascii=False)
+                        )
+                    except json.JSONDecodeError:
+                        error_message = response.text
+                    raise UpstreamProviderError(
+                        error_message,
+                        status_code=response.status_code,
+                        error_type="api_error",
                     )
-                except json.JSONDecodeError:
-                    error_message = response.text
-                raise UpstreamProviderError(
-                    error_message,
-                    status_code=response.status_code,
-                    error_type="api_error",
-                )
 
-            response.raise_for_status()
-            data = response.json()
+                response.raise_for_status()
+                data = response.json()
+                if child_span:
+                    child_span.log_output(data)
 
             audio_url = data.get("url")
             if not audio_url:

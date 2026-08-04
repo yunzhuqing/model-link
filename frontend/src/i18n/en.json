@@ -38,6 +38,7 @@
     "helpMessages": "Messages API",
     "helpResponses": "Responses API",
     "helpFiles": "Files API",
+    "helpTTS": "TTS Speech",
     "helpEmbedding": "Embedding API",
     "helpRerank": "Rerank API",
     "helpImageGeneration": "Image Generation",

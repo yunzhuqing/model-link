@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser, FileText, Clapperboard } from 'lucide-react';
+import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser, FileText, Clapperboard, AudioLines } from 'lucide-react';
 
 interface HelpItem {
   path: string;
@@ -69,6 +69,18 @@ const helpItems: HelpItem[] = [
       { label: '文本', color: 'bg-green-100 text-green-700' },
       { label: '多模态', color: 'bg-purple-100 text-purple-700' },
       { label: 'POST /v1/embeddings', color: 'bg-slate-100 text-slate-600' },
+    ],
+  },
+  {
+    path: '/help/tts',
+    icon: <AudioLines className="w-6 h-6 text-white" />,
+    iconBg: 'from-violet-500 to-fuchsia-600',
+    title: 'TTS 语音合成',
+    description: '文本转语音接口，支持文本、参考音频多模态输入（seed-audio 系列），兼容 OpenAI Audio API 格式，可返回音频流或文件 URL。',
+    tags: [
+      { label: '多模态', color: 'bg-purple-100 text-purple-700' },
+      { label: 'URL / 音频流', color: 'bg-emerald-100 text-emerald-700' },
+      { label: 'POST /v1/audio/speech', color: 'bg-slate-100 text-slate-600' },
     ],
   },
   {

@@ -17,6 +17,7 @@ import HelpResponses from './pages/HelpResponses';
 import HelpChat from './pages/HelpChat';
 import HelpMessages from './pages/HelpMessages';
 import HelpFiles from './pages/HelpFiles';
+import HelpTTS from './pages/HelpTTS';
 import HelpImageGeneration from './pages/HelpImageGeneration';
 import HelpVideoGeneration from './pages/HelpVideoGeneration';
 import HelpMiniMaxH3 from './pages/HelpMiniMaxH3';
@@ -76,6 +77,7 @@ function App() {
               <Route path="help/chat" element={<HelpChat />} />
               <Route path="help/messages" element={<HelpMessages />} />
               <Route path="help/files" element={<HelpFiles />} />
+              <Route path="help/tts" element={<HelpTTS />} />
               <Route path="help/image-generation" element={<HelpImageGeneration />} />
               <Route path="help/video-generation" element={<HelpVideoGeneration />} />
               <Route path="help/minimax-h3" element={<HelpMiniMaxH3 />} />

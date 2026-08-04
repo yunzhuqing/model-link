@@ -103,9 +103,6 @@ async def create_speech():
         return _error_response('Input is required (string or content-block array)', code="invalid_request", param="input", status_code=400)
 
     voice = data.get('voice')
-    if not voice:
-        _log_error("audio_speech", 400, "Voice is required")
-        return _error_response('Voice is required', code="invalid_request", param="voice", status_code=400)
 
     acl_error = _check_allowed_models(auth_ctx, model_name)
     if acl_error:
