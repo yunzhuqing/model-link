@@ -28,6 +28,7 @@ provider 的 ``base_url`` 在管理后台配置（留空则使用默认
   - speed        → ``audio_config.speech_rate``（OpenAI 1.0=正常，上游 0=正常）
   - loudness     → ``audio_config.loudness_rate``
   - pitch        → ``audio_config.pitch_rate``
+  - sample       → ``audio_config.sample_rate``
   - enable_subtitle → 请求体 ``enable_subtitle``（透传）
 
 上游成功时返回 ``{"duration": <秒>, "url": "<音频下载地址>"}``，本 provider
@@ -107,6 +108,8 @@ class SeedTTSProvider(BaseProvider):
             audio_config["loudness_rate"] = request.loudness
         if request.pitch is not None:
             audio_config["pitch_rate"] = request.pitch
+        if request.sample is not None:
+            audio_config["sample_rate"] = request.sample
 
         body: Dict[str, Any] = {
             "model": request.model,

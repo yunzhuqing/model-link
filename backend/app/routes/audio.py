@@ -78,8 +78,9 @@ async def create_speech():
     """
     OpenAI-compatible text-to-speech endpoint.
 
-    Accepts JSON `{model, input, voice, response_format, speed, instructions}`
-    and returns raw audio bytes (``audio/{response_format}``).
+    Accepts JSON `{model, input, voice, response_format, speed, instructions,
+    loudness, pitch, sample}` and returns raw audio bytes
+    (``audio/{response_format}``).
     """
     # ── Phase 1: auth (own short session inside) ──
     auth_ctx, error, status = await get_current_user_or_api_key()
@@ -119,6 +120,7 @@ async def create_speech():
         user=data.get('user'),
         loudness=data.get('loudness'),
         pitch=data.get('pitch'),
+        sample=data.get('sample'),
         enable_subtitle=bool(data.get('enable_subtitle', False)),
         enable_url=bool(data.get('enable_url', False)),
     )

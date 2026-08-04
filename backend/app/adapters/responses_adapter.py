@@ -33,6 +33,11 @@ from app.abstraction.messages import (
 from app.utils import json_loads
 from app.abstraction.tools import ToolDefinition, ToolParameter, ToolType
 
+# Vidu image generation model names (native names exposed by the gateway).
+# These carry no "image" keyword, so they are matched explicitly here to keep
+# sync with app/providers/vidu/image_generation.py:VIDU_MODEL_MAP.
+_VIDU_IMAGE_MODELS = ("viduq1", "viduq2", "viduimage-2", "q2-fast", "q2-pro", "q3-fast")
+
 # ═══════════════════════════════════════════════════════════════════════
 # Module-level content / tool parsing helpers
 # ═══════════════════════════════════════════════════════════════════════
@@ -1541,6 +1546,8 @@ class OpenAIResponsesAdapter(BaseAdapter):
             model_lower.startswith("gpt-image-") or
             "flux" in model_lower or
             "nanobanana" in model_lower or
+            model_lower in _VIDU_IMAGE_MODELS or
+            getattr(response, 'provider', '') == "vidu" or
             getattr(response, 'provider', '') == "volcengine_image"
         )
 

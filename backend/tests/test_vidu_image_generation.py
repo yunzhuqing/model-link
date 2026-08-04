@@ -23,6 +23,8 @@ from app.providers.vidu.image_generation import (
     execute_vidu_image_generation,
     is_vidu_image_model,
 )
+from app.adapters.responses_adapter import OpenAIResponsesAdapter
+from app.abstraction.chat import ChatChoice, ChatResponse, FinishReason, UsageInfo
 
 
 class _FakeResponse:
@@ -298,3 +300,46 @@ async def test_vidu_provider_rejects_non_image_models(monkeypatch):
     with pytest.raises(ValueError, match="only supports image generation"):
         await provider.chat(_chat_request("gpt-4o"))
     assert fake.requests == []
+
+
+def _vidu_chat_response(model: str, image_url: str) -> ChatResponse:
+    """Build the ChatResponse shape produced by _parse_vidu_image_response."""
+    items = json.dumps(
+        [{"type": "image_generation_call", "status": "completed", "result": image_url}],
+        ensure_ascii=False,
+    )
+    return ChatResponse(
+        id="img_test",
+        model=model,
+        choices=[ChatChoice(
+            index=0,
+            message=Message(role=MessageRole.ASSISTANT, content=items),
+            finish_reason=FinishReason.STOP,
+        )],
+        usage=UsageInfo(
+            prompt_tokens=0,
+            completion_tokens=1,
+            total_tokens=1,
+            extra={"output_image_number": 1, "_response_format": "url"},
+        ),
+        provider="vidu",
+    )
+
+
+@pytest.mark.parametrize("model", ["q3-fast", "q2-fast", "q2-pro", "viduq1", "viduq2", "viduimage-2"])
+def test_vidu_image_generation_adapter_output_format(model):
+    """Vidu image responses must render image_generation_call output items,
+    not the raw JSON string as output_text."""
+    image_url = "https://prod-ss-vidu.s3.cn-northwest-1.amazonaws.com.cn/image.png"
+    result = OpenAIResponsesAdapter().format_response(
+        _vidu_chat_response(model, image_url)
+    )
+
+    assert result["model"] == model
+    assert result["status"] == "completed"
+    assert len(result["output"]) == 1
+    item = result["output"][0]
+    assert item["type"] == "image_generation_call"
+    assert item["status"] == "completed"
+    assert item["result"] == image_url
+    assert result["response_format"] == "url"

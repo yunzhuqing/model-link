@@ -43,6 +43,7 @@ class TTSRequest:
     user: Optional[str] = None                          # User identifier
     loudness: Optional[float] = None                   # Volume adjustment (doubao audio_config.loudness_rate)
     pitch: Optional[float] = None                      # Pitch adjustment (doubao audio_config.pitch_rate)
+    sample: Optional[int] = None                       # Output sample rate in Hz (maps to doubao audio_config.sample_rate)
     enable_subtitle: bool = False                      # Request subtitles (returned only when enable_url=true)
     enable_url: bool = False                           # Return a file URL instead of an audio stream
     metadata: Dict[str, Any] = field(default_factory=dict)

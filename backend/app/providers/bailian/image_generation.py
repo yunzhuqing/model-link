@@ -69,7 +69,10 @@ from app.http_client import shared_client
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
-from app.providers.image_size_utils import resolve_image_size, resolve_pixel_size
+from app.providers.image_size_utils import (
+    Z_IMAGE_SIZE_MAP,
+    resolve_pixel_size,
+)
 from app.utils import gen_id, json_loads
 
 
@@ -141,7 +144,9 @@ def _resolve_z_image_size(metadata: dict) -> Optional[str]:
     """
     Resolve the Dashscope size parameter for z-image-turbo from request metadata.
 
-    Uses the unified image size table via resolve_pixel_size().
+    Uses the dedicated Z-Image size table (Z_IMAGE_SIZE_MAP) via
+    resolve_pixel_size(), because Z-Image's size set (two 1K groups plus a
+    2K group) differs from the shared GPT Image 2 (Vidu) table.
 
     Args:
         metadata: Request metadata dict
@@ -157,7 +162,13 @@ def _resolve_z_image_size(metadata: dict) -> Optional[str]:
     if resolution and not size:
         size = resolution
 
-    resolved = resolve_pixel_size(size=size, aspect_ratio=aspect_ratio, resolution=resolution, sep="*")
+    resolved = resolve_pixel_size(
+        size=size,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        sep="*",
+        table=Z_IMAGE_SIZE_MAP,
+    )
     return resolved or "1024*1024"
 
 

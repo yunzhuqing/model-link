@@ -32,7 +32,10 @@ const REQUEST_BODY = `{
   ],
   "enable_url": true,
   "output_format": "mp3",
-  "voice": ""
+  "voice": "",
+  "loudness": 1.0,
+  "pitch": 1.0,
+  "sample": 24000
 }`;
 
 const CURL_EXAMPLE = `curl --location --request POST 'http://localhost:8000/v1/audio/speech' \\
@@ -181,6 +184,9 @@ export default function HelpTTS() {
             { name: 'output_format',    required: false, type: 'string',              desc: '输出音频格式，默认 mp3' },
             { name: 'response_format',  required: false, type: 'string',              desc: 'OpenAI 兼容字段，支持 mp3 / opus / aac / flac / wav / pcm，默认 mp3' },
             { name: 'speed',            required: false, type: 'number',              desc: '语速 0.25 - 4.0，默认 1.0' },
+            { name: 'loudness',         required: false, type: 'number',              desc: '音量调节（映射 seed-audio 上游 audio_config.loudness_rate），范围 0 - 3，默认 1' },
+            { name: 'pitch',            required: false, type: 'number',              desc: '音调调节（映射 seed-audio 上游 audio_config.pitch_rate），范围 0 - 3，默认 1' },
+            { name: 'sample',           required: false, type: 'integer',             desc: '输出采样率（映射 seed-audio 上游 audio_config.sample_rate），范围 8000 - 24000 Hz，默认 24000' },
             { name: 'instructions',     required: false, type: 'string',              desc: '声音风格指令（gpt-4o-mini-tts）' },
             { name: 'enable_subtitle',  required: false, type: 'boolean',             desc: '是否生成字幕，仅在 enable_url=true 时返回' },
           ]} />

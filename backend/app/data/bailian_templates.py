@@ -321,7 +321,6 @@ BAILIAN_TEMPLATES = [
                 'price': 0.1,
                 'tiers': [
                     {'resolution': '1K', 'price': 0.1},
-                    {'resolution': '1.5K', 'price': 0.1},
                     {'resolution': '2K', 'price': 0.1},
                 ],
             },

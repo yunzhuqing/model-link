@@ -8,6 +8,12 @@ Bailian Z-Image, Gemini, GPT Image 2), and a ``resolve_image_size()`` helper
 that turns a user-supplied ``size``, ``aspect_ratio``, or ``resolution``
 parameter into the ``(aspect_ratio, resolution_tier)`` pair.
 
+Z-Image Turbo (Bailian) uses its own dedicated table (``Z_IMAGE_SIZE_MAP``):
+its size set (two 1K groups plus a 2K group, incl. ``1280x1280`` and the
+``1024x1536`` / ``1536x1024`` pair) must not be merged into the shared
+table, which serves GPT Image 2 (Vidu) 1K sizes of the same pixel
+dimensions.
+
 Key distinction
 ---------------
 ``resolution`` in the TencentVOD API is a **quality tier label** ("512", "1K",
@@ -66,8 +72,10 @@ _TIER_LABELS = {"512", "1K", "1.5K", "2K", "3K", "4K", "0.5K"}
 # Unified image size table  —  WxH  →  (aspect_ratio, resolution_tier)
 # ---------------------------------------------------------------------------
 #
-# Merged from: Gemini 2.5 Flash / 3 Pro / 3.1 Flash, GPT Image 2,
-# Volcengine Seedream 4.0/4.5/5.0, Bailian Z-Image Turbo.
+# Merged from: Gemini 2.5 Flash / 3 Pro / 3.1 Flash, GPT Image 2 (Vidu),
+# Volcengine Seedream 4.0/4.5/5.0.  Z-Image Turbo has its own dedicated
+# table (``Z_IMAGE_SIZE_MAP`` below): its ``1024x1536`` / ``1536x1024``
+# sizes belong to a different size group there, so the tables stay separate.
 #
 # Entries are ordered by increasing tier so that _default_for_ratio()
 # returns the lowest-resolution entry for each aspect ratio.
@@ -105,9 +113,12 @@ IMAGE_SIZE_MAP: SizeTable = {
     # 2:3
     "832x1248":   ("2:3",  "1K"),
     "848x1264":   ("2:3",  "1K"),
+    # GPT Image 2 (Vidu) — 1K 2:3 (also present in Z_IMAGE_SIZE_MAP).
+    "1024x1536":  ("2:3",  "1K"),
     # 3:2
     "1248x832":   ("3:2",  "1K"),
     "1264x848":   ("3:2",  "1K"),
+    "1536x1024":  ("3:2",  "1K"),
     # 3:4
     "864x1152":   ("3:4",  "1K"),
     "864x1184":   ("3:4",  "1K"),
@@ -153,21 +164,6 @@ IMAGE_SIZE_MAP: SizeTable = {
     "1568x672":   ("21:9", "1K"),
     "1584x672":   ("21:9", "1K"),
     "1024x439":   ("21:9", "1K"),
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # 1.5K tier (Z-Image Turbo only — 10 ratios)
-    # ═══════════════════════════════════════════════════════════════════════
-    "1280x1280":  ("1:1",  "1.5K"),
-    "1024x1536":  ("2:3",  "1.5K"),
-    "1536x1024":  ("3:2",  "1.5K"),
-    "1104x1472":  ("3:4",  "1.5K"),
-    "1472x1104":  ("4:3",  "1.5K"),
-    "1120x1440":  ("7:9",  "1.5K"),
-    "1440x1120":  ("9:7",  "1.5K"),
-    "864x1536":   ("9:16", "1.5K"),
-    "720x1680":   ("9:21", "1.5K"),
-    "1536x864":   ("16:9", "1.5K"),
-    "1680x720":   ("21:9", "1.5K"),
 
     # ═══════════════════════════════════════════════════════════════════════
     # 2K tier
@@ -295,6 +291,62 @@ IMAGE_SIZE_MAP: SizeTable = {
     "6336x2688":  ("21:9", "4K"),
 }
 
+# ---------------------------------------------------------------------------
+# Z-Image Turbo dedicated table  —  WxH  →  (aspect_ratio, resolution_tier)
+# ---------------------------------------------------------------------------
+#
+# Bailian Z-Image Turbo exposes its own size set in two tiers (1K / 2K).
+# The upstream "larger 1K" group (1280x1280 … 1680x720) is merged into the
+# 1K tier — its ``1024x1536`` / ``1536x1024`` entries would otherwise
+# collide with GPT Image 2 (Vidu) 1K entries in the shared table.
+#
+# This must stay separate from IMAGE_SIZE_MAP: Z-Image has unique ratios
+# (7:9 / 9:7) and sizes (1280x1280, 1104x1472, …) that belong to its own
+# 1K group, while the shared table serves GPT Image 2 (Vidu).
+#
+# Within the 1K tier, the 1280…1680 group is listed FIRST so the reverse
+# lookup (last entry wins per (tier, ratio)) returns the canonical
+# 1024…1344 group for tier-based "1K" resolutions.
+Z_IMAGE_SIZE_MAP: SizeTable = {
+    # ── 1K 档（两档尺寸组均归属 1K）────────────────────────────────────
+    # 1280…1680 组（原 1.5K 命名，现归入 1K）
+    "1280x1280": ("1:1",  "1K"),
+    "1024x1536": ("2:3",  "1K"),
+    "1536x1024": ("3:2",  "1K"),
+    "1104x1472": ("3:4",  "1K"),
+    "1472x1104": ("4:3",  "1K"),
+    "1120x1440": ("7:9",  "1K"),
+    "1440x1120": ("9:7",  "1K"),
+    "864x1536":  ("9:16", "1K"),
+    "720x1680":  ("9:21", "1K"),
+    "1536x864":  ("16:9", "1K"),
+    "1680x720":  ("21:9", "1K"),
+    # 1024…1344 组（标准 1K）
+    "1024x1024": ("1:1",  "1K"),
+    "832x1248":  ("2:3",  "1K"),
+    "1248x832":  ("3:2",  "1K"),
+    "864x1152":  ("3:4",  "1K"),
+    "1152x864":  ("4:3",  "1K"),
+    "896x1152":  ("7:9",  "1K"),
+    "1152x896":  ("9:7",  "1K"),
+    "720x1280":  ("9:16", "1K"),
+    "576x1344":  ("9:21", "1K"),
+    "1280x720":  ("16:9", "1K"),
+    "1344x576":  ("21:9", "1K"),
+    # ── 2K 档 ──────────────────────────────────────────────────────────
+    "1536x1536": ("1:1",  "2K"),
+    "1248x1872": ("2:3",  "2K"),
+    "1872x1248": ("3:2",  "2K"),
+    "1296x1728": ("3:4",  "2K"),
+    "1728x1296": ("4:3",  "2K"),
+    "1344x1728": ("7:9",  "2K"),
+    "1728x1344": ("9:7",  "2K"),
+    "1152x2048": ("9:16", "2K"),
+    "864x2016":  ("9:21", "2K"),
+    "2048x1152": ("16:9", "2K"),
+    "2016x864":  ("21:9", "2K"),
+}
+
 # ── Reverse lookup: (tier, aspect_ratio) → WxH ─────────────────────────
 # Used by providers that need to reconstruct exact pixel dimensions from
 # resolved (aspect_ratio, tier).  Built from IMAGE_SIZE_MAP; later (higher
@@ -313,39 +365,39 @@ def _norm(s: str) -> str:
     return s.lower().replace(" ", "")
 
 
-def _lookup_wh(wh: str) -> Optional[SizeEntry]:
+def _lookup_wh(wh: str, table: SizeTable = IMAGE_SIZE_MAP) -> Optional[SizeEntry]:
     """Exact WxH lookup → (aspect_ratio, resolution_tier)."""
     key = _norm(wh).replace("*", "x")
-    for k, entry in IMAGE_SIZE_MAP.items():
+    for k, entry in table.items():
         if _norm(k) == key:
             return entry
     return None
 
 
-def _default_for_ratio(aspect_ratio: str) -> Optional[SizeEntry]:
+def _default_for_ratio(aspect_ratio: str, table: SizeTable = IMAGE_SIZE_MAP) -> Optional[SizeEntry]:
     """First (lowest-tier) entry whose aspect_ratio matches."""
-    for entry in IMAGE_SIZE_MAP.values():
+    for entry in table.values():
         if entry[0] == aspect_ratio:
             return entry
     return None
 
 
-def _entry_for_ratio_and_tier(aspect_ratio: str, tier: str) -> Optional[SizeEntry]:
+def _entry_for_ratio_and_tier(aspect_ratio: str, tier: str, table: SizeTable = IMAGE_SIZE_MAP) -> Optional[SizeEntry]:
     """Entry matching both aspect_ratio and resolution_tier."""
     tier_u = tier.upper()
-    for entry in IMAGE_SIZE_MAP.values():
+    for entry in table.values():
         if entry[0] == aspect_ratio and entry[1].upper() == tier_u:
             return entry
     return None
 
 
-def _default_for_tier(tier: str) -> Optional[SizeEntry]:
+def _default_for_tier(tier: str, table: SizeTable = IMAGE_SIZE_MAP) -> Optional[SizeEntry]:
     """First "1:1" entry at the given tier; fallback: first entry at that tier."""
     tier_u = tier.upper()
-    for entry in IMAGE_SIZE_MAP.values():
+    for entry in table.values():
         if entry[0] == "1:1" and entry[1].upper() == tier_u:
             return entry
-    for entry in IMAGE_SIZE_MAP.values():
+    for entry in table.values():
         if entry[1].upper() == tier_u:
             return entry
     return None
@@ -384,6 +436,7 @@ def resolve_image_size(
     size: str = "",
     aspect_ratio: str = "",
     resolution: str = "",
+    table: SizeTable = IMAGE_SIZE_MAP,
 ) -> Tuple[str, str]:
     """
     Resolve user inputs into ``(aspect_ratio, resolution_tier)``.
@@ -405,6 +458,9 @@ def resolve_image_size(
 
     Returns:
         (aspect_ratio, resolution_tier) — both empty strings if unresolvable.
+
+    ``table`` selects the lookup table; providers with provider-specific size
+    sets (e.g. Bailian Z-Image Turbo → ``Z_IMAGE_SIZE_MAP``) pass their own.
     """
     size = (size or "").strip()
     aspect_ratio = (aspect_ratio or "").strip()
@@ -415,7 +471,7 @@ def resolve_image_size(
     # ------------------------------------------------------------------
     if resolution:
         if _looks_like_wh(resolution):
-            entry = _lookup_wh(resolution)
+            entry = _lookup_wh(resolution, table)
             if entry:
                 ar = aspect_ratio if aspect_ratio else entry[0]
                 return ar, entry[1]
@@ -424,12 +480,12 @@ def resolve_image_size(
         if _looks_like_tier(resolution):
             tier = resolution.upper()
             if aspect_ratio:
-                entry = _entry_for_ratio_and_tier(aspect_ratio, tier)
+                entry = _entry_for_ratio_and_tier(aspect_ratio, tier, table)
                 if entry:
                     return entry
                 return aspect_ratio, tier
             else:
-                entry = _default_for_tier(tier)
+                entry = _default_for_tier(tier, table)
                 if entry:
                     return entry
                 return "1:1", tier
@@ -443,11 +499,11 @@ def resolve_image_size(
         # If size looks like a tier label, combine tier + aspect_ratio
         if _looks_like_tier(size):
             tier = size.upper()
-            entry = _entry_for_ratio_and_tier(aspect_ratio, tier)
+            entry = _entry_for_ratio_and_tier(aspect_ratio, tier, table)
             if entry:
                 return entry
             return aspect_ratio, tier
-        entry = _default_for_ratio(aspect_ratio)
+        entry = _default_for_ratio(aspect_ratio, table)
         if entry:
             return entry
         return aspect_ratio, ""
@@ -460,7 +516,7 @@ def resolve_image_size(
 
     # 5a. WxH pixel string
     if _looks_like_wh(size):
-        entry = _lookup_wh(size)
+        entry = _lookup_wh(size, table)
         if entry:
             return entry
         return "", ""
@@ -468,7 +524,7 @@ def resolve_image_size(
     # 5b. Aspect ratio string
     if _looks_like_ratio(size):
         ar = size
-        entry = _default_for_ratio(ar)
+        entry = _default_for_ratio(ar, table)
         if entry:
             return entry
         return ar, ""
@@ -476,25 +532,31 @@ def resolve_image_size(
     # 5c. Tier label
     if _looks_like_tier(size):
         tier = size.upper()
-        entry = _default_for_tier(tier)
+        entry = _default_for_tier(tier, table)
         if entry:
             return entry
         return "1:1", tier
 
     # Fallback: treat as aspect_ratio
-    entry = _default_for_ratio(size)
+    entry = _default_for_ratio(size, table)
     if entry:
         return entry
     return size, ""
 
 
-def get_pixel_size(aspect_ratio: str, tier: str) -> str:
+def get_pixel_size(aspect_ratio: str, tier: str, table: SizeTable = IMAGE_SIZE_MAP) -> str:
     """
     Reverse lookup: given (aspect_ratio, tier), return the WxH pixel string.
 
     Returns empty string if no matching entry exists.
     """
-    return _TIER_RATIO_TO_WH.get((tier, aspect_ratio), "")
+    if table is IMAGE_SIZE_MAP:
+        reverse = _TIER_RATIO_TO_WH
+    else:
+        reverse = {}
+        for wh, (ar, t) in table.items():
+            reverse[(t, ar)] = wh
+    return reverse.get((tier, aspect_ratio), "")
 
 
 def resolve_pixel_size(
@@ -502,6 +564,7 @@ def resolve_pixel_size(
     aspect_ratio: str = "",
     resolution: str = "",
     sep: str = "x",
+    table: SizeTable = IMAGE_SIZE_MAP,
 ) -> str:
     """
     Resolve size/aspect_ratio/resolution to a concrete WxH pixel string.
@@ -527,9 +590,11 @@ def resolve_pixel_size(
         if _looks_like_wh(normalized):
             return normalized.replace("x", sep)
 
-    ar, tier = resolve_image_size(size=size, aspect_ratio=aspect_ratio, resolution=resolution)
+    ar, tier = resolve_image_size(
+        size=size, aspect_ratio=aspect_ratio, resolution=resolution, table=table
+    )
     if ar and tier:
-        wh = get_pixel_size(ar, tier)
+        wh = get_pixel_size(ar, tier, table=table)
         if wh:
             return wh.replace("x", sep)
     return ""
