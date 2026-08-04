@@ -24,6 +24,7 @@ from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
 from .mulerun import MulerunProvider
 from .seed_tts_provider import SeedTTSProvider
 from .vidu import ViduProvider
+from .tencentlive import TencentLiveProvider
 
 __all__ = [
     'BaseProvider', 'ProviderConfig', 'ProviderCapability',
@@ -34,6 +35,7 @@ __all__ = [
     'OpenAIChatCompletionsCompatProvider', 'OpenAIResponsesCompatProvider',
     'MulerunProvider', 'SeedTTSProvider',
     'ViduProvider',
+    'TencentLiveProvider',
 ]
 
 # 供应商注册表
@@ -60,6 +62,7 @@ PROVIDER_REGISTRY = {
     'mulerun': MulerunProvider,
     'seed_tts': SeedTTSProvider,
     'vidu': ViduProvider,
+    'tencentlive': TencentLiveProvider,
 }
 
 

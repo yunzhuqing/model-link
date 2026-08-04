@@ -255,7 +255,7 @@ export default function HelpImageGeneration() {
                 <tbody className="divide-y divide-slate-100">
                   {[
                     { family: 'GPT Image',    models: 'gpt-image-2',              format: 'png / jpg / webp', size: '1K ~ 4K（9 种比例）' },
-                    { family: 'Nano Banana',  models: 'gemini-2.5-flash-image / gemini-3-pro-image-preview / gemini-3.1-flash-image-preview', format: 'png / jpg', size: '512 ~ 4K' },
+                    { family: 'Nano Banana',  models: 'gemini-2.5-flash-image / gemini-3-pro-image-preview / gemini-3.1-flash-image-preview / gemini-3.1-flash-image', format: 'png / jpg', size: '512 ~ 4K' },
                     { family: 'Seedream',     models: 'seedream-4.0 / 4.5 / 5.0 / doubao-seedream 系列', format: 'png / jpg', size: '1K ~ 4K' },
                     { family: 'Z-Image',      models: 'z-image-turbo',             format: 'png', size: '1K / 1.5K / 2K（11 种比例）' },
                     { family: 'Qwen Image',   models: 'qwen-image-2.0 / 2.0-pro',  format: 'png', size: '512x512 ~ 2048x2048' },
@@ -710,7 +710,7 @@ export default function HelpImageGeneration() {
         <SectionCard
           id="gemini-sizes"
           title="Nano Banana（Gemini 图像模型）支持尺寸"
-          description="Nano Banana 即 Gemini 图像生成系列模型支持的尺寸参考表，通过 TencentVOD 路由。"
+          description="Nano Banana 即 Gemini 图像生成系列模型支持的尺寸参考表，通过 TencentVOD / TencentLive 路由。"
         >
           <div className="space-y-6">
             {/* Gemini 2.5 Flash Image */}

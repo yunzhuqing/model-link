@@ -17,6 +17,7 @@ from app.data.tencentvod_templates import TENCENTVOD_TEMPLATES
 from app.data.hunyuan_templates import HUNYUAN_TEMPLATES
 from app.data.mulerun_templates import MULERUN_TEMPLATES
 from app.data.vidu_templates import VIDU_TEMPLATES
+from app.data.tencentlive_templates import TENCENTLIVE_TEMPLATES
 
 BUILTIN_TEMPLATES = (
     OPENAI_TEMPLATES
@@ -35,4 +36,5 @@ BUILTIN_TEMPLATES = (
     + HUNYUAN_TEMPLATES
     + MULERUN_TEMPLATES
     + VIDU_TEMPLATES
+    + TENCENTLIVE_TEMPLATES
 )

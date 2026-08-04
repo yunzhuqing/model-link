@@ -103,6 +103,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
             <option value="gemini">Gemini (Google AI)</option>
             <option value="vertexai">Vertex AI (Google Cloud)</option>
             <option value="tencentvod">Tencent VOD</option>
+            <option value="tencentlive">TencentLive (AIGC Model Hub)</option>
             <option value="hunyuan">Hunyuan 3D (Tencent)</option>
             <option value="vllm">vLLM (self-hosted)</option>
             <option value="mulerun">Mulerun</option>
@@ -129,6 +130,8 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
                 ? 'https://api.vidu.cn'
                 : data.type === 'seed_tts'
                 ? 'https://openspeech.bytedance.com'
+                : data.type === 'tencentlive'
+                ? 'https://platform.wand-aigc.com'
                 : 'https://api.example.com'
             }
             className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
@@ -148,6 +151,11 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
           {data.type === 'tencentvod' && (
             <p className="text-xs text-slate-400 mt-1">
               Default: https://text-aigc.vod-qcloud.com/v1 (leave blank to use default)
+            </p>
+          )}
+          {data.type === 'tencentlive' && (
+            <p className="text-xs text-slate-400 mt-1">
+              Default: https://platform.wand-aigc.com — leave blank to use default.
             </p>
           )}
           {data.type === 'hunyuan' && (
