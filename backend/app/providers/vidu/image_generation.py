@@ -368,6 +368,73 @@ async def _poll_vidu_task(
                 )
 
 
+async def check_vidu_task_status(
+    api_key: str,
+    base_url: str,
+    task_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Single-shot Vidu task status check (used by background response resync).
+
+    Queries ``GET {base}/ent/v2/tasks/{task_id}/creations`` exactly once and
+    reports the current state without waiting for completion.
+
+    Args:
+        api_key: Vidu API key
+        base_url: Vidu API base URL (e.g. https://api.vidu.cn)
+        task_id: Task ID returned by the reference2image submission
+
+    Returns:
+        A dict with:
+          - ``state``:      lowercased upstream state ("success" / "failed" /
+                            "error" / "cancelled" / "canceled" / pending value)
+          - ``image_urls``: generated image URLs (non-empty only on success)
+          - ``error``:      {"code": ..., "message": ...} on failure, else None
+        Returns None when the task cannot be queried (HTTP error / parse error).
+    """
+    url = f"{base_url.rstrip('/')}/ent/v2/tasks/{task_id}/creations"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    async with shared_client() as client:
+        response = await client.get(url, headers=headers, timeout=60)
+
+    if response.status_code >= 400:
+        logger.warning(
+            "Vidu task status check error (%s) for task %s: %s",
+            response.status_code, task_id, response.text[:500],
+        )
+        return None
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        logger.warning("Vidu task status check parse error for task %s: %s", task_id, exc)
+        return None
+
+    state = str(data.get("state", "")).lower()
+    result: Dict[str, Any] = {
+        "state": state,
+        "image_urls": [],
+        "error": None,
+    }
+
+    if state == "success":
+        for creation in data.get("creations") or []:
+            url = creation.get("url", "") if isinstance(creation, dict) else ""
+            if url:
+                result["image_urls"].append(url)
+    elif state in ("failed", "error", "cancelled", "canceled"):
+        result["error"] = {
+            "code": str(data.get("err_code") or data.get("code") or "api_error"),
+            "message": str(data.get("err_msg") or data.get("message") or data),
+        }
+
+    return result
+
+
 async def execute_vidu_image_generation(
     api_key: str,
     base_url: str,

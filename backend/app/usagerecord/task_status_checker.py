@@ -298,10 +298,28 @@ async def resolve_and_check_task_status_async(
             err_code = aigc_task.get("ErrCode", 0) if aigc_task else 0
             mapped = _map_tencent_status(task_status, err_code)
             output_items = None
+            error = None
             if mapped == TaskStatus.COMPLETED:
                 model = record.get("model", "")
                 output_items = _extract_tencentvod_output(resp, model)
-            return TaskCheckResult(mapped, output_items=output_items)
+            elif mapped == TaskStatus.FAILED:
+                # Surface upstream error details (ErrCode / ErrCodeExt / Message)
+                # so the client sees the real failure reason instead of a generic
+                # placeholder — consistent with the Volcengine and Vidu branches.
+                err_code_ext = aigc_task.get("ErrCodeExt", "") if aigc_task else ""
+                err_message = aigc_task.get("Message", "") if aigc_task else ""
+                error_code = err_code_ext or str(err_code or "api_error")
+                # Build a descriptive message from available error fields
+                _parts: list = []
+                if err_code:
+                    _parts.append(f"ErrCode={err_code}")
+                if err_code_ext:
+                    _parts.append(f"ErrCodeExt={err_code_ext}")
+                if err_message:
+                    _parts.append(err_message)
+                error_msg = "; ".join(_parts) if _parts else f"TencentVOD task failed (status={task_status})"
+                error = {"code": error_code, "message": error_msg}
+            return TaskCheckResult(mapped, output_items=output_items, error=error)
         except Exception as exc:
             logger.error(f"[task_status] TencentVOD check error for {task_id}: {exc}", exc_info=True)
             return TaskCheckResult(TaskStatus.UNKNOWN)
@@ -344,6 +362,36 @@ async def resolve_and_check_task_status_async(
             return TaskCheckResult(mapped, output_items=output_items)
         except Exception as exc:
             logger.error(f"[task_status] Hunyuan3D check error for {task_id}: {exc}", exc_info=True)
+            return TaskCheckResult(TaskStatus.UNKNOWN)
+
+    # ── Vidu — reference2image async image generation ───────────────────
+    elif provider_type == "vidu":
+        try:
+            from app.providers.vidu.image_generation import check_vidu_task_status
+            result = await check_vidu_task_status(
+                api_key,
+                base_url or "https://api.vidu.cn",
+                task_id,
+            )
+            if not result:
+                return TaskCheckResult(TaskStatus.UNKNOWN)
+            state = str(result.get("state", "")).lower()
+            if state == "success":
+                urls = result.get("image_urls") or []
+                output_items = [
+                    {
+                        "type": "image_generation_call",
+                        "status": "completed",
+                        "result": url,
+                    }
+                    for url in urls
+                ] or None
+                return TaskCheckResult(TaskStatus.COMPLETED, output_items=output_items)
+            if state in ("failed", "error", "cancelled", "canceled"):
+                return TaskCheckResult(TaskStatus.FAILED, error=result.get("error"))
+            return TaskCheckResult(TaskStatus.RUNNING)
+        except Exception as exc:
+            logger.error(f"[task_status] Vidu check error for {task_id}: {exc}", exc_info=True)
             return TaskCheckResult(TaskStatus.UNKNOWN)
 
     # ── OpenAI-compatible Responses API upstream ────────────────────────

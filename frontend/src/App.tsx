@@ -19,6 +19,7 @@ import HelpMessages from './pages/HelpMessages';
 import HelpFiles from './pages/HelpFiles';
 import HelpImageGeneration from './pages/HelpImageGeneration';
 import HelpVideoGeneration from './pages/HelpVideoGeneration';
+import HelpMiniMaxH3 from './pages/HelpMiniMaxH3';
 import HelpThreed from './pages/HelpThreed';
 import HelpVideoErase from './pages/HelpVideoErase';
 import HelpModelRouting from './pages/HelpModelRouting';
@@ -77,6 +78,7 @@ function App() {
               <Route path="help/files" element={<HelpFiles />} />
               <Route path="help/image-generation" element={<HelpImageGeneration />} />
               <Route path="help/video-generation" element={<HelpVideoGeneration />} />
+              <Route path="help/minimax-h3" element={<HelpMiniMaxH3 />} />
               <Route path="help/3d-generation" element={<HelpThreed />} />
               <Route path="help/video-erase" element={<HelpVideoErase />} />
               <Route path="help/model-routing" element={<HelpModelRouting />} />

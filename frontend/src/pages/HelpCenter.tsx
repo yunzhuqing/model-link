@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser, FileText } from 'lucide-react';
+import { BookOpen, Layers, AlignLeft, Zap, MessageCircle, MessagesSquare, ChevronRight, ImageIcon, Video, Box, Route, Eraser, FileText, Clapperboard } from 'lucide-react';
 
 interface HelpItem {
   path: string;
@@ -131,6 +131,15 @@ const generationItems: GenerationItem[] = [
     description: '通过 video_erase 工具调用腾讯云 MPS 智能擦除字幕、水印，仅支持异步模式（background: true）。',
     badge: 'video_erase',
     badgeColor: 'bg-orange-100 text-orange-700',
+  },
+  {
+    path: '/help/minimax-h3',
+    icon: <Clapperboard className="w-5 h-5 text-white" />,
+    iconBg: 'from-slate-600 to-slate-900',
+    title: 'MiniMax-H3 模型',
+    description: '海螺 H3 视频生成模型使用说明，支持文生视频、图生视频及参考对象（图片/视频/音频）多模态引用。',
+    badge: 'video_generation',
+    badgeColor: 'bg-slate-100 text-slate-700',
   },
 ];
 

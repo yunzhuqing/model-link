@@ -23,10 +23,17 @@ CATEGORY_MIN_AGE_MINUTES = {
     ModelCategory.TEXT: 9999,  # never sync
 }
 
+# Vidu image generation models (exact names, case-insensitive).
+# ``viduq1`` / ``viduq2`` must be checked before the ``viduq3`` video prefix,
+# and ``q2-fast`` / ``q2-pro`` / ``q3-fast`` have no "image" keyword.
+_VIDU_IMAGE_MODELS = (
+    "viduq1", "viduq2", "viduimage-2", "q2-fast", "q2-pro", "q3-fast",
+)
+
 # Video model prefixes (case-insensitive)
 _VIDEO_PREFIXES = (
     "doubao-seedance", "seedance", "happyhorse-", "kling-", "veo-", "veo3",
-    "gv-", "hy-video-", "viduq", "pixverse-",
+    "gv-", "hy-video-", "viduq3", "pixverse-", "minimax-h3",
 )
 
 # 3D model prefixes
@@ -59,6 +66,10 @@ def classify_model(model_name: str | None) -> ModelCategory:
     for prefix in _THREED_PREFIXES:
         if lower.startswith(prefix):
             return ModelCategory.THREED
+
+    for name in _VIDU_IMAGE_MODELS:
+        if lower == name:
+            return ModelCategory.IMAGE
 
     for prefix in _VIDEO_PREFIXES:
         if lower.startswith(prefix):

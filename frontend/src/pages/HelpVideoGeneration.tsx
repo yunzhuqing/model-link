@@ -8,6 +8,7 @@ import { KlingSection } from '../components/help/HelpVideo_Kling';
 import { HappyhorseSection } from '../components/help/HelpVideo_Happyhorse';
 import { ViduSection } from '../components/help/HelpVideo_Vidu';
 import { PixVerseSection } from '../components/help/HelpVideo_Pixverse';
+import { MiniMaxH3Section } from '../components/help/HelpVideo_MiniMaxH3';
 
 // ---------- TOC ----------
 
@@ -37,6 +38,11 @@ const TOC_ITEMS: TocItem[] = [
   { id: 'happyhorse-i2v', label: '　├ 图生视频', indent: true },
   { id: 'happyhorse-r2v', label: '　├ 参考图生视频', indent: true },
   { id: 'happyhorse-video-edit', label: '　└ 视频编辑', indent: true },
+  { id: 'minimax', label: 'MiniMax-H3 模型' },
+  { id: 'minimax-t2v', label: '　├ 文生视频', indent: true },
+  { id: 'minimax-ref', label: '　├ 参考对象', indent: true },
+  { id: 'minimax-limits', label: '　├ 输入限制', indent: true },
+  { id: 'minimax-more', label: '　└ 完整指南', indent: true },
   { id: 'vidu', label: 'Vidu 模型' },
   { id: 'vidu-t2v', label: '　├ 文生视频', indent: true },
   { id: 'vidu-i2v', label: '　├ 图生视频', indent: true },
@@ -117,6 +123,7 @@ export default function HelpVideoGeneration() {
                 { label: 'Happyhorse',       color: 'bg-pink-100 text-pink-700' },
                 { label: 'Vidu (生数)',      color: 'bg-purple-100 text-purple-700' },
                 { label: 'PixVerse (爱诗)',  color: 'bg-rose-100 text-rose-700' },
+                { label: 'MiniMax-H3 (海螺)', color: 'bg-slate-100 text-slate-700' },
               ].map(s => (
                 <span key={s.label} className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${s.color}`}>{s.label}</span>
               ))}
@@ -138,6 +145,9 @@ export default function HelpVideoGeneration() {
 
         {/* ======== Happyhorse ======== */}
         <HappyhorseSection />
+
+        {/* ======== MiniMax-H3 ======== */}
+        <MiniMaxH3Section />
 
         {/* ======== Vidu ======== */}
         <ViduSection />
