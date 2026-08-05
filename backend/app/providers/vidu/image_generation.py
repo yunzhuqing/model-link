@@ -492,6 +492,13 @@ async def execute_vidu_image_generation(
         task_id = await _submit_vidu_task(api_key, base_url, request_body, tracer=_child_span)
         logger.info("Vidu image generation: task submitted, task_id=%s", task_id)
 
+        # Persist task_id immediately so the background-resync service can
+        # recover the task if the process crashes or polling times out
+        # before mark_completed/mark_failed is written.
+        _on_task_created = metadata.get('_on_task_created')
+        if _on_task_created:
+            _on_task_created(task_id)
+
         image_urls = await _poll_vidu_task(
             api_key,
             base_url,
