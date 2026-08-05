@@ -328,6 +328,7 @@ export default function HelpMessages() {
                   { name: 'stream',     required: false, type: 'boolean', desc: '是否流式输出，默认 false' },
                   { name: 'temperature',required: false, type: 'number',  desc: '采样温度，0~1' },
                   { name: 'tools',      required: false, type: 'array',   desc: '工具列表（Function Calling）' },
+                  { name: 'service_tier', required: false, type: 'string',  desc: '服务等级，如 "flex" / "priority" / "scale"，用于分级路由与定价' },
                 ].map((r) => (
                   <tr key={r.name} className="hover:bg-slate-50">
                     <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">{r.name}</code></td>

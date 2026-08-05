@@ -189,6 +189,7 @@ export default function HelpTTS() {
             { name: 'sample',           required: false, type: 'integer',             desc: '输出采样率（映射 seed-audio 上游 audio_config.sample_rate），范围 8000 - 24000 Hz，默认 24000' },
             { name: 'instructions',     required: false, type: 'string',              desc: '声音风格指令（gpt-4o-mini-tts）' },
             { name: 'enable_subtitle',  required: false, type: 'boolean',             desc: '是否生成字幕，仅在 enable_url=true 时返回' },
+            { name: 'service_tier',     required: false, type: 'string',              desc: '服务等级，如 "flex" / "priority" / "scale"，用于分级路由与定价' },
           ]} />
         </SectionCard>
 

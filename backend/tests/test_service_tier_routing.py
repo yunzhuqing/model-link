@@ -7,7 +7,8 @@ Covers:
   providers per tier.
 - Pricing: per-tier prices override flat model prices; keys missing from the
   tier entry fall back to the flat prices.
-- "auto"/"default" never constrain routing (OpenAI semantics).
+- unset/"auto"/"default" route only to instances declaring no tiers —
+  an instance without explicit service_tiers is implicitly "default".
 - Admin payload validation (_validate_service_tiers).
 
 Run: cd backend && uv run pytest tests/test_service_tier_routing.py -q
@@ -120,15 +121,48 @@ async def test_unsupported_tier_raises_400(db_session):
 
 
 @pytest.mark.asyncio
-async def test_auto_and_default_do_not_constrain_routing(db_session):
+async def test_default_requests_only_hit_untiered_instances(db_session):
+    """unset/"auto"/"default" must never land on instances that declare
+    tiers (flex/priority/...) — they are served by untiered instances only."""
+    group, _, _ = await _seed_two_tiered_models(db_session)
+
+    default_provider = Provider(
+        name="default-provider", type="openai", group_id=group.id,
+        api_key="sk-test", base_url="https://api.openai.com/v1",
+    )
+    db_session.add(default_provider)
+    await db_session.flush()
+    db_session.add(Model(
+        provider_id=default_provider.id, name="gpt-5", alias="gpt5",
+        input_price=3.0, output_price=15.0, priority=10,
+    ))
+    await db_session.commit()
+
+    service = GatewayService()
+    for tier in ("auto", "default", None, "  "):
+        resolved = await service.resolve_model(db_session, "gpt5", service_tier=tier)
+        assert resolved.provider_name == "default-provider"
+        assert resolved.input_price == pytest.approx(3.0)
+        assert resolved.output_price == pytest.approx(15.0)
+
+    # Explicit tiers still route to their declaring instances.
+    resolved = await service.resolve_model(db_session, "gpt5", service_tier="flex")
+    assert resolved.provider_name == "flex-provider"
+
+
+@pytest.mark.asyncio
+async def test_default_request_without_untiered_instance_raises_400(db_session):
+    """When every instance declares tiers, a default request has no eligible
+    candidate and fails with a 400 listing the supported tiers."""
     await _seed_two_tiered_models(db_session)
     service = GatewayService()
 
-    for tier in ("auto", "default", None, "  "):
-        resolved = await service.resolve_model(db_session, "gpt5", service_tier=tier)
-        # Both instances are eligible; prices stay flat either way.
-        assert resolved.input_price in (pytest.approx(2.0), pytest.approx(5.0))
-        assert resolved.output_price in (pytest.approx(10.0), pytest.approx(20.0))
+    for tier in ("auto", "default", None):
+        with pytest.raises(GatewayServiceError) as exc_info:
+            await service.resolve_model(db_session, "gpt5", service_tier=tier)
+        assert exc_info.value.status_code == 400
+        assert "service_tier 'default'" in str(exc_info.value)
+        assert "flex" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -248,8 +282,22 @@ async def test_tier_pricing_tiers_override_model_tiers(db_session):
     assert resolved.pricing_tiers == priority_tiers
     assert resolved.input_price == pytest.approx(5.0)
 
-    # No service_tier: model-level pricing_tiers apply.
+    # No service_tier: served by an untiered ("default") instance; tiered
+    # instances are not eligible, so model-level pricing_tiers apply.
+    default_provider = Provider(
+        name="nested-default-provider", type="openai", group_id=group.id,
+        api_key="sk-test", base_url="https://api.openai.com/v1",
+    )
+    db_session.add(default_provider)
+    await db_session.flush()
+    db_session.add(Model(
+        provider_id=default_provider.id, name="gpt-5", alias="gpt5n",
+        input_price=1.25, output_price=10.0, pricing_tiers=model_tiers,
+    ))
+    await db_session.commit()
+
     resolved = await service.resolve_model(db_session, "gpt5n")
+    assert resolved.provider_name == "nested-default-provider"
     assert resolved.pricing_tiers == model_tiers
 
 
@@ -423,3 +471,44 @@ async def test_tier_declared_only_in_output_pricing_routes(db_session):
         db_session, "gemini-3.1-flash-image-preview", service_tier="flex")
     assert resolved.service_tier == "flex"
     assert resolved.output_pricing == output_pricing
+
+
+@pytest.mark.asyncio
+async def test_reserved_tier_names_never_block_default_routing(db_session):
+    """A reserved name ("default"/"auto") leaking into tier config (e.g. an
+    output_pricing service_tiers map, which has no admin-side validation)
+    must not count as a tier declaration — otherwise the instance would be
+    unreachable for both default and explicit-tier requests."""
+    group = Group(name="reserved-tier-group")
+    db_session.add(group)
+    await db_session.flush()
+
+    provider = Provider(
+        name="reserved-tier-provider", type="openai", group_id=group.id,
+        api_key="sk-test", base_url="https://api.openai.com/v1",
+    )
+    db_session.add(provider)
+    await db_session.flush()
+
+    output_pricing = {
+        "image": {
+            "type": "per_image",
+            "price": 0.04,
+            "service_tiers": {"default": 0.02},
+        }
+    }
+    model = Model(
+        provider_id=provider.id, name="gemini-3.1-flash-image-preview",
+        input_price=0, output_price=0,
+        output_pricing=output_pricing,
+    )
+    db_session.add(model)
+    await db_session.commit()
+
+    assert model.service_tier_names == []
+
+    service = GatewayService()
+    for tier in (None, "default", "auto"):
+        resolved = await service.resolve_model(
+            db_session, "gemini-3.1-flash-image-preview", service_tier=tier)
+        assert resolved.provider_name == "reserved-tier-provider"

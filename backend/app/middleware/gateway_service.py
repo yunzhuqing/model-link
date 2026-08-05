@@ -86,11 +86,12 @@ class ProviderError(GatewayServiceError):
 # These are used for internal logic and should NOT be sent to upstream provider APIs.
 INTERNAL_METADATA_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning', 'timeout'})
 
-# service_tier values that do NOT constrain provider routing. "auto" and
-# "default" follow OpenAI semantics: serve the request with whatever capacity
-# is available. Any other value (e.g. "flex", "priority", "scale",
-# "standard") restricts candidates to model instances that declare the tier.
-_SERVICE_TIER_NOOP = frozenset({'', 'auto', 'default'})
+# service_tier values meaning "default capacity" (OpenAI semantics). They
+# select model instances that declare no service tiers — an instance without
+# explicit service_tiers is implicitly a "default" instance. Any other value
+# (e.g. "flex", "priority", "scale", "standard") restricts candidates to
+# model instances that declare that tier.
+_SERVICE_TIER_DEFAULT_VALUES = frozenset({'', 'auto', 'default'})
 
 
 def _normalize_service_tier(service_tier) -> Optional[str]:
@@ -280,21 +281,27 @@ class GatewayService:
                 )
 
         # ── Service-tier routing ───────────────────────────────────────────
-        # When the request asks for a specific tier (anything beyond
-        # auto/default), only model instances that declare that tier are
-        # eligible. This lets the same model name/alias be served by
+        # An instance that declares service tiers (flex/priority/scale/...)
+        # only serves requests explicitly asking for one of those tiers; an
+        # instance with no declared tiers is a "default" instance and only
+        # serves requests without a specific service_tier (unset, "auto" or
+        # "default"). This lets the same model name/alias be served by
         # different providers (or different price points) per tier.
         tier = _normalize_service_tier(service_tier)
-        if tier is not None and tier not in _SERVICE_TIER_NOOP:
-            tiered_models = [m for m in active_models if tier in m.service_tier_names]
-            if not tiered_models:
-                supported = sorted({t for m in active_models for t in m.service_tier_names})
-                supported_msg = f" Supported service tiers: {', '.join(supported)}." if supported else ""
-                raise GatewayServiceError(
-                    f"Model '{model_name}' does not support service_tier '{tier}'.{supported_msg}",
-                    status_code=400
-                )
-            active_models = tiered_models
+        if tier is not None and tier not in _SERVICE_TIER_DEFAULT_VALUES:
+            eligible_models = [m for m in active_models if tier in m.service_tier_names]
+            requested_tier = tier
+        else:
+            eligible_models = [m for m in active_models if not m.service_tier_names]
+            requested_tier = 'default'
+        if not eligible_models:
+            supported = sorted({t for m in active_models for t in m.service_tier_names})
+            supported_msg = f" Supported service tiers: {', '.join(supported)}." if supported else ""
+            raise GatewayServiceError(
+                f"Model '{model_name}' does not support service_tier '{requested_tier}'.{supported_msg}",
+                status_code=400
+            )
+        active_models = eligible_models
 
         # Priority + Traffic-ratio based routing
         db_model = self._select_model_by_priority(active_models, user_id=user_id)

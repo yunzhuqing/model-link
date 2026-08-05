@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Route } from 'lucide-react';
+import { CodeBlock } from '../components/help/HelpShared';
 
 function Card({ id, title, desc, children }: { id: string; title: string; desc: string; children: React.ReactNode }) {
   return (
@@ -12,6 +13,25 @@ function Card({ id, title, desc, children }: { id: string; title: string; desc: 
     </div>
   );
 }
+
+
+const SERVICE_TIER_EXAMPLE = `{
+  "model": "gemini-3.1-flash-image-preview",
+  "service_tier": "flex",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "生成狸花猫的照片" }
+      ]
+    }
+  ],
+  "tools": [
+    { "type": "image_generation", "n": 1, "size": "464x576" }
+  ],
+  "background": true
+}`;
 
 export default function HelpModelRouting() {
   const navigate = useNavigate();
@@ -109,11 +129,85 @@ export default function HelpModelRouting() {
         </div>
       </Card>
 
-      <Card id="config" title="配置管理" desc="在分组详情页面的「可用模型」标签下查看和修改每个模型的优先级与流量配比。">
+      
+      <Card id="service-tier" title="服务等级（service_tier）" desc="通过 service_tier 参数将同一模型名路由到不同供应商实例或应用不同定价策略，实现分级服务（如弹性/优先/高并发）。">
+        <div className="space-y-4">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+            <p className="text-sm font-semibold text-emerald-800 mb-2">核心规则</p>
+            <ul className="text-sm text-emerald-700 space-y-1.5 list-disc list-inside">
+              <li>未设置 <code>service_tier</code>（或传 <code>null</code>、<code>""</code>、<code>"auto"</code>、<code>"default"</code>）时，请求仅路由到<strong>未声明服务等级</strong>的模型实例（默认实例）</li>
+              <li>设置为具体等级名（如 <code>"flex"</code>、<code>"priority"</code>、<code>"scale"</code>）时，请求仅路由到<strong>声明了该等级</strong>的模型实例</li>
+              <li>各等级支持独立定价：等级配置中的价格将覆盖模型的基础价格，未配置的价格项回退到基础价格</li>
+              <li>请求的等级在该模型上不可用时，返回 400 错误并在提示中列出可用等级</li>
+            </ul>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left">
+                <tr>
+                  <th className="px-4 py-2.5 font-semibold">service_tier 值</th>
+                  <th className="px-4 py-2.5 font-semibold">路由行为</th>
+                  <th className="px-4 py-2.5 font-semibold">典型用途</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-slate-500 font-semibold">（不填 / null）</code></td>
+                  <td className="px-4 py-2.5">路由到默认实例（无等级声明的实例）</td>
+                  <td className="px-4 py-2.5 text-slate-500">普通请求，无需特殊 QoS</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-slate-500 font-semibold">"auto"</code></td>
+                  <td className="px-4 py-2.5">同不填，路由到默认实例</td>
+                  <td className="px-4 py-2.5 text-slate-500">OpenAI 兼容语义，等价于默认</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-slate-500 font-semibold">"default"</code></td>
+                  <td className="px-4 py-2.5">同不填，路由到默认实例</td>
+                  <td className="px-4 py-2.5 text-slate-500">显式指定默认等级</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-teal-600 font-semibold">"flex"</code></td>
+                  <td className="px-4 py-2.5">仅路由到声明了 flex 等级的实例</td>
+                  <td className="px-4 py-2.5 text-slate-500">弹性/低成本通道，价格更优惠</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-amber-600 font-semibold">"priority"</code></td>
+                  <td className="px-4 py-2.5">仅路由到声明了 priority 等级的实例</td>
+                  <td className="px-4 py-2.5 text-slate-500">高优先级通道，低延迟保证</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-violet-600 font-semibold">"scale"</code></td>
+                  <td className="px-4 py-2.5">仅路由到声明了 scale 等级的实例</td>
+                  <td className="px-4 py-2.5 text-slate-500">高并发通道，适合批量任务</td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">"自定义名称"</code></td>
+                  <td className="px-4 py-2.5">仅路由到声明了该自定义等级的实例</td>
+                  <td className="px-4 py-2.5 text-slate-500">管理员在模型配置中定义的任意等级名</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-slate-700 mb-2">示例：使用 flex 等级调用图片生成（Responses API）</p>
+            <CodeBlock code={SERVICE_TIER_EXAMPLE} />
+          </div>
+
+          <div className="bg-sky-50 border border-sky-200 rounded-xl p-4">
+            <p className="text-sm font-semibold text-sky-800 mb-1">支持的接口</p>
+            <p className="text-sm text-sky-700"><code>service_tier</code> 可用于以下接口：<code>/v1/responses</code>、<code>/v1/chat/completions</code>、<code>/v1/messages</code>、<code>/v1/images/generations</code>、<code>/v1/images/edits</code>、<code>/v1/audio/speech</code>。在 Chat Completions 接口中，<code>service_tier</code> 作为顶层字段传入即可（未识别的字段会透传到 metadata 供路由使用）。</p>
+          </div>
+        </div>
+      </Card>
+
+      <Card id="config" title="配置管理" desc="在分组详情页面的「可用模型」标签下和模型模板中管理优先级、流量配比和服务等级配置。">
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 space-y-2">
-          <p><strong>查看：</strong>分组页面 → 可用模型标签 → 表格中的「优先级」和「流量配比」列</p>
-          <p><strong>修改：</strong>点击供应商卡片上的编辑按钮，修改模型的 priority 和 traffic_ratio 字段后保存</p>
-          <p><strong>默认值：</strong>priority = 0，traffic_ratio = 0（均匀随机分发）</p>
+          <p><strong>优先级/配比：</strong>分组页面 → 可用模型标签 → 编辑供应商卡片中的 priority 和 traffic_ratio 字段。默认 priority=0，traffic_ratio=0（均匀随机分发）</p>
+          <p><strong>服务等级：</strong>在模型编辑弹窗中配置 service_tiers，为每个等级设置名称和可选的独立输入/输出/缓存价格。未配置等级的模型实例自动成为默认实例</p>
+          <p><strong>模型模板：</strong>管理员可在模型模板中预设 service_tiers，从模板添加模型时自动继承等级配置</p>
         </div>
       </Card>
     </div>

@@ -561,6 +561,12 @@ class ModelTemplate(db.Model):
         }
 
 
+# Service tier names reserved for "default capacity" semantics (OpenAI-style
+# unset/"auto"/"default" requests). They can never be declared as an explicit
+# tier: an instance serves default traffic by declaring NO tiers at all.
+RESERVED_SERVICE_TIER_NAMES = frozenset({'auto', 'default'})
+
+
 class Model(db.Model):
     __tablename__ = "ml_models"
 
@@ -666,8 +672,9 @@ class Model(db.Model):
     # Requests carrying a matching service_tier are routed only to model
     # instances that declare that tier; per-tier prices override the flat
     # input/output/cache prices (missing keys fall back to the flat prices).
-    # NULL/empty means the instance only serves requests without a specific
-    # service_tier (backward compatible).
+    # NULL/empty means the instance is a "default" instance: it only serves
+    # requests without a specific service_tier (unset/"auto"/"default"),
+    # and such requests never land on tiered instances.
     service_tiers = db.Column(db.JSON, nullable=True, default=None)
 
     provider = db.relationship("Provider", back_populates="models")
@@ -700,14 +707,17 @@ class Model(db.Model):
         Tiers may be declared either in the top-level ``service_tiers``
         (routing + chat pricing) or inside an ``output_pricing`` category's
         ``service_tiers`` map (generation pricing). Both make the model
-        eligible for requests carrying that service_tier.
+        eligible for requests carrying that service_tier. Reserved names
+        ("auto"/"default") never count as a tier declaration — an instance
+        serves default traffic by declaring no tiers, so reporting them here
+        would make the instance unreachable for every request.
         """
         names = []
         if self.service_tiers:
             for entry in self.service_tiers:
                 if isinstance(entry, dict):
                     name = str(entry.get('tier') or '').strip().lower()
-                    if name and name not in names:
+                    if name and name not in RESERVED_SERVICE_TIER_NAMES and name not in names:
                         names.append(name)
         if isinstance(self.output_pricing, dict):
             for category in self.output_pricing.values():
@@ -718,7 +728,7 @@ class Model(db.Model):
                     continue
                 for key in tiers:
                     name = str(key or '').strip().lower()
-                    if name and name not in names:
+                    if name and name not in RESERVED_SERVICE_TIER_NAMES and name not in names:
                         names.append(name)
         return names
 

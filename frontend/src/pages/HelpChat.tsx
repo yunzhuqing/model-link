@@ -360,6 +360,7 @@ export default function HelpChat() {
                   { name: 'top_p',       required: false, type: 'number',  desc: 'Top-p 采样参数' },
                   { name: 'tools',       required: false, type: 'array',   desc: '工具列表（Function Calling）' },
                   { name: 'tool_choice', required: false, type: 'string',  desc: '"auto" | "none" | 指定函数名' },
+                  { name: 'service_tier', required: false, type: 'string',  desc: '服务等级，如 "flex" / "priority" / "scale"，用于分级路由与定价' },
                 ].map((r) => (
                   <tr key={r.name} className="hover:bg-slate-50">
                     <td className="px-4 py-2.5"><code className="text-blue-600 font-semibold">{r.name}</code></td>

@@ -9,7 +9,7 @@ import os
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from app import get_db_session
-from app.models import Provider, Model, Group
+from app.models import Provider, Model, Group, RESERVED_SERVICE_TIER_NAMES
 from app.auth import token_required
 from app.routes.permissions import (
     _get_role,
@@ -292,8 +292,8 @@ def _validate_service_tiers(value):
         if not isinstance(tier, str) or not tier.strip():
             return None, 'each service tier entry requires a non-empty "tier" name'
         name = tier.strip().lower()
-        if name in ('auto', 'default'):
-            return None, 'service tier name "auto"/"default" is reserved'
+        if name in RESERVED_SERVICE_TIER_NAMES:
+            return None, f'service tier name "{name}" is reserved'
         if name in seen:
             return None, f'duplicate service tier "{name}"'
         seen.add(name)
