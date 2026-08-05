@@ -74,6 +74,7 @@ async def _record_image_usage(
             currency=resolved.currency,
             discount=resolved.discount,
             duration_ms=duration_ms,
+            service_tier=resolved.service_tier,
         )
     except Exception as _ue:
         logger.warning(f"[usage] Failed to trigger usage recording for {kind}: {_ue}")
@@ -121,6 +122,11 @@ async def create_images():
     aspect_ratio = data.get('aspect_ratio')
     resolution = data.get('resolution')
 
+    service_tier = data.get('service_tier')
+    if service_tier is not None and not isinstance(service_tier, str):
+        _log_error("images_generations", 400, "service_tier must be a string", _build_error_context(auth_ctx, model_name))
+        return _error_response('service_tier must be a string', code="invalid_request", param="service_tier", status_code=400)
+
     group_id = auth_ctx.api_key_group_id if auth_ctx else None
     provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
@@ -129,7 +135,8 @@ async def create_images():
     try:
         async with get_db_session() as session:
             resolved = await _gateway_service.resolve_model(
-                session, model_name, group_id, provider_id=provider_id
+                session, model_name, group_id, provider_id=provider_id,
+                service_tier=service_tier,
             )
             if group_id:
                 try:
@@ -197,6 +204,7 @@ async def create_images():
                 output_pricing=resolved.output_pricing,
                 currency=resolved.currency,
                 discount=resolved.discount,
+                service_tier=resolved.service_tier,
             ).to_dict()
         return jsonify(result)
     except ModelNotFoundError as e:
@@ -263,6 +271,11 @@ async def edit_images():
     moderation = data.get('moderation')
     user_id = data.get('user')
 
+    service_tier = data.get('service_tier')
+    if service_tier is not None and not isinstance(service_tier, str):
+        _log_error("images_edits", 400, "service_tier must be a string", _build_error_context(auth_ctx, model_name))
+        return _error_response('service_tier must be a string', code="invalid_request", param="service_tier", status_code=400)
+
     group_id = auth_ctx.api_key_group_id if auth_ctx else None
     provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
@@ -271,7 +284,8 @@ async def edit_images():
     try:
         async with get_db_session() as session:
             resolved = await _gateway_service.resolve_model(
-                session, model_name, group_id, provider_id=provider_id
+                session, model_name, group_id, provider_id=provider_id,
+                service_tier=service_tier,
             )
             if group_id:
                 try:
@@ -340,6 +354,7 @@ async def edit_images():
                 output_pricing=resolved.output_pricing,
                 currency=resolved.currency,
                 discount=resolved.discount,
+                service_tier=resolved.service_tier,
             ).to_dict()
         return jsonify(result)
     except ModelNotFoundError as e:

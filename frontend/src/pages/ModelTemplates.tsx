@@ -26,6 +26,30 @@ interface PricingTier {
   cache_hit_price: number;
 }
 
+interface ServiceTierPriceTier {
+  label?: string;
+  context_size?: number;
+  input_size?: number;
+  output_size?: number;
+  input_price?: number;
+  output_price?: number;
+  cache_creation_price?: number;
+  cache_5m_creation_price?: number;
+  cache_1h_creation_price?: number;
+  cache_hit_price?: number;
+}
+
+interface ServiceTier {
+  pricing_tiers?: ServiceTierPriceTier[] | null;
+  tier: string;
+  input_price?: number;
+  output_price?: number;
+  cache_creation_price?: number;
+  cache_5m_creation_price?: number;
+  cache_1h_creation_price?: number;
+  cache_hit_price?: number;
+}
+
 interface OutputPricingTier {
   resolution: string;
   quality?: string;
@@ -39,6 +63,7 @@ interface OutputPricingCategory {
   price: number;
   tiers?: OutputPricingTier[];
   credits?: Record<string, any>;
+  service_tiers?: Record<string, number | { price?: number; tiers?: OutputPricingTier[] }>;
 }
 
 interface OutputPricing {
@@ -86,6 +111,7 @@ interface ModelTemplate {
   support_embedding: boolean;
   support_tts: boolean;
   api_type: string | null;
+  service_tiers: ServiceTier[] | null;
 }
 
 const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
@@ -125,6 +151,7 @@ const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
   support_embedding: false,
   support_tts: false,
   api_type: '',
+  service_tiers: null,
 });
 
 const FEATURES_KEYS = [
@@ -385,6 +412,142 @@ const TemplateForm = ({
         )}
       </div>
 
+      {/* Service Tiers */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-slate-700">{t('modelTemplates.form.serviceTiersTitle')} <span className="text-slate-400 font-normal text-xs">{t('modelTemplates.form.serviceTiersOptional')}</span></h3>
+          <button
+            type="button"
+            onClick={() => set({ service_tiers: [...(value.service_tiers ?? []), { tier: '', input_price: undefined, output_price: undefined }] })}
+            className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors"
+          >
+            {t('modelTemplates.form.addServiceTier')}
+          </button>
+        </div>
+        {value.service_tiers && value.service_tiers.length > 0 ? (
+          <div className="space-y-3">
+            {value.service_tiers.map((st, idx) => {
+              const update = (patch: Partial<ServiceTier>) => {
+                const tiers = value.service_tiers!.map((t2, i) => (i === idx ? { ...t2, ...patch } : t2));
+                set({ service_tiers: tiers });
+              };
+              return (
+                <div key={idx} className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.serviceTierNameLabel')} *</label>
+                      <input
+                        placeholder={t('modelTemplates.form.serviceTierNamePlaceholder')}
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                        value={st.tier}
+                        onChange={(e) => update({ tier: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.serviceTierInputPrice')}</label>
+                      <NumberInput step="0.0001" min={0} placeholder={fmtNumber(value.input_price)} value={st.input_price} onChange={(v) => update({ input_price: v ?? undefined })} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.serviceTierOutputPrice')}</label>
+                      <NumberInput step="0.0001" min={0} placeholder={fmtNumber(value.output_price)} value={st.output_price} onChange={(v) => update({ output_price: v ?? undefined })} />
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const tiers = value.service_tiers!.filter((_, i) => i !== idx);
+                          set({ service_tiers: tiers.length > 0 ? tiers : null });
+                        }}
+                        className="text-xs text-red-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors"
+                      >
+                        {t('modelTemplates.form.removeTier')}
+                      </button>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.tierCacheCreationPrice')}</label>
+                      <NumberInput step="0.0001" min={0} placeholder={fmtNumber(value.cache_creation_price)} value={st.cache_creation_price} onChange={(v) => update({ cache_creation_price: v ?? undefined })} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.tierCache5mCreationPrice')}</label>
+                      <NumberInput step="0.0001" min={0} placeholder={fmtNumber(value.cache_5m_creation_price)} value={st.cache_5m_creation_price} onChange={(v) => update({ cache_5m_creation_price: v ?? undefined })} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.tierCache1hCreationPrice')}</label>
+                      <NumberInput step="0.0001" min={0} placeholder={fmtNumber(value.cache_1h_creation_price)} value={st.cache_1h_creation_price} onChange={(v) => update({ cache_1h_creation_price: v ?? undefined })} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 mb-1">{t('modelTemplates.form.tierCacheHitPrice')}</label>
+                      <NumberInput step="0.0001" min={0} placeholder={fmtNumber(value.cache_hit_price)} value={st.cache_hit_price} onChange={(v) => update({ cache_hit_price: v ?? undefined })} />
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-slate-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-medium text-slate-500">{t('modelTemplates.form.serviceTierPricingTiersHint')}</span>
+                      <button
+                        type="button"
+                        onClick={() => update({ pricing_tiers: [...(st.pricing_tiers ?? []), { label: '', context_size: value.context_size || 4096, input_price: st.input_price, output_price: st.output_price }] })}
+                        className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center"
+                      >
+                        <Plus className="w-3 h-3 mr-1" /> {t('modelTemplates.form.serviceTierAddPricingTier')}
+                      </button>
+                    </div>
+                    {(st.pricing_tiers ?? []).length > 0 && (
+                      <div className="space-y-2">
+                        {(st.pricing_tiers ?? []).map((pt, j) => {
+                          const updatePriceTier = (patch: Partial<ServiceTierPriceTier>) => {
+                            const list = (st.pricing_tiers ?? []).map((x, k) => (k === j ? { ...x, ...patch } : x));
+                            update({ pricing_tiers: list });
+                          };
+                          return (
+                            <div key={j} className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">{t('modelTemplates.form.serviceTierPricingTierLabel')}</label>
+                                <input
+                                  placeholder={t('modelTemplates.form.serviceTierPricingTierLabelPlaceholder')}
+                                  className="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                                  value={pt.label ?? ''}
+                                  onChange={(e) => updatePriceTier({ label: e.target.value })}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">{t('modelTemplates.form.serviceTierPricingTierCtx')}</label>
+                                <NumberInput min={0} value={pt.context_size ?? null} onChange={(v) => updatePriceTier({ context_size: v ?? undefined })} />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">{t('modelTemplates.form.serviceTierPricingTierIn')}</label>
+                                <NumberInput step="0.0001" min={0} placeholder={fmtNumber(st.input_price ?? value.input_price)} value={pt.input_price ?? null} onChange={(v) => updatePriceTier({ input_price: v ?? undefined })} />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">{t('modelTemplates.form.serviceTierPricingTierOut')}</label>
+                                <NumberInput step="0.0001" min={0} placeholder={fmtNumber(st.output_price ?? value.output_price)} value={pt.output_price ?? null} onChange={(v) => updatePriceTier({ output_price: v ?? undefined })} />
+                              </div>
+                              <div className="flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const list = (st.pricing_tiers ?? []).filter((_x, k) => k !== j);
+                                    update({ pricing_tiers: list.length > 0 ? list : undefined });
+                                  }}
+                                  className="text-xs text-red-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors"
+                                >
+                                  {t('modelTemplates.form.removeTier')}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400 italic">{t('modelTemplates.form.noServiceTiers')}</p>
+        )}
+      </div>
+
       {/* Pricing */}
       <div>
         <h3 className="text-sm font-semibold text-slate-700 mb-2">{t('modelTemplates.form.pricingTitle')}</h3>
@@ -628,6 +791,137 @@ const TemplateForm = ({
                         onChange={(v) => updateCategory({ price: v ?? 0 })}
                       />
                     </div>
+                  </div>
+                  {/* Per-service-tier prices */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-medium text-slate-600">
+                        Service Tier Prices <span className="text-slate-400 font-normal">(override base price by service_tier)</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const current = { ...((cat.service_tiers ?? {}) as Record<string, number>) };
+                          const lower = new Set(Object.keys(current).map((k) => k.toLowerCase()));
+                          let name = 'flex';
+                          let i = 2;
+                          while (lower.has(name.toLowerCase())) { name = `tier-${i}`; i += 1; }
+                          updateCategory({ service_tiers: { ...current, [name]: cat.price } });
+                        }}
+                        className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center"
+                      >
+                        <Plus className="w-3 h-3 mr-1" /> Add Tier
+                      </button>
+                    </div>
+                    {Object.keys(cat.service_tiers ?? {}).length > 0 ? (
+                      <div className="space-y-2">
+                        {Object.entries((cat.service_tiers ?? {}) as Record<string, any>).map(([tierName, tierValue]) => {
+                          const tierBase: number = typeof tierValue === 'number' ? tierValue : (tierValue?.price ?? cat.price);
+                          const tierRes: OutputPricingTier[] = typeof tierValue === 'number' ? [] : (tierValue?.tiers ?? []);
+                          const setTier = (price: number, tiers: OutputPricingTier[]) => {
+                            const current = { ...((cat.service_tiers ?? {}) as Record<string, any>) };
+                            current[tierName] = tiers.length > 0 ? { price, tiers } : price;
+                            updateCategory({ service_tiers: current });
+                          };
+                          return (
+                            <div key={tierName} className="bg-white p-2.5 rounded-lg border border-slate-200">
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 items-end">
+                                <div>
+                                  <label className="block text-xs text-slate-400 mb-1">Tier Name</label>
+                                  <input
+                                    placeholder="flex"
+                                    className="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                                    value={tierName}
+                                    onChange={(e) => {
+                                      const current = { ...((cat.service_tiers ?? {}) as Record<string, any>) };
+                                      const val = current[tierName];
+                                      delete current[tierName];
+                                      current[e.target.value] = val;
+                                      updateCategory({ service_tiers: current });
+                                    }}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs text-slate-400 mb-1">
+                                    Base Price {cat.type === 'per_token' ? '($/M)' : cat.type === 'per_image' ? '($/image)' : cat.type === 'per_second' ? '($/second)' : '($/credit)'}
+                                  </label>
+                                  <NumberInput
+                                    step="0.0001"
+                                    min={0}
+                                    placeholder={fmtNumber(cat.price)}
+                                    value={tierBase}
+                                    onChange={(v) => setTier(v ?? 0, tierRes)}
+                                  />
+                                </div>
+                                <div className="flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const current = { ...((cat.service_tiers ?? {}) as Record<string, any>) };
+                                      delete current[tierName];
+                                      updateCategory({ service_tiers: Object.keys(current).length > 0 ? current : undefined });
+                                    }}
+                                    className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="Remove tier price"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="mt-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-xs text-slate-400">Resolution Prices <span className="font-normal">(optional — override this tier's base price by resolution)</span></span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setTier(tierBase, [...tierRes, { resolution: tierResolutionHints[category][0] || '', price: tierBase }])}
+                                    className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center"
+                                  >
+                                    <Plus className="w-3 h-3 mr-1" /> Add Resolution
+                                  </button>
+                                </div>
+                                {tierRes.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    {tierRes.map((rt, ri) => (
+                                      <div key={ri} className="grid grid-cols-2 md:grid-cols-3 gap-2 items-end">
+                                        <div>
+                                          <input
+                                            placeholder={(tierResolutionHints[category] || []).join(' / ') || 'resolution'}
+                                            className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-all"
+                                            value={rt.resolution}
+                                            onChange={(e) => setTier(tierBase, tierRes.map((x, k) => (k === ri ? { ...x, resolution: e.target.value } : x)))}
+                                          />
+                                        </div>
+                                        <div>
+                                          <NumberInput
+                                            step="0.0001"
+                                            min={0}
+                                            placeholder={fmtNumber(tierBase)}
+                                            value={rt.price}
+                                            onChange={(v) => setTier(tierBase, tierRes.map((x, k) => (k === ri ? { ...x, price: v ?? 0 } : x)))}
+                                          />
+                                        </div>
+                                        <div className="flex justify-end">
+                                          <button
+                                            type="button"
+                                            onClick={() => setTier(tierBase, tierRes.filter((_x, k) => k !== ri))}
+                                            className="text-slate-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded-lg transition-colors"
+                                            title="Remove resolution price"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 italic">No per-tier prices — base price applies to all service tiers.</p>
+                    )}
                   </div>
                   {/* Resolution tiers (money-based only) */}
                   {cat.type !== 'per_credit' && (
@@ -975,6 +1269,10 @@ const TemplateCard = ({
 }) => {
   const { t, i18n } = useTranslation();
   const isZh = i18n.language?.startsWith('zh');
+  const declaredTiers = Array.from(new Set([
+    ...((tpl.service_tiers ?? []) as ServiceTier[]).map((st) => st.tier),
+    ...Object.values(tpl.output_pricing ?? {}).flatMap((c) => Object.keys(((c as any)?.service_tiers ?? {}) as Record<string, unknown>)),
+  ]));
 
   return (
     <div
@@ -1001,6 +1299,11 @@ const TemplateCard = ({
             {tpl.pricing_tiers && tpl.pricing_tiers.length > 0 && (
               <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs font-medium">
                 {t('modelTemplates.tiers', { count: tpl.pricing_tiers.length })}
+              </span>
+            )}
+            {declaredTiers.length > 0 && (
+              <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-xs font-medium" title={t('modelTemplates.form.serviceTiersTitle')}>
+                {declaredTiers.join(' / ')}
               </span>
             )}
             {tpl.is_retired && (
@@ -1076,6 +1379,38 @@ const TemplateCard = ({
             </div>
           )}
 
+          {/* Service Tiers display */}
+          {tpl.service_tiers && tpl.service_tiers.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {tpl.service_tiers.map((st, i) => (
+                <div key={i} className="text-sm text-slate-600">
+                  <div className="flex flex-wrap gap-3">
+                    <span className="text-indigo-600 text-xs font-semibold w-20">{st.tier}</span>
+                    {(!st.pricing_tiers || st.pricing_tiers.length === 0) && (
+                      <>
+                        <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.in')}</span>{currencySymbol(tpl.currency)}{st.input_price ?? tpl.input_price}/M</span>
+                        <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.out')}</span>{currencySymbol(tpl.currency)}{st.output_price ?? tpl.output_price}/M</span>
+                        {(st.cache_hit_price ?? 0) > 0 && <span><span className="text-slate-400 text-xs mr-1">{t('modelTemplates.card.cacheDown')}</span>{currencySymbol(tpl.currency)}{st.cache_hit_price}/M</span>}
+                      </>
+                    )}
+                  </div>
+                  {st.pricing_tiers && st.pricing_tiers.length > 0 && (
+                    <div className="mt-0.5 space-y-0.5">
+                      {st.pricing_tiers.map((pt, j) => (
+                        <div key={j} className="flex flex-wrap gap-3 text-xs text-slate-600">
+                          <span className="text-slate-500 font-medium w-20">{pt.label || `${j + 1}`}</span>
+                          {(pt.context_size ?? 0) > 0 && <span><span className="text-slate-400 mr-1">{t('modelTemplates.card.ctx')}</span>{pt.context_size!.toLocaleString()}</span>}
+                          <span><span className="text-slate-400 mr-1">{t('modelTemplates.card.in')}</span>{currencySymbol(tpl.currency)}{pt.input_price ?? st.input_price ?? tpl.input_price}/M</span>
+                          <span><span className="text-slate-400 mr-1">{t('modelTemplates.card.out')}</span>{currencySymbol(tpl.currency)}{pt.output_price ?? st.output_price ?? tpl.output_price}/M</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Output Pricing display */}
           {tpl.output_pricing && (
             <div className="mt-3">
@@ -1104,6 +1439,25 @@ const TemplateCard = ({
                       </div>
                     ) : (
                       <span className="text-xs text-slate-600">{currencySymbol(tpl.currency)}{catConfig.price}{typeLabel}</span>
+                    )}
+
+                    {catConfig.service_tiers && Object.keys(catConfig.service_tiers).length > 0 && (
+                      <div className="mt-1 space-y-0.5 text-xs text-slate-600">
+                        {Object.entries(catConfig.service_tiers).map(([tierName, tierValue]) => {
+                          const tv = tierValue as any;
+                          const base = typeof tv === 'number' ? tv : tv?.price;
+                          const resTiers: any[] = typeof tv === 'number' ? [] : (tv?.tiers ?? []);
+                          return (
+                            <div key={tierName} className="flex flex-wrap gap-2">
+                              <span className="text-indigo-600 font-medium min-w-[50px]">{tierName}</span>
+                              {base != null && <span>{currencySymbol(tpl.currency)}{base}{typeLabel}</span>}
+                              {resTiers.map((rt, ri) => (
+                                <span key={ri}><span className="text-slate-400 mr-1">{rt.resolution}</span>{currencySymbol(tpl.currency)}{rt.price}{typeLabel}</span>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                     {catConfig.type === 'per_credit' && catConfig.credits && (
                       <div className="mt-1.5 pt-1.5 border-t border-blue-200">

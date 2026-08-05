@@ -370,6 +370,7 @@ async def _handle_request(adapter):
                             output_pricing=resolved.output_pricing,
                             currency=resolved.currency,
                             discount=resolved.discount,
+                            service_tier=resolved.service_tier,
                         )
                         price_chunk = StreamChunk(
                             id=_last_chunk_meta.get('id', ''),
@@ -468,6 +469,7 @@ async def _handle_request(adapter):
                     output_pricing=resolved.output_pricing,
                     currency=resolved.currency,
                     discount=resolved.discount,
+                    service_tier=resolved.service_tier,
                 )
                 await record_usage(
                     response=response,

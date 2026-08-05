@@ -86,6 +86,20 @@ class ProviderError(GatewayServiceError):
 # These are used for internal logic and should NOT be sent to upstream provider APIs.
 INTERNAL_METADATA_KEYS = frozenset({'support_thinking', 'support_online_image', 'support_online_video', 'reasoning', 'timeout'})
 
+# service_tier values that do NOT constrain provider routing. "auto" and
+# "default" follow OpenAI semantics: serve the request with whatever capacity
+# is available. Any other value (e.g. "flex", "priority", "scale",
+# "standard") restricts candidates to model instances that declare the tier.
+_SERVICE_TIER_NOOP = frozenset({'', 'auto', 'default'})
+
+
+def _normalize_service_tier(service_tier) -> Optional[str]:
+    """Normalize a request service_tier value to a lower-cased string or None."""
+    if service_tier is None:
+        return None
+    tier = str(service_tier).strip().lower()
+    return tier or None
+
 logger = logging.getLogger(__name__)
 
 # Error codes that indicate a transient database error worth retrying.
@@ -175,7 +189,7 @@ class GatewayService:
         # Guards mutation of _provider_build_locks itself.
         self._build_locks_mutex = asyncio.Lock()
 
-    async def resolve_model(self, session, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None) -> ResolvedModelData:
+    async def resolve_model(self, session, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None, service_tier: Optional[str] = None) -> ResolvedModelData:
         """
         解析模型名称/别名，返回供应商实例和模型信息（plain dataclass）。
 
@@ -191,6 +205,8 @@ class GatewayService:
             model_name: 模型名称或别名
             group_id: 可选的组 ID（用于访问控制）
             provider_id: 可选的供应商 ID（用于 API Key 限定供应商）
+            service_tier: 可选的服务等级（如 "flex" / "priority"）。指定后仅在
+                声明了该等级的模型实例中路由，并应用该等级的价格配置。
 
         Returns:
             ResolvedModelData 对象（plain dataclass — 不再持有 ORM 引用）
@@ -263,6 +279,23 @@ class GatewayService:
                     status_code=403
                 )
 
+        # ── Service-tier routing ───────────────────────────────────────────
+        # When the request asks for a specific tier (anything beyond
+        # auto/default), only model instances that declare that tier are
+        # eligible. This lets the same model name/alias be served by
+        # different providers (or different price points) per tier.
+        tier = _normalize_service_tier(service_tier)
+        if tier is not None and tier not in _SERVICE_TIER_NOOP:
+            tiered_models = [m for m in active_models if tier in m.service_tier_names]
+            if not tiered_models:
+                supported = sorted({t for m in active_models for t in m.service_tier_names})
+                supported_msg = f" Supported service tiers: {', '.join(supported)}." if supported else ""
+                raise GatewayServiceError(
+                    f"Model '{model_name}' does not support service_tier '{tier}'.{supported_msg}",
+                    status_code=400
+                )
+            active_models = tiered_models
+
         # Priority + Traffic-ratio based routing
         db_model = self._select_model_by_priority(active_models, user_id=user_id)
 
@@ -282,6 +315,36 @@ class GatewayService:
                 status_code=500
             )
 
+        # ── Per-tier pricing ───────────────────────────────────────────────
+        # When the selected model declares a tier entry matching the
+        # requested service_tier, its prices override the flat model prices
+        # (keys absent from the entry keep the flat price).
+        tier_config = db_model.get_service_tier_config(tier) if tier else None
+
+        def _tier_price(key: str, flat_value: float) -> float:
+            if tier_config and tier_config.get(key) is not None:
+                try:
+                    return float(tier_config[key])
+                except (TypeError, ValueError):
+                    pass
+            return flat_value
+
+        # A tier entry may also carry its own context-size pricing_tiers;
+        # when present they fully replace the model-level pricing_tiers so
+        # each service tier can have a different tiered-pricing schedule.
+        pricing_tiers = getattr(db_model, 'pricing_tiers', None)
+        if tier_config:
+            tier_pricing_tiers = tier_config.get('pricing_tiers')
+            if isinstance(tier_pricing_tiers, list) and tier_pricing_tiers:
+                pricing_tiers = tier_pricing_tiers
+
+        input_price = _tier_price('input_price', float(getattr(db_model, 'input_price', 0) or 0))
+        output_price = _tier_price('output_price', float(getattr(db_model, 'output_price', 0) or 0))
+        cache_creation_price = _tier_price('cache_creation_price', float(getattr(db_model, 'cache_creation_price', 0) or 0))
+        cache_5m_creation_price = _tier_price('cache_5m_creation_price', float(getattr(db_model, 'cache_5m_creation_price', 0) or 0))
+        cache_1h_creation_price = _tier_price('cache_1h_creation_price', float(getattr(db_model, 'cache_1h_creation_price', 0) or 0))
+        cache_hit_price = _tier_price('cache_hit_price', float(getattr(db_model, 'cache_hit_price', 0) or 0))
+
         # Eagerly extract all primitive fields to a plain dataclass so callers
         # can close the DB session before the (potentially minute-long) LLM call.
         return ResolvedModelData(
@@ -291,15 +354,15 @@ class GatewayService:
             model_id=db_model.id,
             model_alias=db_model.alias,
             model_real_name=db_model.name,
-            input_price=float(getattr(db_model, 'input_price', 0) or 0),
-            output_price=float(getattr(db_model, 'output_price', 0) or 0),
-            cache_creation_price=float(getattr(db_model, 'cache_creation_price', 0) or 0),
-            cache_5m_creation_price=float(getattr(db_model, 'cache_5m_creation_price', 0) or 0),
-            cache_1h_creation_price=float(getattr(db_model, 'cache_1h_creation_price', 0) or 0),
-            cache_hit_price=float(getattr(db_model, 'cache_hit_price', 0) or 0),
+            input_price=input_price,
+            output_price=output_price,
+            cache_creation_price=cache_creation_price,
+            cache_5m_creation_price=cache_5m_creation_price,
+            cache_1h_creation_price=cache_1h_creation_price,
+            cache_hit_price=cache_hit_price,
             currency=getattr(db_model, 'currency', 'USD') or 'USD',
             discount=float(getattr(db_model, 'discount', 1) or 1),
-            pricing_tiers=getattr(db_model, 'pricing_tiers', None),
+            pricing_tiers=pricing_tiers,
             output_pricing=getattr(db_model, 'output_pricing', None),
             support_thinking=bool(getattr(db_model, 'support_thinking', False)),
             support_online_image=bool(getattr(db_model, 'support_online_image', True)),
@@ -311,6 +374,7 @@ class GatewayService:
             support_tts=bool(getattr(db_model, 'support_tts', False)),
             timeout=getattr(db_model, 'timeout', None),
             api_type=getattr(db_model, 'api_type', None),
+            service_tier=tier,
             provider_instance=provider_instance,
         )
 
@@ -496,6 +560,7 @@ class GatewayService:
         self, session, model_name: str, request,
         group_id: Optional[int] = None, user_id: Optional[str] = None,
         provider_id_override: Optional[int] = None,
+        service_tier: Optional[str] = None,
     ) -> ResolvedModelData:
         """
         Resolve a model for an incoming chat request, honoring the
@@ -506,13 +571,22 @@ class GatewayService:
         provider from the file records and constrains resolve_model to it
         (unless the caller explicitly pinned a provider, in which case the
         pin is validated against the files).
+
+        ``service_tier`` selects the service tier for routing and pricing.
+        When not given explicitly, it falls back to ``request.metadata``
+        (the Responses adapter stores the top-level service_tier there).
         """
         file_provider_id = await self.resolve_file_provider_constraint(
             session, request, group_id, explicit_provider_id=provider_id_override,
         )
         effective_provider_id = provider_id_override if provider_id_override else file_provider_id
+        if service_tier is None:
+            metadata = getattr(request, 'metadata', None)
+            if isinstance(metadata, dict):
+                service_tier = metadata.get('service_tier')
         return await self.resolve_model(
             session, model_name, group_id, user_id=user_id, provider_id=effective_provider_id,
+            service_tier=service_tier,
         )
 
     @staticmethod

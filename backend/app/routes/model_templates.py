@@ -10,6 +10,7 @@ from app.models import ModelTemplate
 from app.auth import token_required
 from app.routes.permissions import require_template_manage
 from app.data import BUILTIN_TEMPLATES
+from app.routes.providers import _validate_service_tiers
 
 model_templates_bp = Blueprint('model_templates', __name__)
 
@@ -87,6 +88,10 @@ async def create_model_template(current_user):
         except (ValueError, AttributeError):
             return jsonify({'detail': 'Invalid retirement_time format. Use ISO 8601 (e.g. 2025-01-01T00:00:00)'}), 400
 
+    service_tiers, tiers_error = _validate_service_tiers(data.get('service_tiers'))
+    if tiers_error:
+        return jsonify({'detail': tiers_error}), 400
+
     tpl = ModelTemplate(
         label=data['label'],
         provider=data['provider'],
@@ -124,6 +129,7 @@ async def create_model_template(current_user):
         support_tts=data.get('support_tts', False),
         timeout=data.get('timeout') or None,
         api_type=data.get('api_type') or None,
+        service_tiers=service_tiers,
     )
     async with get_db_session() as session:
         session.add(tpl)
@@ -152,10 +158,16 @@ async def update_model_template(current_user, template_id):
             'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
             'support_online_image', 'support_online_video', 'support_embedding', 'support_tts',
             'output_size', 'reasoning_effort', 'supported_image_formats', 'pricing_tiers', 'output_pricing',
-            'api_type',
+            'api_type', 'service_tiers',
         ]:
             if field in data:
                 setattr(tpl, field, data[field])
+
+        if 'service_tiers' in data:
+            tiers, tiers_error = _validate_service_tiers(data['service_tiers'])
+            if tiers_error:
+                return jsonify({'detail': tiers_error}), 400
+            tpl.service_tiers = tiers
 
         # Handle retirement_time separately (ISO string → datetime)
         if 'retirement_time' in data:

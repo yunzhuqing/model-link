@@ -261,6 +261,81 @@ async def list_models(current_user):
         return jsonify([m.to_dict() for m in models])
 
 
+# Price keys allowed inside each service_tiers entry
+_SERVICE_TIER_PRICE_KEYS = ('input_price', 'output_price', 'cache_creation_price',
+                            'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price')
+
+# Numeric keys allowed inside a service tier's own pricing_tiers entries
+_SERVICE_TIER_PRICING_TIER_KEYS = ('context_size', 'input_size', 'output_size',
+                                   'input_price', 'output_price', 'cache_creation_price',
+                                   'cache_5m_creation_price', 'cache_1h_creation_price', 'cache_hit_price')
+
+
+def _validate_service_tiers(value):
+    """Validate/normalize the Model.service_tiers JSON payload.
+
+    Returns (normalized_list_or_None, error_message_or_None). Each entry must
+    be an object with a non-empty "tier" name; price keys are optional and
+    must be non-negative numbers. "auto"/"default" are reserved (they never
+    constrain routing).
+    """
+    if value is None or value == '' or value == []:
+        return None, None
+    if not isinstance(value, list):
+        return None, 'service_tiers must be a list of tier objects'
+    normalized = []
+    seen = set()
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None, 'each service tier entry must be an object'
+        tier = entry.get('tier')
+        if not isinstance(tier, str) or not tier.strip():
+            return None, 'each service tier entry requires a non-empty "tier" name'
+        name = tier.strip().lower()
+        if name in ('auto', 'default'):
+            return None, 'service tier name "auto"/"default" is reserved'
+        if name in seen:
+            return None, f'duplicate service tier "{name}"'
+        seen.add(name)
+        item = {'tier': name}
+        for key in _SERVICE_TIER_PRICE_KEYS:
+            if key in entry and entry[key] is not None:
+                try:
+                    price = float(entry[key])
+                except (TypeError, ValueError):
+                    return None, f'service tier "{name}": {key} must be a number'
+                if price < 0:
+                    return None, f'service tier "{name}": {key} must be >= 0'
+                item[key] = price
+        # Optional context-size pricing tiers specific to this service tier —
+        # they fully replace the model-level pricing_tiers when the tier is used.
+        if entry.get('pricing_tiers') is not None:
+            raw_tiers = entry['pricing_tiers']
+            if not isinstance(raw_tiers, list):
+                return None, f'service tier "{name}": pricing_tiers must be a list'
+            tier_list = []
+            for tier_entry in raw_tiers:
+                if not isinstance(tier_entry, dict):
+                    return None, f'service tier "{name}": each pricing tier must be an object'
+                pt_item = {}
+                if tier_entry.get('label') is not None:
+                    pt_item['label'] = str(tier_entry['label'])
+                for key in _SERVICE_TIER_PRICING_TIER_KEYS:
+                    if key in tier_entry and tier_entry[key] is not None:
+                        try:
+                            value = float(tier_entry[key])
+                        except (TypeError, ValueError):
+                            return None, f'service tier "{name}": pricing_tiers {key} must be a number'
+                        if value < 0:
+                            return None, f'service tier "{name}": pricing_tiers {key} must be >= 0'
+                        pt_item[key] = value
+                tier_list.append(pt_item)
+            if tier_list:
+                item['pricing_tiers'] = tier_list
+        normalized.append(item)
+    return normalized, None
+
+
 @providers_bp.route('/models/', methods=['POST'])
 @token_required
 async def create_model(current_user):
@@ -289,6 +364,10 @@ async def create_model(current_user):
                 retirement_time = rt_dt
             except (ValueError, AttributeError):
                 return jsonify({'detail': 'Invalid retirement_time format. Use ISO 8601 (e.g. 2025-01-01T00:00:00)'}), 400
+
+        service_tiers, tiers_error = _validate_service_tiers(data.get('service_tiers'))
+        if tiers_error:
+            return jsonify({'detail': tiers_error}), 400
 
         model = Model(
             name=data.get('name'),
@@ -328,7 +407,8 @@ async def create_model(current_user):
             support_embedding=data.get('support_embedding', False),
             support_tts=data.get('support_tts', False),
             is_active=data.get('is_active', True),
-            api_type=data.get('api_type') or None
+            api_type=data.get('api_type') or None,
+            service_tiers=service_tiers
         )
         session.add(model)
         await session.commit()
@@ -373,7 +453,7 @@ async def update_model(current_user, model_id):
                       'support_kvcache', 'support_image', 'support_audio', 'support_video',
                       'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                       'support_online_image', 'support_online_video', 'support_embedding', 'support_tts',
-                      'is_active', 'priority', 'traffic_ratio', 'retirement_time', 'api_type'}
+                      'is_active', 'priority', 'traffic_ratio', 'retirement_time', 'api_type', 'service_tiers'}
 
         is_root = await _is_root(group_id, current_user.id, session=session)
         is_admin = await _is_admin_or_above_inner(group_id, current_user.id, session=session)
@@ -400,6 +480,12 @@ async def update_model(current_user, model_id):
         if not requested_fields.issubset(allowed_fields):
             forbidden = requested_fields - allowed_fields
             return jsonify({'detail': f'You cannot modify these fields: {", ".join(sorted(forbidden))}'}), 403
+
+        if 'service_tiers' in data:
+            tiers, tiers_error = _validate_service_tiers(data['service_tiers'])
+            if tiers_error:
+                return jsonify({'detail': tiers_error}), 400
+            data['service_tiers'] = tiers
 
         for field in allowed_fields:
             if field in data:

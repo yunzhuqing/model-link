@@ -68,6 +68,7 @@ async def _record_tts_usage(*, tts_response, auth_ctx, resolved, model_name, dur
             currency=resolved.currency,
             discount=resolved.discount,
             duration_ms=duration_ms,
+            service_tier=resolved.service_tier,
         )
     except Exception as _ue:
         logger.warning(f"[usage] Failed to trigger usage recording for tts: {_ue}")
@@ -125,6 +126,11 @@ async def create_speech():
         enable_url=bool(data.get('enable_url', False)),
     )
 
+    service_tier = data.get('service_tier')
+    if service_tier is not None and not isinstance(service_tier, str):
+        _log_error("audio_speech", 400, "service_tier must be a string")
+        return _error_response('service_tier must be a string', code="invalid_request", param="service_tier", status_code=400)
+
     group_id = auth_ctx.api_key_group_id if auth_ctx else None
     provider_id = auth_ctx.provider_id_override if auth_ctx else None
 
@@ -133,7 +139,8 @@ async def create_speech():
     try:
         async with get_db_session() as session:
             resolved = await _gateway_service.resolve_model(
-                session, model_name, group_id, provider_id=provider_id
+                session, model_name, group_id, provider_id=provider_id,
+                service_tier=service_tier,
             )
             if group_id:
                 try:
@@ -183,6 +190,7 @@ async def create_speech():
                 output_pricing=resolved.output_pricing,
                 currency=resolved.currency,
                 discount=resolved.discount,
+                            service_tier=resolved.service_tier,
             )
         # ── Phase 4: usage record (fire-and-forget) ──
         await _record_tts_usage(

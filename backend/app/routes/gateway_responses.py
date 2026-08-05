@@ -167,6 +167,7 @@ async def _run_background_response(
                 resolved = await _gateway_service.resolve_model_for_request(
                     session, chat_request.model, chat_request,
                     group_id=group_id, provider_id_override=provider_id,
+                    service_tier=data.get('service_tier'),
                 )
             # ← session closed; DB connection returned to pool
 
@@ -307,6 +308,7 @@ async def _run_background_response(
                     output_pricing=resolved.output_pricing,
                     currency=resolved.currency,
                     discount=resolved.discount,
+                    service_tier=resolved.service_tier,
                 ).to_dict()
             formatted_output = json.dumps(formatted, ensure_ascii=False)
 
@@ -336,6 +338,7 @@ async def _run_background_response(
                     currency=resolved.currency,
                     discount=resolved.discount,
                     duration_ms=_bg_duration_ms,
+                    service_tier=resolved.service_tier,
                 )
             except Exception as _ue:
                 logger.warning(f"[usage] Failed to record usage for background response {response_id!r} (request_id={request_id}): {_ue}")
@@ -420,6 +423,12 @@ async def openai_responses():
     if not model_name:
         _log_error("responses", 400, "Model is required")
         return jsonify(adapter.format_error_response('Model is required', 400)), 400
+
+    # Service tier routing/pricing input (e.g. "flex", "priority", "scale")
+    service_tier = data.get('service_tier')
+    if service_tier is not None and not isinstance(service_tier, str):
+        _log_error("responses", 400, "service_tier must be a string")
+        return jsonify(adapter.format_error_response('service_tier must be a string', 400)), 400
 
     is_background = bool(data.get('background', False))
 
@@ -536,6 +545,7 @@ async def openai_responses():
                 resolved = await _gateway_service.resolve_model_for_request(
                     session, model_name, chat_request,
                     group_id=group_id, provider_id_override=provider_id_override,
+                    service_tier=service_tier,
                 )
             except ModelNotFoundError as e:
                 _log_error("responses", e.status_code, e.message, _build_error_context(auth_ctx, model_name))
@@ -619,6 +629,7 @@ async def openai_responses():
                             output_pricing=resolved.output_pricing,
                             currency=resolved.currency,
                             discount=resolved.discount,
+                            service_tier=resolved.service_tier,
                         )
                         price_chunk = StreamChunk(
                             id=_last_chunk_meta.get('id', ''),
@@ -665,6 +676,7 @@ async def openai_responses():
                                 currency=resolved.currency,
                                 discount=resolved.discount,
                                 duration_ms=_resp_duration_ms,
+                                service_tier=resolved.service_tier,
                             )
                         except Exception as _ue:
                             logger.warning(f"[usage] Failed to trigger stream usage recording: {_ue}")
@@ -710,6 +722,7 @@ async def openai_responses():
                     output_pricing=resolved.output_pricing,
                     currency=resolved.currency,
                     discount=resolved.discount,
+                    service_tier=resolved.service_tier,
                 )
                 await record_usage(
                     response=response,
@@ -733,6 +746,7 @@ async def openai_responses():
                     currency=resolved.currency,
                     discount=resolved.discount,
                     duration_ms=_resp_duration_ms,
+                    service_tier=resolved.service_tier,
                 )
             except Exception as _ue:
                 logger.warning(f"[usage] Failed to trigger usage recording for responses: {_ue}")

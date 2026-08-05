@@ -100,5 +100,10 @@ class ResolvedModelData:
     # Supported API access types (comma-separated: chat_completions,responses,messages)
     api_type: Optional[str] = None
 
+    # Service tier applied to this request (e.g. "flex", "priority");
+    # None when the request did not request a specific tier. When set, the
+    # flat price fields above already reflect the tier's price overrides.
+    service_tier: Optional[str] = None
+
     # Reference to the (cached, long-lived) provider instance — populated by GatewayService
     provider_instance: Any = field(default=None, repr=False)

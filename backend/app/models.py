@@ -505,6 +505,11 @@ class ModelTemplate(db.Model):
     # NULL or empty means all types are supported (backward compatible)
     api_type = db.Column(db.String(100), nullable=True, default=None)
 
+    # Service tiers this template suggests, same schema as Model.service_tiers:
+    # [{"tier": "flex", "input_price": 1.25, "output_price": 10}, ...]
+    # Applied to the model form via "Quick Fill from Template".
+    service_tiers = db.Column(db.JSON, nullable=True, default=None)
+
     @property
     def is_retired(self):
         """Returns True if the template has passed its retirement time."""
@@ -552,6 +557,7 @@ class ModelTemplate(db.Model):
             'support_embedding': self.support_embedding,
             'support_tts': self.support_tts,
             'api_type': self.api_type,
+            'service_tiers': self.service_tiers,
         }
 
 
@@ -594,6 +600,9 @@ class Model(db.Model):
     #   {"type": "per_credit", "price": <$ per credit>,
     #    "credits": {"base": <per item>, "per_second": <per s>, "resolution": {...},
     #                "quality": {...}, "audio": <credits>, "reference_video": <credits>}}
+    # Each category may also declare per-service-tier unit prices:
+    #   "service_tiers": {"flex": 0.02, "priority": 0.06}
+    # Requests resolved with a matching service_tier use that price.
     output_pricing = db.Column(db.JSON, nullable=True, default=None)
 
     # Cache pricing
@@ -644,6 +653,23 @@ class Model(db.Model):
     # NULL or empty means all types are supported (backward compatible)
     api_type = db.Column(db.String(100), nullable=True, default=None)
 
+    # Service tiers this model instance can serve, e.g.
+    # [{"tier": "flex", "input_price": 1.25, "output_price": 10},
+    #  {"tier": "priority", "input_price": 5, "output_price": 20,
+    #   "pricing_tiers": [{"label": "<=272k", "context_size": 272000,
+    #                      "input_price": 5, "output_price": 20}]}]
+    # Each tier may define flat price overrides and/or its own
+    # pricing_tiers (context-size tiers), which fully replace the
+    # model-level pricing_tiers when that tier is used. Generation-model
+    # (image/video/audio/3D) prices per tier are configured inside
+    # output_pricing via each category's "service_tiers" map instead.
+    # Requests carrying a matching service_tier are routed only to model
+    # instances that declare that tier; per-tier prices override the flat
+    # input/output/cache prices (missing keys fall back to the flat prices).
+    # NULL/empty means the instance only serves requests without a specific
+    # service_tier (backward compatible).
+    service_tiers = db.Column(db.JSON, nullable=True, default=None)
+
     provider = db.relationship("Provider", back_populates="models")
     shares = db.relationship("ModelShare", back_populates="model", cascade="all, delete-orphan")
 
@@ -653,6 +679,48 @@ class Model(db.Model):
         if self.retirement_time is None:
             return False
         return datetime.utcnow() >= self.retirement_time
+
+    def get_service_tier_config(self, tier_name):
+        """Return the service_tiers entry whose 'tier' matches tier_name
+        (case-insensitive), or None when the model declares no such tier."""
+        if not tier_name or not self.service_tiers:
+            return None
+        wanted = str(tier_name).strip().lower()
+        if not wanted:
+            return None
+        for entry in self.service_tiers:
+            if isinstance(entry, dict) and str(entry.get('tier') or '').strip().lower() == wanted:
+                return entry
+        return None
+
+    @property
+    def service_tier_names(self):
+        """Lower-cased names of all declared service tiers (deduplicated).
+
+        Tiers may be declared either in the top-level ``service_tiers``
+        (routing + chat pricing) or inside an ``output_pricing`` category's
+        ``service_tiers`` map (generation pricing). Both make the model
+        eligible for requests carrying that service_tier.
+        """
+        names = []
+        if self.service_tiers:
+            for entry in self.service_tiers:
+                if isinstance(entry, dict):
+                    name = str(entry.get('tier') or '').strip().lower()
+                    if name and name not in names:
+                        names.append(name)
+        if isinstance(self.output_pricing, dict):
+            for category in self.output_pricing.values():
+                if not isinstance(category, dict):
+                    continue
+                tiers = category.get('service_tiers')
+                if not isinstance(tiers, dict):
+                    continue
+                for key in tiers:
+                    name = str(key or '').strip().lower()
+                    if name and name not in names:
+                        names.append(name)
+        return names
 
     def to_dict(self):
         return {
@@ -695,7 +763,8 @@ class Model(db.Model):
             'support_embedding': self.support_embedding,
             'support_tts': self.support_tts,
             'is_active': self.is_active,
-            'api_type': self.api_type
+            'api_type': self.api_type,
+            'service_tiers': self.service_tiers
         }
 
 
@@ -1076,6 +1145,10 @@ class UsageRecord(db.Model):
     provider_id = db.Column(db.Integer, nullable=True, index=True)
     provider_name = db.Column(db.String(100), nullable=True, index=True)
 
+    # Service tier requested for this request (e.g. "flex", "priority");
+    # null when the request did not specify one
+    service_tier = db.Column(db.String(50), nullable=True)
+
     # ── Text token usage ───────────────────────────────────────────────────
     input_tokens = db.Column(db.BigInteger, default=0)
     input_price_unit = db.Column(db.Numeric(20, 10), default=0)   # $ per 1M tokens
@@ -1177,6 +1250,7 @@ class UsageRecord(db.Model):
             'model_name': self.model_name,
             'provider_id': self.provider_id,
             'provider_name': self.provider_name,
+            'service_tier': self.service_tier,
             # Text tokens
             'input_tokens': self.input_tokens,
             'input_price_unit': self.input_price_unit,

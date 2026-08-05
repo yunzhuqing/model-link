@@ -96,6 +96,7 @@ async def record_usage(
     currency: str = 'USD',
     discount: float = 1.0,
     duration_ms: Optional[int] = None,
+    service_tier: Optional[str] = None,
 ) -> None:
     """
     Persist one UsageRecord row for a completed (non-streaming) request.
@@ -130,6 +131,7 @@ async def record_usage(
         exchange_rate=exchange_rate,
         discount=discount,
         user_id=user_id,
+        service_tier=service_tier,
     ))
 
 
@@ -161,6 +163,8 @@ async def record_stream_usage(
     discount: float = 1.0,
     # Duration
     duration_ms: Optional[int] = None,
+    # Service tier applied to the request (None when unspecified)
+    service_tier: Optional[str] = None,
 ) -> None:
     """
     Persist one UsageRecord row for a completed streaming request.
@@ -196,6 +200,7 @@ async def record_stream_usage(
         exchange_rate=exchange_rate,
         discount=discount,
         user_id=user_id,
+        service_tier=service_tier,
     ))
 
 
@@ -277,6 +282,44 @@ def _resolve_price_tier(
         float(selected.get('cache_creation_price', default_cache_creation_price) or default_cache_creation_price),
         float(selected.get('cache_hit_price', default_cache_hit_price) or default_cache_hit_price),
     )
+
+
+def _apply_output_pricing_service_tier(category_config, service_tier):
+    """Return the output-pricing category config with the requested service
+    tier's overrides merged in.
+
+    A category may declare per-service-tier price overrides::
+
+        {"type": "per_image", "price": 0.04,
+         "service_tiers": {"flex": 0.02, "priority": 0.06}}
+
+    Values are usually a unit price (per image / second / credit / $ per M
+    tokens). For advanced cases a value may also be an object whose keys
+    (``price``, ``tiers``, ``credits``) override the corresponding parts of
+    the category config. Unknown or missing tiers keep the base config.
+    """
+    if not service_tier or not isinstance(category_config, dict):
+        return category_config
+    overrides = category_config.get('service_tiers')
+    if not isinstance(overrides, dict) or not overrides:
+        return category_config
+    wanted = str(service_tier).strip().lower()
+    matched = None
+    for name, value in overrides.items():
+        if str(name).strip().lower() == wanted:
+            matched = value
+            break
+    if matched is None:
+        return category_config
+    merged = {k: v for k, v in category_config.items() if k != 'service_tiers'}
+    if isinstance(matched, dict):
+        merged.update(matched)
+    else:
+        try:
+            merged['price'] = float(matched)
+        except (TypeError, ValueError):
+            return category_config
+    return merged
 
 
 def _resolve_output_price(
@@ -472,6 +515,7 @@ def _compute_price_details(
     output_pricing: Optional[dict] = None,
     currency: str = 'USD',
     discount: float = 1.0,
+    service_tier: Optional[str] = None,
 ) -> dict:
     """
     Compute all price-related values from a usage object and pricing config.
@@ -546,10 +590,14 @@ def _compute_price_details(
 
     # ── Resolve output pricing from model config ──────────────────────
     if output_pricing and isinstance(output_pricing, dict):
-        image_pricing_config = output_pricing.get('image')
-        video_pricing_config = output_pricing.get('video')
-        audio_pricing_config = output_pricing.get('audio')
-        td_config = output_pricing.get('3d')
+        image_pricing_config = _apply_output_pricing_service_tier(
+            output_pricing.get('image'), service_tier)
+        video_pricing_config = _apply_output_pricing_service_tier(
+            output_pricing.get('video'), service_tier)
+        audio_pricing_config = _apply_output_pricing_service_tier(
+            output_pricing.get('audio'), service_tier)
+        td_config = _apply_output_pricing_service_tier(
+            output_pricing.get('3d'), service_tier)
 
         # Credit-based (per_credit) billing for image / video / audio models:
         # the config's ``credits`` rules define how many credits each
@@ -696,6 +744,7 @@ def calculate_price(
     output_pricing: Optional[dict] = None,
     currency: str = 'USD',
     discount: float = 1.0,
+    service_tier: Optional[str] = None,
 ):
     """
     Calculate price information from a usage object synchronously.
@@ -722,6 +771,7 @@ def calculate_price(
         output_pricing=output_pricing,
         currency=currency,
         discount=discount,
+        service_tier=service_tier,
     )
     return PriceInfo(
         payable_amount=details['payable_amount'],
@@ -828,6 +878,7 @@ async def _persist_usage_async(
     exchange_rate=None,
     discount=1.0,
     user_id=None,
+    service_tier=None,
 ) -> None:
     """Worker that actually writes the UsageRecord to the database.
 
@@ -860,6 +911,7 @@ async def _persist_usage_async(
             exchange_rate=exchange_rate,
             discount=discount,
             user_id=user_id,
+            service_tier=service_tier,
         )
 
         await _persist_record(record, api_key_raw=api_key_raw)
@@ -968,6 +1020,7 @@ def _build_record(
     exchange_rate=None,
     discount=1.0,
     user_id=None,
+    service_tier=None,
 ):
     """Build a UsageRecord ORM object from the pre-extracted primitive values."""
     from app.models import UsageRecord
@@ -994,6 +1047,7 @@ def _build_record(
         output_pricing=output_pricing,
         currency=currency,
         discount=discount,
+        service_tier=service_tier,
     )
 
     return UsageRecord(
@@ -1007,6 +1061,7 @@ def _build_record(
         model_name=model_name,
         provider_id=provider_id,
         provider_name=provider_name,
+        service_tier=service_tier,
         # Text tokens
         input_tokens=d['input_tokens'],
         input_price_unit=d['input_price_unit'],
