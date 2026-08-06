@@ -287,6 +287,21 @@ def _parse_video_model_name_version(model: str) -> Tuple[str, str]:
     return model, "latest"
 
 
+def _normalize_tencentvod_resolution(resolution: str) -> str:
+    """Normalize a resolution tier to the casing TencentVOD's API expects.
+
+    ``CreateAigcVideoTask`` is case-sensitive for some models — e.g. Hailuo H3
+    rejects ``1080p`` and requires ``1080P`` (supported values:
+    ``[1080P, 2K, 4K, 768P]``). The API's canonical form is digits plus an
+    uppercase suffix, so uppercasing satisfies every model observed so far
+    (Hailuo is strict; Kling/Veo accept either casing).
+
+    Only the value sent to the upstream API is normalized; the original
+    (mixed-case) value is retained for usage/pricing tier matching downstream.
+    """
+    return resolution.strip().upper() if resolution else ""
+
+
 # =============================================================================
 # API 调用: CreateAigcVideoTask
 # =============================================================================
@@ -889,7 +904,7 @@ async def execute_tencentvod_video_generation(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 aspect_ratio=aspect_ratio,
-                resolution=resolution,
+                resolution=_normalize_tencentvod_resolution(resolution),
                 seconds=seconds,
                 audio_generation=audio_generation,
                 person_generation=person_generation,

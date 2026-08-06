@@ -1,0 +1,19 @@
+# Live tool-calling integration test configuration.
+base_url: http://localhost:8000
+api_key: sk-fa9489cdf9576f42ca77c6543d6c51d211b39596dffd38af
+
+models:
+  - name: gpt-5.6-luna
+    provider_ids: [5]
+  - name: doubao-seed-2.0-pro
+    provider_ids: [6]
+  - name: qwen3.8-max
+    provider_ids: [4]
+  - name: kimi-k3
+    provider_ids: [12]
+
+# Add more models like this:
+#  - name: another-model
+#    provider_ids: [6, 8]
+
+max_rounds: 8
