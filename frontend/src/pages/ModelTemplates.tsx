@@ -110,6 +110,7 @@ interface ModelTemplate {
   support_online_video: boolean;
   support_embedding: boolean;
   support_tts: boolean;
+  support_transcription: boolean;
   api_type: string | null;
   service_tiers: ServiceTier[] | null;
 }
@@ -150,6 +151,7 @@ const emptyTemplate = (): Omit<ModelTemplate, 'id'> => ({
   support_online_video: false,
   support_embedding: false,
   support_tts: false,
+  support_transcription: false,
   api_type: '',
   service_tiers: null,
 });
@@ -167,6 +169,7 @@ const FEATURES_KEYS = [
   'support_online_video',
   'support_embedding',
   'support_tts',
+  'support_transcription',
 ] as const;
 
 const FEATURE_I18N_MAP: Record<string, string> = {
@@ -182,6 +185,7 @@ const FEATURE_I18N_MAP: Record<string, string> = {
   support_online_video: 'onlineVideo',
   support_embedding: 'embedding',
   support_tts: 'tts',
+  support_transcription: 'transcription',
 };
 
 const ALL_TAB = '__ALL__';

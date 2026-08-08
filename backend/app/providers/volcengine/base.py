@@ -19,6 +19,7 @@ import base64
 import logging
 from ..base import ProviderConfig, ProviderCapability
 from ..openai_provider import OpenAIProvider
+from ..openspeech_provider import openspeech_transcribe
 from .._responses_format import (
     build_responses_request,
     _tool_result_to_responses_output,
@@ -61,6 +62,7 @@ from app.abstraction.tools import ToolDefinition, ToolCall
 from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInfo, FinishReason
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
+from app.abstraction.transcription import TranscriptionRequest, TranscriptionResponse
 from app.utils import (
     gen_id,
     json_loads,
@@ -142,16 +144,26 @@ class VolcengineProvider(OpenAIProvider):
     async def speech(self, request: Any) -> None:
         """Volcengine provider 不再承载 TTS（已拆分为独立 provider）。
 
-        openspeech 文本转语音（seed-audio）已拆分为独立 provider 类型
-        ``seed_tts``（``SeedTTSProvider``），走 ``{base_url}/api/v3/tts/create``
-        + ``X-Api-Key``。请勿在 Ark（volcengine）供应商下启用 TTS —— 否则会误打
-        到 Ark 的 ``/audio/speech``（该端点不存在）。请为 seed-audio 模型创建
-        provider type = ``seed_tts`` 的供应商并勾选 TTS 能力。
+        openspeech 音频能力（TTS + 转写）已统一到独立 provider 类型
+        ``volcengine_openspeech``（``VolcengineOpenspeechProvider``），走
+        openspeech 的 ``/api/v3/tts/create`` + ``X-Api-Key``。请勿在 Ark
+        （volcengine）供应商下启用 TTS —— 否则会误打到 Ark 的 ``/audio/speech``
+        （该端点不存在）。请为 seed-audio 模型创建 provider type =
+        ``volcengine_openspeech`` 的供应商并勾选 TTS 能力。
         """
         raise RuntimeError(
             "Volcengine provider no longer supports text-to-speech. "
-            "Create a separate provider with type 'seed_tts' for Seed TTS (openspeech) models."
+            "Create a separate provider with type 'volcengine_openspeech' for openspeech audio models."
         )
+
+    async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        """Transcribe audio through the openspeech BigModel AUC async API.
+
+        兼容实现：历史配置在 ``volcengine``（Ark）类型供应商上的转写模型继续
+        走 openspeech AUC 接口（与 ``volcengine_openspeech`` 供应商共用同一
+        实现）。新建转写供应商请使用 provider type = ``volcengine_openspeech``。
+        """
+        return await openspeech_transcribe(self, request)
 
     # ----------------------------------------------------------------
     # Helpers

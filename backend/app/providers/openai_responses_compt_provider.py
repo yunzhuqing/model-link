@@ -44,6 +44,7 @@ from ._responses_format import (
 from app.abstraction.chat import ChatRequest, ChatResponse
 from app.abstraction.streaming import StreamChunk, StreamEventType, FinishReason
 from app.abstraction.tts import TTSRequest, TTSResponse
+from app.abstraction.transcription import TranscriptionRequest, TranscriptionResponse
 
 
 class OpenAIResponsesCompatProvider(BaseProvider):
@@ -108,6 +109,17 @@ class OpenAIResponsesCompatProvider(BaseProvider):
         """
         from ._tts import openai_speech
         return await openai_speech(self, request)
+
+    async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        """
+        执行音频转文字请求 (audio transcription)。
+
+        Delegates to the shared ``openai_transcribe`` helper (same
+        ``/audio/transcriptions`` surface as the Chat-Completions-compatible
+        provider). Forwards the multipart upload verbatim.
+        """
+        from ._transcription import openai_transcribe
+        return await openai_transcribe(self, request)
 
     # ------------------------------------------------------------------
     # 非流式请求

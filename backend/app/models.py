@@ -500,6 +500,7 @@ class ModelTemplate(db.Model):
     support_online_video = db.Column(db.Boolean, default=False)
     support_embedding = db.Column(db.Boolean, default=False)
     support_tts = db.Column(db.Boolean, default=False)  # Whether this is a text-to-speech model
+    support_transcription = db.Column(db.Boolean, default=False)  # Whether this is an audio transcription model
 
     # Supported API access types, comma-separated: chat_completions,responses,messages
     # NULL or empty means all types are supported (backward compatible)
@@ -556,6 +557,7 @@ class ModelTemplate(db.Model):
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding,
             'support_tts': self.support_tts,
+            'support_transcription': self.support_transcription,
             'api_type': self.api_type,
             'service_tiers': self.service_tiers,
         }
@@ -653,6 +655,7 @@ class Model(db.Model):
     support_online_video = db.Column(db.Boolean, default=True)  # Whether the provider supports video URLs directly; if False, URLs are converted to base64
     support_embedding = db.Column(db.Boolean, default=False)  # Whether this is an embedding model
     support_tts = db.Column(db.Boolean, default=False)  # Whether this is a text-to-speech model
+    support_transcription = db.Column(db.Boolean, default=False)  # Whether this is an audio transcription model
     is_active = db.Column(db.Boolean, default=True, nullable=False)  # Whether this model is enabled
 
     # Supported API access types, comma-separated: chat_completions,responses,messages
@@ -772,6 +775,7 @@ class Model(db.Model):
             'support_online_video': self.support_online_video,
             'support_embedding': self.support_embedding,
             'support_tts': self.support_tts,
+            'support_transcription': self.support_transcription,
             'is_active': self.is_active,
             'api_type': self.api_type,
             'service_tiers': self.service_tiers

@@ -32,6 +32,7 @@ from app.abstraction.streaming import StreamChunk
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 from app.abstraction.rerank import RerankRequest, RerankResponse
 from app.abstraction.tts import TTSRequest, TTSResponse
+from app.abstraction.transcription import TranscriptionRequest, TranscriptionResponse
 from app.request_context import ResolvedModelData
 
 
@@ -379,6 +380,7 @@ class GatewayService:
             support_video=bool(getattr(db_model, 'support_video', False)),
             support_embedding=bool(getattr(db_model, 'support_embedding', False)),
             support_tts=bool(getattr(db_model, 'support_tts', False)),
+            support_transcription=bool(getattr(db_model, 'support_transcription', False)),
             timeout=getattr(db_model, 'timeout', None),
             api_type=getattr(db_model, 'api_type', None),
             service_tier=tier,
@@ -1314,6 +1316,82 @@ class GatewayService:
             raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
                                  provider_id=resolved.provider_id,
                                  provider_name=resolved.provider_name)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(str(e), status_code=status_code, error_data=error_data,
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
+        except Exception as e:
+            raise ProviderError(f"Provider error: {str(e)}", status_code=500,
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
+
+    async def transcribe(
+        self,
+        resolved: ResolvedModelData,
+        request: TranscriptionRequest,
+        tracer: Any = None,
+    ) -> TranscriptionResponse:
+        """
+        执行音频转文字请求 (audio transcription)。
+
+        Args:
+            resolved: 调用方在 DB session 内预先解析得到的模型/供应商信息
+            request: Transcription 请求对象 (file_bytes + form fields)
+
+        Returns:
+            TranscriptionResponse (transcript text/JSON + usage)
+
+        Raises:
+            GatewayServiceError: 请求验证失败
+            ProviderError: 供应商 API 调用失败
+        """
+        # Record provider info on tracer immediately
+        if tracer:
+            tracer.set_metadata({
+                "provider_id": resolved.provider_id,
+                "provider": resolved.provider_name,
+            })
+
+        # Replace with real model name
+        request.model = resolved.model_real_name
+
+        # Pass model capability flags into request metadata
+        request.metadata['support_transcription'] = resolved.support_transcription
+
+        # Attach tracer so providers can create child spans
+        resolved.provider_instance.tracer = tracer
+
+        # Check that the model is flagged as a transcription model
+        if not resolved.support_transcription:
+            raise GatewayServiceError(
+                f"Model '{resolved.model_alias or resolved.model_real_name}' is not a transcription model. "
+                f"Set support_transcription=true for this model in the admin panel.",
+                status_code=400
+            )
+
+        # Check that the provider supports transcription
+        if not hasattr(resolved.provider_instance, 'transcribe'):
+            raise GatewayServiceError(
+                f"Provider '{resolved.provider_name}' does not support audio transcription",
+                status_code=400
+            )
+
+        try:
+            response = await resolved.provider_instance.transcribe(request)
+            return response
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except UpstreamProviderError as e:
+            canonical_data: dict = {
+                'type': e.error_type,
+                'message': str(e),
+            }
+            if e.request_id:
+                canonical_data['request_id'] = e.request_id
+            raise ProviderError(str(e), status_code=e.status_code, error_data=canonical_data,
+                                provider_id=resolved.provider_id,
+                                provider_name=resolved.provider_name)
         except RuntimeError as e:
             status_code, error_data = self._parse_provider_error(e)
             raise ProviderError(str(e), status_code=status_code, error_data=error_data,

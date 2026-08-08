@@ -135,7 +135,7 @@ async def openai_speech(provider, request) -> TTSResponse:
     ``provider`` is duck-typed: it must expose ``config`` (with ``base_url``),
     ``get_headers()``, and ``_http()`` — i.e. any ``BaseProvider`` subclass.
     """
-    # OpenAI's /audio/speech requires a voice (unlike seed_tts, where the
+    # OpenAI's /audio/speech requires a voice (unlike openspeech, where the
     # speaker comes from reference audio). Enforce it here, at the provider
     # boundary, not at the gateway route — voice is optional for other TTS
     # providers.

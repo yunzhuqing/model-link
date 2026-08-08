@@ -19,6 +19,7 @@ from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInf
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage
 from app.abstraction.tts import TTSRequest, TTSResponse
+from app.abstraction.transcription import TranscriptionRequest, TranscriptionResponse
 
 # Internal metadata keys set by the gateway service.
 # These must be filtered out before sending requests to upstream provider APIs.
@@ -699,7 +700,7 @@ class OpenAIProvider(BaseProvider):
         finish_reason = FinishReason(finish_reason_str) if finish_reason_str else FinishReason.STOP
         
         tool_calls = []
-        if "tool_calls" in message_data:
+        if message_data.get("tool_calls"):
             tool_calls = [self._parse_tool_call(tc) for tc in message_data["tool_calls"]]
         
         return ChatChoice(
@@ -718,7 +719,7 @@ class OpenAIProvider(BaseProvider):
         reasoning_content = data.get("reasoning_content")
         
         blocks = []
-        if "tool_calls" in data:
+        if data.get("tool_calls"):
             for tc in data["tool_calls"]:
                 tc_id = tc.get("id")
                 func = tc.get("function", {})
@@ -1032,6 +1033,18 @@ class OpenAIProvider(BaseProvider):
         """
         from ._tts import openai_speech
         return await openai_speech(self, request)
+
+    async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResponse:
+        """
+        执行音频转文字请求 (audio transcription)。
+
+        Delegates to the shared ``openai_transcribe`` helper so the same
+        implementation is reused by the Responses-API-compatible provider.
+        Forwards the multipart upload (file + form fields) to the upstream
+        ``/audio/transcriptions`` endpoint verbatim.
+        """
+        from ._transcription import openai_transcribe
+        return await openai_transcribe(self, request)
 
     def _parse_embedding_response(self, data: Dict[str, Any], model: str) -> EmbeddingResponse:
         """解析嵌入响应"""

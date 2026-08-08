@@ -22,7 +22,7 @@ from .deepseek_provider import DeepSeekProvider
 from .openai_chatcompletions_compt_provider import OpenAIChatCompletionsCompatProvider
 from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
 from .mulerun import MulerunProvider
-from .seed_tts_provider import SeedTTSProvider
+from .openspeech_provider import VolcengineOpenspeechProvider
 from .vidu import ViduProvider
 from .tencentlive import TencentLiveProvider
 
@@ -33,7 +33,7 @@ __all__ = [
     'MiniMaxProvider', 'GeminiProvider', 'TencentVODProvider', 'VLLMProvider',
     'TencentProvider', 'HunyuanProvider', 'MPSProvider', 'BytePlusProvider', 'DeepSeekProvider',
     'OpenAIChatCompletionsCompatProvider', 'OpenAIResponsesCompatProvider',
-    'MulerunProvider', 'SeedTTSProvider',
+    'MulerunProvider', 'VolcengineOpenspeechProvider',
     'ViduProvider',
     'TencentLiveProvider',
 ]
@@ -60,7 +60,9 @@ PROVIDER_REGISTRY = {
     'openai_chatcompletions_compt': OpenAIChatCompletionsCompatProvider,
     'openai_responses_compt': OpenAIResponsesCompatProvider,
     'mulerun': MulerunProvider,
-    'seed_tts': SeedTTSProvider,
+    'volcengine_openspeech': VolcengineOpenspeechProvider,
+    # 旧类型别名：历史配置的 seed_tts 供应商继续指向 openspeech 实现（无数据迁移）。
+    'seed_tts': VolcengineOpenspeechProvider,
     'vidu': ViduProvider,
     'tencentlive': TencentLiveProvider,
 }

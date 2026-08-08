@@ -174,7 +174,7 @@ class BaseProvider(ABC):
                 role = MessageRole(role_str)
                 content = message_data.get("content")
                 blocks = []
-                if "tool_calls" in message_data:
+                if message_data.get("tool_calls"):
                     for tc in message_data["tool_calls"]:
                         tc_id = tc.get("id")
                         func = tc.get("function", {})
@@ -193,7 +193,7 @@ class BaseProvider(ABC):
             finish_reason_str = choice_data.get("finish_reason")
             finish_reason = FinishReason(finish_reason_str) if finish_reason_str else FinishReason.STOP
             tool_calls = []
-            if message_data and "tool_calls" in message_data:
+            if message_data and message_data.get("tool_calls"):
                 for tc in message_data["tool_calls"]:
                     import json
                     tc_id = tc.get("id")

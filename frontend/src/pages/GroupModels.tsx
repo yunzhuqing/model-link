@@ -38,6 +38,7 @@ interface ModelItem {
   support_thinking: boolean;
   support_embedding: boolean;
   support_tts: boolean;
+  support_transcription: boolean;
   api_type: string | null;
   rpm: number | null;
   tpm: number | null;
@@ -75,6 +76,7 @@ interface ModelShareEntry {
   support_thinking: boolean;
   support_embedding: boolean;
   support_tts: boolean;
+  support_transcription: boolean;
   api_type: string | null;
   rpm: number | null;
   tpm: number | null;
@@ -268,6 +270,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
         support_thinking: share.support_thinking,
         support_embedding: share.support_embedding,
         support_tts: share.support_tts,
+        support_transcription: share.support_transcription,
         api_type: share.api_type || null,
         rpm: share.rpm,
         tpm: share.tpm,
@@ -434,6 +437,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                               <FeatureBadge active={m.support_thinking} icon={Brain} label={t('group.groupDetail.featureThinking')} />
                               <FeatureBadge active={m.support_embedding} icon={Layers} label={t('group.groupDetail.featureEmbedding')} />
                               <FeatureBadge active={m.support_tts} icon={Volume2} label={t('group.groupDetail.featureTts')} />
+                              <FeatureBadge active={m.support_transcription} icon={Mic} label={t('group.groupDetail.featureTranscription')} />
                             </div>
                             {m.api_type && <div className="mt-1">
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-600 font-mono" title="API access types">{m.api_type}</span>
@@ -534,6 +538,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                               <FeatureBadge active={m.support_thinking} icon={Brain} label={t('group.groupDetail.featureThinking')} />
                               <FeatureBadge active={m.support_embedding} icon={Layers} label={t('group.groupDetail.featureEmbedding')} />
                               <FeatureBadge active={m.support_tts} icon={Volume2} label={t('group.groupDetail.featureTts')} />
+                              <FeatureBadge active={m.support_transcription} icon={Mic} label={t('group.groupDetail.featureTranscription')} />
                             </div>
                             {m.api_type && <div className="mt-1">
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-600 font-mono" title="API access types">{m.api_type}</span>

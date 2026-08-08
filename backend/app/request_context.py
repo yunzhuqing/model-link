@@ -93,6 +93,7 @@ class ResolvedModelData:
     support_video: bool = False
     support_embedding: bool = False
     support_tts: bool = False
+    support_transcription: bool = False
 
     # Per-model timeout override (seconds)
     timeout: Optional[int] = None

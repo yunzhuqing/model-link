@@ -105,6 +105,7 @@ interface Model {
   support_online_video: boolean;
   support_embedding: boolean;
   support_tts: boolean;
+  support_transcription: boolean;
   is_active: boolean;
   api_type: string | null;
   service_tiers: ServiceTier[] | null;
@@ -161,6 +162,7 @@ interface ModelTemplate {
   support_online_video: boolean;
   support_embedding: boolean;
   support_tts: boolean;
+  support_transcription: boolean;
   service_tiers?: ServiceTier[] | null;
   retirement_time: string | null;
   is_retired: boolean;
@@ -178,7 +180,7 @@ interface ModelTemplate {
 const PROVIDER_TYPE_TO_TEMPLATE: Record<string, string[]> = {
   gemini: ['Google'],
   deepseek: ['DeepSeek'],
-  seed_tts: ['Volcengine'],
+  volcengine_openspeech: ['Volcengine'],
 };
 
 /** Return the subset of model templates that match a given provider type.
@@ -251,6 +253,7 @@ const defaultModelState = {
   support_online_video: false,
   support_embedding: false,
   support_tts: false,
+  support_transcription: false,
   api_type: '',
   service_tiers: null as ServiceTier[] | null,
 };
@@ -448,6 +451,7 @@ const ModelCard = ({ model, onEdit, onDelete, onToggle, canManage }: { model: Mo
             {model.support_online_video === false && <FeatureBadge label={t('provider.disabled') + ' Video Only'} color="slate" />}
             {model.support_embedding && <FeatureBadge label={t('modelTemplates.features.embedding')} color="emerald" />}
             {model.support_tts && <FeatureBadge label={t('modelTemplates.features.tts')} color="violet" />}
+            {model.support_transcription && <FeatureBadge label={t('modelTemplates.features.transcription')} color="amber" />}
           </div>
         </div>
         {canManage !== false && (
@@ -572,6 +576,7 @@ const ModelForm = ({
       support_online_video: tpl.support_online_video,
       support_embedding: tpl.support_embedding,
       support_tts: tpl.support_tts,
+      support_transcription: tpl.support_transcription,
       api_type: (tpl as any).api_type || '',
       service_tiers: tpl.service_tiers ?? null,
       retirement_time: tpl.retirement_time,
@@ -1588,6 +1593,7 @@ const ModelForm = ({
             { key: 'support_online_video', label: 'Online Video URL' },
             { key: 'support_embedding', label: 'Embedding' },
             { key: 'support_tts', label: 'TTS' },
+            { key: 'support_transcription', label: 'Transcription' },
           ].map((feature) => (
             <label key={feature.key} className="flex items-center space-x-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50 transition-colors">
               <input

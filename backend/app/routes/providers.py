@@ -406,6 +406,7 @@ async def create_model(current_user):
             support_online_video=data.get('support_online_video', True),
             support_embedding=data.get('support_embedding', False),
             support_tts=data.get('support_tts', False),
+            support_transcription=data.get('support_transcription', False),
             is_active=data.get('is_active', True),
             api_type=data.get('api_type') or None,
             service_tiers=service_tiers
@@ -453,6 +454,7 @@ async def update_model(current_user, model_id):
                       'support_kvcache', 'support_image', 'support_audio', 'support_video',
                       'support_file', 'support_web_search', 'support_tool_search', 'support_thinking',
                       'support_online_image', 'support_online_video', 'support_embedding', 'support_tts',
+                      'support_transcription',
                       'is_active', 'priority', 'traffic_ratio', 'retirement_time', 'api_type', 'service_tiers'}
 
         is_root = await _is_root(group_id, current_user.id, session=session)

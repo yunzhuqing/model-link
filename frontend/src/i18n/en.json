@@ -316,6 +316,7 @@
       "featureThinking": "Deep Thinking",
       "featureEmbedding": "Embedding",
       "featureTts": "TTS",
+      "featureTranscription": "Transcription",
       "actions": "Actions",
       "shareToGroup": "Share",
       "sharedBadge": "Shared from {{group}}"
@@ -473,7 +474,8 @@
       "onlineImage": "Online Image URL",
       "onlineVideo": "Online Video URL",
       "embedding": "Embedding",
-      "tts": "TTS"
+      "tts": "TTS",
+      "transcription": "Transcription"
     },
     "card": {
       "ctx": "ctx",

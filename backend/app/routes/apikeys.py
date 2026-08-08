@@ -452,6 +452,7 @@ async def list_model_shares(current_user, group_id):
                 'support_thinking': model.support_thinking,
                 'support_embedding': model.support_embedding,
                 'support_tts': model.support_tts,
+                'support_transcription': model.support_transcription,
                 'rpm': model.rpm,
                 'tpm': model.tpm,
             })

@@ -98,7 +98,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
             <option value="minimax">MiniMax</option>
             <option value="bailian">Bailian (Alibaba)</option>
             <option value="volcengine">Volcengine (ByteDance)</option>
-            <option value="seed_tts">Seed TTS (Volcengine openspeech)</option>
+            <option value="volcengine_openspeech">Volcengine Openspeech (TTS + Transcription)</option>
             <option value="byteplus">BytePlus (ByteDance Global)</option>
             <option value="gemini">Gemini (Google AI)</option>
             <option value="vertexai">Vertex AI (Google Cloud)</option>
@@ -128,7 +128,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
                 ? 'https://api.mulerun.com/vendors/openai/v1'
                 : data.type === 'vidu'
                 ? 'https://api.vidu.cn'
-                : data.type === 'seed_tts'
+                : data.type === 'volcengine_openspeech'
                 ? 'https://openspeech.bytedance.com'
                 : data.type === 'tencentlive'
                 ? 'https://platform.wand-aigc.com'
@@ -178,7 +178,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
               Default: https://api.vidu.cn — leave blank to use default.
             </p>
           )}
-          {data.type === 'seed_tts' && (
+          {data.type === 'volcengine_openspeech' && (
             <p className="text-xs text-slate-400 mt-1">
               Default: https://openspeech.bytedance.com — leave blank to use default.
             </p>
@@ -491,16 +491,19 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
         </div>
       )}
 
-      {/* Seed TTS (Volcengine openspeech)-specific info panel */}
-      {data.type === 'seed_tts' && (
+      {/* Volcengine Openspeech-specific info panel */}
+      {data.type === 'volcengine_openspeech' && (
         <div className="mt-4 p-4 bg-fuchsia-50 border border-fuchsia-200 rounded-xl">
-          <h3 className="text-sm font-semibold text-fuchsia-800 mb-1">Seed TTS (Volcengine openspeech)</h3>
+          <h3 className="text-sm font-semibold text-fuchsia-800 mb-1">Volcengine Openspeech (TTS + Transcription)</h3>
           <p className="text-xs text-fuchsia-700 mb-0">
-            Text-to-speech via the openspeech <code className="font-mono bg-fuchsia-100 px-1 rounded">/api/v3/tts/create</code>{' '}
-            endpoint (models like <code className="font-mono bg-fuchsia-100 px-1 rounded">seed-audio-1.0</code>).
+            Unified openspeech audio provider: text-to-speech via{' '}
+            <code className="font-mono bg-fuchsia-100 px-1 rounded">/api/v3/tts/create</code> (models like{' '}
+            <code className="font-mono bg-fuchsia-100 px-1 rounded">seed-audio-1.0</code>) and transcription via{' '}
+            <code className="font-mono bg-fuchsia-100 px-1 rounded">/api/v3/auc/bigmodel/submit</code> (BigModel AUC).
             <br />
             Uses the <strong>API Key</strong> as the <code className="font-mono bg-fuchsia-100 px-1 rounded">X-Api-Key</code>{' '}
-            header. This provider only supports TTS — no chat/embedding. Models must have the <strong>TTS</strong> feature flag enabled.
+            header. This provider only supports audio — no chat/embedding. Models must have the{' '}
+            <strong>TTS</strong> / <strong>Transcription</strong> feature flags enabled.
           </p>
         </div>
       )}

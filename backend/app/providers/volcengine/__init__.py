@@ -7,8 +7,9 @@
 - video_generation: 豆包 Seedance 视频生成工具实现
 - threed_generation: 豆包 Seed3D 3D 生成工具实现
 
-文本转语音（openspeech / seed-audio）已拆分为独立 provider：
-``app.providers.seed_tts_provider.SeedTTSProvider``（PROVIDER_TYPE="seed_tts"）。
+openspeech 音频能力（TTS + 转写）已统一到独立 provider：
+``app.providers.openspeech_provider.VolcengineOpenspeechProvider``
+（PROVIDER_TYPE="volcengine_openspeech"）。
 """
 
 from .base import VolcengineProvider

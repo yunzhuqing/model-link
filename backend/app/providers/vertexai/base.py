@@ -1242,7 +1242,7 @@ class VertexAIProvider(BaseProvider):
             if content:
                 message_blocks.append(ContentBlock.from_text(content))
 
-            if "tool_calls" in message_data:
+            if message_data.get("tool_calls"):
                 for tc in message_data["tool_calls"]:
                     tc_id = tc.get("id", "")
                     func = tc.get("function", {})
