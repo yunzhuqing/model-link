@@ -1,16 +1,20 @@
 """
-阿里云百炼图像生成模块 (Qwen Image Generation & Z-Image)
+阿里云百炼图像生成模块 (Qwen Image Generation & Z-Image & Vidu)
 
-通义千问图像生成/编辑模型和 Z-Image 模型支持通过 Dashscope 多模态生成 API 进行图像生成和编辑。
+通义千问图像生成/编辑模型、Z-Image 模型以及 Vidu 图像生成模型支持通过
+Dashscope 图像生成 API 进行图像生成和编辑。
 
 支持的模型包括：
 - qwen-image-2.0-pro: 通义千问图像生成与编辑模型（支持文生图和图生图）
 - z-image-turbo: 快速文生图模型（仅支持文本输入，支持 aspect_ratio 尺寸参数）
+- vidu/vidu-image_reference2image: Vidu Image 图生图模型
+- vidu/viduq3-fast_reference2image / vidu/viduq2-pro_reference2image /
+  vidu/viduq2-fast_reference2image: Vidu Q 系列图生图模型
 
 API 文档:
 https://help.aliyun.com/document_detail/2712195.html
 
-请求格式：
+请求格式（多模态生成，qwen-image / z-image）：
 POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
 {
     "model": "qwen-image-2.0-pro",
@@ -28,6 +32,26 @@ POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/g
     "parameters": {
         "n": 1,
         "watermark": false,
+        "size": "1024*1024"
+    }
+}
+
+请求格式（图像生成，Vidu 系列）：
+POST https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation
+{
+    "model": "vidu/vidu-image_reference2image",
+    "input": {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"text": "..."},
+                    {"image": "https://..."}
+                ]
+            }
+        ]
+    },
+    "parameters": {
         "size": "1024*1024"
     }
 }
@@ -58,11 +82,14 @@ POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/g
 """
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, AsyncGenerator
+import asyncio
 import json
 import time
 import base64
 import logging
 from urllib.request import urlopen
+
+import httpx
 
 from app.http_client import shared_client
 
@@ -70,10 +97,42 @@ from app.abstraction.chat import ChatRequest, ChatResponse, ChatChoice, UsageInf
 from app.abstraction.messages import Message, MessageRole, ContentBlock, ContentType
 from app.abstraction.streaming import StreamChunk, StreamEventType
 from app.providers.image_size_utils import (
+    BAILIAN_VIDU_IMAGE_SIZE_MAP,
     Z_IMAGE_SIZE_MAP,
     resolve_pixel_size,
 )
 from app.utils import gen_id, json_loads
+
+
+logger = logging.getLogger("model_link.bailian")
+
+
+# =============================================================================
+# 异步任务 API 配置
+# =============================================================================
+
+# Dashscope 任务查询 API 路径
+TASK_QUERY_PATH = "/api/v1/tasks"
+
+# 任务状态常量
+TASK_STATUS_PENDING = "PENDING"
+TASK_STATUS_RUNNING = "RUNNING"
+TASK_STATUS_SUCCEEDED = "SUCCEEDED"
+TASK_STATUS_FAILED = "FAILED"
+TASK_STATUS_CANCELED = "CANCELED"
+TASK_STATUS_UNKNOWN = "UNKNOWN"
+
+# 终态集合（任务不会再变动的状态）
+TASK_TERMINAL_STATUSES = frozenset({
+    TASK_STATUS_SUCCEEDED,
+    TASK_STATUS_FAILED,
+    TASK_STATUS_CANCELED,
+    TASK_STATUS_UNKNOWN,
+})
+
+# 轮询配置
+_POLL_INTERVAL_S = 5.0   # 每次轮询间隔（秒）
+_POLL_MAX_WAIT_S = 600   # 最大等待时间（秒）
 
 
 # =============================================================================
@@ -113,6 +172,22 @@ QWEN_IMAGE_API_URL = (
     "multimodal-generation/generation"
 )
 
+# Dashscope 图像生成 API 路径（Vidu 图像生成模型专用）
+BAILIAN_IMAGE_GENERATION_PATH = "/api/v1/services/aigc/image-generation/generation"
+
+# Dashscope 图像生成 API 端点（Vidu 图像生成模型专用）
+BAILIAN_IMAGE_GENERATION_API_URL = (
+    "https://dashscope.aliyuncs.com" + BAILIAN_IMAGE_GENERATION_PATH
+)
+
+# 百炼托管的 Vidu 图像生成模型列表
+BAILIAN_VIDU_IMAGE_MODELS: List[str] = [
+    "vidu/vidu-image_reference2image",
+    "vidu/viduq3-fast_reference2image",
+    "vidu/viduq2-pro_reference2image",
+    "vidu/viduq2-fast_reference2image",
+]
+
 
 # =============================================================================
 # 图像生成模型检测
@@ -135,9 +210,234 @@ def is_qwen_image_model(model: str) -> bool:
     return any(kw in model_lower for kw in ('qwen-image', 'qwen_image')) or model_lower == 'z-image-turbo'
 
 
+def is_bailian_vidu_image_model(model: str) -> bool:
+    """
+    Check if the model is a Bailian-hosted Vidu image generation model.
+
+    Matches the exact Dashscope model names served through the
+    image-generation/generation API, e.g.:
+      - vidu/vidu-image_reference2image
+      - vidu/viduq3-fast_reference2image
+      - vidu/viduq2-pro_reference2image
+      - vidu/viduq2-fast_reference2image
+
+    Args:
+        model: Model name (case-insensitive)
+
+    Returns:
+        True if the model is a Bailian Vidu image generation model
+    """
+    return model.lower() in BAILIAN_VIDU_IMAGE_MODELS
+
+
 def is_z_image_model(model: str) -> bool:
     """Check if the model is a Z-Image Turbo model."""
     return model.lower() == 'z-image-turbo'
+
+
+def _resolve_bailian_vidu_size(model: str, metadata: dict) -> str:
+    """
+    Resolve and validate the Dashscope ``size`` parameter for a Vidu model.
+
+    阿里云百炼托管的 Vidu 图像生成模型仅支持固定尺寸集合
+    （见 ``BAILIAN_VIDU_IMAGE_SIZE_MAP``，按模型分 1K/2K/4K 档），
+    且上游要求 ``W*H`` 格式。用户侧通常以 ``WxH`` 传入（大小写不敏感），
+    这里统一归一化为 ``W*H`` 并校验是否在该模型支持的尺寸集合内。
+
+    Args:
+        model: Bailian Vidu model name
+        metadata: Request metadata (size / resolution / aspect_ratio)
+
+    Returns:
+        Dashscope-format size string (e.g. "1024*1024")
+
+    Raises:
+        ValueError: 请求的尺寸不在该模型支持的固定尺寸集合内
+    """
+    table = BAILIAN_VIDU_IMAGE_SIZE_MAP.get(model.lower())
+    if not table:
+        return "1024*1024"
+
+    supported = ", ".join(sorted(wh.replace("x", "*") for wh in table))
+
+    size = str(metadata.get('size', '') or '').strip()
+    resolution = str(metadata.get('resolution', '') or '').strip()
+    aspect_ratio = str(metadata.get('aspect_ratio', '') or '').strip()
+
+    # 用户直接传像素尺寸 (WxH / W*H) → 归一化并精确校验
+    if size:
+        key = size.lower().replace(" ", "").replace("*", "x")
+        if key in table:
+            return key.replace("x", "*")
+        raise ValueError(
+            f"Bailian Vidu model '{model}' does not support size '{size}'. "
+            f"Supported sizes: {supported}"
+        )
+
+    # 无 size：通过 resolution / aspect_ratio 解析（tier 标签如 1K/2K/4K）
+    resolved = resolve_pixel_size(
+        size="",
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        sep="*",
+        table=table,
+    )
+    if resolved:
+        return resolved
+
+    if not resolution and not aspect_ratio:
+        return "1024*1024"
+
+    raise ValueError(
+        f"Bailian Vidu model '{model}' could not resolve size "
+        f"(resolution={resolution!r}, aspect_ratio={aspect_ratio!r}). "
+        f"Supported sizes: {supported}"
+    )
+
+
+def _resolve_bailian_image_api_url(domain: Optional[str] = None) -> str:
+    """
+    Resolve the Dashscope image-generation API URL.
+
+    Uses the provider's Dashscope domain (for custom domains) or falls back
+    to the default dashscope.aliyuncs.com host.
+
+    Args:
+        domain: Dashscope domain, e.g. "https://dashscope.aliyuncs.com"
+
+    Returns:
+        Full image-generation API URL
+    """
+    base = (domain or "https://dashscope.aliyuncs.com").rstrip("/")
+    return base + BAILIAN_IMAGE_GENERATION_PATH
+
+
+def _resolve_task_query_url(domain: Optional[str] = None) -> str:
+    """
+    Resolve the Dashscope task query API base URL.
+
+    Args:
+        domain: Dashscope domain, e.g. "https://dashscope.aliyuncs.com"
+
+    Returns:
+        Task query API base URL (e.g. "https://dashscope.aliyuncs.com/api/v1/tasks")
+    """
+    base = (domain or "https://dashscope.aliyuncs.com").rstrip("/")
+    return base + TASK_QUERY_PATH
+
+
+async def check_bailian_image_task_status(
+    api_key: str,
+    task_id: str,
+    domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    单次查询百炼 Vidu 图片生成任务状态。
+
+    Args:
+        api_key: Dashscope API Key
+        task_id: 任务 ID
+        domain:  可选的 Dashscope 域名覆盖
+
+    Returns:
+        完整的 API 响应 JSON dict，包含 output.task_status 等字段；
+        网络/HTTP 错误时返回 {"output": {"task_status": "UNKNOWN"}}
+    """
+    task_query_url = _resolve_task_query_url(domain)
+    url = f"{task_query_url}/{task_id}"
+    try:
+        async with shared_client() as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "Task query error (status=%s): %s",
+                    response.status_code,
+                    response.text,
+                )
+                return {"output": {"task_status": TASK_STATUS_UNKNOWN}}
+            return response.json()
+    except httpx.RequestError as e:
+        logger.warning("Task query network error: %s", e)
+        return {"output": {"task_status": TASK_STATUS_UNKNOWN}}
+
+
+async def _poll_bailian_image_task(
+    api_key: str,
+    task_id: str,
+    domain: Optional[str] = None,
+    timeout: int = _POLL_MAX_WAIT_S,
+    poll_interval: float = _POLL_INTERVAL_S,
+    tracer: Any = None,
+) -> Dict[str, Any]:
+    """
+    轮询 Dashscope 任务 API 直到图片任务进入终态或超时。
+
+    Args:
+        api_key: Dashscope API Key
+        task_id: 任务 ID
+        domain:  可选的 Dashscope 域名覆盖
+        timeout: 最大等待时间（秒）
+        poll_interval: 轮询间隔（秒）
+        tracer: 可选 tracer（记录每次轮询状态）
+
+    Returns:
+        终态任务响应 dict（含 output.choices 等）
+
+    Raises:
+        TimeoutError: 超过 timeout 任务仍未结束
+    """
+    _span = None
+    if tracer:
+        _span = tracer.start_child(
+            task_id,
+            model=task_id,
+            provider_type="bailian",
+            obs_type="span",
+        )
+    _error: Optional[Exception] = None
+
+    start_time = time.time()
+    try:
+        poll_count = 0
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(
+                    f"Image generation task {task_id} timed out after {timeout}s"
+                )
+
+            result = await check_bailian_image_task_status(api_key, task_id, domain)
+            output = result.get("output", {})
+            task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
+            poll_count += 1
+
+            if _span:
+                _span.log_output({
+                    "task_id": task_id,
+                    "task_status": task_status,
+                    "elapsed": elapsed,
+                    "poll_count": poll_count,
+                })
+
+            if task_status in TASK_TERMINAL_STATUSES:
+                return result
+
+            logger.debug(
+                "Task %s status: %s, elapsed: %.1fs",
+                task_id,
+                task_status,
+                elapsed,
+            )
+            await asyncio.sleep(poll_interval)
+    except Exception as e:
+        _error = e
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
 
 
 def _resolve_z_image_size(metadata: dict) -> Optional[str]:
@@ -266,20 +566,28 @@ async def execute_qwen_image_generation(
     messages: List[Message],
     metadata: dict,
     tracer: Any = None,
+    domain: Optional[str] = None,
 ) -> ChatResponse:
     """
-    Execute Qwen image generation/editing via the Dashscope API.
+    Execute Qwen / Vidu image generation via the Dashscope API.
 
-    Builds the Dashscope multimodal generation request from the ChatRequest
+    Builds the Dashscope image generation request from the ChatRequest
     messages and metadata, calls the API, and returns the result as a
-    ChatResponse with image_generation_call items stored in the message content
-    (JSON-encoded list, compatible with the Responses API adapter format).
+    ChatResponse with image_generation_call items stored in the message
+    content (JSON-encoded list, compatible with the Responses API adapter
+    format).
+
+    Routing:
+    - qwen-image / z-image models → multimodal-generation/generation API（同步）
+    - vidu/vidu-*_reference2image models → image-generation/generation API
+      （X-DashScope-Async: enable 异步任务，提交后轮询 /api/v1/tasks/{task_id}）
 
     Args:
         api_key: Dashscope API key
-        model: Model name (e.g. "qwen-image-2.0-pro")
+        model: Model name (e.g. "qwen-image-2.0-pro" or "vidu/vidu-image_reference2image")
         messages: List of Message objects
         metadata: Request metadata (carries image generation parameters)
+        domain: Optional Dashscope domain (e.g. "https://dashscope.aliyuncs.com")
 
     Returns:
         ChatResponse with image_generation_call items in the message content
@@ -291,36 +599,41 @@ async def execute_qwen_image_generation(
 
     # Convert messages to Dashscope format
     dashscope_messages = _convert_messages_to_dashscope(messages)
+    is_vidu = is_bailian_vidu_image_model(model)
 
     # Build parameters from metadata
     parameters: Dict[str, Any] = {}
 
-    # Z-Image Turbo uses aspect_ratio + tier to resolve exact pixel size
-    if is_z_image_model(model):
+    if is_vidu:
+        # Vidu 图像生成 API 仅支持 size 参数（图生图），且只支持固定尺寸
+        parameters['size'] = _resolve_bailian_vidu_size(model, metadata)
+    elif is_z_image_model(model):
+        # Z-Image Turbo uses aspect_ratio + tier to resolve exact pixel size
         resolved_size = _resolve_z_image_size(metadata)
         if resolved_size:
             parameters['size'] = resolved_size
     else:
+        # Qwen Image：size 直接透传（同时接受 "1024x1024" 与 "1024*1024"）
         size = metadata.get('size')
         if size:
-            # Accept "1024x1024" and "1024*1024" formats; Dashscope uses "*"
             parameters['size'] = str(size).replace('x', '*')
 
-    n = metadata.get('number') or metadata.get('n')
-    if n is not None:
-        parameters['n'] = int(n)
-    else:
-        parameters['n'] = 1
+    if not is_vidu:
+        n = metadata.get('number') or metadata.get('n')
+        if n is not None:
+            parameters['n'] = int(n)
+        else:
+            parameters['n'] = 1
 
-    watermark = metadata.get('watermark')
-    if watermark is not None:
-        parameters['watermark'] = bool(watermark)
-    else:
-        parameters['watermark'] = False
+        watermark = metadata.get('watermark')
+        if watermark is not None:
+            parameters['watermark'] = bool(watermark)
+        else:
+            parameters['watermark'] = False
 
-    seed = metadata.get('seed')
-    if seed is not None:
-        parameters['seed'] = seed
+        seed = metadata.get('seed')
+        if seed is not None:
+            parameters['seed'] = seed
 
     # Build request body
     request_body: Dict[str, Any] = {
@@ -338,18 +651,35 @@ async def execute_qwen_image_generation(
 
     _child_span = None
     if tracer:
-        _child_span = tracer.start_child(model, model=model, provider_type="bailian", input_data=request_body)
+        _child_span = tracer.start_child(
+            model,
+            model=model,
+            provider_type="bailian",
+            obs_type="generation",
+            input_data=request_body,
+        )
         if _child_span:
             _child_span.log_input(request_body)
     _trace_error: Optional[Exception] = None
 
     try:
-        http_timeout = int(metadata.get("timeout", 300) or 300)
+        http_timeout = int(metadata.get("timeout", _POLL_MAX_WAIT_S) or _POLL_MAX_WAIT_S)
+        api_url = (
+            _resolve_bailian_image_api_url(domain)
+            if is_vidu
+            else QWEN_IMAGE_API_URL
+        )
+
+        request_headers = dict(headers)
+        if is_vidu:
+            # 阿里云百炼 Vidu 图片生成仅支持异步任务，需开启 async 模式
+            request_headers["X-DashScope-Async"] = "enable"
+
         async with shared_client() as client:
             response = await client.post(
-                QWEN_IMAGE_API_URL,
+                api_url,
                 json=request_body,
-                headers=headers,
+                headers=request_headers,
             )
             response_data = response.json()
 
@@ -365,13 +695,24 @@ async def execute_qwen_image_generation(
             code = response_data.get('code', '')
             message = response_data.get('message', 'Unknown error')
             raise RuntimeError(
-                f"Qwen Image API error (code={code}): {message}"
+                f"Bailian Image API error (code={code}): {message}"
             )
 
         if response.status_code >= 400:
             raise RuntimeError(
-                f"Qwen Image API error ({response.status_code}): "
+                f"Bailian Image API error ({response.status_code}): "
                 f"{json.dumps(response_data, ensure_ascii=False)}"
+            )
+
+        if is_vidu:
+            return await _execute_bailian_vidu_async(
+                api_key=api_key,
+                model=model,
+                metadata=metadata,
+                domain=domain,
+                response_data=response_data,
+                poll_timeout=http_timeout,
+                tracer=tracer,
             )
 
         return _parse_qwen_image_response(response_data, model, metadata,
@@ -383,10 +724,104 @@ async def execute_qwen_image_generation(
         raise
     except Exception as e:
         _trace_error = e
-        raise RuntimeError(f"Qwen Image API error: {str(e)}")
+        raise RuntimeError(f"Bailian Image API error: {str(e)}")
     finally:
         if _child_span:
             _child_span.end(error=_trace_error)
+
+
+async def _execute_bailian_vidu_async(
+    api_key: str,
+    model: str,
+    metadata: dict,
+    domain: Optional[str],
+    response_data: Dict[str, Any],
+    poll_timeout: int,
+    tracer: Any = None,
+) -> ChatResponse:
+    """
+    处理百炼 Vidu 图片生成的异步任务流程。
+
+    提交响应只包含 ``task_id`` 与 ``task_status``；随后轮询
+    ``GET /api/v1/tasks/{task_id}`` 直到终态，再解析最终输出中的图片结果。
+
+    Args:
+        api_key: Dashscope API Key
+        model: Vidu 模型名
+        metadata: 请求元数据（携带 _on_task_created hook 等）
+        domain: 可选的 Dashscope 域名覆盖
+        response_data: 提交任务的响应 JSON
+        poll_timeout: 轮询最大等待时间（秒）
+        tracer: 可选 tracer（用于记录轮询明细）
+
+    Returns:
+        ChatResponse with image_generation_call items
+
+    Raises:
+        RuntimeError: 任务失败 / 取消 / 超时 / 响应缺少 task_id
+    """
+    output = response_data.get("output", {})
+    task_id = output.get("task_id")
+    if not task_id:
+        raise RuntimeError(
+            f"No task_id in image generation response: "
+            f"{json.dumps(response_data, ensure_ascii=False)}"
+        )
+
+    task_status = output.get("task_status", TASK_STATUS_UNKNOWN)
+
+    # 通知后台响应记录任务 ID（用于 usage resync）
+    hook = metadata.get('_on_task_created')
+    if hook:
+        hook(task_id)
+
+    # 任务已同步完成（罕见但可能）
+    if task_status == TASK_STATUS_SUCCEEDED:
+        return _parse_qwen_image_response(
+            response_data, model, metadata,
+            request_id=response_data.get('request_id', ''),
+        )
+
+    if task_status in (TASK_STATUS_FAILED, TASK_STATUS_CANCELED):
+        code = output.get("code", "UnknownError")
+        message = output.get("message", "Image generation failed")
+        raise RuntimeError(
+            f"Image generation task {task_id} failed: [{code}] {message}"
+        )
+
+    # 轮询直到终态
+    try:
+        final_result = await _poll_bailian_image_task(
+            api_key=api_key,
+            task_id=task_id,
+            domain=domain,
+            timeout=poll_timeout,
+            tracer=tracer,
+        )
+    except TimeoutError:
+        raise RuntimeError(
+            f"Image generation task {task_id} timed out after {poll_timeout}s"
+        )
+
+    final_output = final_result.get("output", {})
+    final_status = final_output.get("task_status", TASK_STATUS_UNKNOWN)
+
+    if final_status == TASK_STATUS_SUCCEEDED:
+        return _parse_qwen_image_response(
+            final_result, model, metadata,
+            request_id=final_result.get('request_id', ''),
+        )
+
+    if final_status in (TASK_STATUS_FAILED, TASK_STATUS_CANCELED):
+        code = final_output.get("code", "UnknownError")
+        message = final_output.get("message", "Image generation failed")
+        raise RuntimeError(
+            f"Image generation task {task_id} failed: [{code}] {message}"
+        )
+
+    raise RuntimeError(
+        f"Image generation task {task_id} ended with status={final_status}"
+    )
 
 
 def _resolution_tier(width: int, height: int) -> str:
@@ -451,17 +886,31 @@ def _parse_qwen_image_response(data: Dict[str, Any], model: str, metadata: Optio
 
     usage_data = data.get("usage", {})
     image_count = usage_data.get("image_count", max(len(image_call_items), 1))
-    # Extract resolution tier from usage data (e.g. "1K", "2K", "4K")
+
+    # 同步响应：从 width/height 推导 resolution tier 与 aspect ratio
     img_width = usage_data.get("width", 0)
     img_height = usage_data.get("height", 0)
-    img_resolution = _resolution_tier(img_width, img_height) if img_width and img_height else None
-
-    # Derive aspect ratio from width/height (e.g. "1:1", "16:9")
-    img_aspect = None
     if img_width and img_height:
+        img_resolution = _resolution_tier(img_width, img_height)
         from math import gcd
         g = gcd(img_width, img_height)
         img_aspect = f"{img_width // g}:{img_height // g}"
+    else:
+        # 异步任务响应无 width/height：使用 SR（如 "2K"）与 size（如 "2048*2048"）
+        img_resolution = None
+        img_aspect = None
+        sr = usage_data.get("SR") or usage_data.get("resolution")
+        if sr:
+            img_resolution = str(sr)
+        size_str = usage_data.get("size", "")
+        if size_str:
+            parts = str(size_str).lower().replace("x", "*").split("*")
+            if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                w, h = int(parts[0]), int(parts[1])
+                if w and h:
+                    from math import gcd
+                    g = gcd(w, h)
+                    img_aspect = f"{w // g}:{h // g}"
 
     message = Message(
         role=MessageRole.ASSISTANT,

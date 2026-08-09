@@ -609,6 +609,9 @@ class GatewayService:
         - Text content: ``{{file-xxx}}`` → ``{{asset-xxx}}``
         - ContentBlock.url for IMAGE_URL / VIDEO_URL / AUDIO_URL / FILE_URL types
         - Metadata file_id_media_map: resolves URLs keyed by file_id
+
+        Resolved references are prefixed by the asset kind: ``asset://`` for
+        Volcengine ARK assets and ``yike://`` for Aliyun yike MediaIds.
         """
         import re
         from sqlalchemy import select as sa_select
@@ -632,10 +635,15 @@ class GatewayService:
         result = await session.execute(
             sa_select(UploadedFile).where(UploadedFile.file_id.in_(list(all_file_ids)))
         )
-        mappings = {uf.file_id: uf.object_key for uf in result.scalars().all()}
+        mappings = {uf.file_id: (uf.object_key, uf.type) for uf in result.scalars().all()}
 
         if not mappings:
             return
+
+        def _ref_prefix(file_type: str) -> str:
+            # Aliyun yike assets are referenced by MediaId; ARK assets use
+            # the asset:// prefix handled by the Volcengine providers.
+            return "yike://" if file_type == "aliyun" else "asset://"
 
         # 1. Replace in message content
         for msg in request.messages:
@@ -651,19 +659,19 @@ class GatewayService:
                         # are left as-is for the video_generation module.
                         # Replace in block.url (IMAGE_URL / VIDEO_URL / AUDIO_URL / FILE_URL)
                         if hasattr(block, 'url') and block.url:
-                            for fid, okey in mappings.items():
+                            for fid, (okey, ftype) in mappings.items():
                                 if block.url == fid or block.url.startswith(fid):
-                                    block.url = f"asset://{okey}"
+                                    block.url = f"{_ref_prefix(ftype)}{okey}"
 
         # 2. Resolve file_id_media_map in metadata
         if isinstance(fid_map, dict):
             for fid, info in list(fid_map.items()):
                 if fid in mappings:
-                    okey = mappings[fid]
+                    okey, ftype = mappings[fid]
                     # Update the URL if it's empty or matches the file_id
                     url = info.get('url', '')
                     if not url or url == fid or fid_pattern.match(url):
-                        info['url'] = f"asset://{okey}"
+                        info['url'] = f"{_ref_prefix(ftype)}{okey}"
 
 
     async def chat(
@@ -1612,6 +1620,145 @@ class GatewayService:
             result_dict["background"] = background
 
         return result_dict, chat_response
+
+    async def submit_video_generation(
+        self,
+        resolved: ResolvedModelData,
+        data: dict,
+        tracer: Any = None,
+    ) -> dict:
+        """
+        Submit a video generation job on the resolved provider.
+
+        Delegates to the provider's ``submit_video_generation`` method
+        (Aliyun yike SubmitVideoGenerationJob). Returns the raw upstream
+        response dict (``{"RequestId": ..., "JobId": ...}``).
+
+        Args:
+            resolved: caller-resolved ResolvedModelData (no internal DB access).
+            data: Video generation parameters (job_type, model, input,
+                resolution, aspect_ratio, duration, n, scene, ...).
+            tracer: Optional tracer.
+
+        Returns:
+            Upstream response dict.
+
+        Raises:
+            GatewayServiceError: Request validation failure.
+            ProviderError: Upstream provider API failure.
+        """
+        provider = resolved.provider_instance
+        if provider is None or not hasattr(provider, "submit_video_generation"):
+            raise GatewayServiceError(
+                f"Provider '{resolved.provider_name}' does not support video generation",
+                status_code=400,
+            )
+        if tracer:
+            provider.tracer = tracer
+        try:
+            return await provider.submit_video_generation(data)
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(
+                str(e), status_code=status_code, error_data=error_data,
+                provider_id=resolved.provider_id,
+                provider_name=resolved.provider_name,
+            )
+
+    async def get_video_generation(
+        self,
+        resolved: ResolvedModelData,
+        job_id: str,
+        request_id: Optional[str] = None,
+        tracer: Any = None,
+    ) -> dict:
+        """
+        Query a video generation job on the resolved provider.
+
+        Delegates to the provider's ``get_video_generation`` method
+        (Aliyun yike GetVideoGenerationJob). Returns the raw upstream
+        response dict (``{"RequestId": ..., "VideoGenerationJob": {...}}``).
+
+        Args:
+            resolved: caller-resolved ResolvedModelData (no internal DB access).
+            job_id: Job ID returned by submit_video_generation.
+            request_id: Optional upstream RequestId.
+            tracer: Optional tracer.
+
+        Returns:
+            Upstream response dict.
+
+        Raises:
+            GatewayServiceError: Request validation failure.
+            ProviderError: Upstream provider API failure.
+        """
+        provider = resolved.provider_instance
+        if provider is None or not hasattr(provider, "get_video_generation"):
+            raise GatewayServiceError(
+                f"Provider '{resolved.provider_name}' does not support video generation",
+                status_code=400,
+            )
+        if tracer:
+            provider.tracer = tracer
+        try:
+            return await provider.get_video_generation(job_id, request_id=request_id)
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(
+                str(e), status_code=status_code, error_data=error_data,
+                provider_id=resolved.provider_id,
+                provider_name=resolved.provider_name,
+            )
+
+    async def get_video_job_credit(
+        self,
+        resolved: ResolvedModelData,
+        job_id: str,
+        tracer: Any = None,
+    ) -> dict:
+        """
+        Query the credit cost of a finished video generation job.
+
+        Delegates to the provider's ``get_job_credit`` method (Aliyun yike
+        GetYikeJobCredit). Returns the raw upstream response dict
+        (``{"RequestId": ..., "JobId": ..., "JobCreditCost": ...,
+        "CreditStatus": ...}``).
+
+        Args:
+            resolved: caller-resolved ResolvedModelData (no internal DB access).
+            job_id: Job ID returned by submit_video_generation.
+            tracer: Optional tracer.
+
+        Returns:
+            Upstream response dict.
+
+        Raises:
+            GatewayServiceError: Request validation failure.
+            ProviderError: Upstream provider API failure.
+        """
+        provider = resolved.provider_instance
+        if provider is None or not hasattr(provider, "get_job_credit"):
+            raise GatewayServiceError(
+                f"Provider '{resolved.provider_name}' does not support job credit query",
+                status_code=400,
+            )
+        if tracer:
+            provider.tracer = tracer
+        try:
+            return await provider.get_job_credit(job_id)
+        except ValueError as e:
+            raise GatewayServiceError(str(e), status_code=400)
+        except RuntimeError as e:
+            status_code, error_data = self._parse_provider_error(e)
+            raise ProviderError(
+                str(e), status_code=status_code, error_data=error_data,
+                provider_id=resolved.provider_id,
+                provider_name=resolved.provider_name,
+            )
 
     @staticmethod
     def _parse_provider_error(error: RuntimeError) -> Tuple[int, Optional[dict]]:

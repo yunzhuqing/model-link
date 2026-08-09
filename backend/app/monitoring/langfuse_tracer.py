@@ -51,6 +51,10 @@ def _detect_type(input_data: dict | None) -> str:
 
     # ── /v1/responses uses "input" instead of "messages" ──────────────
     messages = input_data.get("messages") or input_data.get("input") or []
+    # Providers with Dashscope-style bodies put {"messages": [...]} under
+    # "input"; the dict must not be indexed like a list.
+    if not isinstance(messages, list):
+        return "generation"
     if not messages:
         return "generation"
 
@@ -145,8 +149,10 @@ def _derive_model_prefix(model_name: str) -> str:
     ``"claude-sonnet-4-6"`` → ``"claude"``
     ``"gemini-2.5-pro"`` → ``"gemini"``
     ``"kimi-k2"`` → ``"kimi"``
+    ``"vidu/vidu-image_reference2image"`` → ``"vidu"``
     """
-    return model_name.split("-")[0]
+    base = model_name.rsplit("/", 1)[-1]
+    return base.split("-")[0]
 
 
 def _derive_trace_name(

@@ -259,6 +259,7 @@ export default function HelpImageGeneration() {
                     { family: 'Seedream',     models: 'seedream-4.0 / 4.5 / 5.0 / doubao-seedream 系列', format: 'png / jpg', size: '1K ~ 4K' },
                     { family: 'Z-Image',      models: 'z-image-turbo',             format: 'png', size: '1K / 1.5K / 2K（11 种比例）' },
                     { family: 'Qwen Image',   models: 'qwen-image-2.0 / 2.0-pro',  format: 'png', size: '512x512 ~ 2048x2048' },
+                    { family: 'Vidu (百炼)',   models: 'vidu/vidu-image_reference2image / vidu/viduq3-fast_reference2image / vidu/viduq2-pro_reference2image / vidu/viduq2-fast_reference2image', format: 'png / jpg', size: '1024*1024（图生图）' },
                   ].map((r) => (
                     <tr key={r.family} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-semibold text-slate-700 text-xs">{r.family}</td>

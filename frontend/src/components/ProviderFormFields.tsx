@@ -97,6 +97,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
             <option value="glm">GLM (Zhipu AI)</option>
             <option value="minimax">MiniMax</option>
             <option value="bailian">Bailian (Alibaba)</option>
+            <option value="aliyun">Aliyun (Alibaba Cloud)</option>
             <option value="volcengine">Volcengine (ByteDance)</option>
             <option value="volcengine_openspeech">Volcengine Openspeech (TTS + Transcription)</option>
             <option value="byteplus">BytePlus (ByteDance Global)</option>
@@ -126,6 +127,8 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
                 ? 'http://localhost:8000/v1'
                 : data.type === 'mulerun'
                 ? 'https://api.mulerun.com/vendors/openai/v1'
+                : data.type === 'aliyun'
+                ? 'https://yike.cn-shanghai.aliyuncs.com'
                 : data.type === 'vidu'
                 ? 'https://api.vidu.cn'
                 : data.type === 'volcengine_openspeech'
@@ -186,7 +189,7 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
         </div>
 
         {/* API Key — hidden for tencentvod and hunyuan (uses AK/SK instead) */}
-        {data.type !== 'tencentvod' && data.type !== 'hunyuan' && (
+        {data.type !== 'tencentvod' && data.type !== 'hunyuan' && data.type !== 'aliyun' && (
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
               {data.type === 'vertexai' ? t('provider.serviceAccountJson') : t('provider.apiKeyLabel')}
@@ -485,6 +488,66 @@ export default function ProviderFormFields({ data, onChange, groups, providerId 
                   onChange={(e) => setExtra({ ark_group_id: e.target.value })}
                 />
                 <p className="text-xs text-slate-400 mt-1">{t('provider.arkGroupIdHelp')}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Aliyun-specific fields */}
+      {data.type === 'aliyun' && (
+        <div className="mt-4 space-y-4">
+          <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl">
+            <h3 className="text-sm font-semibold text-orange-800 mb-1">{t('provider.aliyunConfig')}</h3>
+            <p className="text-xs text-orange-600 mb-3">{t('provider.aliyunDesc')}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.aliyunAccessKeyIdLabel')} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  placeholder="LTAIxxxxxxxxxxxxxxxx"
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all"
+                  value={data.extra_config?.access_key_id || ''}
+                  onChange={(e) => setExtra({ access_key_id: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.aliyunAccessKeySecretLabel')} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  placeholder={t('provider.aliyunAccessKeySecretPlaceholder')}
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all"
+                  value={data.extra_config?.access_key_secret || ''}
+                  onChange={(e) => setExtra({ access_key_secret: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.aliyunRegionLabel')}
+                  <span className="text-slate-400 font-normal ml-1 text-xs">{t('provider.regionOptional')}</span>
+                </label>
+                <input
+                  placeholder="cn-shanghai"
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all"
+                  value={data.extra_config?.region || ''}
+                  onChange={(e) => setExtra({ region: e.target.value })}
+                />
+                <p className="text-xs text-slate-400 mt-1">{t('provider.aliyunRegionHelp')}</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('provider.aliyunEndpointLabel')}
+                </label>
+                <input
+                  placeholder="https://yike.cn-shanghai.aliyuncs.com"
+                  className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all"
+                  value={data.extra_config?.endpoint || ''}
+                  onChange={(e) => setExtra({ endpoint: e.target.value })}
+                />
+                <p className="text-xs text-slate-400 mt-1">{t('provider.aliyunEndpointHelp')}</p>
               </div>
             </div>
           </div>

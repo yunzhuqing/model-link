@@ -31,6 +31,10 @@ from app.routes.gateway_helpers import (
     _check_allowed_models,
 )
 from app.providers.volcengine.asset import create_asset, upload_and_create_asset, delete_asset, poll_asset_status, batch_delete_assets
+from app.providers.aliyun.video_generation import (
+    delete_medias as aliyun_delete_medias,
+    import_media as aliyun_import_media,
+)
 from app.models import UploadedFile
 
 logger = logging.getLogger("gateway")
@@ -191,6 +195,71 @@ async def _get_volcengine_credentials_for_upload(
     # still works; the recorded provider_id lets generation follow it later.
     return await _get_volcengine_credentials(session, group_id, providers[0].id)
 
+async def _get_aliyun_credentials(session, group_id: int, provider_id: Optional[int] = None):
+    """
+    Look up the Aliyun provider belonging to the API key's group.
+
+    Returns a dict with:
+        vendor:             "aliyun"
+        access_key_id:      Alibaba Cloud AccessKey ID
+        access_key_secret:  Alibaba Cloud AccessKey Secret
+        region:             Region (default cn-shanghai)
+        endpoint:           Custom endpoint override (optional)
+        api_version:        yike API version override (optional)
+        provider_id:        Provider.id holding the account
+    """
+    from sqlalchemy import select as sa_select
+    from app.models import Provider
+
+    query = sa_select(Provider).where(
+        Provider.type == "aliyun",
+        Provider.group_id == group_id,
+        Provider.is_active == True,
+    )
+    if provider_id:
+        query = query.where(Provider.id == provider_id)
+
+    result = await session.execute(query)
+    provider = result.scalars().first()
+
+    if not provider:
+        raise RuntimeError(
+            "No active Aliyun provider found. "
+            "Please configure an Aliyun provider first."
+        )
+
+    extra = provider.extra_config or {}
+    creds = {
+        "vendor": "aliyun",
+        "access_key_id": str(extra.get("access_key_id") or "").strip(),
+        "access_key_secret": str(extra.get("access_key_secret") or "").strip(),
+        "region": str(extra.get("region") or "cn-shanghai").strip(),
+        "endpoint": str(extra.get("endpoint") or "").strip() or None,
+        "api_version": str(extra.get("api_version") or "").strip() or None,
+        "provider_id": provider.id,
+        "provider_name": provider.name,
+    }
+
+    # 兼容 "AK:SK" 格式的 api_key
+    if (not creds["access_key_id"] or not creds["access_key_secret"]) and provider.api_key:
+        api_key = (provider.api_key or "").strip()
+        if ":" in api_key:
+            parts = api_key.split(":", 1)
+            if not creds["access_key_id"]:
+                creds["access_key_id"] = parts[0].strip()
+            if not creds["access_key_secret"]:
+                creds["access_key_secret"] = parts[1].strip()
+
+    if not creds["access_key_id"] or not creds["access_key_secret"]:
+        raise RuntimeError(
+            "Aliyun provider is missing credentials. "
+            "Set extra_config.access_key_id + access_key_secret, "
+            "or api_key in 'AccessKeyId:AccessKeySecret' format."
+        )
+
+    return creds
+
+
 async def _get_group_project_name(session, group_id: int) -> str:
     """
     Look up the API key's group and extract the 'dept' tag value
@@ -280,14 +349,46 @@ def _ark_credentials(creds: dict) -> dict:
     }
 
 
+_SUPPORTED_PURPOSES = frozenset({"seedance-ref", "wonder-ref"})
+
+
 def _validate_purpose(purpose: str, auth_ctx):
     """Return an error response if ``purpose`` is unsupported, else None."""
-    if purpose != "seedance-ref":
+    if purpose not in _SUPPORTED_PURPOSES:
         _log_error("files_upload", 400, f"Unsupported purpose: {purpose}", _build_error_context(auth_ctx))
         return _error_response(
-            f"Unsupported purpose '{purpose}'. Only 'seedance-ref' is currently supported.",
+            f"Unsupported purpose '{purpose}'. Supported: {', '.join(sorted(_SUPPORTED_PURPOSES))}.",
             code="invalid_request", param="purpose", status_code=400)
     return None
+
+
+def _mime_to_media_type(content_type: str) -> str:
+    """Map a MIME type to a yike MediaType (image / video / audio)."""
+    ct = (content_type or "").lower()
+    if ct.startswith("image/"):
+        return "image"
+    if ct.startswith("video/"):
+        return "video"
+    if ct.startswith("audio/"):
+        return "audio"
+    return ""
+
+
+def _parse_register_config(value) -> Optional[str]:
+    """
+    Normalize RegisterConfig for ImportMedia.
+
+    Accepts a dict (serialized to JSON), a JSON string, or ``None``. The
+    ``NeedThirdPartyAsset`` flag may also be provided as a JSON string.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
 
 
 def _require_group_id(group_id: str, auth_ctx):
@@ -317,6 +418,7 @@ async def _resolve_project_name(auth_ctx) -> str:
 def _build_uploaded_file_record(
     file_id: str, object_key: str, purpose: str, auth_ctx,
     client_user_id, storage_key: Optional[str], provider_id: Optional[int],
+    file_type: str = "volcengine",
 ) -> UploadedFile:
     """Construct an UploadedFile row with the common fields filled in."""
     raw_key = auth_ctx.api_key_raw if auth_ctx else None
@@ -332,7 +434,7 @@ def _build_uploaded_file_record(
         api_key=api_key,
         user_id=auth_ctx.user_id if auth_ctx else None,
         client_user_id=client_user_id,
-        type="volcengine",
+        type=file_type,
         storage_key=storage_key,
         provider_id=provider_id,
     )
@@ -573,8 +675,208 @@ async def _handle_json_upload(auth_ctx, creds):
     return jsonify(response)
 
 
+async def _aliyun_import(
+    creds: dict, input_url: str, media_type: str, register_config: Optional[str],
+) -> Dict[str, Any]:
+    """Call yike ImportMedia and return the parsed response dict."""
+    from app.http_client import get_shared_client
+
+    client = await get_shared_client()
+    return await aliyun_import_media(
+        client,
+        access_key_id=creds["access_key_id"],
+        access_key_secret=creds["access_key_secret"],
+        input_url=input_url,
+        media_type=media_type,
+        register_config=register_config,
+        region=creds.get("region"),
+        endpoint=creds.get("endpoint"),
+        version=creds.get("api_version"),
+    )
+
+
+async def _handle_multipart_upload_aliyun(auth_ctx, creds):
+    """Handle a multipart/form-data upload via Aliyun yike ImportMedia."""
+    files_uploaded = await request.files
+    form = await request.form
+
+    file_obj = files_uploaded.get("file")
+    if not file_obj:
+        _log_error("files_upload", 400, "No file provided", _build_error_context(auth_ctx))
+        return _error_response("No file provided. Use 'file' field for multipart upload.", code="invalid_request", param="file", status_code=400)
+
+    purpose = form.get("purpose", "wonder-ref")
+    err = _validate_purpose(purpose, auth_ctx)
+    if err:
+        return err
+
+    file_data = file_obj.read()
+    filename = file_obj.filename or "upload"
+    mime_type = file_obj.content_type or "application/octet-stream"
+
+    media_type = (form.get("media_type") or _mime_to_media_type(mime_type) or "").strip().lower()
+    if media_type not in ("image", "video", "audio"):
+        _log_error("files_upload", 400,
+                   f"Unsupported media_type: {media_type!r}. Use image / video / audio or a recognizable MIME type.",
+                   _build_error_context(auth_ctx))
+        return _error_response(
+            f"Unsupported media_type '{media_type}'. Use image / video / audio.",
+            code="invalid_request", param="media_type", status_code=400)
+
+    register_config = form.get("register_config") or None
+    if register_config is None and form.get("need_third_party_asset", "").lower() in ("1", "true", "yes"):
+        register_config = json.dumps({"NeedThirdPartyAsset": True})
+
+    # Save to storage and get a public URL for ImportMedia.
+    try:
+        storage_key, public_url = await _save_uploaded_file(file_data, filename, mime_type)
+    except Exception as e:
+        logger.exception("files: failed to save uploaded file")
+        _log_error("files_upload", 500, f"Failed to save file: {e}", _build_error_context(auth_ctx))
+        return _error_response(f"Failed to save uploaded file: {e}", code="storage_error", status_code=500)
+
+    if not public_url.startswith(("http://", "https://")):
+        _log_error("files_upload", 500,
+                   f"Could not generate public URL for uploaded file: {public_url}. Set PUBLIC_BASE_URL environment variable.",
+                   _build_error_context(auth_ctx))
+        return _error_response("Could not generate public URL. Set PUBLIC_BASE_URL to make uploads accessible.", code="storage_error", status_code=500)
+
+    try:
+        result = await _aliyun_import(creds, public_url, media_type, register_config)
+    except RuntimeError as e:
+        _log_error("files_upload", 502, str(e), _build_error_context(auth_ctx))
+        return _error_response(str(e), code="upstream_error", status_code=502)
+
+    media_id = result.get("MediaId", "")
+    if not media_id:
+        _log_error("files_upload", 502, "ImportMedia returned no MediaId", _build_error_context(auth_ctx))
+        return _error_response("ImportMedia returned no MediaId.", code="upstream_error", status_code=502)
+
+    file_id = _gen_file_id()
+    await _persist_upload_record(_build_uploaded_file_record(
+        file_id, media_id, purpose, auth_ctx, form.get("user"), storage_key,
+        creds.get("provider_id"), file_type="aliyun",
+    ))
+
+    return jsonify({
+        "id": file_id,
+        "object": "file",
+        "bytes": len(file_data),
+        "created_at": int(time.time()),
+        "filename": filename,
+        "purpose": purpose,
+        "media_id": media_id,
+    })
+
+
+async def _handle_json_upload_aliyun(auth_ctx, creds):
+    """Handle an application/json upload via Aliyun yike ImportMedia.
+
+    Accepts ``input_image`` / ``input_audio`` / ``input_video`` /
+    ``input_file`` URL strings (or arrays), plus optional ``media_type``
+    (used for ``input_file`` / ``input_url``), ``register_config`` and
+    ``need_third_party_asset``.
+    """
+    data = await _parse_json_body()
+    if not data:
+        _log_error("files_upload", 400, "Invalid or empty JSON request body")
+        return _error_response("Invalid or empty JSON request body", code="invalid_request", status_code=400)
+
+    explicit_type = (str(data.get("media_type") or "").strip().lower())
+    if explicit_type and explicit_type not in ("image", "video", "audio"):
+        _log_error("files_upload", 400, f"Unsupported media_type: {explicit_type}",
+                   _build_error_context(auth_ctx))
+        return _error_response(
+            f"Unsupported media_type '{explicit_type}'. Use image / video / audio.",
+            code="invalid_request", param="media_type", status_code=400)
+
+    # Collect (url, media_type) entries. Keys imply the media type;
+    # input_file / input_url fall back to the explicit media_type (default image).
+    key_type_map = {
+        "input_image": "image",
+        "input_audio": "audio",
+        "input_video": "video",
+    }
+    media_entries: list = []
+    for key in ("input_image", "input_audio", "input_video", "input_file", "input_url", "inputUrl"):
+        val = data.get(key)
+        if val is None:
+            continue
+        if isinstance(val, str):
+            urls = [val]
+        elif isinstance(val, list) and all(isinstance(v, str) for v in val):
+            urls = val
+        else:
+            _log_error("files_upload", 400, f"'{key}' must be a URL string or array of URL strings.",
+                       _build_error_context(auth_ctx))
+            return _error_response(
+                f"'{key}' must be a URL string or array of URL strings.",
+                code="invalid_request", param=key, status_code=400)
+        mtype = key_type_map.get(key, explicit_type or "image")
+        for url in urls:
+            if url and url.strip():
+                media_entries.append((url.strip(), mtype))
+
+    if not media_entries:
+        _log_error("files_upload", 400,
+                   "input_image, input_audio, input_video, input_file, or input_url is required for JSON mode",
+                   _build_error_context(auth_ctx))
+        return _error_response(
+            "input_image, input_audio, input_video, input_file, or input_url is required when using JSON mode.",
+            code="invalid_request", param="input_url", status_code=400)
+
+    purpose = data.get("purpose", "wonder-ref")
+    err = _validate_purpose(purpose, auth_ctx)
+    if err:
+        return err
+
+    register_config = _parse_register_config(
+        data.get("register_config") or data.get("RegisterConfig")
+    )
+    if register_config is None and data.get("need_third_party_asset", False):
+        register_config = json.dumps({"NeedThirdPartyAsset": True})
+
+    logger.info("files: Aliyun JSON mode urls=%d purpose=%s", len(media_entries), purpose)
+
+    results, errors = [], []
+    for media_url, media_type in media_entries:
+        try:
+            result = await _aliyun_import(creds, media_url, media_type, register_config)
+            results.append({"result": result, "url": media_url})
+        except RuntimeError as e:
+            logger.error("files: Aliyun import failed for url %s: %s", media_url[:80], e)
+            errors.append({"url": media_url, "error": str(e)})
+
+    if not results and errors:
+        _log_error("files_upload", 502, f"All imports failed: {errors[0]['error']}", _build_error_context(auth_ctx))
+        return _error_response(f"Failed to import media: {errors[0]['error']}", code="upstream_error", status_code=502)
+
+    uploaded_files = []
+    client_user_id = data.get("user")
+    provider_id = creds.get("provider_id")
+    for item in results:
+        media_id = item["result"].get("MediaId", "")
+        file_id = _gen_file_id()
+        await _persist_upload_record(_build_uploaded_file_record(
+            file_id, media_id, purpose, auth_ctx, client_user_id,
+            item.get("url"), provider_id, file_type="aliyun",
+        ))
+        uploaded_files.append({
+            "id": file_id,
+            "object": "file",
+            "bytes": 0,
+            "created_at": int(time.time()),
+            "media_id": media_id,
+        })
+
+    response = {"object": "list", "data": uploaded_files, "purpose": purpose}
+    if errors:
+        response["errors"] = errors
+    return jsonify(response)
+
+
 # =============================================================================
-# POST /v1/files — Upload files to Volcengine asset library
+# POST /v1/files — Upload files to Volcengine / Aliyun asset library
 # =============================================================================
 
 @files_bp.route('/v1/files', methods=['POST', 'HEAD', 'OPTIONS'])
@@ -585,15 +887,19 @@ async def upload_file():
     Supports two modes:
 
     1. multipart/form-data (standard OpenAI format):
-       - ``purpose``: File purpose (e.g. "vision", "seedance-ref")
+       - ``purpose``: "seedance-ref" (Volcengine ARK) or "wonder-ref" (Aliyun yike)
        - ``file``:    Binary file data
        - ``group_id``: (optional) Volcengine ARK AssetGroup ID
+       - Aliyun mode: ``media_type`` (image/video/audio), ``register_config``
+         or ``need_third_party_asset=true`` (Wonder 模型需注册第三方素材)
 
     2. application/json (extended format):
        - ``input_image`` / ``input_audio`` / ``input_video`` / ``input_file``: URL string or array of URL strings (at least one must be provided)
-       - ``purpose``:     File purpose
+       - ``input_url``: (Aliyun) single URL shorthand
+       - ``purpose``:     "seedance-ref" or "wonder-ref"
        - ``group_id``:    Volcengine ARK AssetGroup ID (required or from provider config)
        - ``filename``:    (optional) Asset name
+       - ``media_type`` / ``register_config`` / ``need_third_party_asset``: (Aliyun) ImportMedia options
     """
     if request.method == 'HEAD' or request.method == 'OPTIONS':
         return '', 200
@@ -604,27 +910,53 @@ async def upload_file():
         _log_error("files_upload", status, error.get('detail', 'Not authenticated'))
         return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
 
-    # ── Get Volcengine credentials ──
-    # The chosen provider is recorded on the UploadedFile row so that seedance
+    # ── Phase 1b: read purpose to pick the asset vendor ──
+    content_type = request.content_type or ""
+    if "multipart/form-data" in content_type:
+        form = await request.form
+        purpose = form.get("purpose", "seedance-ref")
+    elif "application/json" in content_type:
+        body = await _parse_json_body()
+        purpose = (body or {}).get("purpose", "seedance-ref")
+    else:
+        purpose = "seedance-ref"
+
+    if purpose not in _SUPPORTED_PURPOSES:
+        _log_error("files_upload", 400, f"Unsupported purpose: {purpose}", _build_error_context(auth_ctx))
+        return _error_response(
+            f"Unsupported purpose '{purpose}'. Supported: {', '.join(sorted(_SUPPORTED_PURPOSES))}.",
+            code="invalid_request", param="purpose", status_code=400)
+
+    # ── Phase 2: Resolve provider credentials by purpose ──
+    # The chosen provider is recorded on the UploadedFile row so that video
     # generation can be routed to the same account that holds the asset.
     provider_id = auth_ctx.provider_id_override if auth_ctx else None
     try:
         async with get_db_session() as session:
-            creds = await _get_volcengine_credentials_for_upload(
-                session,
-                auth_ctx.api_key_group_id,
-                auth_ctx.user_id if auth_ctx else None,
-                provider_id,
-            )
+            if purpose == "wonder-ref":
+                creds = await _get_aliyun_credentials(
+                    session, auth_ctx.api_key_group_id, provider_id,
+                )
+            else:
+                creds = await _get_volcengine_credentials_for_upload(
+                    session,
+                    auth_ctx.api_key_group_id,
+                    auth_ctx.user_id if auth_ctx else None,
+                    provider_id,
+                )
     except RuntimeError as e:
         _log_error("files_upload", 500, str(e), _build_error_context(auth_ctx))
         return _error_response(str(e), code="provider_error", status_code=500)
 
-    # ── Dispatch by content type ──
-    content_type = request.content_type or ""
+    # ── Phase 3: Dispatch by content type + vendor ──
+    is_aliyun = creds.get("vendor") == "aliyun"
     if "multipart/form-data" in content_type:
+        if is_aliyun:
+            return await _handle_multipart_upload_aliyun(auth_ctx, creds)
         return await _handle_multipart_upload(auth_ctx, creds)
     if "application/json" in content_type:
+        if is_aliyun:
+            return await _handle_json_upload_aliyun(auth_ctx, creds)
         return await _handle_json_upload(auth_ctx, creds)
     _log_error("files_upload", 415, f"Unsupported content type: {content_type}")
     return _error_response(
@@ -705,6 +1037,33 @@ async def delete_file(file_id: str):
                 logger.error("files: failed to delete asset %s from Volcengine: %s", object_key, e)
                 _log_error("files_delete", 502, f"Failed to delete upstream asset: {e}", _build_error_context(auth_ctx))
                 return _error_response(f"Failed to delete upstream asset: {e}", code="upstream_error", status_code=502)
+
+        # ── Phase 3b: Delete from upstream if wonder-ref (Aliyun yike) ──
+        # object_key holds the yike MediaId returned by ImportMedia.
+        if purpose == "wonder-ref" and file_type == "aliyun" and object_key:
+            try:
+                creds = await _get_aliyun_credentials(session, auth_ctx.api_key_group_id, asset_provider_id)
+                from app.http_client import get_shared_client
+
+                client = await get_shared_client()
+                await aliyun_delete_medias(
+                    client,
+                    access_key_id=creds["access_key_id"],
+                    access_key_secret=creds["access_key_secret"],
+                    media_ids=[object_key],
+                    delete_physical_files=True,
+                    region=creds.get("region"),
+                    endpoint=creds.get("endpoint"),
+                    version=creds.get("api_version"),
+                )
+                logger.info(
+                    "files: deleted media %s from Aliyun yike (provider_id=%s)",
+                    object_key, asset_provider_id,
+                )
+            except RuntimeError as e:
+                logger.error("files: failed to delete media %s from Aliyun: %s", object_key, e)
+                _log_error("files_delete", 502, f"Failed to delete upstream media: {e}", _build_error_context(auth_ctx))
+                return _error_response(f"Failed to delete upstream media: {e}", code="upstream_error", status_code=502)
 
         # ── Phase 3.5: Delete the hosted storage copy ──
         # Only multipart uploads leave a local storage copy (storage_key is a

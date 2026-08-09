@@ -14,10 +14,14 @@ from .base import BailianProvider
 from .image_generation import (
     QwenImageConfig,
     QWEN_IMAGE_MODELS,
+    BAILIAN_VIDU_IMAGE_MODELS,
     is_qwen_image_model,
+    is_bailian_vidu_image_model,
     has_image_generation_tool,
     execute_qwen_image_generation,
     stream_image_generation,
+    check_bailian_image_task_status,
+    _resolve_task_query_url,
 )
 from .video_generation import (
     is_happyhorse_video_model,
@@ -32,11 +36,15 @@ __all__ = [
     # Image generation config
     'QwenImageConfig',
     'QWEN_IMAGE_MODELS',
+    'BAILIAN_VIDU_IMAGE_MODELS',
     # Image generation utilities
     'is_qwen_image_model',
+    'is_bailian_vidu_image_model',
     'has_image_generation_tool',
     'execute_qwen_image_generation',
     'stream_image_generation',
+    'check_bailian_image_task_status',
+    '_resolve_task_query_url',
     # Video generation utilities
     'is_happyhorse_video_model',
     'has_video_generation_tool',

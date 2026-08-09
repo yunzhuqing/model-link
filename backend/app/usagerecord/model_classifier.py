@@ -33,8 +33,11 @@ _VIDU_IMAGE_MODELS = (
 # Video model prefixes (case-insensitive)
 _VIDEO_PREFIXES = (
     "doubao-seedance", "seedance", "happyhorse-", "kling-", "veo-", "veo3",
-    "gv-", "hy-video-", "viduq3", "pixverse-", "minimax-h3",
+    "gv-", "hy-video-", "viduq3", "pixverse-", "minimax-h3", "wonder-",
 )
+
+# Aliyun (yike) video models that don't share a safe prefix (exact names).
+_VIDEO_EXACT = ("wan3.0-video", "wan2.7")
 
 # 3D model prefixes
 _THREED_PREFIXES = (
@@ -74,6 +77,9 @@ def classify_model(model_name: str | None) -> ModelCategory:
     for prefix in _VIDEO_PREFIXES:
         if lower.startswith(prefix):
             return ModelCategory.VIDEO
+
+    if lower in _VIDEO_EXACT:
+        return ModelCategory.VIDEO
 
     for keyword in _IMAGE_KEYWORDS:
         if keyword in lower:

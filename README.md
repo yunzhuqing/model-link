@@ -448,6 +448,7 @@ uv run arq app.arq_worker.WorkerSettings
 | Zhipu (GLM) | OpenAI 兼容 | Chat, Streaming, Tools, Vision |
 | Ollama | OpenAI 兼容 | Chat, Streaming, 本地模型 |
 | vLLM | OpenAI 兼容 | Chat, Streaming, 高性能推理 |
+| 阿里云 (Aliyun) | OpenAPI (AK/SK) | 视频生成 (yike: Submit/GetVideoGenerationJob) |
 | 自定义 | OpenAI 兼容 | 自建模型服务 |
 
 ## 生产部署建议

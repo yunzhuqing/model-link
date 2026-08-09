@@ -129,6 +129,14 @@ def _map_bailian_status(task_status: str) -> TaskStatus:
     return TaskStatus.RUNNING
 
 
+def _map_aliyun_status(status: str) -> TaskStatus:
+    if status == "Finished":
+        return TaskStatus.COMPLETED
+    if status == "Failed":
+        return TaskStatus.FAILED
+    return TaskStatus.RUNNING
+
+
 def _map_tencent_status(task_status: str, err_code: int = 0) -> TaskStatus:
     if task_status == "FINISH":
         return TaskStatus.COMPLETED if err_code == 0 else TaskStatus.FAILED
@@ -239,7 +247,7 @@ async def resolve_and_check_task_status_async(
             logger.error(f"[task_status] Volcengine check error for {task_id}: {exc}", exc_info=True)
             return TaskCheckResult(TaskStatus.UNKNOWN)
 
-    # ── Bailian — Dashscope video generation ────────────────────────────
+    # ── Bailian — Dashscope video / Vidu image generation ──────────────
     elif provider_type == "bailian":
         try:
             from app.providers.bailian.video_generation import _resolve_task_query_url
@@ -266,9 +274,69 @@ async def resolve_and_check_task_status_async(
                         "status": "completed",
                         "result": video_url,
                     }]
+                else:
+                    # Vidu 图片生成：从 choices[].message.content[] 提取图片 URL
+                    items = []
+                    for choice in output.get("choices") or []:
+                        msg = choice.get("message") or {}
+                        for item in msg.get("content") or []:
+                            if item.get("image"):
+                                items.append({
+                                    "type": "image_generation_call",
+                                    "status": "completed",
+                                    "result": item["image"],
+                                })
+                    if items:
+                        output_items = items
             return TaskCheckResult(mapped, output_items=output_items)
         except Exception as exc:
             logger.error(f"[task_status] Bailian check error for {task_id}: {exc}", exc_info=True)
+            return TaskCheckResult(TaskStatus.UNKNOWN)
+
+    # ── Aliyun — yike GetVideoGenerationJob (AK/SK) ─────────────────────
+    elif provider_type == "aliyun":
+        try:
+            from app.providers.aliyun.video_generation import (
+                get_video_generation_job,
+                parse_output_medias,
+            )
+            access_key_id = (extra_config.get("access_key_id") or "").strip()
+            access_key_secret = (extra_config.get("access_key_secret") or "").strip()
+            if not access_key_id or not access_key_secret:
+                parts = api_key.split(":", 1)
+                if len(parts) != 2:
+                    return TaskCheckResult(TaskStatus.UNKNOWN)
+                access_key_id, access_key_secret = parts[0], parts[1]
+            region = extra_config.get("region") or None
+            endpoint = extra_config.get("endpoint") or None
+            client = await _get_poll_client()
+            result = await get_video_generation_job(
+                client,
+                access_key_id=access_key_id,
+                access_key_secret=access_key_secret,
+                job_id=task_id,
+                region=region,
+                endpoint=endpoint,
+            )
+            job = result.get("VideoGenerationJob") or {}
+            if not isinstance(job, dict):
+                return TaskCheckResult(TaskStatus.UNKNOWN)
+            status = job.get("Status") or ""
+            mapped = _map_aliyun_status(status)
+            output_items = None
+            error = None
+            if mapped == TaskStatus.COMPLETED:
+                medias = parse_output_medias(job.get("Output"))
+                items = [
+                    {"type": "video_generation_call", "status": "completed", "result": m.get("OutputUrl", "")}
+                    for m in medias if m.get("OutputUrl")
+                ]
+                output_items = items if items else None
+            elif mapped == TaskStatus.FAILED:
+                error = {"code": "VideoGenerationFailed", "message": job.get("ErrorMessage") or "Video generation failed"}
+            return TaskCheckResult(mapped, output_items=output_items, error=error)
+        except Exception as exc:
+            logger.error(f"[task_status] Aliyun check error for {task_id}: {exc}", exc_info=True)
             return TaskCheckResult(TaskStatus.UNKNOWN)
 
     # ── TencentVOD — shared DescribeTaskDetail API ──────────────────────

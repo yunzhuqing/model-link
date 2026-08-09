@@ -629,6 +629,7 @@ def create_app(config=None):
     from app.routes.gateway_responses import gateway_responses_bp
     from app.routes.embeddings import embeddings_bp
     from app.routes.images import images_bp
+    from app.routes.videos import videos_bp
     from app.routes.rerank import rerank_bp
     from app.routes.audio import audio_bp
     from app.routes.apikeys import apikeys_bp
@@ -644,6 +645,7 @@ def create_app(config=None):
     app.register_blueprint(gateway_responses_bp)
     app.register_blueprint(embeddings_bp)
     app.register_blueprint(images_bp)
+    app.register_blueprint(videos_bp)
     app.register_blueprint(rerank_bp)
     app.register_blueprint(audio_bp)
     app.register_blueprint(apikeys_bp, url_prefix='/api')

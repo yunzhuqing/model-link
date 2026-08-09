@@ -24,6 +24,7 @@ from app.abstraction.embedding import EmbeddingRequest, EmbeddingResponse
 from app.providers.openai_provider import OpenAIProvider
 from .image_generation import (
     is_qwen_image_model,
+    is_bailian_vidu_image_model,
     has_image_generation_tool,
     execute_qwen_image_generation,
     stream_image_generation,
@@ -131,6 +132,27 @@ class BailianProvider(OpenAIProvider):
             "context_size": 0,
             "supports_vision": False,
         },
+        # Vidu 图像生成系列（通过百炼 image-generation API）
+        "vidu/vidu-image_reference2image": {
+            "description": "Vidu Image 图生图模型（百炼托管）",
+            "context_size": 0,
+            "supports_vision": True,
+        },
+        "vidu/viduq3-fast_reference2image": {
+            "description": "Vidu Q3 Fast 图生图模型（百炼托管）",
+            "context_size": 0,
+            "supports_vision": True,
+        },
+        "vidu/viduq2-pro_reference2image": {
+            "description": "Vidu Q2 Pro 图生图模型（百炼托管）",
+            "context_size": 0,
+            "supports_vision": True,
+        },
+        "vidu/viduq2-fast_reference2image": {
+            "description": "Vidu Q2 Fast 图生图模型（百炼托管）",
+            "context_size": 0,
+            "supports_vision": True,
+        },
         # Happyhorse 视频生成系列
         "happyhorse-1.0-t2v": {
             "description": "文生视频模型，根据文本描述生成视频",
@@ -216,8 +238,8 @@ class BailianProvider(OpenAIProvider):
     # ==================== 图像/视频生成检测 ====================
 
     def is_image_generation_model(self, model: str) -> bool:
-        """Check if the model is a Qwen image generation/editing model."""
-        return is_qwen_image_model(model)
+        """Check if the model is a Qwen / Vidu image generation model."""
+        return is_qwen_image_model(model) or is_bailian_vidu_image_model(model)
 
     def _has_image_generation_tool(self, request: ChatRequest) -> bool:
         """Check if the request contains an image_generation tool."""
@@ -365,6 +387,7 @@ class BailianProvider(OpenAIProvider):
                 messages=request.messages,
                 metadata=request.metadata,
                 tracer=self.tracer,
+                domain=self._get_dashscope_domain(),
             )
 
         # 标准对话路径

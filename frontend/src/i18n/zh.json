@@ -656,7 +656,16 @@
     "arkGroupIdLabel": "素材组 ID",
     "arkGroupIdPlaceholder": "group-2026xxxxxxxx-xxxx",
     "arkGroupIdHelp": "素材上传的目标 Group ID",
-    "defaultApGuangzhou": "默认：ap-guangzhou"
+    "defaultApGuangzhou": "默认：ap-guangzhou",
+    "aliyunConfig": "阿里云配置",
+    "aliyunDesc": "通过阿里云 OpenAPI (AK/SK 签名) 访问阿里云 AI 服务。当前支持视频生成 (yike: SubmitVideoGenerationJob / GetVideoGenerationJob)。",
+    "aliyunAccessKeyIdLabel": "AccessKey ID",
+    "aliyunAccessKeySecretLabel": "AccessKey Secret",
+    "aliyunAccessKeySecretPlaceholder": "您的阿里云 AccessKey Secret",
+    "aliyunRegionLabel": "区域",
+    "aliyunRegionHelp": "默认：cn-shanghai（支持 ap-southeast-1）",
+    "aliyunEndpointLabel": "自定义端点（可选）",
+    "aliyunEndpointHelp": "留空则使用默认端点 yike.{region}.aliyuncs.com"
   },
   "lang": {
     "switch": "语言",

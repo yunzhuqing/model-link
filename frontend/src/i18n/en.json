@@ -654,7 +654,16 @@
     "arkGroupIdLabel": "Asset Group ID",
     "arkGroupIdPlaceholder": "group-2026xxxxxxxx-xxxx",
     "arkGroupIdHelp": "Target asset group for uploaded assets",
-    "defaultApGuangzhou": "Default: ap-guangzhou"
+    "defaultApGuangzhou": "Default: ap-guangzhou",
+    "aliyunConfig": "Aliyun Config",
+    "aliyunDesc": "Access Alibaba Cloud AI services via OpenAPI (AK/SK signed). Currently supports video generation (yike: SubmitVideoGenerationJob / GetVideoGenerationJob).",
+    "aliyunAccessKeyIdLabel": "AccessKey ID",
+    "aliyunAccessKeySecretLabel": "AccessKey Secret",
+    "aliyunAccessKeySecretPlaceholder": "Your Alibaba Cloud AccessKey Secret",
+    "aliyunRegionLabel": "Region",
+    "aliyunRegionHelp": "Default: cn-shanghai (also supports ap-southeast-1)",
+    "aliyunEndpointLabel": "Custom endpoint (optional)",
+    "aliyunEndpointHelp": "Leave blank to use the default endpoint yike.{region}.aliyuncs.com"
   },
   "lang": {
     "switch": "Language",

@@ -55,6 +55,20 @@ def _safe_list(val) -> list:
     return val if isinstance(val, list) else []
 
 
+def _merge_extra_usage(usage_dict: dict, usage) -> dict:
+    """
+    Merge provider-specific credit fields from ``usage.extra`` into the
+    Responses API usage dict (e.g. Aliyun yike ``credits`` / ``credit_status``).
+    """
+    if usage is None:
+        return usage_dict
+    extra = getattr(usage, "extra", None) or {}
+    for key in ("credits", "credit_status"):
+        if key in extra:
+            usage_dict[key] = extra[key]
+    return usage_dict
+
+
 def _register_fid_media(file_map: dict, block: dict):
     """Register a file_id → media mapping from a content block.
 
@@ -1566,7 +1580,9 @@ class OpenAIResponsesAdapter(BaseAdapter):
             model_lower.startswith("gv-") or
             model_lower.startswith("hy-video-") or 
             model_lower == "minimax-h3" or
-            model_lower.startswith("mps-")
+            model_lower.startswith("mps-") or
+            model_lower.startswith("wonder-") or
+            model_lower in ("wan3.0-video", "wan2.7")
         )
 
         # 3D generation models: hunyuan-3d* / hy-3d* (Tencent), *seed3d* (Volcengine)
@@ -1774,6 +1790,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
         # Include price information if available
         if response.usage.price is not None:
             usage_dict['price'] = response.usage.price.to_dict()
+        _merge_extra_usage(usage_dict, response.usage)
 
         # Always include the requested format in the response so that upper
         # layers (sync return / async GET polling) can decide whether to
@@ -2049,6 +2066,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                             usage_out['output_tokens_details'] = {'reasoning_tokens': chunk.usage.reasoning_tokens}
                         if chunk.usage.price is not None:
                             usage_out['price'] = chunk.usage.price.to_dict()
+                        _merge_extra_usage(usage_out, chunk.usage)
                         completed_resp['usage'] = usage_out
                 completed: dict = {
                     'type': 'response.completed',
@@ -2120,6 +2138,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                     }
                     if chunk.usage.price is not None:
                         usage_out['price'] = chunk.usage.price.to_dict()
+                    _merge_extra_usage(usage_out, chunk.usage)
                     completed['response']['usage'] = usage_out
                 events.append(f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n")
 
@@ -2665,6 +2684,7 @@ class OpenAIResponsesAdapter(BaseAdapter):
                         }
                         if deferred_usage.price is not None:
                             usage_out['price'] = deferred_usage.price.to_dict()
+                        _merge_extra_usage(usage_out, deferred_usage)
                         completed_resp['usage'] = usage_out
                     completed_event = {
                         'type': 'response.completed',

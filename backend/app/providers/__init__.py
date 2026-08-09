@@ -24,6 +24,7 @@ from .openai_responses_compt_provider import OpenAIResponsesCompatProvider
 from .mulerun import MulerunProvider
 from .openspeech_provider import VolcengineOpenspeechProvider
 from .vidu import ViduProvider
+from .aliyun import AliyunProvider
 from .tencentlive import TencentLiveProvider
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     'OpenAIChatCompletionsCompatProvider', 'OpenAIResponsesCompatProvider',
     'MulerunProvider', 'VolcengineOpenspeechProvider',
     'ViduProvider',
+    'AliyunProvider',
     'TencentLiveProvider',
 ]
 
@@ -64,6 +66,7 @@ PROVIDER_REGISTRY = {
     # 旧类型别名：历史配置的 seed_tts 供应商继续指向 openspeech 实现（无数据迁移）。
     'seed_tts': VolcengineOpenspeechProvider,
     'vidu': ViduProvider,
+    'aliyun': AliyunProvider,
     'tencentlive': TencentLiveProvider,
 }
 
