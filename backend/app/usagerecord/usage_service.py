@@ -577,6 +577,7 @@ def _compute_price_details(
     output_video_price_unit: float = usage_extra.get('output_video_price_unit', 0.0) or 0.0
     output_video_audio: Optional[bool] = usage_extra.get('output_video_audio')
     output_video_reference_video: Optional[bool] = usage_extra.get('output_video_reference_video')
+    video_pricing_type: str = ''
 
     output_audio_tokens: int = usage_extra.get('output_audio_tokens', 0) or 0
     output_audio_seconds: float = usage_extra.get('output_audio_seconds', 0.0) or 0.0
@@ -667,13 +668,20 @@ def _compute_price_details(
         cache_creation_cost = cache_creation_tokens * cache_creation_price_unit / 1_000_000
 
     # ── Billing amounts ───────────────────────────────────────────────
+    # per_second video pricing bills number × duration × unit price;
+    # other video pricing modes (per_item / provider-provided unit) bill per video.
+    if video_pricing_type == 'per_second':
+        video_cost: float = output_video_number * output_video_seconds * output_video_price_unit
+    else:
+        video_cost = output_video_number * output_video_price_unit
+
     payable_amount: float = float(
         input_tokens * input_price_unit / 1_000_000
         + output_tokens * output_price_unit / 1_000_000
         + cache_creation_cost
         + cache_tokens * cache_token_price_unit / 1_000_000
         + output_image_number * output_image_price_unit
-        + output_video_number * output_video_price_unit
+        + video_cost
         + output_audio_seconds * output_audio_price_unit
         + web_search_requests * web_search_price_unit
         + credits * credit_price_unit

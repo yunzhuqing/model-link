@@ -127,7 +127,7 @@ async def test_audio_per_credit_duration():
 
 
 @pytest.mark.asyncio
-async def test_money_pricing_unchanged_without_per_credit():
+async def test_money_pricing_without_per_credit():
     output_pricing = {
         'image': {'type': 'per_image', 'price': 0.04},
         'video': {'type': 'per_second', 'price': 0.02},
@@ -146,8 +146,42 @@ async def test_money_pricing_unchanged_without_per_credit():
     assert d['output_image_price_unit'] == pytest.approx(0.04)
     assert d['output_video_price_unit'] == pytest.approx(0.02)
     assert d['output_audio_price_unit'] == pytest.approx(0.006)
-    # Existing money behavior: video is billed per generated video, audio per second
-    assert d['payable_amount'] == pytest.approx(0.04 + 1 * 0.02 + 30 * 0.006)
+    # per_second video pricing: number × duration × unit price; audio per second
+    assert d['payable_amount'] == pytest.approx(0.04 + 1 * 5 * 0.02 + 30 * 0.006)
+
+
+@pytest.mark.asyncio
+async def test_video_per_second_multiplies_duration():
+    output_pricing = {
+        'video': {
+            'type': 'per_second',
+            'price': 0.8,
+            'tiers': [
+                {'resolution': '720p', 'price': 0.6},
+                {'resolution': '1080p', 'price': 0.8},
+            ],
+        },
+    }
+    d = _details(
+        output_pricing,
+        {
+            'output_video_number': 2,
+            'output_video_resolution': '1080p',
+            'output_video_seconds': 10,
+        },
+    )
+    assert d['output_video_price_unit'] == pytest.approx(0.8)
+    assert d['payable_amount'] == pytest.approx(2 * 10 * 0.8)
+
+
+@pytest.mark.asyncio
+async def test_video_per_second_without_duration_bills_zero():
+    output_pricing = {
+        'video': {'type': 'per_second', 'price': 0.02},
+    }
+    d = _details(output_pricing, {'output_video_number': 1})
+    assert d['output_video_price_unit'] == pytest.approx(0.02)
+    assert d['payable_amount'] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio

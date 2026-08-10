@@ -4,6 +4,7 @@ Files API route module.
 Provides an OpenAI-compatible /v1/files endpoint that supports:
 - Standard multipart/form-data file upload (OpenAI-compatible)
 - JSON body with `input_image`, `input_audio`, `input_video`, or `input_file`
+- File retrieval (GET /v1/files/<file_id>) with live upstream asset status
 
 Uploaded files are registered in the Volcengine ARK asset library via
 CreateAsset API, assigned to the specified AssetGroup for use with
@@ -30,10 +31,18 @@ from app.routes.gateway_helpers import (
     _build_error_context,
     _check_allowed_models,
 )
-from app.providers.volcengine.asset import create_asset, upload_and_create_asset, delete_asset, poll_asset_status, batch_delete_assets
+from app.providers.volcengine.asset import (
+    create_asset,
+    upload_and_create_asset,
+    delete_asset,
+    get_asset,
+    poll_asset_status,
+    batch_delete_assets,
+)
 from app.providers.aliyun.video_generation import (
     delete_medias as aliyun_delete_medias,
     import_media as aliyun_import_media,
+    get_media as aliyun_get_media,
 )
 from app.models import UploadedFile
 
@@ -371,6 +380,23 @@ def _mime_to_media_type(content_type: str) -> str:
         return "video"
     if ct.startswith("audio/"):
         return "audio"
+    return ""
+
+
+_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus")
+_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".ts")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".avif")
+
+
+def _infer_media_type_from_url(url: str) -> str:
+    """Infer the yike MediaType (image / video / audio) from a URL extension."""
+    path = (url or "").split("?", 1)[0].split("#", 1)[0].lower()
+    if path.endswith(_AUDIO_EXTS):
+        return "audio"
+    if path.endswith(_VIDEO_EXTS):
+        return "video"
+    if path.endswith(_IMAGE_EXTS):
+        return "image"
     return ""
 
 
@@ -773,9 +799,11 @@ async def _handle_json_upload_aliyun(auth_ctx, creds):
     """Handle an application/json upload via Aliyun yike ImportMedia.
 
     Accepts ``input_image`` / ``input_audio`` / ``input_video`` /
-    ``input_file`` URL strings (or arrays), plus optional ``media_type``
-    (used for ``input_file`` / ``input_url``), ``register_config`` and
-    ``need_third_party_asset``.
+    ``input_file`` URL strings (or arrays), plus optional ``media_type``,
+    ``register_config`` and ``need_third_party_asset``. For
+    ``input_file`` / ``input_url`` the media type is inferred from the URL
+    extension (image / video / audio), falling back to the explicit
+    ``media_type`` (default image).
     """
     data = await _parse_json_body()
     if not data:
@@ -790,8 +818,9 @@ async def _handle_json_upload_aliyun(auth_ctx, creds):
             f"Unsupported media_type '{explicit_type}'. Use image / video / audio.",
             code="invalid_request", param="media_type", status_code=400)
 
-    # Collect (url, media_type) entries. Keys imply the media type;
-    # input_file / input_url fall back to the explicit media_type (default image).
+    # Collect (url, media_type) entries. input_image / input_audio /
+    # input_video imply the media type; input_file / input_url infer it from
+    # the URL extension, falling back to the explicit media_type (default image).
     key_type_map = {
         "input_image": "image",
         "input_audio": "audio",
@@ -812,10 +841,12 @@ async def _handle_json_upload_aliyun(auth_ctx, creds):
             return _error_response(
                 f"'{key}' must be a URL string or array of URL strings.",
                 code="invalid_request", param=key, status_code=400)
-        mtype = key_type_map.get(key, explicit_type or "image")
+        base_mtype = key_type_map.get(key, "")
         for url in urls:
-            if url and url.strip():
-                media_entries.append((url.strip(), mtype))
+            url = (url or "").strip()
+            if url:
+                mtype = base_mtype or explicit_type or _infer_media_type_from_url(url) or "image"
+                media_entries.append((url, mtype))
 
     if not media_entries:
         _log_error("files_upload", 400,
@@ -894,7 +925,7 @@ async def upload_file():
          or ``need_third_party_asset=true`` (Wonder 模型需注册第三方素材)
 
     2. application/json (extended format):
-       - ``input_image`` / ``input_audio`` / ``input_video`` / ``input_file``: URL string or array of URL strings (at least one must be provided)
+       - ``input_image`` / ``input_audio`` / ``input_video`` / ``input_file``: URL string or array of URL strings (at least one must be provided); ``input_file`` / ``input_url`` 的 media_type 按 URL 扩展名推断 (image/video/audio)
        - ``input_url``: (Aliyun) single URL shorthand
        - ``purpose``:     "seedance-ref" or "wonder-ref"
        - ``group_id``:    Volcengine ARK AssetGroup ID (required or from provider config)
@@ -1088,6 +1119,128 @@ async def delete_file(file_id: str):
         "object": "file",
         "deleted": True,
     })
+
+# =============================================================================
+# GET /v1/files/<file_id> — Get an uploaded file
+# =============================================================================
+
+def _derive_filename(record) -> Optional[str]:
+    """Best-effort filename from the storage key (upload path or original URL)."""
+    storage_key = record.storage_key
+    if not storage_key:
+        return None
+    if storage_key.startswith(("http://", "https://")):
+        path = storage_key.split("?", 1)[0].rstrip("/")
+        name = path.rsplit("/", 1)[-1]
+        return name or None
+    name = storage_key.rsplit("/", 1)[-1]
+    return name or None
+
+
+@files_bp.route('/v1/files/<file_id>', methods=['GET'])
+async def get_file(file_id: str):
+    """OpenAI-compatible file retrieval endpoint.
+
+    Returns the OpenAI file object plus a ``status`` field reflecting the
+    live upstream asset state:
+      - Aliyun yike (wonder-ref): GetMedia → MediaBasicInfo.Status
+      - Volcengine ARK (seedance-ref): GetAsset → Result.Status
+
+    Example::
+
+        {
+          "id": "file-abc123",
+          "object": "file",
+          "bytes": 0,
+          "created_at": 1677610602,
+          "filename": "mydata.png",
+          "purpose": "wonder-ref",
+          "status": "Normal"
+        }
+    """
+    # ── Phase 1: Auth ──
+    auth_ctx, error, status = await get_current_user_or_api_key()
+    if error:
+        _log_error("files_get", status, error.get('detail', 'Not authenticated'))
+        return _error_response(error.get('detail', 'Not authenticated'), code="unauthorized", status_code=status)
+
+    # ── Phase 2: Look up file record ──
+    from sqlalchemy import select as sa_select
+
+    async with get_db_session() as session:
+        result = await session.execute(
+            sa_select(UploadedFile).where(UploadedFile.file_id == file_id)
+        )
+        record = result.scalars().first()
+
+        if not record:
+            _log_error("files_get", 404, f"File not found: {file_id}", _build_error_context(auth_ctx))
+            return _error_response(f"File not found: {file_id}", code="not_found", param="file_id", status_code=404)
+
+        object_key = record.object_key
+        file_type = record.type
+        # Prefer the provider that actually holds the asset (recorded at upload
+        # time); fall back to the API key's pinned provider for legacy rows.
+        asset_provider_id = record.provider_id or (auth_ctx.provider_id_override if auth_ctx else None)
+
+        # ── Phase 3: Query live upstream status ──
+        upstream_status = ""
+        media_basic = {}
+        try:
+            if file_type == "aliyun" and object_key:
+                creds = await _get_aliyun_credentials(session, auth_ctx.api_key_group_id, asset_provider_id)
+                from app.http_client import get_shared_client
+
+                client = await get_shared_client()
+                media_info = await aliyun_get_media(
+                    client,
+                    access_key_id=creds["access_key_id"],
+                    access_key_secret=creds["access_key_secret"],
+                    media_id=object_key,
+                    region=creds.get("region"),
+                    endpoint=creds.get("endpoint"),
+                    version=creds.get("api_version"),
+                )
+                media_basic = (media_info.get("MediaInfo") or {}).get("MediaBasicInfo") or {}
+                upstream_status = media_basic.get("Status") or ""
+                logger.info("files: got aliyun media %s status=%s", object_key, upstream_status)
+            elif file_type == "volcengine" and object_key.lower().startswith("asset-"):
+                creds = await _get_volcengine_credentials(session, auth_ctx.api_key_group_id, asset_provider_id)
+                project_name = "default"
+                if auth_ctx and auth_ctx.api_key_group_id:
+                    project_name = await _get_group_project_name(session, auth_ctx.api_key_group_id)
+
+                asset_info = await get_asset(
+                    asset_id=object_key,
+                    project_name=project_name,
+                    access_key=creds.get("access_key"),
+                    secret_key=creds.get("secret_key"),
+                    api_key=creds.get("api_key"),
+                    region=creds.get("ark_region", "cn-beijing"),
+                )
+                upstream_status = (asset_info.get("Result") or {}).get("Status") or ""
+                logger.info("files: got volcengine asset %s status=%s", object_key, upstream_status)
+        except RuntimeError as e:
+            _log_error("files_get", 502, str(e), _build_error_context(auth_ctx))
+            return _error_response(f"Failed to query upstream asset: {e}", code="upstream_error", status_code=502)
+
+        created_at = int(record.created_at.timestamp()) if record.created_at else 0
+        response = {
+            "id": file_id,
+            "object": "file",
+            "bytes": 0,
+            "created_at": created_at,
+            "filename": _derive_filename(record),
+            "purpose": record.purpose,
+            "status": upstream_status,
+        }
+        if file_type == "aliyun" and media_basic:
+            if media_basic.get("MediaType"):
+                response["media_type"] = media_basic["MediaType"]
+            if media_basic.get("InputURL"):
+                response["input_url"] = media_basic["InputURL"]
+        return jsonify(response)
+
 
 # =============================================================================
 # GET /v1/files — List uploaded files (stub)

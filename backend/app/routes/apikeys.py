@@ -246,7 +246,8 @@ async def add_user_to_group(current_user, group_id, user_id):
         if user in group.users:
             return jsonify({'detail': 'User is already a member of this group'}), 400
 
-        group.users.append(user)
+        # Group.users is a viewonly relationship - write through UserGroup instead.
+        session.add(UserGroup(user_id=user.id, group_id=group.id, role='member'))
         await session.commit()
         await session.refresh(group)
 
@@ -285,7 +286,8 @@ async def remove_user_from_group(current_user, group_id, user_id):
         if _role_rank(target_membership.role) > _role_rank(current_role):
             return jsonify({'detail': 'Cannot remove a member with a higher role than your own'}), 403
 
-        group.users.remove(user)
+        # Group.users is a viewonly relationship - delete the association row directly.
+        await session.delete(target_membership)
         await session.commit()
         await session.refresh(group)
 

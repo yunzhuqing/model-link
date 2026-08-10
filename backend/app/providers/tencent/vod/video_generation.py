@@ -1095,6 +1095,9 @@ async def stream_video_generation(
         model=model,
         event_type=StreamEventType.CONTENT_DELTA,
         created=response.created,
+        # Carry usage so the gateway can compute price and persist a UsageRecord
+        # for streaming video generation (see _resp_chunks_with_usage).
+        usage=response.usage,
     )
     finish_chunk.raw_sse_passthrough = [
         f"event: response.completed\ndata: {json.dumps(completed_event, ensure_ascii=False)}\n\n",

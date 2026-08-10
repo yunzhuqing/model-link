@@ -1,3 +1,4 @@
+import pytest
 from app.providers.tencent.vod.video_generation import (
     _build_file_infos_from_map,
     _parse_video_model_name_version,
@@ -85,3 +86,50 @@ def test_minimax_h3_converts_common_brace_variables_to_hailuo_at_variables():
         "视频1", "音频1", "图片1", "图片2"
     }
     assert all(item["Usage"] == "Reference" for item in file_infos)
+
+
+@pytest.mark.asyncio
+async def test_stream_video_generation_carries_usage_for_billing():
+    from app.abstraction.chat import (
+        ChatChoice,
+        ChatResponse,
+        FinishReason,
+        Message,
+        UsageInfo,
+    )
+    from app.abstraction.messages import MessageRole
+    from app.providers.tencent.vod.video_generation import stream_video_generation
+
+    usage = UsageInfo(
+        prompt_tokens=0,
+        completion_tokens=1,
+        total_tokens=1,
+        extra={
+            'output_video_number': 1,
+            'output_video_seconds': 5.0,
+            'output_video_resolution': '1080p',
+        },
+    )
+    response = ChatResponse(
+        id='vid-test',
+        model='MiniMax-H3',
+        choices=[ChatChoice(
+            index=0,
+            message=Message(
+                role=MessageRole.ASSISTANT,
+                content='[{"result": "https://example.com/v.mp4"}]',
+            ),
+            finish_reason=FinishReason.STOP,
+        )],
+        usage=usage,
+        provider='tencentvod',
+    )
+
+    async def fake_chat_fn(request):
+        return response
+
+    chunks = [c async for c in stream_video_generation(fake_chat_fn, None)]
+    usage_chunks = [c for c in chunks if c.usage is not None]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0].usage is usage
+    assert any(c.raw_sse_passthrough for c in chunks)

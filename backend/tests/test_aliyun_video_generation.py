@@ -15,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 from urllib.parse import quote, quote_plus
 
@@ -29,6 +30,7 @@ from app.providers.aliyun.video_generation import (
     ALIYUN_VIDEO_MODELS,
     DEFAULT_ENDPOINT,
     YIKE_API_VERSION,
+    _build_file_var_map,
     _build_media_list,
     _extract_text_prompt,
     _fetch_job_credit,
@@ -40,6 +42,7 @@ from app.providers.aliyun.video_generation import (
     _substitute_prompt_vars,
     delete_medias,
     get_yike_job_credit,
+    get_media,
     import_media,
     infer_job_type,
     is_aliyun_video_model,
@@ -109,7 +112,7 @@ def _job_payload(
     return {"RequestId": "req-abcde", "VideoGenerationJob": job}
 
 
-def _credit_payload(cost: float = 12.5, status: str = "Generated") -> Dict[str, Any]:
+def _credit_payload(cost: float = 12.5, status: str = "success") -> Dict[str, Any]:
     return {
         "RequestId": "req-credit",
         "JobId": "job-12345",
@@ -212,6 +215,60 @@ def test_rpc_query_encodes_utf8_and_special_chars():
     assert "Input" not in query
 
 
+def test_rpc_signature_lowercases_boolean_params():
+    """布尔参数按 Aliyun RPC 规范以小写 true/false 参与签名 (DeleteMedias)。"""
+    query = build_rpc_params(
+        action="DeleteMedias",
+        version="2026-07-07",
+        access_key_id="ak",
+        access_key_secret="sk",
+        params={"MediaIds": "media-1", "DeletePhysicalFiles": True},
+        timestamp="2026-01-01T00:00:00Z",
+        signature_nonce="nonce-bool",
+    )
+    # 服务端从收到的参数 (小写 true) 构造 canonical 字符串并签名;
+    # 客户端必须以相同的小写形式计算签名。
+    signed = {
+        "AccessKeyId": "ak",
+        "Action": "DeleteMedias",
+        "Format": "json",
+        "SignatureMethod": "HMAC-SHA1",
+        "SignatureNonce": "nonce-bool",
+        "SignatureVersion": "1.0",
+        "Timestamp": "2026-01-01T00:00:00Z",
+        "Version": "2026-07-07",
+        "MediaIds": "media-1",
+        "DeletePhysicalFiles": "true",
+    }
+    assert query["Signature"] == _reference_rpc_signature(signed, "POST", "sk")
+    # 大写 True 会产生不同签名 (回归保护)
+    wrong = dict(signed, DeletePhysicalFiles="True")
+    assert query["Signature"] != _reference_rpc_signature(wrong, "POST", "sk")
+
+    legacy = build_rpc_params(
+        action="DeleteYikeAssetMediaInfos",
+        version="2026-03-19",
+        access_key_id="ak",
+        access_key_secret="sk",
+        params={"MediaIds": "media-1", "LogicDelete": False},
+        timestamp="2026-01-01T00:00:00Z",
+        signature_nonce="nonce-bool",
+    )
+    legacy_signed = {
+        "AccessKeyId": "ak",
+        "Action": "DeleteYikeAssetMediaInfos",
+        "Format": "json",
+        "SignatureMethod": "HMAC-SHA1",
+        "SignatureNonce": "nonce-bool",
+        "SignatureVersion": "1.0",
+        "Timestamp": "2026-01-01T00:00:00Z",
+        "Version": "2026-03-19",
+        "MediaIds": "media-1",
+        "LogicDelete": "false",
+    }
+    assert legacy["Signature"] == _reference_rpc_signature(legacy_signed, "POST", "sk")
+
+
 def test_resolve_yike_endpoint():
     assert resolve_yike_endpoint(None, None) == DEFAULT_ENDPOINT
     assert resolve_yike_endpoint("ap-southeast-1", None) == "yike.ap-southeast-1.aliyuncs.com"
@@ -283,13 +340,14 @@ def test_build_media_list_from_messages_and_metadata():
     assert media[1]["Type"] == "video"
 
 
-def test_extract_text_prompt_strips_file_templates():
+def test_extract_text_prompt_keeps_file_templates():
+    """{{file-xxx}} 占位符保留在 prompt 中, 由后续变量替换处理。"""
     messages = [
         Message(role=MessageRole.USER, content="第一段"),
         Message(role=MessageRole.SYSTEM, content="系统提示"),
         Message(role=MessageRole.USER, content="参考 {{file-abc123def456}} 生成"),
     ]
-    assert _extract_text_prompt(messages) == "第一段参考 生成"
+    assert _extract_text_prompt(messages) == "第一段参考 {{file-abc123def456}} 生成"
 
 
 def test_parse_output_medias():
@@ -329,7 +387,7 @@ async def test_submit_video_generation_job():
     req = client.requests[0]
     assert "Action=SubmitVideoGenerationJob" in req["url"]
     assert "Signature=" in req["url"]
-    assert "Version=2026-03-19" in req["url"]
+    assert "Version=2026-07-07" in req["url"]
     assert req["headers"]["x-acs-action"] == "SubmitVideoGenerationJob"
     assert req["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
 
@@ -419,7 +477,7 @@ def test_responses_adapter_usage_carries_credits():
 
     usage = UsageInfo(
         prompt_tokens=0, completion_tokens=5, total_tokens=5,
-        extra={"credits": 12.5, "credit_status": "Generated", "_task_id": "job-1"},
+        extra={"credits": 12.5, "credit_status": "success", "_task_id": "job-1"},
     )
     resp = ChatResponse(
         id="resp_1", created=0, model="wonder-pro",
@@ -432,7 +490,7 @@ def test_responses_adapter_usage_carries_credits():
     )
     formatted = OpenAIResponsesAdapter().format_response(resp)
     assert formatted["usage"]["credits"] == 12.5
-    assert formatted["usage"]["credit_status"] == "Generated"
+    assert formatted["usage"]["credit_status"] == "success"
     assert "_task_id" not in formatted["usage"]
 
 
@@ -446,10 +504,10 @@ async def test_get_yike_job_credit():
     )
     req = client.requests[0]
     assert "Action=GetYikeJobCredit" in req["url"]
-    assert "Version=2026-03-19" in req["url"]
+    assert "Version=2026-07-07" in req["url"]
     assert "JobId=job-12345" in req["content"]
     assert result["JobCreditCost"] == 6.25
-    assert result["CreditStatus"] == "Generated"
+    assert result["CreditStatus"] == "success"
 
 
 @pytest.mark.asyncio
@@ -494,6 +552,48 @@ async def test_fetch_job_credit_best_effort(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_job_credit_polls_until_success(monkeypatch):
+    """CreditStatus=init 时轮询, 直到 success 才返回真实积分。"""
+    client = _FakeClient([
+        _FakeResponse(200, _credit_payload(cost=0.0, status="init")),
+        _FakeResponse(200, _credit_payload(cost=0.0, status="init")),
+        _FakeResponse(200, _credit_payload(cost=12.5, status="success")),
+    ])
+
+    async def fake_shared_client():
+        return client
+
+    monkeypatch.setattr("app.http_client.get_shared_client", fake_shared_client)
+    credit = await _fetch_job_credit(
+        access_key_id="ak", access_key_secret="sk", job_id="job-12345",
+        credit_timeout=30, poll_interval=0,
+    )
+    assert credit["CreditStatus"] == "success"
+    assert credit["JobCreditCost"] == 12.5
+    assert len(client.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_job_credit_timeout_returns_last_response(monkeypatch):
+    """超时未结算时返回最后一次响应 (init/0), 不阻断主流程。"""
+    client = _FakeClient([
+        _FakeResponse(200, _credit_payload(cost=0.0, status="init")),
+    ])
+
+    async def fake_shared_client():
+        return client
+
+    monkeypatch.setattr("app.http_client.get_shared_client", fake_shared_client)
+    credit = await _fetch_job_credit(
+        access_key_id="ak", access_key_secret="sk", job_id="job-12345",
+        credit_timeout=0, poll_interval=0,
+    )
+    assert credit["CreditStatus"] == "init"
+    assert credit["JobCreditCost"] == 0.0
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_execute_video_generation_credit_unavailable(monkeypatch):
     """GetYikeJobCredit 返回错误时, 任务仍成功且 usage 不含 credits。"""
     client = _FakeClient([
@@ -523,13 +623,14 @@ async def test_execute_video_generation_credit_unavailable(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_delete_medias_legacy_version():
-    """默认版本 2026-03-19 → DeleteYikeAssetMediaInfos + LogicDelete=false (物理删除)。"""
+    """旧版本 2026-03-19 (显式覆盖) → DeleteYikeAssetMediaInfos + LogicDelete=false (物理删除)。"""
     client = _FakeClient([_FakeResponse(200, {"RequestId": "req-del"})])
     result = await delete_medias(
         client,
         access_key_id="ak", access_key_secret="sk",
         media_ids=["media-1", "media-2"],
         delete_physical_files=True,
+        version="2026-03-19",
     )
     assert result["RequestId"] == "req-del"
 
@@ -547,14 +648,13 @@ async def test_delete_medias_legacy_version():
 
 @pytest.mark.asyncio
 async def test_delete_medias_new_version():
-    """2026-07-07+ → DeleteMedias + DeletePhysicalFiles。"""
+    """默认版本 2026-07-07 → DeleteMedias + DeletePhysicalFiles。"""
     client = _FakeClient([_FakeResponse(200, {"RequestId": "req-del"})])
     await delete_medias(
         client,
         access_key_id="ak", access_key_secret="sk",
         media_ids="media-1,media-2",
         delete_physical_files=True,
-        version="2026-07-07",
     )
     req = client.requests[0]
     assert "Action=DeleteMedias" in req["url"]
@@ -569,13 +669,14 @@ async def test_delete_medias_new_version():
 
 @pytest.mark.asyncio
 async def test_delete_medias_logic_delete_when_keeping_files():
-    """delete_physical_files=False → 旧版 LogicDelete=true (保留文件)。"""
+    """旧版 (显式 2026-03-19) delete_physical_files=False → LogicDelete=true (保留文件)。"""
     client = _FakeClient([_FakeResponse(200, {"RequestId": "req-del"})])
     await delete_medias(
         client,
         access_key_id="ak", access_key_secret="sk",
         media_ids=["media-1"],
         delete_physical_files=False,
+        version="2026-03-19",
     )
     from urllib.parse import unquote
     body = dict(pair.split("=", 1) for pair in client.requests[0]["content"].split("&"))
@@ -585,13 +686,19 @@ async def test_delete_medias_logic_delete_when_keeping_files():
 
 @pytest.mark.asyncio
 async def test_delete_medias_validation_and_error():
-    client = _FakeClient([_FakeResponse(400, {
+    err_payload = {
         "Code": "InvalidParameter", "Message": "media not found", "RequestId": "req-err",
-    })])
+    }
+    client = _FakeClient([_FakeResponse(400, err_payload), _FakeResponse(400, err_payload)])
     with pytest.raises(ValueError, match="MediaIds"):
         await delete_medias(client, access_key_id="ak", access_key_secret="sk", media_ids=[])
-    with pytest.raises(RuntimeError, match="DeleteYikeAssetMediaInfos.*InvalidParameter"):
+    with pytest.raises(RuntimeError, match="DeleteMedias.*InvalidParameter"):
         await delete_medias(client, access_key_id="ak", access_key_secret="sk", media_ids=["media-x"])
+    with pytest.raises(RuntimeError, match="DeleteYikeAssetMediaInfos.*InvalidParameter"):
+        await delete_medias(
+            client, access_key_id="ak", access_key_secret="sk",
+            media_ids=["media-x"], version="2026-03-19",
+        )
 
 
 @pytest.mark.asyncio
@@ -608,7 +715,7 @@ async def test_import_media():
 
     req = client.requests[0]
     assert "Action=ImportMedia" in req["url"]
-    assert "Version=2026-03-19" in req["url"]
+    assert "Version=2026-07-07" in req["url"]
     assert req["headers"]["x-acs-action"] == "ImportMedia"
 
     from urllib.parse import unquote
@@ -618,6 +725,196 @@ async def test_import_media():
     assert body["InputURL"] == "https://x/ref.jpg"
     assert body["MediaType"] == "image"
     assert json.loads(body["RegisterConfig"]) == {"NeedThirdPartyAsset": True}
+
+
+@pytest.mark.asyncio
+async def test_get_media():
+    client = _FakeClient([_FakeResponse(200, {
+        "RequestId": "req-media",
+        "MediaInfo": {
+            "MediaId": "media-1",
+            "MediaBasicInfo": {
+                "MediaId": "media-1",
+                "InputURL": "https://x/1.png",
+                "MediaType": "image",
+                "Status": "Normal",
+            },
+        },
+    })])
+    result = await get_media(
+        client,
+        access_key_id="ak", access_key_secret="sk",
+        media_id="media-1",
+    )
+    assert result["MediaInfo"]["MediaBasicInfo"]["Status"] == "Normal"
+
+    req = client.requests[0]
+    assert "Action=GetMedia" in req["url"]
+    assert "Version=2026-07-07" in req["url"]
+    assert req["headers"]["x-acs-action"] == "GetMedia"
+
+    from urllib.parse import unquote
+    body = dict(pair.split("=", 1) for pair in req["content"].split("&"))
+    body = {k: unquote(v) for k, v in body.items()}
+    assert body["MediaId"] == "media-1"
+
+    with pytest.raises(ValueError, match="MediaId"):
+        await get_media(client, access_key_id="ak", access_key_secret="sk", media_id="")
+
+    err_client = _FakeClient([_FakeResponse(400, {
+        "Code": "InvalidParameter", "Message": "media not found", "RequestId": "req-err",
+    })])
+    with pytest.raises(RuntimeError, match="GetMedia.*InvalidParameter"):
+        await get_media(
+            err_client, access_key_id="ak", access_key_secret="sk", media_id="media-x",
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_file_aliyun_returns_openai_file_with_status(monkeypatch):
+    """GET /v1/files/<file_id>: Aliyun 素材返回 OpenAI file 结构 + status。"""
+    from app.models import UploadedFile
+    from app.routes.files import get_file
+    from quart import Quart
+    import app.routes.files as files_route
+
+    class _AuthCtx:
+        api_key_group_id = 1
+        provider_id_override = None
+        user_id = None
+        api_key_id = 7
+        api_key_raw = "sk-test"
+        user_name = "tester"
+        api_key_name = "key-1"
+
+    record = UploadedFile(
+        file_id="file-abc123",
+        object_key="media-ali-1",
+        purpose="wonder-ref",
+        type="aliyun",
+        storage_key="uploads/cat.png",
+        created_at=datetime(2026, 8, 10, 6, 0, 0, tzinfo=timezone.utc),
+    )
+
+    class _FakeScalars:
+        def __init__(self, rec):
+            self._rec = rec
+        def first(self):
+            return self._rec
+
+    class _FakeResult:
+        def __init__(self, rec):
+            self._rec = rec
+        def scalars(self):
+            return _FakeScalars(self._rec)
+
+    class _FakeSession:
+        async def execute(self, query):
+            return _FakeResult(record)
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_db():
+        yield _FakeSession()
+
+    async def fake_auth():
+        return _AuthCtx(), None, 200
+
+    async def fake_creds(session, group_id, provider_id=None):
+        return {
+            "vendor": "aliyun",
+            "access_key_id": "ak",
+            "access_key_secret": "sk",
+            "region": "cn-shanghai",
+            "endpoint": None,
+            "api_version": None,
+            "provider_id": 1,
+            "provider_name": "aliyun-1",
+        }
+
+    client = _FakeClient([_FakeResponse(200, {
+        "RequestId": "req-media",
+        "MediaInfo": {
+            "MediaId": "media-ali-1",
+            "MediaBasicInfo": {
+                "MediaId": "media-ali-1",
+                "InputURL": "https://x/1.png",
+                "MediaType": "image",
+                "Status": "Normal",
+            },
+        },
+    })])
+
+    async def fake_shared_client():
+        return client
+
+    monkeypatch.setattr(files_route, "get_current_user_or_api_key", fake_auth)
+    monkeypatch.setattr(files_route, "get_db_session", fake_db)
+    monkeypatch.setattr(files_route, "_get_aliyun_credentials", fake_creds)
+    monkeypatch.setattr("app.http_client.get_shared_client", fake_shared_client)
+
+    async with Quart(__name__).app_context():
+        response = await get_file("file-abc123")
+    data = await response.get_json()
+    assert data["id"] == "file-abc123"
+    assert data["object"] == "file"
+    assert data["purpose"] == "wonder-ref"
+    assert data["filename"] == "cat.png"
+    assert data["bytes"] == 0
+    assert data["status"] == "Normal"
+    assert data["media_type"] == "image"
+    assert data["input_url"] == "https://x/1.png"
+    assert data["created_at"] == int(record.created_at.timestamp())
+
+    req = client.requests[0]
+    assert "Action=GetMedia" in req["url"]
+    assert "MediaId=media-ali-1" in req["content"]
+
+
+@pytest.mark.asyncio
+async def test_get_file_not_found(monkeypatch):
+    from app.routes.files import get_file
+    from quart import Quart
+    import app.routes.files as files_route
+
+    class _AuthCtx:
+        api_key_group_id = 1
+        provider_id_override = None
+        user_id = None
+        api_key_id = 7
+        api_key_raw = "sk-test"
+        api_key_name = "key-1"
+
+    class _FakeScalars:
+        def first(self):
+            return None
+
+    class _FakeResult:
+        def scalars(self):
+            return _FakeScalars()
+
+    class _FakeSession:
+        async def execute(self, query):
+            return _FakeResult()
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_db():
+        yield _FakeSession()
+
+    async def fake_auth():
+        return _AuthCtx(), None, 200
+
+    monkeypatch.setattr(files_route, "get_current_user_or_api_key", fake_auth)
+    monkeypatch.setattr(files_route, "get_db_session", fake_db)
+
+    async with Quart(__name__).app_context():
+        response, status_code = await get_file("file-missing")
+    assert status_code == 404
+    data = await response.get_json()
+    assert data["error"]["code"] == "not_found"
 
 
 @pytest.mark.asyncio
@@ -677,12 +974,14 @@ def test_build_media_list_media_id_sources():
     """Medias 支持 MediaId (消息块 / metadata / yike:// 前缀 / 引用列表)。"""
     block_with_media_id = ContentBlock(type=ContentType.IMAGE_URL, url="")
     block_with_media_id.media_id = "media-block-1"
+    block_with_yike_url = ContentBlock.from_image_url("yike://media-block-2")
 
     messages = [
         Message(role=MessageRole.USER, content=[
             ContentBlock.from_text("用这张图"),
             ContentBlock.from_image_url("https://x/1.jpg"),
             block_with_media_id,
+            block_with_yike_url,
         ]),
     ]
     metadata = {
@@ -703,6 +1002,7 @@ def test_build_media_list_media_id_sources():
     assert media == [
         {"Type": "image", "Url": "https://x/1.jpg"},
         {"Type": "image", "MediaId": "media-block-1"},
+        {"Type": "image", "MediaId": "media-block-2"},
         {"Type": "image", "MediaId": "media-map-1"},
         {"Type": "video", "MediaId": "media-map-2"},
         {"Type": "image", "Url": "https://x/2.jpg"},
@@ -711,6 +1011,26 @@ def test_build_media_list_media_id_sources():
         {"Type": "image", "Url": "https://x/3.jpg"},
         {"Type": "image", "MediaId": "media-ff-1"},
         {"Type": "image", "MediaId": "media-lf-1"},
+    ]
+
+
+def test_build_media_list_yike_url_dedup_with_media_map():
+    """同一素材同时出现在消息块 (yike:// 前缀) 和 file_id_media_map 时只保留一个 MediaId。"""
+    messages = [
+        Message(role=MessageRole.USER, content=[
+            ContentBlock.from_image_url("yike://media-dup-1"),
+            ContentBlock.from_image_url("https://x/plain.jpg"),
+        ]),
+    ]
+    metadata = {
+        "file_id_media_map": {
+            "file-a": {"type": "image", "url": "yike://media-dup-1"},
+        },
+    }
+    media = _build_media_list(messages, metadata)
+    assert media == [
+        {"Type": "image", "MediaId": "media-dup-1"},
+        {"Type": "image", "Url": "https://x/plain.jpg"},
     ]
 
 
@@ -760,7 +1080,7 @@ async def test_resolve_file_ids_aliyun_uses_yike_prefix():
 async def test_videos_collect_media_media_id_and_url():
     from app.routes.videos import _collect_media
 
-    media, var_map = await _collect_media({
+    media, var_map, file_var_map = await _collect_media({
         "images": ["https://x/1.jpg", {"media_id": "media-1", "var_id": "cat"}],
         "videos": [{"url": "https://v/1.mp4", "var_id": "clip"}],
         "first_frame_url": {"media_id": "media-ff"},
@@ -774,6 +1094,7 @@ async def test_videos_collect_media_media_id_and_url():
         {"Type": "image", "Url": "https://x/last.jpg"},
     ]
     assert var_map == {"cat": ("image", 2), "clip": ("video", 1)}
+    assert file_var_map == {}
 
 
 @pytest.mark.asyncio
@@ -811,7 +1132,7 @@ async def test_videos_collect_media_resolves_file_id(monkeypatch):
     import app.routes.videos as videos_route
     monkeypatch.setattr(videos_route, "get_db_session", fake_db)
 
-    media, var_map = await _collect_media({
+    media, var_map, file_var_map = await _collect_media({
         "images": [{"file_id": "file-aliyun", "var_id": "cat"}],
         "videos": [{"file_id": "file-volc"}],
     })
@@ -820,6 +1141,7 @@ async def test_videos_collect_media_resolves_file_id(monkeypatch):
         {"Type": "video", "Url": "asset://asset-volc-1"},
     ]
     assert var_map == {"cat": ("image", 1)}
+    assert file_var_map == {"file-aliyun": ("image", 1), "file-volc": ("video", 1)}
 
     with pytest.raises(ValueError, match="File not found"):
         await _collect_media({"images": ["file-missing"]})
@@ -885,27 +1207,85 @@ async def test_get_aliyun_credentials():
         await _get_aliyun_credentials(_FakeSession([]), 1)
 
 
+def test_infer_media_type_from_url():
+    """input_file 的 media_type 按 URL 扩展名推断 (image/video/audio)。"""
+    from app.routes.files import _infer_media_type_from_url
+
+    assert _infer_media_type_from_url(
+        "https://ark-project.tos-cn-beijing.volces.com/doc_image/r2v_tea_pic1.jpg"
+    ) == "image"
+    assert _infer_media_type_from_url(
+        "https://ark-project.tos-cn-beijing.volces.com/doc_audio/r2v_tea_audio1.mp3"
+    ) == "audio"
+    assert _infer_media_type_from_url(
+        "https://ark-project.tos-cn-beijing.volces.com/doc_video/r2v_tea_video1.mp4"
+    ) == "video"
+    assert _infer_media_type_from_url("https://x/a.PNG?token=1") == "image"
+    assert _infer_media_type_from_url("https://x/b.mov") == "video"
+    assert _infer_media_type_from_url("https://x/c.wav#frag") == "audio"
+    # 无法识别的扩展名 → 空, 由调用方回退到显式 media_type / image
+    assert _infer_media_type_from_url("https://x/unknown.bin") == ""
+    assert _infer_media_type_from_url("") == ""
+
+
 def test_substitute_prompt_vars():
-    """{{var_id}} → 阿里云变量名 (图/视频/音频分别计数, 中英文)。"""
+    """{{var_id}} / {{file-xxx}} → 阿里云变量名 (图片/视频/音频分别计数, 中英文)。"""
     var_map = {
         "cat": ("image", 1),
         "room": ("image", 2),
         "clip": ("video", 1),
         "song": ("audio", 1),
     }
+    file_var_map = {
+        "file-aaa": ("image", 1),
+        "file-bbb": ("video", 1),
+        "file-ccc": ("audio", 1),
+    }
     # 中文 prompt → 中文变量名
     assert _substitute_prompt_vars(
         "{{cat}} 在图里, {{room}} 是房间, {{clip}} 是参考视频", var_map
-    ) == "图 1 在图里, 图 2 是房间, 视频 1 是参考视频"
+    ) == "图片1 在图里, 图片2 是房间, 视频1 是参考视频"
     # 英文 prompt → 英文变量名
     assert _substitute_prompt_vars(
         "The cat in {{cat}} runs, audio {{song}}", var_map
     ) == "The cat in Image 1 runs, audio Audio 1"
     # 未命中的占位符保持原样
-    assert _substitute_prompt_vars("{{missing}} 和 {{cat}}", var_map) == "{{missing}} 和 图 1"
+    assert _substitute_prompt_vars("{{missing}} 和 {{cat}}", var_map) == "{{missing}} 和 图片1"
+    # {{file-xxx}} 占位符 → 按类型计数的变量名
+    assert _substitute_prompt_vars(
+        "首帧用 {{file-aaa}}, 参考 {{file-bbb}} 和 {{file-ccc}}", var_map, file_var_map
+    ) == "首帧用 图片1, 参考 视频1 和 音频1"
+    # 未出现在媒体列表中的 file_id 保持原样
+    assert _substitute_prompt_vars("{{file-missing}}", {}, {"file-a": ("image", 1)}) == "{{file-missing}}"
     # 空输入
     assert _substitute_prompt_vars("", var_map) == ""
     assert _substitute_prompt_vars("plain text", {}) == "plain text"
+
+
+def test_build_file_var_map():
+    """file_id → (media_type, index): 按 Medias 顺序、类型分别计数。"""
+    metadata = {
+        "file_id_media_map": {
+            "file-a": {"type": "image", "url": "yike://m1"},
+            "file-b": {"type": "video", "url": "yike://v1"},
+            "file-c": {"type": "input_image", "media_id": "m2"},
+            "file-d": {"type": "image", "url": "https://x/plain.jpg"},
+            "file-e": {"type": "image", "url": "yike://not-in-list"},
+        },
+    }
+    media = [
+        {"Type": "image", "MediaId": "m1"},
+        {"Type": "image", "Url": "https://x/plain.jpg"},
+        {"Type": "image", "MediaId": "m2"},
+        {"Type": "video", "MediaId": "v1"},
+    ]
+    assert _build_file_var_map(metadata, media) == {
+        "file-a": ("image", 1),
+        "file-c": ("image", 3),
+        "file-b": ("video", 1),
+        "file-d": ("image", 2),
+    }
+    assert _build_file_var_map({}, media) == {}
 
 
 def test_build_media_list_var_map():
@@ -967,8 +1347,59 @@ async def test_execute_video_generation_prompt_var_substitution(monkeypatch):
     body = dict(pair.split("=", 1) for pair in client.requests[0]["content"].split("&"))
     body = {k: unquote(v) for k, v in body.items()}
     parsed = json.loads(body["Input"])
-    assert parsed["Prompt"] == "让 图 1 里的猫奔跑"
+    assert parsed["Prompt"] == "让 图片1 里的猫奔跑"
     assert parsed["Medias"] == [{"Type": "image", "Url": "https://x/cat.jpg"}]
+
+
+@pytest.mark.asyncio
+async def test_execute_video_generation_file_id_prompt_substitution(monkeypatch):
+    """execute 提交时 Prompt 的 {{file-xxx}} 替换为图片N/视频N, 素材只以 MediaId 出现一次。"""
+    client = _FakeClient([
+        _FakeResponse(200, _submit_ok_payload()),
+        _FakeResponse(200, _job_payload(
+            "Finished",
+            output_medias='{"Medias": [{"MediaId": "m1", "OutputUrl": "https://v/1.mp4"}]}',
+        )),
+        _FakeResponse(200, _credit_payload()),
+    ])
+
+    async def fake_shared_client():
+        return client
+
+    monkeypatch.setattr("app.http_client.get_shared_client", fake_shared_client)
+
+    messages = [
+        Message(role=MessageRole.USER, content=[
+            ContentBlock.from_text("全程使用{{file-img}}作为第一视角构图，全程使用{{file-aud}}作为背景音乐"),
+            ContentBlock.from_image_url("yike://media-img-1"),
+            ContentBlock.from_video_url("yike://media-vid-1"),
+            ContentBlock.from_audio_url("yike://media-aud-1"),
+        ]),
+    ]
+    metadata = {
+        "file_id_media_map": {
+            "file-img": {"type": "image", "url": "yike://media-img-1"},
+            "file-vid": {"type": "video", "url": "yike://media-vid-1"},
+            "file-aud": {"type": "audio", "url": "yike://media-aud-1"},
+        },
+    }
+    request = _chat_request(messages=messages, metadata=metadata)
+    await execute_video_generation(
+        access_key_id="ak", access_key_secret="sk",
+        model="wonder-pro",
+        messages=request.messages,
+        metadata=request.metadata,
+    )
+    from urllib.parse import unquote
+    body = dict(pair.split("=", 1) for pair in client.requests[0]["content"].split("&"))
+    body = {k: unquote(v) for k, v in body.items()}
+    parsed = json.loads(body["Input"])
+    assert parsed["Prompt"] == "全程使用图片1作为第一视角构图，全程使用音频1作为背景音乐"
+    assert parsed["Medias"] == [
+        {"Type": "image", "MediaId": "media-img-1"},
+        {"Type": "video", "MediaId": "media-vid-1"},
+        {"Type": "audio", "MediaId": "media-aud-1"},
+    ]
 
 
 def test_normalize_input_raw_input_var_id_stripped():
@@ -985,7 +1416,7 @@ def test_normalize_input_raw_input_var_id_stripped():
         },
     )
     parsed = json.loads(out)
-    assert parsed["Prompt"] == "图 1 奔跑"
+    assert parsed["Prompt"] == "图片1 奔跑"
     assert parsed["Medias"] == [
         {"Type": "image", "Url": "https://x/a.jpg"},
         {"Type": "video", "Url": "https://x/b.mp4"},
@@ -1046,7 +1477,7 @@ async def test_execute_video_generation_success(monkeypatch):
     assert response.usage.extra["output_video_seconds"] == 5.0
     assert response.usage.extra["_task_id"] == "job-12345"
     assert response.usage.extra["credits"] == 12.5
-    assert response.usage.extra["credit_status"] == "Generated"
+    assert response.usage.extra["credit_status"] == "success"
 
     # 提交 + 轮询 + 积分查询
     assert len(client.requests) == 3
@@ -1152,7 +1583,7 @@ async def test_stream_video_generation(monkeypatch):
     assert done[0].finish_reason == FinishReason.STOP
     assert done[0].usage.extra["output_video_seconds"] == 5.0
     assert done[0].usage.extra["credits"] == 8.0
-    assert done[0].usage.extra["credit_status"] == "Generated"
+    assert done[0].usage.extra["credit_status"] == "success"
 
     # 带 tool_calls 的视频块
     tool_chunks = [c for c in chunks if c.tool_calls]
@@ -1303,7 +1734,7 @@ async def test_aliyun_provider_get_job_credit(monkeypatch):
 
     async def fake_credit(client, **kwargs):
         captured.update(kwargs)
-        return {"RequestId": "req-1", "JobId": "job-1", "JobCreditCost": 3.5, "CreditStatus": "Generated"}
+        return {"RequestId": "req-1", "JobId": "job-1", "JobCreditCost": 3.5, "CreditStatus": "success"}
 
     monkeypatch.setattr(aliyun_base, "get_yike_job_credit", fake_credit)
 
@@ -1385,7 +1816,7 @@ async def test_gateway_service_get_video_job_credit():
 
     class _FakeCreditProvider:
         async def get_job_credit(self, job_id):
-            return {"RequestId": "req-1", "JobId": job_id, "JobCreditCost": 2.0, "CreditStatus": "Generated"}
+            return {"RequestId": "req-1", "JobId": job_id, "JobCreditCost": 2.0, "CreditStatus": "success"}
 
     service = GatewayService()
     resolved = ResolvedModelData(

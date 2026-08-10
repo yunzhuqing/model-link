@@ -55,22 +55,24 @@ def _error_response(message, code="request_failed", param="", status_code=500):
 
 
 def _normalize_input(prompt: str = "", media: list = None, raw_input=None,
-                     var_map: dict = None):
+                     var_map: dict = None, file_var_map: dict = None):
     """
     Build the yike ``Input`` JSON string.
 
     Priority: explicit ``input`` (dict or JSON string) > prompt + media list.
 
-    ``{{var_id}}`` placeholders in the prompt are substituted with the Aliyun
-    variable names ("图 1" / "Image 1") using ``var_map``. Raw ``input`` JSON
-    keeps its Prompt/Medias verbatim except that user-defined ``var_id`` keys
-    on Medias items are stripped (yike does not accept them).
+    ``{{var_id}}`` / ``{{file-xxx}}`` placeholders in the prompt are
+    substituted with the Aliyun variable names ("图片1" / "Image 1") using
+    ``var_map`` / ``file_var_map``. Raw ``input`` JSON keeps its
+    Prompt/Medias verbatim except that user-defined ``var_id`` keys on Medias
+    items are stripped (yike does not accept them).
 
     Args:
         prompt: Prompt text
         media: Optional media list
         raw_input: Optional pre-built input (dict or JSON string)
         var_map: Optional var_id → (media_type, index) map
+        file_var_map: Optional file_id → (media_type, index) map
 
     Returns:
         JSON string
@@ -111,10 +113,10 @@ def _normalize_input(prompt: str = "", media: list = None, raw_input=None,
                 var_map = merged_map
             raw_prompt = obj.get("Prompt")
             if isinstance(raw_prompt, str):
-                obj["Prompt"] = _substitute_prompt_vars(raw_prompt, var_map)
+                obj["Prompt"] = _substitute_prompt_vars(raw_prompt, var_map, file_var_map)
             return json.dumps(obj, ensure_ascii=False)
 
-    prompt = _substitute_prompt_vars(prompt or "", var_map)
+    prompt = _substitute_prompt_vars(prompt or "", var_map, file_var_map)
     return build_input_json(prompt=prompt, media=media)
 
 
@@ -131,11 +133,11 @@ async def _collect_media(data: dict) -> tuple:
     Volcengine ARK assets resolve to ``asset://{asset_id}``.
 
     Returns:
-        ``(media_list, var_map)`` where media_list items are
+        ``(media_list, var_map, file_var_map)`` where media_list items are
         ``[{"Type": "image", "Url": "..."}]`` or
-        ``[{"Type": "image", "MediaId": "..."}]`` and var_map maps user
-        ``var_id`` → ``(media_type, index)`` for ``{{var_id}}`` prompt
-        substitution.
+        ``[{"Type": "image", "MediaId": "..."}]``, var_map maps user
+        ``var_id`` → ``(media_type, index)`` and file_var_map maps
+        ``file_id`` → ``(media_type, index)`` for prompt substitution.
 
     Raises:
         ValueError: When a referenced file_id does not exist.
@@ -143,7 +145,11 @@ async def _collect_media(data: dict) -> tuple:
     media = []
     file_refs: list = []
 
-    def _add(type_: str, url_: str = "", media_id: str = "", var_id: str = "") -> None:
+    def _add(type_: str, url_: str = "", media_id: str = "", var_id: str = "",
+             file_id: str = "") -> None:
+        if not media_id and url_.startswith("yike://"):
+            media_id = url_[len("yike://"):]
+            url_ = ""
         if media_id:
             if any(m.get("MediaId") == media_id for m in media):
                 return
@@ -154,6 +160,8 @@ async def _collect_media(data: dict) -> tuple:
             item = {"Type": type_, "Url": url_}
         else:
             return
+        if file_id:
+            item["_file_id"] = file_id
         if var_id:
             item["_var_id"] = var_id
         media.append(item)
@@ -204,24 +212,28 @@ async def _collect_media(data: dict) -> tuple:
             if rec is None:
                 raise ValueError(f"File not found: {fid}")
             if rec.type == "aliyun":
-                _add(mtype, media_id=rec.object_key, var_id=var_id)
+                _add(mtype, media_id=rec.object_key, var_id=var_id, file_id=fid)
             elif rec.storage_key and rec.storage_key.startswith(("http://", "https://")):
-                _add(mtype, rec.storage_key, var_id=var_id)
+                _add(mtype, rec.storage_key, var_id=var_id, file_id=fid)
             else:
-                _add(mtype, f"asset://{rec.object_key}", var_id=var_id)
+                _add(mtype, f"asset://{rec.object_key}", var_id=var_id, file_id=fid)
 
-    # Build var_id → (media_type, index) map (type-wise numbering) and strip
-    # internal markers.
+    # Build var_id / file_id → (media_type, index) maps (type-wise numbering)
+    # and strip internal markers.
     var_map: dict = {}
+    file_var_map: dict = {}
     counters = {"image": 0, "video": 0, "audio": 0}
     for item in media:
         mtype = item["Type"]
         counters[mtype] += 1
+        file_id = item.pop("_file_id", None)
+        if file_id:
+            file_var_map[file_id] = (mtype, counters[mtype])
         var_id = item.pop("_var_id", None)
         if var_id:
             var_map[var_id] = (mtype, counters[mtype])
 
-    return media, var_map
+    return media, var_map, file_var_map
 
 
 # ============== Videos Generations API ==============
@@ -252,12 +264,13 @@ async def create_video_generation():
 
     prompt = data.get('prompt', '')
     try:
-        media, var_map = await _collect_media(data)
+        media, var_map, file_var_map = await _collect_media(data)
     except ValueError as e:
         _log_error("videos_generations", 404, str(e), _build_error_context(auth_ctx, model_name))
         return _error_response(str(e), code="file_not_found", status_code=404)
     input_json = _normalize_input(prompt=prompt, media=media,
-                                  raw_input=data.get('input'), var_map=var_map)
+                                  raw_input=data.get('input'), var_map=var_map,
+                                  file_var_map=file_var_map)
 
     job_type = data.get('job_type') or infer_job_type(media)
     n = data.get('n', 1)

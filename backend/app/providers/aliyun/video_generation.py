@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 # 默认 API 版本 (用户账号实测可用)。新版接口为 2026-07-07,
 # 可通过供应商 extra_config["api_version"] 覆盖。
-YIKE_API_VERSION = "2026-03-19"
+YIKE_API_VERSION = "2026-07-07"
 
 # 区域端点映射 (regional endpoint rule)
 YIKE_ENDPOINT_MAP = {
@@ -245,12 +245,18 @@ def build_rpc_params(
         if v is not None:
             signed_params[k] = v
 
+    def _rpc_value(v: Any) -> Any:
+        # Aliyun RPC 规范: 布尔值在签名与请求体中都使用小写 true/false。
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        return v
+
     canonical_pairs = []
     for key in sorted(signed_params):
         value = signed_params[key]
         if value is None:
             continue
-        canonical_pairs.append(f"{_percent_encode(key)}={_percent_encode(value)}")
+        canonical_pairs.append(f"{_percent_encode(key)}={_percent_encode(_rpc_value(value))}")
     canonicalized_query_string = "&".join(canonical_pairs)
     string_to_sign = f"POST&%2F&{quote_plus(canonicalized_query_string, safe='~')}"
     common["Signature"] = _compute_rpc_signature(access_key_secret, string_to_sign)
@@ -391,24 +397,14 @@ def _resolve_size_params(metadata: dict) -> tuple:
 # 辅助函数: 提取 Prompt 与媒体列表
 # =============================================================================
 
-_FILE_ID_TEMPLATE_RE = re.compile(r"\{\{file-[a-f0-9]+\}\}")
-
-
-def _strip_file_id_templates(text: str) -> str:
-    """Remove ``{{file-xxx}}`` placeholders from prompt text."""
-    if not text:
-        return text
-    stripped = _FILE_ID_TEMPLATE_RE.sub("", text)
-    return re.sub(r"\s+", " ", stripped).strip()
-
-
 def _extract_text_prompt(messages: List[Message]) -> str:
     """
     Extract the text prompt from messages.
 
     Concatenates all text content blocks from user messages into a single
-    prompt string; ``{{file-xxx}}`` placeholders are stripped because yike
-    references media via the Medias array instead.
+    prompt string. ``{{file-xxx}}`` / ``{{var_id}}`` placeholders are left
+    intact; they are substituted later with Aliyun variable names
+    (图片N / 视频N / 音频N) based on the Medias list.
 
     Args:
         messages: List of messages
@@ -421,12 +417,12 @@ def _extract_text_prompt(messages: List[Message]) -> str:
         if msg.role != MessageRole.USER:
             continue
         if isinstance(msg.content, str):
-            prompt_parts.append(_strip_file_id_templates(msg.content))
+            prompt_parts.append(msg.content)
         elif isinstance(msg.content, list):
             for block in msg.content:
                 if isinstance(block, dict):
                     if block.get("type") == "text":
-                        prompt_parts.append(_strip_file_id_templates(block.get("text", "")))
+                        prompt_parts.append(block.get("text", ""))
                 elif hasattr(block, "type"):
                     block_type = block.type
                     if isinstance(block_type, str):
@@ -434,7 +430,7 @@ def _extract_text_prompt(messages: List[Message]) -> str:
                     else:
                         is_text = getattr(block_type, "value", None) == "text"
                     if is_text:
-                        prompt_parts.append(_strip_file_id_templates(block.text or ""))
+                        prompt_parts.append(block.text or "")
     return "".join(prompt_parts).strip()
 
 
@@ -503,47 +499,100 @@ def _split_media_ref(ref: str) -> str:
 
 
 # 阿里云万相/Wonder 提示词中的素材变量名 (按媒体数组顺序、类型分别计数)
-_VAR_NAMES_ZH = {"image": "图 {n}", "video": "视频 {n}", "audio": "音频 {n}"}
+_VAR_NAMES_ZH = {"image": "图片{n}", "video": "视频{n}", "audio": "音频{n}"}
 _VAR_NAMES_EN = {"image": "Image {n}", "video": "Video {n}", "audio": "Audio {n}"}
 
 
 def _aliyun_var_name(media_type: str, index: int, language: str = "zh") -> str:
-    """Build the Aliyun prompt variable name for a media item, e.g. "图 1"."""
+    """Build the Aliyun prompt variable name for a media item, e.g. "图片1"."""
     table = _VAR_NAMES_EN if language == "en" else _VAR_NAMES_ZH
-    return table.get(str(media_type), "图 {n}").format(n=max(1, int(index)))
+    return table.get(str(media_type), "图片{n}").format(n=max(1, int(index)))
 
 
-def _substitute_prompt_vars(prompt: str, var_map: Dict[str, Any]) -> str:
+def _substitute_prompt_vars(
+    prompt: str,
+    var_map: Dict[str, Any],
+    file_var_map: Optional[Dict[str, Any]] = None,
+) -> str:
     """
-    Replace ``{{var_id}}`` placeholders in the prompt with Aliyun variable
-    names (e.g. "图 1" / "Image 1"), one per referenced media item.
+    Replace ``{{var_id}}`` / ``{{file-xxx}}`` placeholders in the prompt with
+    Aliyun variable names (e.g. "图片1" / "Image 1"), one per referenced media
+    item.
 
-    ``var_map`` maps var_id → ``(media_type, index)`` where index is the
-    1-based position of the media item among items of the same type (图片和
-    视频分别计数, 与 Input.Medias 数组顺序一致).
+    ``var_map`` maps var_id → ``(media_type, index)`` and ``file_var_map``
+    maps file_id → ``(media_type, index)``; index is the 1-based position of
+    the media item among items of the same type (图片/视频/音频分别计数, 与
+    Input.Medias 数组顺序一致).
 
-    Placeholders not present in ``var_map`` are left untouched.
+    Placeholders not present in either map are left untouched.
 
     Args:
-        prompt:  Raw prompt text
-        var_map: var_id → (media_type, index)
+        prompt:       Raw prompt text
+        var_map:      var_id → (media_type, index)
+        file_var_map: file_id → (media_type, index) (optional)
 
     Returns:
         Prompt with ``{{var_id}}`` placeholders substituted.
     """
-    if not prompt or not var_map:
+    if not prompt or (not var_map and not file_var_map):
         return prompt
     has_cjk = bool(re.search(r"[\u4e00-\u9fff]", prompt))
     language = "zh" if has_cjk else "en"
 
     def _replace(match: "re.Match") -> str:
-        info = var_map.get(match.group(1))
+        name = match.group(1)
+        info = var_map.get(name)
+        if info is None and file_var_map:
+            info = file_var_map.get(name)
         if info is None:
             return match.group(0)
         media_type, index = info
         return _aliyun_var_name(media_type, index, language)
 
     return re.sub(r"\{\{([^}]+)\}\}", _replace, prompt)
+
+
+def _build_file_var_map(metadata: dict, media_list: List[Dict[str, str]]) -> Dict[str, Any]:
+    """
+    Build file_id → ``(media_type, index)`` for ``{{file-xxx}}`` placeholders.
+
+    Indexes are the per-type 1-based positions of each file's media item in
+    the yike ``Medias`` list (图片/视频/音频分别计数), so prompt placeholders
+    line up with the numbering used in Input.Medias.
+
+    Files whose media item is not present in ``media_list`` are skipped and
+    their placeholders are left untouched by ``_substitute_prompt_vars``.
+    """
+    fid_map = metadata.get("file_id_media_map")
+    if not isinstance(fid_map, dict) or not fid_map:
+        return {}
+
+    counters = {"image": 0, "video": 0, "audio": 0}
+    index_by_media: Dict[str, Any] = {}
+    for item in media_list:
+        mtype = item.get("Type")
+        if mtype not in counters:
+            continue
+        counters[mtype] += 1
+        key = item.get("MediaId") or item.get("Url") or ""
+        if key:
+            index_by_media[key] = (mtype, counters[mtype])
+
+    result: Dict[str, Any] = {}
+    for fid, info in fid_map.items():
+        if not isinstance(info, dict):
+            continue
+        mtype = str(info.get("type") or "").replace("input_", "")
+        if mtype not in counters:
+            continue
+        media_id = str(info.get("media_id") or "")
+        url = str(info.get("url") or "")
+        if not media_id and url.startswith(_YIKE_MEDIA_PREFIX):
+            media_id = _split_media_ref(url)
+        key = media_id or url
+        if key in index_by_media:
+            result[fid] = index_by_media[key]
+    return result
 
 
 def _build_media_list(
@@ -584,6 +633,10 @@ def _build_media_list(
     seen: set = set()
 
     def _add(type_: str, url_: str = "", media_id: str = "", var_id: str = "") -> None:
+        # Normalize resolved uploaded-asset refs: yike://{MediaId} → MediaId.
+        if not media_id and url_.startswith(_YIKE_MEDIA_PREFIX):
+            media_id = _split_media_ref(url_)
+            url_ = ""
         if not url_ and not media_id:
             return
         key = media_id or url_
@@ -641,7 +694,7 @@ def _build_media_list(
         if isinstance(refs, list):
             for ref in refs:
                 if isinstance(ref, str):
-                    _add(ref_type, _split_media_ref(ref) if ref.startswith(_YIKE_MEDIA_PREFIX) else ref)
+                    _add(ref_type, ref)
                 elif isinstance(ref, dict):
                     media_id, url, var_id = _entry_ref(ref)
                     _add(ref_type, url, media_id, var_id)
@@ -652,10 +705,7 @@ def _build_media_list(
             media_id, url, var_id = _entry_ref(value)
             _add("image", url, media_id, var_id)
         elif isinstance(value, str) and value:
-            if value.startswith(_YIKE_MEDIA_PREFIX):
-                _add("image", media_id=_split_media_ref(value))
-            else:
-                _add("image", value)
+            _add("image", value)
 
     # Build var_id → (media_type, index) map and strip internal markers.
     var_map: Dict[str, Any] = {}
@@ -1228,6 +1278,112 @@ async def import_media(
             _span.end(error=_error)
 
 
+async def get_media(
+    client,
+    *,
+    access_key_id: str,
+    access_key_secret: str,
+    media_id: str,
+    region: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    security_token: Optional[str] = None,
+    version: Optional[str] = None,
+    tracer: Any = None,
+) -> Dict[str, Any]:
+    """
+    Call GetMedia and return the parsed response.
+
+    Returns the yike media detail::
+
+        {
+          "RequestId": str,
+          "MediaInfo": {
+            "MediaId": str,
+            "MediaBasicInfo": {
+              "MediaId": str,
+              "InputURL": str,
+              "MediaType": str,
+              "Status": str
+            }
+          }
+        }
+
+    Args:
+        client: httpx.AsyncClient
+        access_key_id: Alibaba Cloud AccessKey ID
+        access_key_secret: Alibaba Cloud AccessKey Secret
+        media_id: yike MediaId (as returned by ImportMedia)
+        region: Optional region id
+        endpoint: Optional endpoint override
+        security_token: Optional STS security token
+        version: Optional API version override (defaults to YIKE_API_VERSION)
+        tracer: Optional tracer for child span
+
+    Returns:
+        Parsed GetMedia response dict.
+
+    Raises:
+        RuntimeError: On API error
+    """
+    api_version = version or YIKE_API_VERSION
+    media_id = str(media_id or "").strip()
+    if not media_id:
+        raise ValueError("MediaId is required for GetMedia")
+
+    params: Dict[str, Any] = {"MediaId": media_id}
+    host = resolve_yike_endpoint(region, endpoint)
+    query = build_rpc_params(
+        action="GetMedia",
+        version=api_version,
+        access_key_id=access_key_id,
+        access_key_secret=access_key_secret,
+        params=params,
+        security_token=security_token,
+    )
+    url = _rpc_request_url(host, query)
+
+    _span = None
+    if tracer:
+        _span = tracer.start_child(
+            media_id, model="get-media", provider_type="aliyun",
+            input_data=params, obs_type="span",
+        )
+        if _span:
+            _span.log_input(params)
+    _error: Optional[Exception] = None
+
+    try:
+        response = await client.post(
+            url,
+            content=_rpc_form_body(params),
+            headers=_rpc_headers(api_version, "GetMedia"),
+        )
+        if response.status_code >= 400:
+            error_msg = f"Aliyun GetMedia error ({response.status_code})"
+            try:
+                error_body = response.json()
+                code = error_body.get("Code") or error_body.get("code") or ""
+                message = error_body.get("Message") or error_body.get("message") or ""
+                request_id = error_body.get("RequestId") or error_body.get("requestId") or ""
+                error_msg += f": [{code}] {message} (RequestId: {request_id})"
+            except Exception:
+                error_msg += f": {response.text}"
+            raise RuntimeError(error_msg)
+
+        result = response.json()
+        if _span:
+            _span.log_output(result)
+        return result
+    except httpx.RequestError as e:
+        raise RuntimeError(f"Aliyun media query network error: {e}")
+    except Exception:
+        _error = sys.exc_info()[1]
+        raise
+    finally:
+        if _span:
+            _span.end(error=_error)
+
+
 async def get_yike_job_credit(
     client,
     *,
@@ -1320,6 +1476,13 @@ async def get_yike_job_credit(
             _span.end(error=_error)
 
 
+# GetYikeJobCredit 的结算状态: 任务 Finished 后积分异步结算,
+# 结算完成前 CreditStatus 为 "init" 且 JobCreditCost=0。
+_CREDIT_SETTLED_STATUS = "success"
+_CREDIT_POLL_TIMEOUT_S = 20
+_CREDIT_POLL_INTERVAL_S = 3
+
+
 async def _fetch_job_credit(
     *,
     access_key_id: str,
@@ -1330,13 +1493,27 @@ async def _fetch_job_credit(
     security_token: Optional[str] = None,
     version: Optional[str] = None,
     tracer: Any = None,
+    credit_timeout: int = _CREDIT_POLL_TIMEOUT_S,
+    poll_interval: int = _CREDIT_POLL_INTERVAL_S,
 ) -> Optional[Dict[str, Any]]:
     """
     Best-effort fetch of the credit cost consumed by a finished job.
 
+    Aliyun settles job credits asynchronously: right after the job reaches
+    Finished, GetYikeJobCredit returns ``CreditStatus="init"`` with
+    ``JobCreditCost=0``. This polls until the credit is settled
+    (``CreditStatus == "success"``), bounded by ``credit_timeout``. On
+    timeout the last response is returned as-is (status/cost may still be
+    init/0); a failed credit query must never fail the video generation
+    itself, so errors are logged and None is returned.
+
     Credit info is a bonus for usage reporting; a failed credit query must
     never fail the video generation itself, so errors are logged and None is
     returned.
+
+    Args:
+        credit_timeout: Max seconds to wait for credit settlement (default 20)
+        poll_interval: Seconds between credit polls (default 3)
 
     Returns:
         Parsed credit response dict, or None when the query fails.
@@ -1345,17 +1522,29 @@ async def _fetch_job_credit(
         from app.http_client import get_shared_client
 
         client = await get_shared_client()
-        return await get_yike_job_credit(
-            client,
-            access_key_id=access_key_id,
-            access_key_secret=access_key_secret,
-            job_id=job_id,
-            region=region,
-            endpoint=endpoint,
-            security_token=security_token,
-            version=version,
-            tracer=tracer,
-        )
+        deadline = time.time() + max(0, int(credit_timeout))
+        last: Optional[Dict[str, Any]] = None
+        while True:
+            try:
+                last = await get_yike_job_credit(
+                    client,
+                    access_key_id=access_key_id,
+                    access_key_secret=access_key_secret,
+                    job_id=job_id,
+                    region=region,
+                    endpoint=endpoint,
+                    security_token=security_token,
+                    version=version,
+                    tracer=tracer,
+                )
+            except Exception as e:
+                logger.warning("Failed to fetch yike job credit for %s: %s", job_id, e)
+                return None
+            if (last.get("CreditStatus") or "") == _CREDIT_SETTLED_STATUS:
+                return last
+            if time.time() >= deadline:
+                return last
+            await asyncio.sleep(max(0, int(poll_interval)))
     except Exception as e:
         logger.warning("Failed to fetch yike job credit for %s: %s", job_id, e)
         return None
@@ -1618,7 +1807,8 @@ async def execute_video_generation(
 
     prompt = _extract_text_prompt(messages)
     media, var_map = _build_media_list(messages, metadata, return_vars=True)
-    prompt = _substitute_prompt_vars(prompt, var_map)
+    file_var_map = _build_file_var_map(metadata, media)
+    prompt = _substitute_prompt_vars(prompt, var_map, file_var_map)
     job_type = metadata.get("job_type") or infer_job_type(media)
     input_json = metadata.get("input")
     if not input_json:
@@ -1793,7 +1983,8 @@ async def stream_video_generation(
 
     prompt = _extract_text_prompt(request.messages)
     media, var_map = _build_media_list(request.messages, metadata, return_vars=True)
-    prompt = _substitute_prompt_vars(prompt, var_map)
+    file_var_map = _build_file_var_map(metadata, media)
+    prompt = _substitute_prompt_vars(prompt, var_map, file_var_map)
     job_type = metadata.get("job_type") or infer_job_type(media)
     input_json = metadata.get("input")
     if not input_json:
