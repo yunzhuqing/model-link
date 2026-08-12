@@ -371,62 +371,84 @@ def _resolve_output_price(
         norm_res = resolution.strip().lower() if resolution else ''
         norm_quality = quality.strip().lower() if quality else ''
 
-        # Collect candidate tiers
-        candidates: list = []
-        for tier in tiers:
-            if not isinstance(tier, dict):
-                continue
+        def _flag_score(tier_audio, tier_ref, *, strict: bool):
+            """Score audio / reference_video flags for one tier.
 
-            # Resolution matching: tier without resolution → wildcard (matches any)
-            tier_res = (tier.get('resolution') or '').strip().lower()
-            if tier_res and norm_res and tier_res != norm_res:
-                continue  # Resolution mismatch
-
-            # Quality matching: tier without quality → wildcard (matches any)
-            tier_quality = (tier.get('quality') or '').strip().lower()
-            if tier_quality and norm_quality and tier_quality != norm_quality:
-                continue  # Quality mismatch
-
-            # Check audio and reference_video flags
-            tier_audio = tier.get('audio')            # None means wildcard
-            tier_ref = tier.get('reference_video')    # None means wildcard
-
-            # Compute match score (higher = more specific match)
+            ``None`` flag values are wildcards (match anything, no score).
+            In strict mode a flag mismatch rejects the tier (returns None);
+            in relaxed mode flags are soft preferences (matching flag preferred,
+            mismatch penalized but not fatal), so a config whose discriminator
+            set doesn't cover the request's actual output still resolves to the
+            closest tier — e.g. Seedance 2.5 generates audio by default while
+            the configured tiers all carry ``audio: false``.
+            """
             score = 0
-            match = True
-
-            # Resolution specificity bonus
-            if tier_res and norm_res and tier_res == norm_res:
-                score += 1  # Exact resolution match is preferred
-
-            # Quality specificity bonus
-            if tier_quality and norm_quality and tier_quality == norm_quality:
-                score += 1  # Exact quality match is preferred
-
-            # Audio flag matching
+            # Audio flag
             if tier_audio is not None and audio is not None:
-                if bool(tier_audio) != bool(audio):
-                    match = False
-                else:
+                if bool(tier_audio) == bool(audio):
                     score += 1
-            elif tier_audio is not None:
+                elif strict:
+                    return None
+                else:
+                    score -= 1
+            elif tier_audio is not None and bool(tier_audio):
                 # Tier specifies audio but request doesn't — prefer non-audio
-                if bool(tier_audio):
-                    score -= 1
-
-            # Reference video flag matching
+                score -= 1
+            # Reference video flag
             if tier_ref is not None and reference_video is not None:
-                if bool(tier_ref) != bool(reference_video):
-                    match = False
-                else:
+                if bool(tier_ref) == bool(reference_video):
                     score += 1
-            elif tier_ref is not None:
-                # Tier specifies ref_video but request doesn't — prefer non-ref
-                if bool(tier_ref):
+                elif strict:
+                    return None
+                else:
                     score -= 1
+            elif tier_ref is not None and bool(tier_ref):
+                # Tier specifies ref_video but request doesn't — prefer non-ref
+                score -= 1
+            return score
 
-            if match:
-                candidates.append((score, tier))
+        def _collect_tiers(strict: bool):
+            out: list = []
+            for tier in tiers:
+                if not isinstance(tier, dict):
+                    continue
+
+                # Resolution matching: tier without resolution → wildcard (matches any)
+                tier_res = (tier.get('resolution') or '').strip().lower()
+                if tier_res and norm_res and tier_res != norm_res:
+                    continue  # Resolution mismatch
+
+                # Quality matching: tier without quality → wildcard (matches any)
+                tier_quality = (tier.get('quality') or '').strip().lower()
+                if tier_quality and norm_quality and tier_quality != norm_quality:
+                    continue  # Quality mismatch
+
+                # Compute match score (higher = more specific match)
+                score = 0
+
+                # Resolution specificity bonus
+                if tier_res and norm_res and tier_res == norm_res:
+                    score += 1  # Exact resolution match is preferred
+
+                # Quality specificity bonus
+                if tier_quality and norm_quality and tier_quality == norm_quality:
+                    score += 1  # Exact quality match is preferred
+
+                flag = _flag_score(tier.get('audio'), tier.get('reference_video'), strict=strict)
+                if flag is None:
+                    continue
+                score += flag
+                out.append((score, tier))
+            return out
+
+        # Strict pass first: keep the historical exact-match semantics.
+        candidates = _collect_tiers(strict=True)
+        if not candidates:
+            # No tier matches every flag. Relax flag matching so the price still
+            # resolves instead of collapsing to base_price (which e.g. picks the
+            # ¥42 "with ref video" price for a text-only Seedance 2.5 request that
+            # should be ¥70). Resolution / quality are still enforced.
+            candidates = _collect_tiers(strict=False)
 
         if candidates:
             # Pick the best matching tier (highest score)
