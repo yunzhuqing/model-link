@@ -621,11 +621,11 @@ async def get_summary_time_series_by_model():
 
     granularity = request.args.get("granularity", "day")
 
-    # Card ``ds`` is per-day; only ``day`` is served by Metabase. hour/month
-    # fall back to the DB path below regardless of the source switch.
-    if metabase_client.is_enabled() and granularity == "day":
+    # Metabase serves all granularities: day breaks out on the per-day ``ds``
+    # partition; hour/month are bucketed from the card's ``_time`` DateTime.
+    if metabase_client.is_enabled():
         try:
-            return jsonify(await metabase_client.fetch_time_series_by_model(filters))
+            return jsonify(await metabase_client.fetch_time_series_by_model(filters, granularity=granularity))
         except Exception as exc:  # noqa: BLE001
             logger.error("metabase fetch_time_series_by_model failed: %s", exc)
             return jsonify({"detail": f"failed to load stats: {exc}"}), 502
@@ -684,11 +684,11 @@ async def get_summary_time_series():
 
     granularity = request.args.get("granularity", "day")
 
-    # Card ``ds`` is per-day; only ``day`` is served by Metabase. hour/month
-    # fall back to the DB path below regardless of the source switch.
-    if metabase_client.is_enabled() and granularity == "day":
+    # Metabase serves all granularities: day breaks out on the per-day ``ds``
+    # partition; hour/month are bucketed from the card's ``_time`` DateTime.
+    if metabase_client.is_enabled():
         try:
-            return jsonify(await metabase_client.fetch_time_series(filters))
+            return jsonify(await metabase_client.fetch_time_series(filters, granularity=granularity))
         except Exception as exc:  # noqa: BLE001
             logger.error("metabase fetch_time_series failed: %s", exc)
             return jsonify({"detail": f"failed to load stats: {exc}"}), 502

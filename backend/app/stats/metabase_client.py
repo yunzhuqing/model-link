@@ -20,10 +20,13 @@ Coverage notes (card schema vs. endpoint fields):
                            used for the relay-group exclusion filter
   - native currency amt  → not on card (only USD ``actualamountusd``); ``/by_currency``
                            stays on DB
-  - ``granularity``      → card ``ds`` is per-day; only ``day`` is served here,
-                           ``hour``/``month`` fall back to DB
+  - ``granularity``      → day breaks out on the per-day ``ds`` partition;
+                           ``hour``/``month`` have no pre-aggregated column and
+                           are bucketed from the card's ``_time`` DateTime via
+                           MBQL expressions, so all three are served from here.
 """
 import os
+import re
 import uuid
 import json
 import logging
@@ -58,6 +61,7 @@ _FIELD_TYPES = {
     "outputaudioseconds": ("type/BigInteger", "type/BigInteger"),
     "websearchrequests": ("type/BigInteger", "type/BigInteger"),
     "ds_time": ("type/Date", "type/Date"),
+    "_time": ("type/DateTime", "type/DateTime"),
 }
 
 
@@ -76,6 +80,11 @@ def _field_ref(name: str) -> list:
         raise ValueError(f"Unknown Metabase field: {name!r}")
     eff, base = _FIELD_TYPES[name]
     field_uuid = _env(f"METABASE_FIELD_{name.upper()}_UUID")
+    if not field_uuid and name == "_time":
+        # Ad-hoc queries reference ``_time`` with a fresh lib/uuid per clause and
+        # Metabase resolves the column by name; mirror that so the hour/month
+        # expressions work without configuring METABASE_FIELD__TIME_UUID.
+        field_uuid = str(uuid.uuid4())
     if not field_uuid:
         raise RuntimeError(
             f"Metabase field UUID for {name!r} is not configured "
@@ -136,6 +145,79 @@ def _iso_period(v) -> Optional[str]:
     return s  # 已是 ISO 或其它，原样返回
 
 
+# ── Time-series period expressions ────────────────────────────────────────────
+# The card only pre-aggregates a per-day ``ds`` partition; hourly/monthly buckets
+# are computed in-query from the ``_time`` DateTime column via MBQL expressions
+# (the same ``concat``/``get-*`` approach proven against the card). The
+# expression result is unpadded (``2026-8-9 13``); ``_normalize_period``
+# re-zeros it into the exact ISO shape the DB path emits.
+
+_HOUR_PERIOD_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2})")
+_MONTH_PERIOD_RE = re.compile(r"(\d{4})-(\d{1,2})")
+
+
+def _expression_clause(name: str) -> dict:
+    """Opening clause of an MBQL expression definition (uuid + name)."""
+    return {"lib/uuid": str(uuid.uuid4()), "lib/expression-name": name}
+
+
+def _get_part(fn: str) -> list:
+    """``["get-year", uuid, field_ref("_time")]``-style temporal getter."""
+    return [fn, _clause_uuid(), _field_ref("_time")]
+
+
+def _period_expression(granularity: str) -> tuple:
+    """Return (breakout_clause, [expressions]) for the time-series period column.
+
+    ``day`` keeps the existing ``ds`` text partition; ``hour`` / ``month`` break
+    out on a named expression over ``_time`` so Metabase does the bucketing.
+    """
+    if granularity == "hour":
+        name = "hour_of_day"
+        expr = [
+            "concat", _expression_clause(name),
+            _get_part("get-year"), "-",
+            _get_part("get-month"), "-",
+            _get_part("get-day"), " ",
+            _get_part("get-hour"),
+        ]
+    elif granularity == "month":
+        name = "year_month"
+        expr = [
+            "concat", _expression_clause(name),
+            _get_part("get-year"), "-",
+            _get_part("get-month"),
+        ]
+    else:
+        return [_field_ref("ds")], []
+    return [["expression", name]], [expr]
+
+
+def _normalize_period(v, granularity: str):
+    """Re-format an MBQL period value into the DB path's ISO shape.
+
+    hour   → ``2026-08-09T13:00:00``  (DB: ``%Y-%m-%dT%H:00:00``)
+    month  → ``2026-08-01T00:00:00``  (DB: ``%Y-%m-01T00:00:00``)
+    day    → falls through to ``_iso_period`` (``yyyy-MM-dd``)
+    """
+    if v is None:
+        return None
+    s = str(v).strip()
+    if granularity == "hour":
+        m = _HOUR_PERIOD_RE.match(s)
+        if m:
+            y, mo, d, h = (int(g) for g in m.groups())
+            return f"{y:04d}-{mo:02d}-{d:02d}T{h:02d}:00:00"
+        return s
+    if granularity == "month":
+        m = _MONTH_PERIOD_RE.match(s)
+        if m:
+            y, mo = (int(g) for g in m.groups())
+            return f"{y:04d}-{mo:02d}-01T00:00:00"
+        return s
+    return _iso_period(v)
+
+
 def _filter_clauses(filters: dict) -> list:
     """Build the dimension + date-range MBQL filter clauses from the filters
     dict produced by ``routes/usage._get_summary_filters``.
@@ -176,7 +258,8 @@ def _filter_clauses(filters: dict) -> list:
     return clauses
 
 
-def _build_query(breakout: list, aggregations: list, filters: dict) -> dict:
+def _build_query(breakout: list, aggregations: list, filters: dict,
+                 expressions: list | None = None) -> dict:
     card_id = _env("METABASE_CARD_ID")
     database_id = _env("METABASE_DATABASE_ID")
     if not card_id or not database_id:
@@ -190,6 +273,10 @@ def _build_query(breakout: list, aggregations: list, filters: dict) -> dict:
         "aggregation": aggregations,
         "filters": _filter_clauses(filters),
     }
+    # Named expressions (used for hour/month period bucketing) must be declared
+    # on the stage before the breakout can reference them.
+    if expressions:
+        stage["expressions"] = expressions
     # Metabase rejects an empty ``breakout: []`` ("should have at least 1
     # elements"); only include the key when there is a real breakout.
     if breakout:
@@ -358,9 +445,10 @@ async def fetch_by_api_key(filters: dict) -> list[dict]:
     return items[:20]
 
 
-async def fetch_time_series(filters: dict) -> list[dict]:
+async def fetch_time_series(filters: dict, granularity: str = "day") -> list[dict]:
+    breakout, expressions = _period_expression(granularity)
     mbql = _build_query(
-        breakout=[_field_ref("ds")],
+        breakout=breakout,
         aggregations=[
             _agg_count(),
             _agg_sum("inputtokens"),
@@ -370,12 +458,13 @@ async def fetch_time_series(filters: dict) -> list[dict]:
             _agg_sum("actualamountusd"),
         ],
         filters=filters,
+        expressions=expressions,
     )
     rows = await _run(mbql)
-    # [ds, count, in, out, reasoning, cache_creation, amount]
+    # [period, count, in, out, reasoning, cache_creation, amount]
     items = [
         {
-            "period": _iso_period(r[0]),
+            "period": _normalize_period(r[0], granularity),
             "requests": _int(r[1]),
             "input_tokens": _int(r[2]),
             "output_tokens": _int(r[3]),
@@ -390,9 +479,10 @@ async def fetch_time_series(filters: dict) -> list[dict]:
     return items
 
 
-async def fetch_time_series_by_model(filters: dict) -> list[dict]:
+async def fetch_time_series_by_model(filters: dict, granularity: str = "day") -> list[dict]:
+    breakout, expressions = _period_expression(granularity)
     mbql = _build_query(
-        breakout=[_field_ref("ds"), _field_ref("modelname")],
+        breakout=[*breakout, _field_ref("modelname")],
         aggregations=[
             _agg_count(),
             _agg_sum("inputtokens"),
@@ -402,12 +492,13 @@ async def fetch_time_series_by_model(filters: dict) -> list[dict]:
             _agg_sum("actualamountusd"),
         ],
         filters=filters,
+        expressions=expressions,
     )
     rows = await _run(mbql)
-    # [ds, modelname, count, in, out, reasoning, cache_creation, amount]
+    # [period, modelname, count, in, out, reasoning, cache_creation, amount]
     items = [
         {
-            "period": _iso_period(r[0]),
+            "period": _normalize_period(r[0], granularity),
             "model_name": r[1],
             "requests": _int(r[2]),
             "input_tokens": _int(r[3]),
