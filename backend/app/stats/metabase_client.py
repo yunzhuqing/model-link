@@ -190,7 +190,7 @@ def _period_expression(granularity: str) -> tuple:
         ]
     else:
         return [_field_ref("ds")], []
-    return [["expression", name]], [expr]
+    return [["expression", _clause_uuid(), name]], [expr]
 
 
 def _normalize_period(v, granularity: str):

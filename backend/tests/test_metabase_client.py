@@ -45,7 +45,9 @@ def test_period_expression_day(monkeypatch):
 
 def test_period_expression_hour():
     breakout, expressions = mb._period_expression("hour")
-    assert breakout == [["expression", "hour_of_day"]]
+    assert breakout[0][0] == "expression"
+    assert breakout[0][1]["lib/uuid"]
+    assert breakout[0][2] == "hour_of_day"
     assert len(expressions) == 1
     expr = expressions[0]
     assert expr[0] == "concat"
@@ -58,7 +60,9 @@ def test_period_expression_hour():
 
 def test_period_expression_month():
     breakout, expressions = mb._period_expression("month")
-    assert breakout == [["expression", "year_month"]]
+    assert breakout[0][0] == "expression"
+    assert breakout[0][1]["lib/uuid"]
+    assert breakout[0][2] == "year_month"
     assert len(expressions) == 1
     expr = expressions[0]
     assert expr[1]["lib/expression-name"] == "year_month"
