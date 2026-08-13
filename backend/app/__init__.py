@@ -17,6 +17,8 @@ from flask_migrate import Migrate
 # ContextVar to hold the current request ID so it can be injected into log records.
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
+logger = logging.getLogger(__name__)
+
 
 class RequestIdFilter(logging.Filter):
     """Logging filter that injects the current request_id into every log record."""
@@ -608,9 +610,16 @@ def create_app(config=None):
 
     # Register the usage-sync daemon to start only when this node becomes leader,
     # and stop it immediately when leadership is lost.
+    # Disabled by default — the leader does NOT auto-start usage sync unless
+    # USAGE_SYNC_ENABLED=true (manual /api/usage/sync/{start,run} endpoints
+    # remain available regardless).
     from app.usagerecord.sync_service import start_usage_sync as _start_usage_sync, stop_usage_sync as _stop_usage_sync
-    register_on_leader(lambda: _start_usage_sync(app))
-    register_on_lost_leader(_stop_usage_sync)
+    if os.getenv("USAGE_SYNC_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+        register_on_leader(lambda: _start_usage_sync(app))
+        register_on_lost_leader(_stop_usage_sync)
+        logger.info("[usage_sync] USAGE_SYNC_ENABLED=true — will auto-start on leadership.")
+    else:
+        logger.info("[usage_sync] USAGE_SYNC_ENABLED is off — usage sync won't auto-start.")
 
     from app.usagerecord.compress_service import start_compress_service as _start_compress, stop_compress_service as _stop_compress
     register_on_leader(lambda: _start_compress(app))

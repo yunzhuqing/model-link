@@ -14,7 +14,11 @@ This ensures that:
   - Only the leader node performs these potentially heavy DB queries.
 
 Configuration (environment variables):
-  USAGE_SYNC_INTERVAL  = 60   (seconds between sync runs, default: 60)
+  USAGE_SYNC_ENABLED   = false (master switch; when off, the leader does NOT
+                                 auto-start this task. Manual endpoints
+                                 /api/usage/sync/start and /api/usage/sync/run
+                                 still work regardless.)
+  USAGE_SYNC_INTERVAL  = 60    (seconds between sync runs, default: 60)
 """
 from __future__ import annotations
 
