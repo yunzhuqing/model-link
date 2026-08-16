@@ -191,7 +191,7 @@ class GatewayService:
         # Guards mutation of _provider_build_locks itself.
         self._build_locks_mutex = asyncio.Lock()
 
-    async def resolve_model(self, session, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None, service_tier: Optional[str] = None) -> ResolvedModelData:
+    async def resolve_model(self, session, model_name: str, group_id: Optional[int] = None, user_id: Optional[str] = None, provider_id: Optional[int] = None, service_tier: Optional[str] = None, provider_ids: Optional[set[int]] = None) -> ResolvedModelData:
         """
         解析模型名称/别名，返回供应商实例和模型信息（plain dataclass）。
 
@@ -242,6 +242,8 @@ class GatewayService:
 
         if provider_id is not None:
             all_models = [m for m in all_models if m.provider_id == provider_id]
+        elif provider_ids is not None:
+            all_models = [m for m in all_models if m.provider_id in provider_ids]
 
         if not all_models:
             raise ModelNotFoundError(model_name)
@@ -496,10 +498,10 @@ class GatewayService:
     async def resolve_file_provider_constraint(
         self, session, request, group_id: Optional[int] = None,
         explicit_provider_id: Optional[int] = None,
-    ) -> Optional[int]:
+    ) -> Optional[set[int]]:
         """
-        Determine the provider_id that seedance generation must run on, based
-        on the file_id references in the request.
+        Determine which providers have an asset copy for every referenced
+        file. The returned set constrains normal model routing.
 
         Each uploaded seedance-ref file is registered into a specific
         Volcengine account's asset library (recorded as UploadedFile.provider_id).
@@ -511,8 +513,8 @@ class GatewayService:
         - No file references → return None (no constraint).
         - Caller explicitly pinned a provider (explicit_provider_id): if the
           referenced files were uploaded to a different provider, raise.
-        - No explicit pin: if all referenced files share one provider, return
-          it (auto-route). If they span multiple providers, raise.
+        - No explicit pin: intersect the provider sets for every file and let
+          normal priority/traffic routing choose within that intersection.
         - Legacy files without a recorded provider_id are ignored.
 
         Raises GatewayServiceError (400) on a conflict.
@@ -531,39 +533,57 @@ class GatewayService:
         rows = result.all()
 
         if not rows:
-            return None
+            raise GatewayServiceError(
+                f"Referenced files were not found: {sorted(file_ids)}.",
+                status_code=400,
+            )
+
+        found_file_ids = {row.file_id for row in rows}
+        missing_file_ids = file_ids - found_file_ids
+        if missing_file_ids:
+            raise GatewayServiceError(
+                f"Referenced files were not found: {sorted(missing_file_ids)}.",
+                status_code=400,
+            )
 
         # NOTE: file_id lookups are global, but a cross-group file_id can't
         # actually steer generation onto an inaccessible provider —
         # resolve_model filters candidates by group_id, so a provider whose
         # models aren't visible to this group yields ModelNotFoundError.
 
-        provider_ids = {r.provider_id for r in rows if r.provider_id is not None}
-        if not provider_ids:
+        providers_by_file = {file_id: set() for file_id in file_ids}
+        for row in rows:
+            if row.provider_id is not None:
+                providers_by_file.setdefault(row.file_id, set()).add(row.provider_id)
+
+        constrained_sets = [providers_by_file[file_id] for file_id in file_ids
+                            if providers_by_file.get(file_id)]
+        if not constrained_sets:
             return None
 
+        common_provider_ids = set.intersection(*constrained_sets)
+
         if explicit_provider_id is not None:
-            if provider_ids and not provider_ids.issubset({explicit_provider_id}):
+            missing_files = [
+                file_id for file_id in file_ids
+                if providers_by_file.get(file_id)
+                and explicit_provider_id not in providers_by_file[file_id]
+            ]
+            if missing_files:
                 raise GatewayServiceError(
-                    f"Referenced files were uploaded to a different Volcengine "
-                    f"provider than the one requested (requested provider_id="
-                    f"{explicit_provider_id}, file providers={sorted(provider_ids)}). "
-                    f"Use an API key without a provider pin, or upload the files "
-                    f"to the requested provider first.",
+                    f"Provider {explicit_provider_id} has no asset copy for "
+                    f"referenced files: {sorted(missing_files)}.",
                     status_code=400,
                 )
-            return explicit_provider_id
+            return {explicit_provider_id}
 
-        if len(provider_ids) > 1:
+        if not common_provider_ids:
             raise GatewayServiceError(
-                f"Referenced files were uploaded to different Volcengine "
-                f"providers {sorted(provider_ids)}; seedance generation requires "
-                f"all referenced assets to live in the same account. Re-upload "
-                f"them under one provider.",
+                "No provider has asset copies for all referenced files.",
                 status_code=400,
             )
 
-        return next(iter(provider_ids))
+        return common_provider_ids
 
     async def resolve_model_for_request(
         self, session, model_name: str, request,
@@ -585,21 +605,22 @@ class GatewayService:
         When not given explicitly, it falls back to ``request.metadata``
         (the Responses adapter stores the top-level service_tier there).
         """
-        file_provider_id = await self.resolve_file_provider_constraint(
+        file_provider_ids = await self.resolve_file_provider_constraint(
             session, request, group_id, explicit_provider_id=provider_id_override,
         )
-        effective_provider_id = provider_id_override if provider_id_override else file_provider_id
         if service_tier is None:
             metadata = getattr(request, 'metadata', None)
             if isinstance(metadata, dict):
                 service_tier = metadata.get('service_tier')
         return await self.resolve_model(
-            session, model_name, group_id, user_id=user_id, provider_id=effective_provider_id,
+            session, model_name, group_id, user_id=user_id,
+            provider_id=provider_id_override,
+            provider_ids=None if provider_id_override else file_provider_ids,
             service_tier=service_tier,
         )
 
     @staticmethod
-    async def _resolve_file_ids(request, session) -> None:
+    async def _resolve_file_ids(request, session, provider_id: Optional[int] = None) -> None:
         """
         Scan all messages and metadata in the request for file_id references
         (file-xxx format) and replace them with the real object_key from
@@ -632,10 +653,24 @@ class GatewayService:
             fid_map = {}
 
         # Look up mappings from the database
-        result = await session.execute(
-            sa_select(UploadedFile).where(UploadedFile.file_id.in_(list(all_file_ids)))
+        query = sa_select(UploadedFile).where(
+            UploadedFile.file_id.in_(list(all_file_ids))
         )
-        mappings = {uf.file_id: (uf.object_key, uf.type) for uf in result.scalars().all()}
+        if provider_id is not None:
+            query = query.where(
+                (UploadedFile.provider_id == provider_id)
+                | (UploadedFile.provider_id.is_(None))
+            )
+        result = await session.execute(query)
+        records = result.scalars().all()
+        mappings = {}
+        for uploaded_file in records:
+            current = mappings.get(uploaded_file.file_id)
+            is_exact = provider_id is not None and uploaded_file.provider_id == provider_id
+            if current is None or is_exact:
+                mappings[uploaded_file.file_id] = (
+                    uploaded_file.object_key, uploaded_file.type
+                )
 
         if not mappings:
             return
@@ -720,7 +755,7 @@ class GatewayService:
         from app import get_db_session
         try:
             async with get_db_session() as session:
-                await self._resolve_file_ids(request, session)
+                await self._resolve_file_ids(request, session, resolved.provider_id)
         except Exception as e:
             import logging
             logging.getLogger("gateway").warning(

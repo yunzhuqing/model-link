@@ -1213,6 +1213,8 @@ async def import_media(
         "ImportSource": str(import_source or "url").strip() or "url",
         "InputURL": str(input_url or "").strip(),
         "MediaType": media_type,
+        # Required by yike ImportMedia — omitting it causes the call to fail.
+        "Overwrite": True,
     }
     if not params["InputURL"]:
         raise ValueError("InputURL is required for ImportMedia")

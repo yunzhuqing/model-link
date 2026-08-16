@@ -790,7 +790,7 @@ async def test_get_file_aliyun_returns_openai_file_with_status(monkeypatch):
     record = UploadedFile(
         file_id="file-abc123",
         object_key="media-ali-1",
-        purpose="wonder-ref",
+        purpose="seedance-ref",
         type="aliyun",
         storage_key="uploads/cat.png",
         created_at=datetime(2026, 8, 10, 6, 0, 0, tzinfo=timezone.utc),
@@ -859,7 +859,7 @@ async def test_get_file_aliyun_returns_openai_file_with_status(monkeypatch):
     data = await response.get_json()
     assert data["id"] == "file-abc123"
     assert data["object"] == "file"
-    assert data["purpose"] == "wonder-ref"
+    assert data["purpose"] == "seedance-ref"
     assert data["filename"] == "cat.png"
     assert data["bytes"] == 0
     assert data["status"] == "Normal"

@@ -1342,9 +1342,14 @@ class UploadedFile(db.Model):
     Used during chat request construction to resolve file references.
     """
     __tablename__ = "ml_uploaded_files"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "file_id", "provider_id", name="uq_uploaded_file_provider"
+        ),
+    )
 
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    file_id = db.Column(db.String(200), unique=True, nullable=False, index=True)
+    file_id = db.Column(db.String(200), nullable=False, index=True)
     object_key = db.Column(db.String(500), nullable=False)
     purpose = db.Column(db.String(100), nullable=True)
     group_id = db.Column(db.Integer, nullable=True, index=True)

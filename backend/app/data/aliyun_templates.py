@@ -5,7 +5,7 @@ ALIYUN_TEMPLATES = [
         label='Aliyun Wonder-Pro (T2V/I2V)',
         provider='Aliyun',
         name='wonder-pro',
-        alias='wonder-pro',
+        alias='doubao-seedance-2.0',
         context_size=4096, input_size=4096, output_size=1,
         pricing_tiers=None,
         output_pricing={
@@ -29,7 +29,7 @@ ALIYUN_TEMPLATES = [
         label='Aliyun Wonder-Standard (T2V/I2V)',
         provider='Aliyun',
         name='wonder-standard',
-        alias='wonder-standard',
+        alias='doubao-seedance-2.0-mini',
         context_size=4096, input_size=4096, output_size=1,
         pricing_tiers=None,
         output_pricing={
