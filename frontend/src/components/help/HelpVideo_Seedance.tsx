@@ -228,7 +228,66 @@ export const VIDEO_GENERATION_ROLE = `{
       "seconds": 6,
       "resolution": "720p",
       "generate_audio": true,
-      "aspect_ratio": "16:9"
+      "aspect_ratio": "16:9",
+      "task_type": "reference"
+    }
+  ]
+}`;
+
+export const VIDEO_GENERATION_EXTEND = `{
+  "model": "doubao-seedance-2.5",
+  "background": true,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "加上2s人咬一口并且很享受的场景"
+        },
+        {
+          "type": "input_video",
+          "video_url": "https://ark-project.tos-cn-beijing.volces.com/doc_video/r2v_tea_video1.mp4"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "video_generation",
+      "task_type": "extend",
+      "seconds": "7",
+      "resolution": "1080p"
+    }
+  ]
+}`;
+
+export const VIDEO_GENERATION_EDIT = `{
+  "model": "doubao-seedance-2.5",
+  "background": true,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "将视频中的面包黄油换成樱桃"
+        },
+        {
+          "type": "input_video",
+          "video_url": "https://ark-project.tos-cn-beijing.volces.com/doc_video/r2v_tea_video1.mp4"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "video_generation",
+      "task_type": "edit",
+      "resolution": "1080p",
+      "seconds": "7"
     }
   ]
 }`;
@@ -360,6 +419,24 @@ export function SeedanceSection() {
           <CurlSection body={VIDEO_GENERATION_ROLE} />
         </div>
 
+        {/* Video edit / extend */}
+        <div id="seedance-edit-extend" className="scroll-mt-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">视频编辑与延长 (edit / extend)</p>
+          <div className="bg-violet-50 border border-violet-100 rounded-lg p-3 text-sm text-violet-800 mb-3">
+            <strong>说明：</strong>edit / extend 仅 Seedance 2.5 及以后版本支持，<code>content</code> 须包含 <code>reference_video</code>；<code>aspect_ratio</code> 自动设为 <code>adaptive</code>，edit 的 <code>duration</code> 自动设为 <code>-1</code>。
+          </div>
+          <div className="space-y-4">
+            <div id="seedance-extend" className="scroll-mt-4">
+              <p className="text-sm font-semibold text-slate-800 mb-2">视频延长 (extend)</p>
+              <CurlSection body={VIDEO_GENERATION_EXTEND} />
+            </div>
+            <div id="seedance-edit" className="scroll-mt-4">
+              <p className="text-sm font-semibold text-slate-800 mb-2">视频编辑 (edit)</p>
+              <CurlSection body={VIDEO_GENERATION_EDIT} />
+            </div>
+          </div>
+        </div>
+
         {/* Model parameter specs */}
         <div id="seedance-models" className="scroll-mt-4">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">模型参数说明</p>
@@ -370,6 +447,18 @@ export function SeedanceSection() {
               <li><code>generate_audio</code> 参数仅 1.5-pro 及以后版本支持；1.0 系列不支持此参数，请勿传入</li>
               <li>1.5-pro 及以后版本默认生成有声视频；若需无声视频，设置 <code>generate_audio: false</code></li>
               <li>2.0 系列支持通过 <code>file_id</code> 引用多模态素材（图片、视频、音频）</li>
+              <li><code>task_type</code> 控制全模态参考任务模式，可选值 <code>auto</code> | <code>reference</code> | <code>edit</code> | <code>extend</code>；仅 2.5 及以后版本支持，不传时由 API 自动选择</li>
+            </ul>
+          </div>
+
+          {/* task_type mode constraints */}
+          <div className="bg-violet-50 border border-violet-100 rounded-lg p-3 text-sm text-violet-800 mb-3">
+            <strong>task_type 模式约束：</strong>
+            <ul className="list-disc list-inside mt-1 space-y-1">
+              <li><code>auto</code>：由 API 自动选择任务模式</li>
+              <li><code>reference</code>：参考素材生成视频</li>
+              <li><code>edit</code>：视频编辑（编辑原视频画面或音频）。<code>content</code> 须至少包含一个 <code>reference_video</code>，原视频时长须为 4–30 秒；<code>aspect_ratio</code> 自动设为 <code>adaptive</code>，<code>duration</code> 自动设为 <code>-1</code></li>
+              <li><code>extend</code>：视频延长（向前或向后延长）。<code>content</code> 须至少包含一个 <code>reference_video</code>；<code>aspect_ratio</code> 自动设为 <code>adaptive</code></li>
             </ul>
           </div>
 

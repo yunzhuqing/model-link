@@ -3,6 +3,7 @@ import { ArrowLeft, Video } from 'lucide-react';
 import { useBaseUrl, TableOfContents } from '../components/help/HelpShared';
 import type { TocItem } from '../components/help/HelpShared';
 import { SeedanceSection } from '../components/help/HelpVideo_Seedance';
+import { GlobalParamsSection } from '../components/help/HelpVideoGlobalParams';
 import { VeoSection } from '../components/help/HelpVideo_Veo';
 import { KlingSection } from '../components/help/HelpVideo_Kling';
 import { HappyhorseSection } from '../components/help/HelpVideo_Happyhorse';
@@ -14,12 +15,17 @@ import { MiniMaxH3Section } from '../components/help/HelpVideo_MiniMaxH3';
 
 const TOC_ITEMS: TocItem[] = [
   { id: 'overview', label: '功能说明' },
+  { id: 'global-params', label: '全局参数说明' },
+  { id: 'global-input', label: '　├ input 参数类型', indent: true },
+  { id: 'global-tool', label: '　└ tool 参数', indent: true },
   { id: 'seedance', label: 'Seedance 模型' },
   { id: 'seedance-t2v', label: '　├ 文生视频', indent: true },
   { id: 'seedance-multimodal', label: '　├ 多模态引用', indent: true },
   { id: 'seedance-multimodal-url', label: '　│ ├ URL 引用', indent: true },
   { id: 'seedance-multimodal-file', label: '　│ └ file 对象引用', indent: true },
   { id: 'seedance-role', label: '　├ 图片角色', indent: true },
+  { id: 'seedance-extend', label: '　├ 视频延长', indent: true },
+  { id: 'seedance-edit', label: '　├ 视频编辑', indent: true },
   { id: 'seedance-models', label: '　├ 参数说明', indent: true },
   { id: 'seedance-pricing', label: '　└ 收费标准', indent: true },
   { id: 'kling', label: 'Kling 模型' },
@@ -133,6 +139,9 @@ export default function HelpVideoGeneration() {
             </div>
           </div>
         </div>
+
+        {/* ======== Global params ======== */}
+        <GlobalParamsSection />
 
         {/* ======== Seedance ======== */}
         <SeedanceSection />

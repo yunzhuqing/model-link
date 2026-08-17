@@ -926,6 +926,11 @@ def _extract_video_gen_metadata(tool_data: dict, file_id_media_map: dict) -> dic
     if person_generation:
         meta['person_generation'] = person_generation
 
+    # Seedance omni-reference task type (auto | reference | edit | extend).
+    task_type = tool_data.get('task_type')
+    if task_type:
+        meta['task_type'] = task_type
+
     raw_parameters = tool_data.get('parameters')
     if isinstance(raw_parameters, dict):
         meta['parameters'] = raw_parameters

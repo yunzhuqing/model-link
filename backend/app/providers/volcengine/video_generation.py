@@ -25,6 +25,7 @@ API 文档: https://www.volcengine.com/docs/82379/
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import asyncio
@@ -122,6 +123,8 @@ _SEEDANCE_MODEL_PREFIXES = (
     "seedance",
 )
 
+# omni_reference_task_type 接受的枚举值（对应 tool 的 task_type 参数）
+_SEEDANCE_TASK_TYPES = ("auto", "reference", "edit", "extend")
 
 def is_seedance_video_model(model: str) -> bool:
     """
@@ -137,12 +140,32 @@ def is_seedance_video_model(model: str) -> bool:
     return any(lower.startswith(prefix) for prefix in _SEEDANCE_MODEL_PREFIXES)
 
 
+def _seedance_version(model_id: str) -> Optional[Tuple[int, int]]:
+    """
+    从模型 ID 中提取 Seedance 主版本号 (major, minor)。
+
+    匹配 seedance-X-Y 或 seedance-X.Y 形式，例如：
+      doubao-seedance-2-5-pro-xxx → (2, 5)
+      doubao-seedance-1-5-pro-251215 → (1, 5)
+      seedance-2.0 → (2, 0)
+
+    Args:
+        model_id: 实际 API 模型 ID
+
+    Returns:
+        (major, minor) 元组；无法识别版本号（如 seedance-pro）时为 None
+    """
+    match = re.search(r'seedance[- ]?(\d+)[.\-](\d+)', model_id.lower())
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
 def _model_supports_audio(model_id: str) -> bool:
     """
     检查模型是否支持 generate_audio 参数。
 
     Seedance 1.5 及之后的版本支持 generate_audio，1.5 之前的版本（1.0、pro）不支持。
-    通过从模型 ID 中提取主版本号来判断。
 
     Args:
         model_id: 实际 API 模型 ID（如 "doubao-seedance-1-5-pro-251215"）
@@ -150,17 +173,29 @@ def _model_supports_audio(model_id: str) -> bool:
     Returns:
         True 表示支持 generate_audio 参数
     """
-    import re
-    lower = model_id.lower()
-    # Match seedance-X-Y or seedance-X.Y pattern to extract major version
-    match = re.search(r'seedance[- ]?(\d+)[.\-](\d+)', lower)
-    if match:
-        major = int(match.group(1))
-        minor = int(match.group(2))
-        # 1.5+ supports audio (i.e., version >= 1.5)
-        return (major, minor) >= (1, 5)
-    # For "seedance-pro" (no version number) — older model, no audio support
-    return False
+    version = _seedance_version(model_id)
+    if version is None:
+        # For "seedance-pro" (no version number) — older model, no audio support
+        return False
+    return version >= (1, 5)
+
+
+def _model_supports_task_type(model_id: str) -> bool:
+    """
+    检查模型是否支持 task_type（omni_reference_task_type）参数。
+
+    Seedance 2.5 及之后的版本支持 task_type，2.5 之前的版本不支持。
+
+    Args:
+        model_id: 实际 API 模型 ID（如 "doubao-seedance-2-5-pro-260620"）
+
+    Returns:
+        True 表示支持 task_type 参数
+    """
+    version = _seedance_version(model_id)
+    if version is None:
+        return False
+    return version >= (2, 5)
 
 
 # =============================================================================
@@ -480,6 +515,7 @@ async def _create_video_task(
     generate_audio: Optional[bool] = True,
     watermark: bool = False,
     seed: Optional[int] = None,
+    omni_reference_task_type: Optional[str] = None,
     tracer: Any = None,
 ) -> str:
     """
@@ -496,6 +532,8 @@ async def _create_video_task(
         generate_audio: 是否生成音频（默认 True；None 表示不发送该参数）
         watermark:      是否添加水印（默认 False）
         seed:           随机种子
+        omni_reference_task_type: 全模态参考任务类型
+                        (auto | reference | edit | extend)，None 表示不发送
         tracer:         可选的 tracer 实例
 
     Returns:
@@ -522,6 +560,8 @@ async def _create_video_task(
         body["resolution"] = resolution
     if seed is not None:
         body["seed"] = seed
+    if omni_reference_task_type:
+        body["omni_reference_task_type"] = omni_reference_task_type
 
     url = f"{base_url.rstrip('/')}/contents/generations/tasks"
     headers = {
@@ -791,6 +831,21 @@ async def execute_seedance_video_generation(
     seed_raw = metadata.get("seed")
     seed: Optional[int] = int(seed_raw) if seed_raw is not None else None
 
+    # Omni-reference task type (auto | reference | edit | extend).
+    # task_type is only supported by Seedance 2.5+ models; for earlier versions
+    # it is silently dropped (not sent to the API), like generate_audio.
+    task_type = str(metadata.get("task_type") or "").strip()
+    if task_type:
+        if task_type not in _SEEDANCE_TASK_TYPES:
+            raise RuntimeError(
+                f"Seedance video generation: invalid task_type '{task_type}', "
+                f"expected one of {', '.join(_SEEDANCE_TASK_TYPES)}"
+            )
+        if not _model_supports_task_type(model):
+            task_type = None  # Don't send to API for pre-2.5 models
+    else:
+        task_type = None
+
     # Build file_id → Seedance variable alias map (图片1, 视频1, 音频1, …)
     # Media references come exclusively from file_id_media_map (input content blocks),
     # NOT from video_generation tool fields.
@@ -818,10 +873,31 @@ async def execute_seedance_video_generation(
     if not prompt_text:
         raise RuntimeError("Seedance video generation: no text prompt found in user messages")
 
+    # ── task_type-specific constraints (edit / extend) ─────────────────────
+    # edit/extend operate on a reference video: content must contain at least
+    # one reference_video. Both modes require ratio=adaptive; edit additionally
+    # requires duration=-1 (the reference video itself must be 4–30s long, a
+    # constraint validated upstream by the API).
+    has_reference_video = any(
+        item.get("type") == "video_url" and item.get("role") == "reference_video"
+        for item in content
+    )
+    if task_type in ("edit", "extend"):
+        if not has_reference_video:
+            raise RuntimeError(
+                f"Seedance video generation: task_type '{task_type}' requires "
+                f"at least one reference_video in content"
+            )
+        ratio = "adaptive"
+        if task_type == "edit":
+            duration = -1
+
     # ── Tracing ────────────────────────────────────────────────────────────
     _request_data: Dict[str, Any] = {"model": model, "content": content, "ratio": ratio, "resolution": resolution}
     if duration is not None:
         _request_data["duration"] = duration
+    if task_type is not None:
+        _request_data["task_type"] = task_type
     _child_span = None
     if tracer:
         _child_span = tracer.start_child(model, model=model, provider_type="volcengine", input_data=_request_data)
@@ -842,6 +918,7 @@ async def execute_seedance_video_generation(
             generate_audio=generate_audio,
             watermark=watermark,
             seed=seed,
+            omni_reference_task_type=task_type,
             tracer=_child_span,
         )
 
@@ -869,11 +946,6 @@ async def execute_seedance_video_generation(
         if _child_span:
             _child_span.end(error=_trace_error)
 
-    # Determine whether a reference video was used in the request
-    has_reference_video = any(
-        item.get("type") == "video_url" and item.get("role") == "reference_video"
-        for item in content
-    )
 
     video_items = [{
         "type": "video_generation_call",

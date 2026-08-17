@@ -302,15 +302,14 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
   const totalModels = aggregated.length;
   const activeModels = aggregated.filter(m => m.instances.some(i => i.model.is_active && i.providerActive)).length;
 
-  // Determine which model_id to show share button for (use the first non-shared instance's model id)
-  function getShareableModel(agg: AggregatedModel): { id: number; name: string; alias: string | null; providerName: string } | null {
-    const own = agg.instances.find(i => !i.sharedFromGroup);
-    if (!own) return null;
+  // Returns share info for a specific provider instance, or null if it's a shared-from-group instance
+  function getShareableInstance(inst: { model: ModelItem; providerName: string; sharedFromGroup?: string }): { id: number; name: string; alias: string | null; providerName: string } | null {
+    if (inst.sharedFromGroup) return null;
     return {
-      id: own.model.id,
-      name: own.model.name,
-      alias: own.model.alias,
-      providerName: own.providerName,
+      id: inst.model.id,
+      name: inst.model.name,
+      alias: inst.model.alias,
+      providerName: inst.providerName,
     };
   }
 
@@ -371,14 +370,13 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filtered.map((agg) => {
-                  const shareable = getShareableModel(agg);
-
                   // If only one provider, show as single row
                   if (agg.instances.length === 1) {
                     const inst = agg.instances[0];
                     const m = inst.model;
                     const active = m.is_active && inst.providerActive;
                     const isShared = !!inst.sharedFromGroup;
+                    const instShareable = getShareableInstance(inst);
                     return (
                       <tr key={`${m.id}-${isShared ? 's' : 'o'}`} className={`hover:bg-slate-50 ${!active ? 'opacity-50' : ''}`}>
                         <td className="px-4 py-3">
@@ -457,9 +455,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          {shareable && (
+                          {instShareable && (
                             <button
-                              onClick={() => setShareModel(shareable)}
+                              onClick={() => setShareModel(instShareable)}
                               className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                               title={t('group.groupDetail.shareToGroup')}
                             >
@@ -478,6 +476,7 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                     const active = m.is_active && inst.providerActive;
                     const isShared = !!inst.sharedFromGroup;
                     const rowSpan = agg.instances.length;
+                    const instShareable = getShareableInstance(inst);
                     return (
                       <tr key={`${m.id}-${idx}-${isShared ? 's' : 'o'}`} className={`hover:bg-slate-50 ${!active ? 'opacity-50' : ''} ${idx > 0 ? 'border-t-0' : ''}`}>
                         {idx === 0 ? (
@@ -558,9 +557,9 @@ export default function GroupModels({ groupId, currentRole, myPermissions }: { g
                           )}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          {idx === 0 && shareable && (
+                          {instShareable && (
                             <button
-                              onClick={() => setShareModel(shareable)}
+                              onClick={() => setShareModel(instShareable)}
                               className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                               title={t('group.groupDetail.shareToGroup')}
                             >
