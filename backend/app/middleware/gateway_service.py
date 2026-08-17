@@ -465,9 +465,24 @@ class GatewayService:
     def _collect_file_ids(request) -> set:
         """
         Scan all messages and metadata in the request for file_id references
-        (file-xxx format). Returns the set of raw file_ids found, without any
-        DB lookup. Used both to constrain provider selection (before
-        resolve_model) and to resolve asset:// replacements (after).
+        that need a database lookup.
+
+        Two kinds of file_id can appear in a request:
+
+        1. **Placeholder references** — the block carries a file_id whose URL
+           is empty, equals the file_id itself, or matches the ``file-<hex>``
+           pattern (e.g. an uploaded ``file-xxx`` ID with no inline URL).
+           These must be resolved to ``asset://`` / ``yike://`` and constrain
+           provider routing, so they are collected here.
+
+        2. **Inline-URL references** — the block carries a file_id together
+           with a real external URL (e.g. ``file_id: "apple_1",
+           image_url: "https://..."``). These are passed through to the
+           provider as-is and do NOT constrain provider routing, so they are
+           excluded here.
+
+        The placeholder test mirrors the one used by ``_resolve_file_ids``
+        so the two stay consistent.
         """
         import re
         fid_pattern = re.compile(r'\bfile-[a-f0-9]{24}\b')
@@ -477,6 +492,9 @@ class GatewayService:
         def _collect(text: str) -> None:
             if text:
                 all_file_ids.update(fid_pattern.findall(text))
+
+        def _is_placeholder(url: str, fid: str) -> bool:
+            return not url or url == fid or bool(fid_pattern.match(url))
 
         for msg in request.messages:
             if msg.content:
@@ -491,7 +509,12 @@ class GatewayService:
 
         fid_map = request.metadata.get('file_id_media_map', {})
         if isinstance(fid_map, dict):
-            all_file_ids.update(fid_map.keys())
+            for fid, info in fid_map.items():
+                if not isinstance(info, dict):
+                    continue
+                url = info.get('url', '')
+                if _is_placeholder(url, fid):
+                    all_file_ids.add(fid)
 
         return all_file_ids
 

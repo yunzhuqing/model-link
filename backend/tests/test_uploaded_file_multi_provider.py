@@ -201,3 +201,79 @@ async def test_json_upload_replicates_one_file_to_volcengine_and_aliyun(monkeypa
         ("file-shared", 11, "volcengine", "asset-volc"),
         ("file-shared", 22, "aliyun", "media-aliyun"),
     }
+
+
+@pytest.mark.asyncio
+async def test_file_provider_constraint_skips_inline_url_file_ids():
+    """Custom file_ids with a real external URL must not require a DB lookup.
+
+    Regression test: a request that references media via custom file_ids
+    (e.g. "apple_1") together with real image/video/audio URLs should pass
+    through the constraint check without raising "Referenced files were not
+    found".
+    """
+    request = ChatRequest(
+        model="doubao-seedance-2.0",
+        messages=[Message(role=MessageRole.USER, content="generate")],
+        metadata={
+            "file_id_media_map": {
+                "apple_1": {
+                    "type": "image",
+                    "url": "https://cdn.example/pic1.jpg",
+                    "role": "reference_image",
+                },
+                "tea_1": {
+                    "type": "image",
+                    "url": "https://cdn.example/pic2.jpg",
+                    "role": "reference_image",
+                },
+                "video_1": {
+                    "type": "video",
+                    "url": "https://cdn.example/clip.mp4",
+                    "role": "reference_video",
+                },
+                "audio_1": {
+                    "type": "audio",
+                    "url": "https://cdn.example/track.mp3",
+                    "role": "reference_audio",
+                },
+            }
+        },
+    )
+
+    # An empty session (no rows) must NOT raise — the constraint is None.
+    provider_ids = await GatewayService().resolve_file_provider_constraint(
+        _ConstraintSession([]), request
+    )
+    assert provider_ids is None
+
+
+@pytest.mark.asyncio
+async def test_file_provider_constraint_mixed_placeholder_and_inline():
+    """A placeholder file_id (uploaded, no URL) constrains routing; an
+    inline-URL file_id is ignored."""
+    rows = [SimpleNamespace(file_id="file-aabbccdd1122334455667788", provider_id=1)]
+
+    request = ChatRequest(
+        model="doubao-seedance-2.0",
+        messages=[Message(role=MessageRole.USER, content="generate")],
+        metadata={
+            "file_id_media_map": {
+                "file-aabbccdd1122334455667788": {
+                    "type": "image",
+                    "url": "file-aabbccdd1122334455667788",
+                    "role": "reference_image",
+                },
+                "apple_1": {
+                    "type": "image",
+                    "url": "https://cdn.example/pic.jpg",
+                    "role": "reference_image",
+                },
+            }
+        },
+    )
+
+    provider_ids = await GatewayService().resolve_file_provider_constraint(
+        _ConstraintSession(rows), request
+    )
+    assert provider_ids == {1}
