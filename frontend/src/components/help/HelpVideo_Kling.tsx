@@ -88,7 +88,7 @@ const KLING_V3_OMNI_IMAGE_TO_VIDEO = `{
   "tools": [
     {
       "type": "video_generation",
-      "duration": 5
+      "seconds": 5
     }
   ]
 }`;
@@ -121,7 +121,7 @@ const KLING_V3_OMNI_MULTIMODAL_REF = `{
   "tools": [
     {
       "type": "video_generation",
-      "duration": 5
+      "seconds": 5
     }
   ]
 }`;
